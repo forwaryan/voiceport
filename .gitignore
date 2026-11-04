@@ -1,0 +1,11 @@
+.build/
+.swiftpm/
+dist/
+.voiceport/
+.claude/scheduled_tasks*
+.DS_Store
+__pycache__/
+*.xcuserstate
+.env
+.env.*
+!.env.example
