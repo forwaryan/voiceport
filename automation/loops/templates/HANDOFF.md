@@ -7,6 +7,8 @@
 ```yaml
 role: <developer | verifier | evaluator | protocol-support>
 role_session: <实际宿主会话标识；不是自造的角色名>
+rotation_startup_proof: <真实新 session、terminal、harness、transcript 起始身份/UTC/实际压缩记录与首次计数0；实际 PreToolUse 状态路径及指定 helper 哈希；SessionStart 未观察到须披露>
+hook_loading_and_trust: <当前进程真实加载证明；原生 Codex 用户原生 UI 信任状态，未证明则阻塞；配置存在不算加载，不代批或改信任库>
 host: <回执所属宿主>
 workspace: <实际工作区标识及路径>
 agent: <实际启用的 agent；仅用户指定时设置模型>
@@ -112,3 +114,35 @@ ORCA orchestration send --from <本次from> --type worker_done --subject <准确
 ```
 
 没有修改文件时省略 files-modified，没有报告时省略 report-path；不能填不存在的值。ask 后结束当前轮等待回复；worker_done 仅发一次，失败按宿主回执恢复，确认后结束当前轮。现场协议冲突或不能判定时交协调者，不用本地提问工具替代 Orca ask，不循环 check，不开始其他任务。
+
+## F. 全角色上下文轮换
+
+协调者、开发、独立验证、协议支撑和效果评估统一最多 **5 轮上下文**：初始上下文加最多 **4 次已完成压缩**。进入最后一轮立即利用剩余空间保存交接；当前工具自然返回后不再开新工作，禁止第 5 次压缩，不强制 compact、不额外压测。实际接口与宿主边界见 [全角色会话轮换](../../../.claude/COORDINATOR_ROTATION.md)。
+
+新角色接单前核对真正新 session，不能仅凭新 terminal：从真实 transcript 的起始身份/时间和已完成压缩记录，独立核对实际 hook 状态的 `owner`、`terminal`、`harness`、`boundaries=[]`、`hook_events` 中的 PreToolUse 及 `hook_implementation_sha256` 与指定版本一致。worker 状态在 `.voiceport/session-rotations/<actual-session>.json`；协调者另有 lease，不能把 worker 状态写入 owner lease。Claude 按 `compact_boundary` UUID 去重，Codex 按真实 `session_meta.payload.id` 验证身份并按 `compacted.payload.window_id` 去重；恢复旧 transcript 不清零。SessionStart 若未观察到须披露，真实 PreToolUse 加新 transcript 证明可满足启动条件，不能伪造状态、手动合成激活或把测试 stdin 当加载证明。原生 Codex 必须由用户在原生 UI 信任具体 hook 定义并证明当前进程实际加载，未证明则该前端阻塞；不写信任库或代发批准按键。Claude 支撑成功不替代失败/未执行的原生 Codex Task。Claude PreCompact veto 为 `decision:block`，Codex PreCompact 为 `continue:false`，Codex PreToolUse 为 `decision:block`；真实 veto 生命周期未执行要保留未测。
+
+**先检查实际 terminal 绑定。** 同一 session 的实际 `ORCA_TERMINAL_HANDLE` 与 hook 保存 terminal 不一致或缺失时，即使计数 0、角色已结算后重开或 registry 已移到新 terminal，也立即停止普通工作与压缩。helper 锁存首个 `terminal_drift`，保留实际 session、旧 terminal、单调计数和旧笔记；返回原 terminal 仍 fence，checkpoint 不得冒用旧 caller 或宣称成功。worker 仅可 Read、精确 session-status、以当前真实 preamble 的 from/Task/Dispatch 发有界 escalation，然后结束 turn；不能 Write/Edit 笔记、执行 Skill 或任意 shell。escalation 命令只用 `orca orchestration send` 的六组参数 `--from ACTUAL_TERMINAL --type escalation --subject '简短主题' --body '简短事实与停止请求' --task-id ACTUAL_TASK --dispatch-id ACTUAL_DISPATCH`，不重复、不加参数，最多 48KB 且无 shell 元字符/换行/分号。Orca 校验真实 dispatch，不能借旧 registry 代发；Stop（含递归）允许结束，双宿主 veto 格式保持上述规则。
+
+协调者从真实 state/transcript 与保留工作采集行政 handoff，记录实际/保存 terminal、session、完成压缩数、原角色/Task/Dispatch 沿革、笔记/证据、活动工具和旧 checkpoint 未成功。依 recovery 停止精确 mismatched assignment，取得真实 exited/released 后启动 genuinely fresh session；spec/freeze 不变走同 Task retry/new-start，改变则建显式 successor，保留 Run/产品 attempt 和历史。验证新 ID、实际 terminal 与 hook 状态一致、真实 PreToolUse 当前 helper hash、bounded transcript 初始身份/时间与零计数；SessionStart 缺失如实写 startup addendum。旧会话持续 fence，不能重绑/清零/改信任或仅 send 恢复旧 transcript。此恢复不由 helper 自动 stop/launch；mock 恢复模型不代表真实生命周期接受。operational03 FAILED、policy03 旧九文档快照结论保留，修改后须重新固定相关输入独立复核；原生信任仍失败/未执行，Full VP-013/capture 仍 false。
+
+terminal 绑定一致且没有 drift 锁存的 worker 在 `.voiceport/handoffs/session-rotation-ACTUAL_SESSION_ID.md` 保存非空、最多 48KB 的精简笔记，使用真实身份，不填示例回执：
+
+```yaml
+actual_session_and_terminal: <实际 session/terminal/harness 与当前轮数、完成压缩记录和加载证据>
+run_task_dispatch: <当前 preamble 的实际 Run/Task/Dispatch>
+role_predecessor: <原角色、原 Task/Dispatch 与实际续接链>
+product_attempt_and_freeze: <同一产品 attempt、当前冻结 pins；行政中断也保留旧快照>
+completed_evidence: <已完成命令、原始日志/报告路径、退出码；引用与亲自执行分开>
+active_tools: <真实工具句柄/运行或结束状态；未知写 unknown，不以超时当退出>
+provisional_findings_and_remaining: <暂定发现、未做项、权限与证据写入范围>
+```
+
+先保存笔记，再执行以下接口。原生 Codex 若尚未创建该笔记文件，可改用同命令的 `--notes-text '单行精简笔记'` 一次创建并提交；已有笔记时不传此参数，helper 不覆盖旧文件，不能借此执行其他命令：
+
+```sh
+python3 -I .claude/hooks/coordinator_rotation.py checkpoint --session ACTUAL_SESSION_ID
+```
+
+策略要求 helper 对照实际调用者的当前 terminal/session 与精确注册身份核验关联，只接受限定私有路径内的普通笔记文件（非符号链接），记录哈希并在通知后保持/复核笔记完整性，再发一次 escalation。首次操作实现独立评审失败，保存 7 个可复现缺陷；当前返修及完成后的新固定输入独立复核待办，不预判返修成败。上述身份、fail-closed 与笔记完整性是要求，尚非独立接受的保证；真实新会话 PreToolUse 已观察，SessionStart、实际 PreCompact 与完整自动生命周期未执行，原生信任/激活仍阻塞。未知送达先交协调者查实际回执，不能盲重发。checkpoint 只是行政交接，不结束未完成的产品工作，不伪造 worker_done；worker 随即结束当前轮，不启动其他 agent、worker 或循环，不接管主协调者 loop、账本或 Git。
+
+协调者核对交接和活动工具后，对精确旧 dispatch 依 Orca recovery 作 guarded stop，必须取得实际 exited/资源释放证明；取消请求、静默或未知存活都不是退出。之后用 `worker-start` 和真实 fresh-agent 回执续接，禁止把 send 恢复超限 transcript 当新上下文。原 Task/spec/freeze 未变可按实际 retry/new-start 恢复；已改变则建立显式 successor assignment，保留原角色/Task/Dispatch lineage、同一 Run/产品 attempt 和旧证据，新证据用新路径。修订冻结输入前须明确中断旧评审并建立新完整冻结，不能静默漂移，也不能把行政中断当产品通过或退回。协调者仍在原 loop 处理事件；自身轮换另依 lease 的停止调度、retire/launch/claim 流程，继任显式恢复已授权的 loop。普通工作真实完成时才按 E 节发送一次准确 outcome 的 worker_done。

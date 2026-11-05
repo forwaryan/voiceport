@@ -1,70 +1,89 @@
-# VoicePort 协调者轮换
+# VoicePort 全角色会话轮换
 
-本项目默认在一个主协调者完成 **5 次压缩**后，停止该会话的动态 loop，保存精简交接包，在同一 checkout 启动新的 Claude 协调会话，并接管原 Orca Run。开发者和独立验证者保持原会话、Task/Dispatch、product_attempt 和冻结版本。到阈值的最后一轮，在当前工具自然返回后直接保存和交接，不额外压测，也不强制压缩来触发或验证轮换。
+协调者、开发者、独立验证者、协议支撑和效果评估者统一最多 **5 轮上下文**：初始上下文加最多 **4 次已完成压缩**。进入第 5 轮就利用剩余空间直接保存交接并换新窗口，不再进行第 5 次压缩。这里明确区分上下文轮数和已完成压缩次数；旧版“完成 5 次压缩后才轮换”已被替代。不额外压测，不强制压缩，不为测试轮换消耗真实上下文。
 
-这是项目的协调工具，不是 Claude Code `/loop` 自带的换窗口功能。工具只维护 `.voiceport/coordinator-rotation.json`，不替代产品账本或 Orca 的实际 Run 所有权。当前实现面向本项目 macOS/POSIX 协调环境，需要 `python3`、`fcntl` 和支持 `agent launch`/`run-use` 的 Orca。
+2026-11-05 用户发现验证窗口实际已有 10 次压缩。原因是旧实现只约束协调者 owner，worker 被明确排除；Orca follow-up 即使换了 terminal handle 仍可恢复旧对话。该旧验证进程已按用户指令经 guarded stop 确认退出并释放，原报告材料和 freeze07 快照保留，未完成评审不能变成产品退回或通过。当前配置修正须以新的完整冻结版本继续验收。
 
-## 触发与计数
+这是项目 hook 与模型执行交接步骤的机制，不是 `/loop` 内置功能或外部进程监督器。需要本机 Python3/fcntl 与 Orca；原 Run、产品 attempt、角色沿革、冻结与暂停跨窗口保留。所有产品账本仍只由唯一主协调者维护；各角色可以并行处理无写入冲突的真实任务。
 
-`.claude/settings.json` 安装 `PostCompact`、`SessionStart`、`PreToolUse` 和 `Stop` 命令 hook。PostCompact 之后扫描本会话 transcript 的完整 `compact_boundary` 记录，以实际 UUID 去重，自动/手动压缩均计数。SessionStart 和下次工具调用补查异步延迟写入的边界；不会按 hook 次数、summary 哈希或 prompt_id 计数。JSONL 的未完成末行留到下次处理，inode 变化或截断后重扫并保留 UUID 去重。边界 schema 变化会报告错误，不悄悄猜测次数。
+## 宿主适配与计数
 
-状态锁保护计数、请求和 epoch 更新；一次 epoch 只产生一个确定的轮换请求。仅 `owner` 对应的会话计数。worker hook 不改轮换状态。阈值保存在私有状态的 `threshold` 字段，初始化时可用 `adopt --threshold N` 配置，后续协调者继承该值。活动协调者也可运行 `python3 -I .claude/hooks/coordinator_rotation.py configure --session ACTUAL_SESSION_ID --threshold N`，下次 hook 核对时生效；交接已触发后不能提高阈值逃过交接。若持久目标文字也含旧阈值，可在同一次 `configure` 加 `--goal '更新后的目标'` 同步后续交接描述。不要直接改正在使用的状态文件。
+以下计数、身份校验、阻断与交接完整性均为必须满足的策略要求，不是当前实现已获独立接受的保证。首次操作实现独立评审失败，保存了 7 个可复现缺陷：同 inode/大小改写漏计、缺失 transcript 放行、外来 Claude 会话与缺失身份的原生 transcript 放行、通知后笔记可变、笔记符号链接被接受、未核对实际调用者 terminal。当前另有返修进行，完成后的新固定输入独立复核待办；此处不预判返修成败。真实新会话 PreToolUse 加载已有观察，SessionStart、实际 PreCompact veto 和完整自动生命周期仍未执行；原生信任/激活仍阻塞。
 
-## 首次启用
+- Claude Code 使用 `.claude/settings.json` 的 PreCompact、PostCompact、SessionStart、PreToolUse、Stop。按当前会话 `compact_boundary` 的实际 UUID 去重。
+- 原生 Codex 使用 `.codex/hooks.json` 的相同事件。要求按 `session_meta.payload.id` 验证所属会话，按真实 `compacted.payload.window_id` 去重。不能拿 Claude parser 猜 Codex 次数；要求未知 schema/缺失 transcript 明确失败并拦住后续工具或压缩，不能把该要求当成已验证的当前保证。
+- 完整 JSONL 行、延迟记录、inode 替换与截断会补查；保留完成身份集合，不因恢复或新终端清零。初始状态不吞掉已存在的压缩。
+- 协调者 lease/epoch 在 `.voiceport/coordinator-rotation.json`；其他会话独立计数在 `.voiceport/session-rotations/<actual-session>.json`。worker 的计数不能写协调者 lease 或产品账本。运行阈值字段 `threshold=5` 现在表示上下文轮数；配置不可超过 5，继任沿用。
+- 最后一轮拦住新开发、测试、派发、收件箱消费与 loop 续订，只允许必要只读和明确交接操作。当前工具自然返回；不以静默或超时推断它退出。
 
-先读项目共用协调契约，确认原协调者已实际停 loop 并退任。现有用户对接管的授权可以直接执行，不再要求用户重复确认。保留旧协调者交接回执，不以终端输入 accepted 代替退任证据。
+两个宿主的压缩 veto 输出不同：Claude PreCompact 返回 `decision: block` / `reason`（或 exit2）；原生 Codex PreCompact 返回 `continue: false` / `stopReason`。Claude 的 PreCompact `continue:false` 不能当 veto；Codex 不接受此事件的 `decision:block`。Codex PreToolUse 使用 `decision:block`，不是 `continue:false`。共享 helper 显式选择 `hook --harness codex` 适配输出。
 
-在新协调者自己的终端调用：
+## 加载证明与信任条件
+
+配置存在不代表当前进程已加载。每次新 worker 应核对真实 PreToolUse 写出的 session 状态：实际 session ID、terminal 与 Orca 回执匹配，首次计数 0，`hook_implementation_sha256` 对应当前 helper；再从真实 transcript 的初始身份/时间和当前 compact_boundary 核对确实为新会话及计数一致。SessionStart 若未观察到必须保留该事实，不能伪造事件填证明；PreToolUse 须补扫并执行上限；真实加载观察不等于身份/计数实现已独立接受，但不能因缺少辅助 SessionStart 标记而无理由卡住已按上述条件证明的新上下文。不得手造状态或把合成 stdin 测试说成实际 hook 激活。报告区分已观测的加载与未执行的 PreCompact 全生命周期；原会话已超过上限不能恢复工作。
+
+原生 Codex 0.166.0 的未托管 hook 需要用户通过 `/hooks` 信任具体定义哈希；修改定义后可能需要重新信任。不自动改信任数据库或全局配置。缺少真实加载证明时该前端工作应报告阻塞，不能先做产品改动再补证明。Claude 新窗口加载项目 settings；已在运行的窗口也须凭实际 hook 结果确认，不能只依赖文件落盘。
+
+宿主对手动/自动压缩的实际跨窗全流程不通过强制压缩来验收。隔离单元测试验证逻辑、真实新窗口验证身份和加载；未执行的完整生命周期路径继续如实标注。
+
+## 协调者交接
+
+首次 adopt 要先确认原协调者实际停 loop/退任，绑定既有 Run，不新建 Run。原有授权足够，不反复向用户确认。普通 Run 不加仅适用于 legacy 的 takeover 参数。
 
 ```sh
 orca orchestration run-use --id ACTUAL_RUN --json
 orca orchestration run-current --full --json
-python3 -I .claude/hooks/coordinator_rotation.py adopt --session ACTUAL_SESSION_ID --run ACTUAL_RUN --transcript /absolute/path/to/session.jsonl --threshold 5 --goal '当前用户目标与边界' --loop-prompt '已授权的原 loop 提示词' --retired-session OLD_SESSION_ID
+python3 -I .claude/hooks/coordinator_rotation.py adopt --session ACTUAL_SESSION_ID --run ACTUAL_RUN --transcript /absolute/session.jsonl --threshold 5 --goal '当前目标' --loop-prompt '原始已授权 loop 提示词' --retired-session OLD_SESSION_ID
 ```
 
-普通 Run 使用不带 `--takeover-legacy` 的 `run-use`；该额外参数仅用于自动迁移的 legacy Run，本项目当前 Run 已实测会拒绝误用。`adopt` 会核对调用者的实际 Run 绑定，并把当前会话已记录的压缩计入，不从零掩盖已有压缩。不得为接管另建 Run。运行中的本机身份和 token 只放 `.voiceport`，不提交到 Git。
+活动 owner 可用 `configure --session ACTUAL_SESSION_ID --threshold 5 --goal '当前目标'` 同步运行阈值和持久目标；交接期间不能提高阈值逃避轮换。运行状态不要直接手改。
 
-## 达到阈值后的交接
+进入最后一轮后：
 
-达到阈值后，PreToolUse 拒绝协调者继续编辑、派发、消费收件箱或续订循环，允许只读 Read、Skill、停止 loop 和以下单条 helper 命令。已在执行的工具先自然返回；hook 不中断 worker 或修改冻结内容。Stop hook 最多在非递归停止时提示一次交接，不能靠无界阻止结束来维持循环。
+1. 成功调用 `ScheduleWakeup({stop:true})`，保留真实回执，不安装新 wakeup。
+2. 运行 `python3 -I .claude/hooks/coordinator_rotation.py retire --session ACTUAL_SESSION_ID --transcript /absolute/session.jsonl`。核对最后一次调度确实停止，保存最多 48KB 的交接包并退任。
+3. 运行 `python3 -I .claude/hooks/coordinator_rotation.py launch --session ACTUAL_SESSION_ID`，取得 Orca prompt 已送达回执后结束 turn。新 session 读取 packet、从自己的终端绑定原 Run，然后用一次性 token 执行 `claim --session ACTUAL_NEW_SESSION_ID --token TOKEN`。
+4. claim 验证 Run、packet 哈希、旧 session fencing、token/epoch。继任核对自身确为新 session 及自身实际计数，不以新 terminal handle 代替。保留活动 worker、角色、attempt 和冻结；某 worker 需要轮换时按下面的独立流程处理。
+5. 接管成功、未暂停且仍可推进时，显式用 packet 的原始 `loop_prompt` 启动 `/loop`。原 timer 不自动迁移。Orca 完成/问题/升级事件是主唤醒，1200 秒以上 timer 只兜底。
 
-1. 调用 `ScheduleWakeup`，参数 `{"stop":true}`，取得真实成功回执。不要安装新 wakeup。
-2. 运行 `python3 -I .claude/hooks/coordinator_rotation.py retire --session ACTUAL_SESSION_ID --transcript /absolute/path/to/session.jsonl`。工具检查最后一次 loop 操作确实成功停止，原子写入最多 48KB 的私有交接包，然后登记退任。
-3. 运行 `python3 -I .claude/hooks/coordinator_rotation.py launch --session ACTUAL_SESSION_ID`。它通过 Orca 在同一 checkout 启动一个新会话，传递实际交接路径、原 Run、一次性 token 和接管步骤。取得 launch 回执后结束本协调者的 turn；不要监督新协调者或继续调度。
-4. 新会话读取交接包，加载 orchestration 技能，从自己的终端接管既有 Run，再执行 prompt 给出的 `claim --session ACTUAL_NEW_SESSION_ID --token TOKEN`。claim 核对真实 Run、交接包哈希和未消费 token，在锁内递增 epoch、清零新会话计数。旧会话仍被 fence，即便重新打开也不能恢复协调写入。
-5. 新会话确认领取成功后再处理收件箱、核对 worker 和继续原任务。交接包显式记录 `rotation_threshold`（当前为 5）及 `rotation_policy`，继任沿用运行阈值和“最后一轮直接保存交接、不额外压测或强制压缩”的规则；`claim` 保留既有阈值，不重置为旧默认值。暂停状态跨交接保留；若没有暂停且仍有可推进任务，显式用交接包的 `loop_prompt` 启动 `/loop`。原会话定时器不会自动转移。等待 worker 以 Orca 完成事件为主，兜底至少 1200 秒。
+Stop 提示只在非递归停止时给出，不无限阻止结束。旧 owner 被 fence，即便重新打开也不能消费邮箱或恢复调度。
 
-轮换需要协调模型执行上述固定交接步骤；hook 本身不在 PostCompact 中直接杀进程或伪造 ScheduleWakeup 回执。若模型停止响应，系统保持请求/退任状态，不能保证无人值守自愈。工具 hook 是协调约束，不是阻止任意 shell 或恶意会话绕过的安全沙箱；非 owner 的普通 worker 仍按原任务允许范围工作。
+## Worker 交接
 
-## 每轮 Git 交付跨交接保留
+worker 不启动继任、不停协调者 loop、不改 ledger/角色注册或结算自己的未完成产品任务。
 
-用户已明确要求把分逻辑 commit、push、PR 创建/更新与合并，以及拉取最新 main 纳入持续 loop。当前协调者按 `docs/LOOP_METHODS.md` 第 6 节和 `.claude/loop.md` 执行；交接包包含 `git_delivery_policy`，继任继续未完成的 Git 步骤。每个有实际代码/测试/文档产出的阶段及时提交推送，满足仓库合并条件后合并，在无活动 writer/冻结验证冲突的安全点同步 main，并从最新 main 建下一功能分支。公开保留失败和 WIP 边界，不将提交或合并当作 VP 产品验收。
+1. 在 `.voiceport/handoffs/session-rotation-ACTUAL_SESSION_ID.md` 写入精简交接：实际 Run/Task/Dispatch、role predecessor、attempt/freeze pins，已完成命令/原始日志/退出码，正在运行工具的真实句柄与状态，暂定发现、未做项、证据范围和权限。不能把未完成操作写成成功。
+2. 执行 `python3 -I .claude/hooks/coordinator_rotation.py checkpoint --session ACTUAL_SESSION_ID`。原生 Codex 可通过同一命令的 `--notes-text '单行精简交接内容'` 安全保存，避免被工具 fence 后再编辑任意文件。策略要求 helper 核对实际调用者的当前 terminal/session 与精确注册身份，只接受限定私有路径内的普通笔记文件（非符号链接），记录 SHA/身份并在通知后保持/复核笔记完整性，发送一次 escalation 并保留未知送达锁存；这些身份与完整性要求尚待新固定输入独立复核，不伪造 worker_done 或产品验收。
+3. 结束 turn。协调者核对交接及活动工具，在用户已授权轮换范围内 guarded stop 精确 dispatch；只有确认退出/释放后才能开始新上下文。不把取消请求或未知存活当成已退出。
+4. 若原 Task/spec/freeze 仍适用，在同一 Task 上按 Orca recovery 的 retry/new-start 继续。若 spec/freeze 已改变，建立显式 successor assignment，记录原 Task/Dispatch/role lineage；产品 attempt 不因行政轮换重开，也不凭行政失败拒绝产品。
+5. 新窗口用 `worker-start` 和实际 fresh-agent 回执。对已到上限的旧 dispatch 直接 `send` 可能恢复原 transcript，禁止当作换新上下文。实际 session ID 必须变化、首次计数为 0，旧证据保持只读，新证据使用新路径。
 
-## 中断和恢复
+### 实际 terminal 与保存绑定不一致：先 fence，再由协调者新开会话
+
+同一 session 从 terminal A 恢复到实际 terminal B（包括已经结算的角色被重新打开）不能继续普通工作，即使完成压缩次数为 0、注册表已改到 B 或旧 Task 尚未完成。worker hook 在普通工具与 PreCompact 前核对实际 `ORCA_TERMINAL_HANDLE`；发现缺失或不一致会锁存 `terminal_drift` 的首个实际/保存 terminal、事件与时间。原 `owner`、保存 terminal、笔记及完成压缩记录保留；后续有效 transcript 扫描只增加已完成记录。返回 terminal A 也不解除 fence，checkpoint 仍核对实际 caller 相等并拒绝已锁存 drift；不发送旧 terminal 的成功交接。
+
+1. worker 立即停止普通工作与压缩，披露实际和保存的 terminal、session 与计数，按当前真实 Orca preamble 的 from/Task/Dispatch 发 escalation，然后结束 turn。不要手改绑定/清零、冒用 A、补造 SessionStart 或把旧笔记当成功 checkpoint。drift 路径不拦 Stop，包含递归 Stop；双宿主保持各自的 PreCompact/PreToolUse veto 输出。
+2. fence 只允许 Read、精确 `python3 -I .claude/hooks/coordinator_rotation.py session-status --session ACTUAL_SESSION_ID` 和一条有界的 `orca orchestration send` escalation。该 shell 命令仅接受 `--from ACTUAL_TERMINAL --type escalation --subject '简短主题' --body '简短事实与停止请求' --task-id ACTUAL_TASK --dispatch-id ACTUAL_DISPATCH` 六组不重复参数，Task/Dispatch 必须来自实际 preamble 并由 Orca 验证；不加其他参数。命令最多 48KB，避免 shell 元字符（正文也不要换行、分号或命令替换）；不允许任意 Bash/exec_command、Skill、Write/Edit，连原 checkpoint 笔记也不开放。该例是接口格式，不是实际回执。
+3. 协调者从真实状态、transcript 与已保留工作采集行政 handoff，记下未成功的旧 terminal checkpoint、原角色/Task/Dispatch history、实际绑定差异、计数、证据和仍运行工具。行政 handoff 由协调者保存，worker 不通过 fence 外写文件；此采集不替代旧 worker 的 checkpoint 成功。
+4. 协调者依 Orca recovery 对精确 mismatched assignment guarded stop，取得实际 exited/资源释放后再开 genuinely fresh session。spec/freeze 不变走同一 Task 的 retry/new-start；改变则建显式 successor，保留原角色/Task/Dispatch 沿革、Run 和产品 attempt。只发 send 恢复旧对话、只改 registry、收到 stop 请求、静默或超时均不算退出或新会话。
+5. 新 session ID 必须不同，实际 terminal 与新 hook 状态完全相等，真实 PreToolUse 加载当前指定 helper hash，bounded transcript 初始身份/时间与首次完成压缩数 0 一致。SessionStart 未观察到用上述 startup addendum 如实补证，不伪造。旧 session 永久保留 fence 与旧证据；正常 fresh session 仍按初始加最多四次压缩、最后一轮直接 checkpoint/handoff 执行。
+
+这里没有 terminal/token migration、自动 stop/launch 或信任绕过子系统。临时根目录/mock Orca 的 gate 与恢复模型是开发控制；实际 stop/release/launch、PreCompact veto 及完整生命周期未因这些控制获得接受。独立 operational03 的 FAILED 和 policy03 对旧九文档精确快照的结论均保留；本次改动须重新固定相关 operational/docs 输入并独立复核。原生 Codex 信任 Task 仍失败/未执行，Full VP-013/capture 仍 false。
+
+## 失败恢复和 Git
+
+`requested` 只做交接；`retired` 可单次 launch；`launching` 或 checkpoint `notifying` 表示已尝试，超时也不能重复 fresh 启动/发送。按实际 Orca receipt 的 replay ID 恢复；没有证明则报告未知状态，不能凭静默另开重复写者。claim/身份/哈希失败不写产品、不起 loop。worker `handoff_ready` 只证明交接准备与升级送达，不证明旧进程已经退出。
 
 ```sh
 python3 -I .claude/hooks/coordinator_rotation.py status
+python3 -I .claude/hooks/coordinator_rotation.py session-status --session ACTUAL_WORKER_SESSION
 python3 -I .claude/hooks/test_coordinator_rotation.py
 ```
 
-- `requested`：原协调者尚未完成退任；只恢复停 loop 和 retire，不重复派发。
-- `retired`：原 loop 已停止，交接包已落盘；可执行一次 launch。
-- `launching`：启动已尝试，即使超时也禁止 fresh launch。查看私有 `request.launch_receipt` / `launch_error` 和 Orca 终端。存在 operationId 时，按 Orca 文档用同一命令加 `--retry-launch` 重放；没有可验证回执时先检查实际会话，不凭静默创建第二个。
-- 新会话已启动但尚未 claim：恢复该会话，让它绑定原 Run 并使用原 token。不能让旧会话重获写权。
-- claim 失败：不写产品账本，不开 loop。保留证据、核对宿主所有权和 packet 哈希；不自动清空锁或新建 Run。
-- 存在未知旧 session、失联或权限菜单：保持停止状态，按宿主真实回执处理。不能将超时当作退出。
+每个有实际产出的阶段仍须分逻辑 commit/push、更新 PR，满足正常仓库条件后自主合并，在无写者/冻结冲突的安全点同步 main；用户已持续授权，不逐 PR 重问。不能 force/admin 绕过。交接携带未完 Git 步骤，Git 集成不代表产品验收。配置/角色文档属于冻结输入，调整时先明确停止旧评审并建立新冻结，不能静默漂移。
 
-没有状态文件时 hook 不自动认领任何会话。首次 adopt 必须由实际协调者执行。现有 `.claude` 目录启动时若尚无 settings 文件，当前会话可能需要用户打开 `/hooks` 或重启才加载新增 hooks；新启动的接任会话会加载项目配置。未取得真实触发证据之前只称配置已安装。
+## 来源与验证边界
 
-## 来源与取舍
+2026-11-05 核对 Claude Code 2.1.318、原生 Codex 0.166.0 的已安装实现/schema，并只读查阅 [Claude PreCompact](https://code.claude.com/docs/en/hooks#precompact) 与 [Codex hooks](https://learn.chatgpt.com/docs/hooks)。本机原生 Codex rollout 确认 `session_meta` 和带 window_id 的 `compacted` 结构。上述是来源和 schema 证据，不能代替真实 compaction veto/跨窗口全流程执行。
 
-2026-11-05 只读调研，未运行上游下载代码：
-
-- [Anthropic hooks：PostCompact](https://code.claude.com/docs/en/hooks#postcompact)、[SessionStart](https://code.claude.com/docs/en/hooks#sessionstart)、[Stop](https://code.claude.com/docs/en/hooks#stop)。PostCompact 没有决策控制；用它观察完成，用 SessionStart/PreToolUse 补查和执行约束。官方 [CHANGELOG 固定版本](https://github.com/anthropics/claude-code/blob/26382c08758260c9f5deb2019d8fe851f89fa9ae/CHANGELOG.md) 记录生命周期 hook 支持。
-- [planning-with-files 恢复逻辑](https://github.com/OthmanAdi/planning-with-files/blob/8eef6dc6540dde5eef3fdc0ac487ad9c48ef3ba5/hooks/claude-hook.sh#L304-L345)：从磁盘恢复精简状态；不把全部旧对话复制给下一任。
-- [HumanLayer handoff](https://github.com/humanlayer/humanlayer/blob/f9bd73534a9fb7099a274f951b698b1297122fd9/apps/riptide-api/src/orpc/api/sessions/handoff.ts#L40-L114)：在安全状态交接、用事务绑定继任；本项目额外保留旧会话退任和 epoch。
-- [Ralph 顺序新会话](https://github.com/snarktank/ralph/blob/6c53cb0b831ebe8739c6a003e22af14902d8b0b5/ralph.sh#L84-L108)：跨新进程用持久进度衔接；不复制其权限绕过、文本完成哨兵或忽略失败行为。
-
-## 验证范围
-
-单元测试在临时项目中模拟 Orca，覆盖重复/延迟/截断边界、worker 隔离、阈值后拦截、真实停止回执检查、失败启动锁存、token 单次领取、Run 绑定失败、交接包篡改、暂停/worker/attempt 保留以及快速继任与 launch 回执竞争。模拟测试不代表已完成真实压缩后的跨窗口轮换；真实人工接管和真实 hook 触发的结果另记在本机交接记录。
+原 16 项协调者测试保留沿革，新隔离测试覆盖全部角色、四次后交接、双宿主 veto、超过上限不清零、checkpoint 单次通知、错误身份/schema 和旧 lease/token/epoch/暂停规则。只在临时项目/mock Orca 中执行，不运行真实压缩/启动压测。原 [planning-with-files](https://github.com/OthmanAdi/planning-with-files/blob/8eef6dc6540dde5eef3fdc0ac487ad9c48ef3ba5/hooks/claude-hook.sh#L304-L345)、[HumanLayer handoff](https://github.com/humanlayer/humanlayer/blob/f9bd73534a9fb7099a274f951b698b1297122fd9/apps/riptide-api/src/orpc/api/sessions/handoff.ts#L40-L114)、[Ralph](https://github.com/snarktank/ralph/blob/6c53cb0b831ebe8739c6a003e22af14902d8b0b5/ralph.sh#L84-L108) 的持久状态/事务/新进程思路仍适用，不继承权限绕过或文本完成哨兵。

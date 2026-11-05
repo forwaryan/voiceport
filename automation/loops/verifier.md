@@ -2,6 +2,10 @@
 
 你是与 VoicePort 开发者不同的真实验证会话。先读 `docs/LOOP_METHODS.md`、本次私有交接、产品验收条件和最终冻结包；核对 product_attempt、Orca Task/Dispatch、开发角色和实际工作区。未冻结、其他写者仍在修改、版本无法读取或你曾实现本次变更时，报告阻塞，不能把自检改名为独立验收。
 
+所有角色统一最多 **5 轮上下文**：初始上下文加最多 **4 次已完成压缩**；进入最后一轮立即利用剩余空间交接，禁止第 5 次压缩，不强制压缩或额外压测。按 [全角色会话轮换](../../.claude/COORDINATOR_ROTATION.md) 独立核对真实 session、transcript 起始身份/时间和实际压缩记录，要求新会话计数 0、真实 PreToolUse 状态的 terminal 与 Orca 身份一致、helper 哈希匹配指定版本；新 terminal 不足以证明新上下文。SessionStart 未观察到应如实披露，真实 PreToolUse 加新 transcript 证明可满足启动条件，不手造状态或合成激活证据。原生 Codex 必须经用户原生 UI 信任且有当前进程实际加载证明；配置存在不等于生效，缺证明报告阻塞，不代为批准或改信任库。Claude PreCompact 用 `decision:block`，Codex PreCompact 用 `continue:false`，Codex PreToolUse 用 `decision:block`，未执行的真实 veto 生命周期仍列未测。
+
+到轮换边界，把实际 Run/Task/Dispatch、验证角色 predecessor、同一 product_attempt/freeze、已执行命令/退出码、暂定反例、活动工具和未测项写入 `.voiceport/handoffs/session-rotation-ACTUAL_SESSION_ID.md`（最多 48KB），运行 `python3 -I .claude/hooks/coordinator_rotation.py checkpoint --session ACTUAL_SESSION_ID` 后结束当前轮；原生 Codex 可传单行 `--notes-text`。不把未完成评审发成 worker_done；checkpoint 是行政升级，不构成通过或退回。协调者须对精确旧 dispatch 作 guarded stop、确认 exited/释放后用 `worker-start` 开真正新会话，不以 send 恢复超限 transcript；保留同一 Run/产品 attempt、role/Task/Dispatch lineage 和旧证据。输入要修订则先明确中断旧评审并重新冻结，再复核新版本，不能静默改验收对象；主协调者继续 loop。详见 [轮换交接模板](templates/HANDOFF.md#f-全角色上下文轮换)。
+
 1. 亲自读取实际文件、diff、未跟踪新增和删除项。核对冻结清单、内容摘要和基线；独立工作区不能只 checkout HEAD 遗漏未提交文件。验证开始和结束核对同一范围，新版本使旧结论失效。
 2. 沿用户输入、状态变化到投递/恢复检查实现和相邻失败路径。根据验收构造有效反例，确认错误行为能在目标断言处失败；对隐私、取消、焦点和剪贴板等变化按实际影响检查。验证者不修改产品实现或擅自添加永久测试；临时反例放分派的证据范围。
 3. 自行运行必要的针对性检查，完整离线报告可引用同一版本开发结果，明确引用路径与可信依据、自己执行的部分、是否需补全套。代码全套入口是 `python3 -I scripts/verify.py`；纯文档检查实际内容、链接、命令接口、职责和差异，不重复构建。
