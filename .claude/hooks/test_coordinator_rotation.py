@@ -904,6 +904,239 @@ class RotationTests(unittest.TestCase):
             r.checkpoint_notes(self.root, 'worker')
         self.assertFalse(r.writable_notes(self.root, 'worker'))
 
+    def error_session(self, session, harness):
+        path = self.transcript_for(session)
+        if harness == 'codex':
+            path.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': session}}) + '\n')
+            self.append({'type': 'compacted', 'payload': {'window_id': 'saved'}}, session)
+        else:
+            self.boundary('saved', session)
+        payload = {**self.payload(session=session), 'rotation_harness': harness}
+        self.assertEqual(r.hook(self.root, payload), {})
+        return path, payload, r.session_path(self.root, session)
+
+    def test_first_drift_survives_all_scan_errors_and_return_to_original_terminal(self):
+        protected = {p: p.read_bytes() for p in (self.path, self.root / '.voiceport/coordination.json',
+                                                self.root / '.voiceport/loop-state.json')}
+        faults = ('missing_path', 'missing_file', 'foreign', 'malformed', 'prefix_rewrite')
+        for harness in ('claude', 'codex'):
+            for terminal in ('terminal-B', ''):
+                for index, fault in enumerate(faults):
+                    with self.subTest(harness=harness, terminal=terminal, fault=fault):
+                        session = f'error-{harness}-{bool(terminal)}-{fault}'
+                        path, payload, sp = self.error_session(session, harness)
+                        original = path.read_bytes()
+                        notes = r.notes_path(self.root, session)
+                        notes.parent.mkdir(exist_ok=True)
+                        notes.write_text('Retained old assignment, unfinished work and logs.')
+                        saved = r.load(sp)
+                        saved.update(phase=('active', 'requested', 'notifying', 'handoff_ready')[index % 4],
+                                     request={'id': 'old-request'}, history=[{'dispatch': 'ctx_old'}],
+                                     checkpoint={'notes_sha256': 'old-digest'}, notes=str(notes),
+                                     notify_error='Delivery unknown: never resend')
+                        r.atomic(sp, saved)
+                        bad = {**payload, 'hook_event_name': 'PreCompact' if index % 2 else 'PreToolUse'}
+                        if fault == 'missing_path':
+                            bad.pop('transcript_path')
+                        elif fault == 'missing_file':
+                            bad['transcript_path'] = str(self.root / 'absent.jsonl')
+                        elif fault == 'foreign':
+                            row = ({'sessionId': 'foreign'} if harness == 'claude' else
+                                   {'type': 'session_meta', 'payload': {'id': 'foreign'}})
+                            path.write_text(json.dumps(row) + '\n')
+                        elif fault == 'malformed':
+                            # Even a parsed new boundary cannot commit before prefix verification.
+                            row = ({'sessionId': session, 'subtype': 'compact_boundary', 'uuid': 'pending'}
+                                   if harness == 'claude' else {'type': 'compacted', 'payload': {'window_id': 'pending'}})
+                            path.write_bytes(original + (json.dumps(row) + '\n{broken json}\n').encode())
+                        with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': terminal}):
+                            if fault == 'prefix_rewrite':
+                                with patch.object(r, 'verify_transcript_prefix', side_effect=ValueError('transcript changed during scan')):
+                                    with self.assertRaisesRegex(ValueError, 'changed during scan'):
+                                        r.hook(self.root, bad)
+                            else:
+                                with self.assertRaises((ValueError, OSError)):
+                                    r.hook(self.root, bad)
+                        failed = r.load(sp)
+                        first = failed.pop('terminal_drift')
+                        self.assertEqual(failed, saved)
+                        self.assertEqual(first['actual_terminal'], terminal)
+                        self.assertEqual(first['event'], bad['hook_event_name'])
+                        diagnostic = r.load(sp.with_suffix('.scan-error.json'))
+                        self.assertFalse(diagnostic['scan_verified'])
+                        self.assertEqual(diagnostic['owner'], session)
+                        self.assertEqual(diagnostic['last_verified_completed_compactions'], 1)
+                        self.assertEqual(diagnostic['last_verified_cursor'], saved['transcript_cursor'])
+                        self.assertTrue(diagnostic['error'])
+                        error_bytes = sp.with_suffix('.scan-error.json').read_bytes()
+                        path.write_bytes(original)
+                        self.assertEqual(r.hook(self.root, payload)['hookSpecificOutput']['permissionDecision'], 'deny')
+                        compact = {**payload, 'hook_event_name': 'PreCompact'}
+                        value = r.hook(self.root, compact)
+                        self.assertEqual(r.codex_output(compact, value).get('continue') if harness == 'codex'
+                                         else value['decision'], False if harness == 'codex' else 'block')
+                        row = ({'sessionId': session, 'subtype': 'compact_boundary', 'uuid': 'authentic-next'}
+                               if harness == 'claude' else {'type': 'compacted', 'payload': {'window_id': 'authentic-next'}})
+                        self.append(row, session)
+                        r.hook(self.root, payload)
+                        current = r.load(sp)
+                        self.assertEqual(len(current['boundaries']), 2)
+                        self.assertEqual(current['terminal_drift'], first)
+                        self.assertEqual(current['terminal'], saved['terminal'])
+                        self.assertEqual(notes.read_text(), 'Retained old assignment, unfinished work and logs.')
+                        self.assertEqual(sp.with_suffix('.scan-error.json').read_bytes(), error_bytes)
+                        with patch.object(r, 'invoke') as invoke:
+                            with self.assertRaisesRegex(ValueError, 'drift'):
+                                r.checkpoint(self.root, session)
+                            invoke.assert_not_called()
+        for p, raw in protected.items():
+            self.assertEqual(p.read_bytes(), raw)
+
+    def test_authenticated_recovery_survives_each_scan_fault_and_keeps_failed_evidence(self):
+        import shlex
+        for harness in ('claude', 'codex'):
+            for fault in ('missing_path', 'missing_file', 'foreign', 'malformed', 'prefix_rewrite'):
+                with self.subTest(harness=harness, fault=fault):
+                    session = f'recovery-{harness}-{fault}'
+                    path, payload, sp = self.error_session(session, harness)
+                    with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': 'terminal-B'}), patch.object(r, 'invoke') as invoke:
+                        r.hook(self.root, payload)
+                        saved = sp.read_bytes()
+                        bad = dict(payload)
+                        if fault == 'missing_path':
+                            bad.pop('transcript_path')
+                        elif fault == 'missing_file':
+                            bad['transcript_path'] = str(self.root / 'absent.jsonl')
+                        elif fault == 'foreign':
+                            row = ({'sessionId': 'foreign'} if harness == 'claude' else
+                                   {'type': 'session_meta', 'payload': {'id': 'foreign'}})
+                            path.write_text(json.dumps(row) + '\n')
+                        elif fault == 'malformed':
+                            path.write_text('{broken json}\n')
+                        verify = r.verify_transcript_prefix
+                        def prefix(*args):
+                            if fault == 'prefix_rewrite':
+                                raise ValueError('transcript changed during scan')
+                            return verify(*args)
+                        command = shlex.join(['orca', 'orchestration', 'send', '--from', 'terminal-B', '--type', 'escalation',
+                                              '--subject', 'Terminal drift', '--body', 'Stop exact assignment.',
+                                              '--task-id', 'task_actual', '--dispatch-id', 'ctx_actual'])
+                        with patch.object(r, 'verify_transcript_prefix', side_effect=prefix):
+                            for name, data in [('Read', {}), ('Bash', {'command': f'python3 -I {r.SCRIPT} session-status --session {session}'}),
+                                               ('Bash', {'command': command}), ('exec_command', {'cmd': command})]:
+                                self.assertEqual(r.hook(self.root, {**bad, 'tool_name': name, 'tool_input': data}), {})
+                            self.assertEqual(sp.read_bytes(), saved)
+                            diagnostic = r.load(sp.with_suffix('.scan-error.json'))
+                            self.assertEqual(diagnostic['last_verified_completed_compactions'], 1)
+                            self.assertFalse(diagnostic['scan_verified'])
+                            for event in ('PreToolUse', 'PreCompact'):
+                                with self.assertRaises((ValueError, OSError)):
+                                    r.hook(self.root, {**bad, 'hook_event_name': event})
+                            for native in (False, True):
+                                for recursive in (False, True):
+                                    stop = {**bad, 'hook_event_name': 'Stop',
+                                            'stopHookActive' if native else 'stop_hook_active': recursive}
+                                    self.assertEqual(r.hook(self.root, stop), {})
+                        invoke.assert_not_called()
+                        current = r.load(sp)
+                        self.assertEqual(current['boundaries'], json.loads(saved)['boundaries'])
+                        self.assertEqual(current['terminal_drift'], json.loads(saved)['terminal_drift'])
+
+    def test_corrupt_or_unrecognized_session_never_uses_failed_scan_recovery(self):
+        for harness in ('claude', 'codex'):
+            session = 'new-error-' + harness
+            payload = {**self.payload(session=session, name='Read'), 'rotation_harness': harness}
+            path = self.transcript_for(session)
+            path.write_text('{broken json}\n')
+            with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': 'terminal-B'}):
+                with self.assertRaises(ValueError):
+                    r.hook(self.root, payload)
+            self.assertFalse(r.session_path(self.root, session).exists())
+            session = 'corrupt-error-' + harness
+            path, payload, sp = self.error_session(session, harness)
+            with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': 'terminal-B'}):
+                r.hook(self.root, payload)
+            saved = r.load(sp)
+            path.write_text('{broken json}\n')
+            mutations = [{'owner': 'someone-else'}, {'schema_version': 2}, {'threshold': 6},
+                         {'boundaries': None}, {'boundaries': ['saved', 'saved']}, {'boundaries': [1]},
+                         {'terminal_drift': {}}, {'transcript_cursor': {}}, {'transcript_session_verified': 'true'},
+                         {'harness': 'codex' if harness == 'claude' else 'claude'},
+                         {'transcript_session_verified': False}]
+            with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': 'terminal-B'}), patch.object(r, 'invoke') as invoke:
+                for mutation in mutations:
+                    with self.subTest(harness=harness, mutation=mutation):
+                        r.atomic(sp, {**saved, **mutation})
+                        before = sp.read_bytes()
+                        with self.assertRaises(ValueError):
+                            r.hook(self.root, {**payload, 'tool_name': 'Read'})
+                        self.assertEqual(sp.read_bytes(), before)
+                        self.assertFalse(sp.with_suffix('.scan-error.json').exists())
+                sp.write_text('{broken state}')
+                with self.assertRaises(ValueError):
+                    r.hook(self.root, {**payload, 'tool_name': 'Read'})
+                self.assertEqual(sp.read_text(), '{broken state}')
+                invoke.assert_not_called()
+
+    def test_failed_scan_recovery_parser_keeps_negatives_and_tool_shapes_closed(self):
+        import shlex
+        for harness in ('claude', 'codex'):
+            session = 'parser-error-' + harness
+            path, payload, sp = self.error_session(session, harness)
+            path.write_text('{broken json}\n')
+            command = shlex.join(['orca', 'orchestration', 'send', '--from', 'terminal-B', '--type', 'escalation',
+                                  '--subject', 'Drift', '--body', 'Stop exact assignment.', '--task-id', 'task_actual', '--dispatch-id', 'ctx_actual'])
+            bad_commands = [command.replace('terminal-B', 'worker-terminal'), command.replace('escalation', 'worker_done'),
+                            command + ' --to run_other', command + ' --json', command + ' --body duplicate',
+                            command.replace('--subject', '--body'), command + '; pwd', command + ' | pwd',
+                            command.replace('Drift', '$(pwd)'), command.replace('Drift', '`pwd`'), command + "'",
+                            command.replace('Drift', 'x' * 48001), command.replace('Drift', '界' * 16001),
+                            f'python3 -I {r.SCRIPT} session-status --session another',
+                            f'python3 -I {r.SCRIPT} checkpoint --session {session}', 'pwd']
+            bad_commands.extend(command.replace('Drift', ch) for ch in ('*', '?', '[x]', '{x,y}', '~', '\n', '\r', '\x00'))
+            with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': 'terminal-B'}), patch.object(r, 'invoke') as invoke:
+                for name in ('Bash', 'exec_command'):
+                    for cmd in bad_commands:
+                        with self.subTest(harness=harness, name=name, command=cmd[:150]):
+                            data = {'command' if name == 'Bash' else 'cmd': cmd}
+                            with self.assertRaises(ValueError):
+                                r.hook(self.root, {**payload, 'tool_name': name, 'tool_input': data})
+                for name in ('Write', 'Edit', 'Skill', 'Agent', 'ScheduleWakeup'):
+                    with self.assertRaises(ValueError):
+                        r.hook(self.root, {**payload, 'tool_name': name})
+                for name, data in [(None, {}), (12, {}), ('Read', []), ('Bash', None),
+                                   ('exec_command', {'cmd': []}), ('Bash', {'command': 5})]:
+                    with self.assertRaises(ValueError):
+                        r.hook(self.root, {**payload, 'tool_name': name, 'tool_input': data})
+                with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': ''}):
+                    with self.assertRaises(ValueError):
+                        r.hook(self.root, {**payload, 'tool_name': 'Bash', 'tool_input': {'command': command}})
+                invoke.assert_not_called()
+            self.assertEqual(len(r.load(sp)['boundaries']), 1)
+
+    def test_scan_error_cli_veto_and_nonblocking_stop_keep_host_contracts(self):
+        for harness in ('claude', 'codex'):
+            session = 'cli-error-' + harness
+            path, payload, sp = self.error_session(session, harness)
+            path.write_text('{broken json}\n')
+            env = {**os.environ, 'ORCA_TERMINAL_HANDLE': 'terminal-B', 'PATH': ''}
+            argv = [sys.executable, '-B', '-I', str(Path(r.__file__)), '--root', str(self.root), 'hook', '--harness', harness]
+            for event, name in [('PreCompact', 'Edit'), ('PreToolUse', 'Edit'), ('PreToolUse', 'Read'),
+                                ('Stop', 'Edit'), ('Stop', 'Edit')]:
+                data = {**payload, 'hook_event_name': event, 'tool_name': name,
+                        'stop_hook_active': True, 'stopHookActive': True}
+                proc = subprocess.run(argv, input=json.dumps(data), capture_output=True, text=True, env=env, timeout=10)
+                with self.subTest(harness=harness, event=event, name=name):
+                    expected = 2 if (event == 'PreToolUse' and name == 'Edit') or (event == 'PreCompact' and harness == 'claude') else 0
+                    self.assertEqual(proc.returncode, expected, proc.stderr)
+                    if event == 'PreCompact' and harness == 'codex':
+                        self.assertIs(json.loads(proc.stdout)['continue'], False)
+                    elif expected == 0:
+                        self.assertEqual(json.loads(proc.stdout), {})
+            self.assertEqual(r.load(sp)['terminal_drift']['actual_terminal'], 'terminal-B')
+            self.assertEqual(len(r.load(sp)['boundaries']), 1)
+            self.assertFalse(r.load(sp.with_suffix('.scan-error.json'))['scan_verified'])
+
     def test_no_state_is_noop_and_bad_state_fails_tool_hook(self):
         self.path.unlink()
         self.assertEqual(r.hook(self.root, self.payload()), {})

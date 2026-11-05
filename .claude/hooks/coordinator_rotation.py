@@ -517,6 +517,45 @@ def require_terminal(state):
         raise ValueError('session terminal drift is fenced; coordinator must stop/release and start a fresh session')
 
 
+def validate_session_state(state, session):
+    """Private saved authority must be coherent before it can fence or recover."""
+    if not isinstance(state, dict) or state.get('owner') != session:
+        raise ValueError('saved session identity does not match the actual session')
+    if (not {'schema_version', 'epoch', 'threshold', 'phase', 'boundaries',
+             'terminal', 'created_at', 'request'}.issubset(state)
+            or state.get('schema_version') != 1 or type(state.get('epoch')) is not int
+            or state['epoch'] < 1 or type(state.get('threshold')) is not int
+            or not 1 <= state['threshold'] <= DEFAULT_THRESHOLD
+            or state.get('phase') not in ('active', 'requested', 'notifying', 'handoff_ready')
+            or not isinstance(state.get('created_at'), str) or not state['created_at']
+            or (state.get('terminal') is not None and not isinstance(state['terminal'], str))):
+        raise ValueError('invalid saved session authority')
+    boundaries = state.get('boundaries')
+    if (not isinstance(boundaries, list)
+            or any(not isinstance(b, str) or not b for b in boundaries)
+            or len(set(boundaries)) != len(boundaries)):
+        raise ValueError('invalid saved session boundaries; refuse to reset counts')
+    if 'harness' in state and state['harness'] not in ('claude', 'codex'):
+        raise ValueError('invalid saved session harness')
+    if 'transcript_session_verified' in state and type(state['transcript_session_verified']) is not bool:
+        raise ValueError('invalid saved transcript verification')
+    if state.get('transcript_session_verified'):
+        cursor = state.get('transcript_cursor')
+        if (state.get('harness') not in ('claude', 'codex') or not isinstance(cursor, dict)
+                or not isinstance(cursor.get('path'), str) or not cursor['path']
+                or type(cursor.get('offset')) is not int or cursor['offset'] < 0
+                or type(cursor.get('inode')) is not int):
+            raise ValueError('invalid saved transcript verification evidence')
+    if 'terminal_drift' in state:
+        drift = state['terminal_drift']
+        if (not isinstance(drift, dict) or drift.get('stored_terminal') != state.get('terminal')
+                or not isinstance(drift.get('detected_at'), str) or not drift['detected_at']
+                or not isinstance(drift.get('event'), str)
+                or (drift.get('actual_terminal') is not None
+                    and not isinstance(drift['actual_terminal'], str))):
+            raise ValueError('invalid saved terminal drift evidence')
+
+
 @contextmanager
 def session_transaction(root, session):
     path = session_path(root, session)
@@ -528,6 +567,7 @@ def session_transaction(root, session):
             'phase': 'active', 'boundaries': [], 'request': None,
             'terminal': os.environ.get('ORCA_TERMINAL_HANDLE'), 'created_at': now(),
         }
+        validate_session_state(state, session)
         before = path.read_bytes() if path.exists() else None
         yield state
         if before is None or load(path) != state:
@@ -585,8 +625,11 @@ def terminal_drift_hint(state):
 
 def allowed_terminal_recovery(payload, state):
     """Read/status or one exact actual-caller escalation, never arbitrary shell/notes/skills."""
-    name = payload.get('tool_name', '').split('.')[-1]
+    tool = payload.get('tool_name', '')
     data = payload.get('tool_input', {})
+    if not isinstance(tool, str) or not isinstance(data, dict):
+        return False
+    name = tool.split('.')[-1]
     if name == 'Read':
         return True
     if name == 'exec_command':
@@ -635,14 +678,44 @@ def worker_hook(root, payload):
         harness = payload.get('rotation_harness', 'claude')
         if state.get('harness', harness) != harness:
             raise ValueError('session harness changed; reconcile identity before continuing')
+        authenticated = (session_path(root, state['owner']).exists()
+                         and state.get('transcript_session_verified') is True)
+        actual = os.environ.get('ORCA_TERMINAL_HANDLE')
+        if authenticated and (not actual or actual != state.get('terminal')):
+            if not state.get('terminal_drift'):
+                state['terminal_drift'] = {'stored_terminal': state.get('terminal'),
+                                         'actual_terminal': actual, 'detected_at': now(), 'event': event}
+                # Commit only this observation, under the session lock, BEFORE the
+                # abortable scan transaction. A transcript exception must not lose it.
+                atomic(session_path(root, state['owner']), state)
         state['harness'] = harness
         state['hook_events'] = sorted(set(state.get('hook_events', [])) | {event})
         state['hook_implementation_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         transcript = payload.get('transcript_path')
-        if not transcript and event in ('PreToolUse', 'PreCompact'):
-            raise ValueError('transcript_path unavailable; cannot enforce per-session context limit')
-        if transcript:
-            scan(state, transcript)
+        try:
+            if not transcript and event in ('PreToolUse', 'PreCompact'):
+                raise ValueError('transcript_path unavailable; cannot enforce per-session context limit')
+            if transcript:
+                scan(state, transcript)
+        except (ValueError, OSError) as error:
+            if not authenticated or not state.get('terminal_drift'):
+                raise
+            # Diagnostic sidecar is not authority and never changes verification,
+            # count, phase, checkpoint or uncertain-delivery state. Keep the most
+            # recent failed scan even after a later successful scan; Read can inspect it.
+            atomic(session_path(root, state['owner']).with_suffix('.scan-error.json'), {
+                'owner': state['owner'], 'harness': harness, 'event': event,
+                'stored_terminal': state.get('terminal'), 'actual_terminal': actual,
+                'at_utc': now(), 'error_type': type(error).__name__, 'error': str(error),
+                'transcript_path': transcript, 'scan_verified': False,
+                'last_verified_completed_compactions': len(state['boundaries']),
+                'last_verified_cursor': state.get('transcript_cursor'),
+            })
+            if event == 'Stop':
+                return {}  # Failed scans never prevent recursive/native drift Stop.
+            if event == 'PreToolUse' and allowed_terminal_recovery(payload, state):
+                return {}  # Prior saved authority only; this scan did not verify anything.
+            raise
         actual = os.environ.get('ORCA_TERMINAL_HANDLE')
         if not actual or actual != state.get('terminal'):
             # Latch the first mismatch without rebinding or changing the count.
