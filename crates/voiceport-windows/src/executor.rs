@@ -1,4 +1,5 @@
-//! One service worker plus one process-owned join thread; UI never joins.
+//! A request has two owners: UI and covered cleanup work. Only explicit
+//! request disposal or a completed OS join can relinquish cleanup ownership.
 use crate::Job;
 use std::{
     io,
@@ -16,8 +17,8 @@ pub struct ServiceFailure;
 pub trait Service: Send + Sync + 'static {
     fn run(&self, job: &Job) -> Result<String, ServiceFailure>;
 }
-/// Trusted spawners return a handle covering all execution; on Err no work
-/// may have started or be retained. Cleanup spawners execute the supplied loop.
+/// The actual returned thread covers supplied work, including execution in
+/// its TLS destructors. On Err no work may have started or be retained.
 pub trait Spawner: Send + Sync + 'static {
     fn spawn(&self, work: Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>;
 }
@@ -39,37 +40,76 @@ type Answer = Result<String, ServiceFailure>;
 struct Shared {
     result: Mutex<Option<Answer>>,
     stopped: AtomicBool,
-    claimed: AtomicBool,
+}
+struct RequestOwner {
+    job: Option<Arc<Job>>,
+    permit: Option<Arc<Permit>>,
+    shared: Arc<Shared>,
+    safe: bool,
+}
+impl Drop for RequestOwner {
+    fn drop(&mut self) {
+        if self.safe {
+            // Release our actual ticket before acknowledging. An unclaimed request can
+            // only reach this branch when its queue/closure owner truly disposes it.
+            drop(self.job.take());
+            drop(self.permit.take());
+            self.shared.stopped.store(true, Ordering::Release);
+        } else {
+            // Unknown OS-join failure: retain the single ticket/permit indefinitely.
+            // Never substitute a closure flag, timeout or cancellation for stop proof.
+            Box::leak(Box::new((self.job.take(), self.permit.take())));
+        }
+    }
 }
 struct Work {
-    job: Arc<Job>,
-    shared: Arc<Shared>,
+    owner: RequestOwner,
     service: Arc<dyn Service>,
     spawner: Arc<dyn Spawner>,
 }
+struct CleanupReceiver {
+    receiver: mpsc::Receiver<Work>,
+    accepting: Arc<AtomicBool>,
+}
+impl CleanupReceiver {
+    fn recv(&self) -> Result<Work, mpsc::RecvError> {
+        self.receiver.recv()
+    }
+}
+impl Drop for CleanupReceiver {
+    fn drop(&mut self) {
+        self.accepting.store(false, Ordering::Release);
+    }
+}
 struct Reaper {
     sender: mpsc::SyncSender<Work>,
-    thread: JoinHandle<()>,
+    accepting: Arc<AtomicBool>,
+    _thread: JoinHandle<()>,
 }
 static REAPER: OnceLock<Reaper> = OnceLock::new();
 fn reaper(spawner: &dyn Spawner) -> io::Result<&'static Reaper> {
     if let Some(r) = REAPER.get() {
-        if r.thread.is_finished() {
+        if !r.accepting.load(Ordering::Acquire) {
             return Err(io::Error::other("cleanup unavailable"));
         }
         return Ok(r);
     }
     let (sender, receiver) = mpsc::sync_channel::<Work>(1);
+    let accepting = Arc::new(AtomicBool::new(true));
+    let queue = CleanupReceiver {
+        receiver,
+        accepting: accepting.clone(),
+    };
     let thread = spawner.spawn(Box::new(move || {
-        while let Ok(work) = receiver.recv() {
-            let shared = work.shared.clone();
-            shared.claimed.store(true, Ordering::Release);
-            let job = work.job;
+        while let Ok(mut work) = queue.recv() {
+            let shared = work.owner.shared.clone();
+            let job = work.owner.job.as_ref().unwrap().clone();
             let output = shared.clone();
             let service = work.service;
+            work.owner.safe = false;
             let spawned = catch_unwind(AssertUnwindSafe(|| {
                 work.spawner.spawn(Box::new(move || {
-                    let result = catch_unwind(AssertUnwindSafe(|| {
+                    let answer = catch_unwind(AssertUnwindSafe(|| {
                         if job.cancelled() {
                             Err(ServiceFailure)
                         } else {
@@ -78,7 +118,7 @@ fn reaper(spawner: &dyn Spawner) -> io::Result<&'static Reaper> {
                     }))
                     .unwrap_or(Err(ServiceFailure));
                     *output.result.lock().unwrap_or_else(|p| p.into_inner()) =
-                        Some(result.and_then(|text| {
+                        Some(answer.and_then(|text| {
                             if text.len() <= 1_000_000 {
                                 Ok(text)
                             } else {
@@ -89,43 +129,44 @@ fn reaper(spawner: &dyn Spawner) -> io::Result<&'static Reaper> {
             }));
             match spawned {
                 Ok(Ok(handle)) => {
-                    // This is the ONLY join, off the UI thread, including TLS.
                     let _ = catch_unwind(AssertUnwindSafe(|| {
-                        let result = handle.join();
+                        let result = handle.join(); // The sole join, always on the covered cleanup thread.
+                        work.owner.safe = true;
                         if result.is_err() {
                             *shared.result.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(Err(ServiceFailure));
                         }
-                        shared.stopped.store(true, Ordering::Release);
                         drop(result);
                     }));
                 }
-                _ => shared.stopped.store(true, Ordering::Release), // no worker started
+                _ => work.owner.safe = true, // trusted spawn failure: no worker exists
             }
+            // Owner drops after actual join (or proven no-start). UI may already be
+            // gone; our Arc keeps File/permit until here and then releases both.
         }
     }))?;
-    // Process-wide permit serializes initialization. The one idle cleanup thread
-    // persists for the process; no per-request cleanup threads accumulate.
-    assert!(REAPER.set(Reaper { sender, thread }).is_ok());
+    assert!(
+        REAPER
+            .set(Reaper {
+                sender,
+                accepting,
+                _thread: thread
+            })
+            .is_ok()
+    );
     Ok(REAPER.get().unwrap())
 }
 struct Running {
     job: Arc<Job>,
     shared: Arc<Shared>,
-    _permit: Permit,
+    _permit: Arc<Permit>,
 }
 impl Running {
     fn stopped(&self) -> bool {
-        if self.shared.stopped.load(Ordering::Acquire) {
-            return true;
-        }
-        // If an injected cleanup loop returned without claiming this request, no
-        // service worker could have started. Never use this to replace the reaper.
-        REAPER.get().is_some_and(|r| r.thread.is_finished())
-            && !self.shared.claimed.load(Ordering::Acquire)
+        self.shared.stopped.load(Ordering::Acquire)
     }
     fn finish(self) -> (Job, Answer) {
-        let answer = self
+        let result = self
             .shared
             .result
             .lock()
@@ -134,35 +175,7 @@ impl Running {
             .unwrap_or(Err(ServiceFailure));
         let job =
             Arc::try_unwrap(self.job).unwrap_or_else(|_| panic!("worker ownership invariant"));
-        (job, answer)
-    }
-}
-struct Orphans {
-    receiver: mpsc::Receiver<Running>,
-    waiting: Option<Running>,
-}
-type OrphanOwner = (mpsc::SyncSender<Running>, Mutex<Orphans>);
-static ORPHAN: OnceLock<OrphanOwner> = OnceLock::new();
-fn orphans() -> &'static OrphanOwner {
-    ORPHAN.get_or_init(|| {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        (
-            sender,
-            Mutex::new(Orphans {
-                receiver,
-                waiting: None,
-            }),
-        )
-    })
-}
-fn reap_orphan() {
-    if let Ok(mut o) = orphans().1.try_lock() {
-        if o.waiting.is_none() {
-            o.waiting = o.receiver.try_recv().ok();
-        }
-        if o.waiting.as_ref().is_some_and(Running::stopped) {
-            drop(o.waiting.take().unwrap().finish());
-        }
+        (job, result)
     }
 }
 pub struct Executor {
@@ -194,7 +207,6 @@ impl Executor {
         self.active.is_none()
     }
     pub fn submit(&mut self, job: Job) -> Result<(), Job> {
-        reap_orphan();
         if self.active.is_some()
             || BUSY
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -202,7 +214,7 @@ impl Executor {
         {
             return Err(job);
         }
-        let permit = Permit;
+        let permit = Arc::new(Permit);
         let reaper = match reaper(self.cleanup.as_ref()) {
             Ok(r) => r,
             Err(_) => {
@@ -214,17 +226,21 @@ impl Executor {
         let shared = Arc::new(Shared {
             result: Mutex::new(None),
             stopped: AtomicBool::new(false),
-            claimed: AtomicBool::new(false),
         });
         let work = Work {
-            job: job.clone(),
-            shared: shared.clone(),
+            owner: RequestOwner {
+                job: Some(job.clone()),
+                permit: Some(permit.clone()),
+                shared: shared.clone(),
+                safe: true,
+            },
             service: self.service.clone(),
             spawner: self.spawner.clone(),
         };
+        // Returned command is explicitly disposed on send failure; its owner
+        // acknowledges only after dropping the extra ticket, never before.
         if let Err(error) = reaper.sender.try_send(work) {
             drop(error);
-            shared.stopped.store(true, Ordering::Release);
         }
         self.active = Some(Running {
             job,
@@ -244,10 +260,7 @@ impl Drop for Executor {
     fn drop(&mut self) {
         if let Some(r) = self.active.take() {
             r.job.cancellation.cancel();
-            if let Err(error) = orphans().0.try_send(r) {
-                let (mpsc::TrySendError::Full(r) | mpsc::TrySendError::Disconnected(r)) = error;
-                Box::leak(Box::new(r));
-            }
+            drop(r);
         }
     }
 }
