@@ -247,9 +247,11 @@ This is a synchronous **off-UI owner API**. Native calls, output writes and Drop
 may block; future GUI integration needs a dedicated owner context and separate
 review. The message pump never calls this code now. Unknown reset/drain/unprepare/
 close keeps the complete owner, output guards and process capacity. Explicit cleanup
-polling may retry release steps, never capture or service work. Drop attempts bounded
-cleanup once and, if release remains unconfirmed (or during unwinding), deliberately
-retains one bounded native owner/permit until process termination. It does not start
+polling may retry release steps, never capture or service work. Ordinary off-UI
+Drop drains all bounded already-returned packets, while each poll retains its
+four-packet limit. Drop continues only after a full returned-packet quota, never
+on Idle or an unknown reset/unprepare/close. If release remains unconfirmed (or
+while already unwinding), the owner/permit is retained until process termination. It does not start
 reapers/replacements or infer actual stop from timeout, result publication, Weak
 expiry or JoinHandle::is_finished. This conservative lost-owner case requires process
 restart, not silent recovery; no universal panic/abnormal kernel-stop guarantee.
@@ -270,3 +272,77 @@ and [unprepare before freeing buffers](https://learn.microsoft.com/en-us/previou
 Actual Windows device/NTFS gates, full PE/link/runtime, future user Start/Stop,
 protected delivery, residual cleanup and Windows distribution/material review remain
 mandatory. Source/compile/offline developer checks do not accept full VP-013.
+
+
+## Capture repair02: confirmed unwind retention and ordinary Drop drainage
+
+Freeze08 was rejected for VP013-C08-001 and VP013-C08-002: a destructor panic
+inside Session::drop bypassed its final leak statement and freed the normal owner
+field, and ordinary returned data beyond four packets leaked admission unnecessarily.
+The exact independent13 fixture/assertions remain unchanged: baseline10pass/3fail101
+and repaired13pass0 are separately retained, alongside the two adjacent controls.
+These developer checks are not independent acceptance or Windows runtime evidence.
+
+Session now keeps its allocation in a field-level OwnerSlot. Its own destructor
+retains the entire still-unconfirmed Box even if Session::drop unwinds. A latch
+surrounds calls into backends/outputs, including their complete destruction and
+Output::finish; only NORMAL RETURN clears it. If an embedding caller catches a
+panic, later begin/stop/cancel/poll cannot reinterpret it as cleanup or retry that
+interrupted work. They retain admission/remaining output guards and return only a
+static failure. In particular backend destructor panic keeps remaining
+output/root guards, and output destruction/finish panic keeps capacity. Rust may
+unwind fields of the value already being destroyed; this policy retains the whole
+remaining owner and cannot resurrect a consumed panicking value. No valid audio is
+published on these paths. Propagating panic, abort/double-panic and native FFI/kernel
+failure are not claimed as graceful GUI recovery by an external catch harness.
+
+A normal off-UI Drop now permits a finite larger drain budget: only a full quota
+of four returned packets enables another pass, bounded by MAX_DRAIN_PACKETS and
+one End allowance. Idle, release errors and an interrupted operation terminate
+attempts immediately with conservative ownership. Ordinary five-packet, exact
+maximum, overflow-sentinel and finite drain-limit disposal can reach confirmed
+unprepare/close/destructor completion and allow a later admission. This is bounded
+work, not a timeout or proof inferred from silence. Normal owners are actually
+freed, avoiding per-session retention in the successful lifecycle. No reaper,
+thread, new queue, unsafe Send/Sync, GUI wiring, device operation, automatic retry,
+file deletion, format change or native storage alteration was added. All original
+native capture/NTFS/security/link/runtime and future product gates remain open.
+
+## Capture repair03: explicit recovery after returned release errors
+
+A normally returned reset, unprepare or close error now prevents Drop from
+retrying that unknown cleanup stage, even if the external fault disappears.
+The remaining owner, output guards and permit stay retained. A new explicit
+stop, cancel or poll may retry; successful completion of the failed stage allows
+cleanup to advance, while another release-stage error again requires explicit
+recovery. This condition is separate from the first-error latch: earlier
+open/read/output errors stay visible and never admit a partial recording, and
+a recovered release error does not prohibit bounded ordinary Drop drainage.
+Interrupted calls retain the permanent unconfirmed latch and cannot recover.
+Native release and complete backend/output destructor return, including fields,
+remain required before capacity returns. These are portable policy self-checks;
+independent review and all native runtime/product gates remain outstanding.
+
+## Capture freeze10: independently accepted bounded checkpoint
+
+The original independent capture role verified the repaired frozen source and
+confirmed C09-001 fixed, with the prior unwind-retention and finite ordinary
+Drop fixes preserved. Exact unchanged final16, original13 and two adjacent
+controls pass. Six additional independent groups cover 381 cases, including
+all error variants, partial explicit recovery, a new release failure reached
+inside Drop, interrupted recovery and a complete backend field-destructor gate.
+The fresh full local entry passes 25 steps with 82 Rust tests and the existing
+Swift/loop/packaging suites; current helper/main signing and safe smoke pass.
+The full locked default Windows all-target check passes with real AMD64 COFF
+and useful nonempty metadata. One capture and three storage tests are compiled
+only. This accepts source, compile and portable ownership behavior; native
+NTFS/device/driver/security/runtime, dedicated off-UI capture ownership and GUI
+human Start/Stop, retention cleanup, protected delivery, successful full Windows
+link/runtime and packaging/material completeness remain mandatory.
+
+The independent session's project SessionStart hook returned an error because
+its transcript did not yet exist. The later authentic PreToolUse, exact new
+session/terminal and zero compaction count established loading under the startup
+policy; the failed startup event remains failed. Actual PreCompact veto and the
+full automatic rotation lifecycle remain unexecuted. No real recording, upload,
+clipboard/keystroke delivery or ordinary GUI action was performed by this review.

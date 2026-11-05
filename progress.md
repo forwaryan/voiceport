@@ -1,5 +1,31 @@
 # 进度记录
 
+## 2026-11-05 — 原独立freeze10阶段通过，准备PR6正常集成
+
+msg_171500dd9ff5真实PASS_BOUNDED_SOURCE_COMPILE_PORTABLE_CHECKPOINT，C09-001 FIXED且C08-001/002保持，无本范围残留。exact final16/original13/adjacent2全0，新增6组381例通过；fresh完整25步82Rust/31core/73app/4loop/11packaging/6预期负例、693文件实际签名/安全smoke与DEFAULTWindows编译通过，1capture+3storage仅编译。协调accept-10首次0核对929普通/260目录/129056217字节/1466外部产物、787公共+6操作/783保护、77222旧普通/25134旧目录mode/10links/6specials/796Git输入；未重跑委派测试。新session08a2b209/真实当前PreToolUse/精确terminal/初始最终0已核对；项目SessionStart因transcript未创建exit1保留，Orca自己的startup0不混用，实际PreCompact/full lifecycle未执行。
+
+开发03和独立10已实际exited/released。限定阶段接受写入evidence/vp013-coordinator-checkpoint-acceptance-10.json，VP013同attemptcd2c8d7d仍running/false，旧FAILED/断言/checker错误/生成dist重建例外全部保留。先接受状态commit/push、PR6正常ready/merge与main安全同步，再专用off-UI capture owner作为下一可独立实现切片，惰性API/有界控制与实际线程释放测试先行，GUI Start/Stop保持未接、禁止真实设备/录音/上传/输入。实际native安全/runtime、retention/protected delivery/fullWindowslink与材料、真实轮换仍必需，不把Git集成当整体验收。
+
+## 2026-11-05 — 原开发返修03交付，准备完整freeze10独立复核
+
+msg_139db395f13f真实succeeded并停写，源码增加独立的正常返回释放错误状态：未知reset/unprepare/close阻止隐式Drop，显式stop/cancel/poll可恢复，成功阶段解除后允许普通有限排空，新阶段失败再次要求显式恢复；首错和永久panic latch保持。原first13修前10pass3fail101、三暂时故障修前0pass3fail101原样，修后exact final16/original13/adjacent2全0，新增6组旧源3pass3fail101、最终工作区82/fmt/严格host-nativeclippy/完整DEFAULTWindows均0；1capture+3storage仅编译。交付仅3修改1新增，native和cleanup测试不改。
+
+协调核对126封存普通/12目录/267指定外部产物、787公共/278目录、783未改公共+6操作、75338旧普通/24573目录mode及102228历史身份条目，未重跑委派测试。新native session01a1ab9e/精确terminal/当前helper真实SessionStart+PreToolUse/初始最终0已直接核对；历史失败激活、实际PreCompact和完整自动轮换未执行不改。新checker首次未兼容旧repair02 external_key_records索引而KeyError1，原脚本/日志保存在handoffs/vp013-repair03-checker-failure-01，纠正两种明确schema后0，未改worker证据/旧断言。当前attemptcd2c8d7d保持running/false，先逻辑源码测试/文档状态commit-push和draftPR6更新，再完整freeze10回原独立09/08逻辑角色真新会话；开发自检与协调交付核对不算独立接受。不自动录音/上传/真实输入，全部native/runtime/GUI/delivery/fullWindows与真实轮换门槛仍开放。
+
+## 2026-11-05 — freeze09确认原修复并因隐式cleanup重试退回
+
+原独立msg_82ffcbb35b57正式FAILED_IMPLEMENTED_SCOPE。原C08-001/002独立FIXED；新增P2 VP013-C09-001位于capture.rs:512：显式stop的reset/unprepare/close错误后，Drop首次cancel隐式poll重试同一步。首次13组10pass3fail101，三条暂时故障确认expected(调用1,预算占用,guard析构0)、actual(2,预算释放,guard析构1)，均101，原成功断言不改。显式poll恢复正控制、原13和相邻2通过；完整Mac25步/76Rust、签名693文件安全smoke、DEFAULT Windows编译16COFF/1非空有效metadata通过，1采集+3存储仅编译，不推断原生指针误释放或Windows实测。
+
+协调rejection-check-09已核对932普通/262目录/83552617字节/819产物、786公共+6操作、782保护、75338历史普通/24573历史目录mode/10links/6specials和795 Git输入。新checker首次误选接管前worker stub导致AssertionError1，原脚本/原输出保存在handoffs/vp013-rejection09-checker-failure-01；纠正为实际协调lease、Run绑定和transcript两次压缩后0，未重跑委派测试/改证据/重置状态。实际两个旧进程均exited/released后，按真实实现退回retry旧7feb749c、start新cd2c8d7d-c39a-43ac-893c-15e140b88c87，transition见evidence/vp013-capture-repair-03-transition.json。PR6仍draft，当前先提交推送失败状态；沿原开发角色真新changed-spec successor返修03，须先证真实新session/terminal/当前hook/初始0，不恢复旧native绑定到新终端。聚焦隐式Drop与显式恢复边界，保住panic保留/普通有界Drop/后续准入/首错，不弱化旧断言；修后完整新冻结、原独立复核。全产品仍false，自动录音/上传/真实输入仍禁止。
+
+## 2026-11-05 — 原开发capture返修02交付，待新冻结独立复核
+
+msg_c531a2474e2e真实succeeded并停写，仅3修改1新增：capture OwnerSlot与normal-return latch防止未确认析构/finish/方法panic后恢复容量，有界普通Drop完成已返回数据排空，未知释放/Idle不转圈、不强制释放；native backend/accepted storage等保护输入不变。原13/Toml/lock/adjacent字节完全相同，开发baseline10pass3fail101保持、修后13pass0及adjacent2pass，新增5组、工作区76、fmt/strictclippy/完整DEFAULT Windows/nativeclippy均0。协调check-vp013-capture-repair-02.py核对94封存普通/17目录、786公共/278目录、781保护+6操作、73453旧SHA refs及965独立08封存记录，未重跑委派测试；checker首次误读结束启动证明顶层session而1，原脚本与精确输出保存在独立failure-01后按authentic_state.owner+metadata.id修正并通过。原开发session01a1a5dd/精确terminal/真实native PreToolUse+SessionStart/当前helper、2次压缩第3轮已核对；本会话加载已观察，历史激活失败Task不改、实际veto/自动生命周期仍未执行。开发自检与协调交付核对不作独立接受；当前attempt7feb749c仍running/false。先源码/测试和文档状态分逻辑commit/push、更新draftPR6，再建立完整freeze09，原独立采集角色真新会话复核两原始反例/消费panic与普通Drop相邻路径、完整受影响入口；失败freeze08/旧证据不改，不自动录音/上传/真实输入。
+
+## 2026-11-05 — capture freeze08 独立失败，进入有界Drop返修
+
+指定独立msg_bb4d3feb4fcc报告FAILED_IMPLEMENTED_SCOPE，实际新session/真实PreToolUse/初始与最终0已核对，SessionStart未观察。两缺陷三条成功断言失败：backend/output析构panic释放未确认容量，以及16385样本正常已返回数据直接Drop后永久占用容量；10通过/3失败exit101原样保留，另2相邻控制通过。完整Mac25步、71Rust、31core、73app、4loop、11packaging和默认Windows all-target check通过，1采集+3存储native测试仅编译。协调check-vp013-rejection-08.py首次0核对封存965普通/296目录/143129425字节/31产物、785公共+6操作、768保护、73453历史普通及10links/6specials，未重跑委派测试。失败freeze08及capture07行政未完成、所有旧失败永久保留。独立和原开发已实际exited/released；按真实实现缺陷retry旧产品attempt并start新返修attempt，非行政轮换重开。当前从main4459aff建立fix/windows-capture-drop，返修回原开发并先验真实hook/上下文，修后完整新冻结、原独立复核；全VP013仍false，实际native/GUI/设备/cleanup/delivery/完整link与材料门槛未满足。PR5已正常merge/main同步，Git集成不作产品验收。
+
 ## 2026-11-05 — 独立06限定范围通过与Git集成安全点
 
 真实msg_caf06f0e7daf SUCCEEDED，独立源结论PASS_WITH_EXECUTION_LIMITS：R05-01/02/03解决，55/19/10/原04五组/review05四组和三组新增事务/兼容控制各一次通过；未发现本范围实质残留。协调核对69封存条目、32历史身份、六固定输入/七政策文档不变，接受精确repair06源码及两恢复文档的隔离支持范围，coordinator-acceptance-06.json保存。源码/证据停写，开发实际exited/released；独立完成后仍live/reclaimable不冒称退出。原FAILED/初始oracle失败均保留，真实PreCompact/四压缩/自动生命周期/native激活未执行、VP013同attemptfalse。安全点继续final逻辑提交推送、PR5正常ready/merge及main同步，再制作完整capture freeze08、原独立采集角色真新会话续验；不把Git集成或操作源接受当产品接受。
