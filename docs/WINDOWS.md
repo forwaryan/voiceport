@@ -307,3 +307,18 @@ freed, avoiding per-session retention in the successful lifecycle. No reaper,
 thread, new queue, unsafe Send/Sync, GUI wiring, device operation, automatic retry,
 file deletion, format change or native storage alteration was added. All original
 native capture/NTFS/security/link/runtime and future product gates remain open.
+
+## Capture repair03: explicit recovery after returned release errors
+
+A normally returned reset, unprepare or close error now prevents Drop from
+retrying that unknown cleanup stage, even if the external fault disappears.
+The remaining owner, output guards and permit stay retained. A new explicit
+stop, cancel or poll may retry; successful completion of the failed stage allows
+cleanup to advance, while another release-stage error again requires explicit
+recovery. This condition is separate from the first-error latch: earlier
+open/read/output errors stay visible and never admit a partial recording, and
+a recovered release error does not prohibit bounded ordinary Drop drainage.
+Interrupted calls retain the permanent unconfirmed latch and cannot recover.
+Native release and complete backend/output destructor return, including fields,
+remain required before capacity returns. These are portable policy self-checks;
+independent review and all native runtime/product gates remain outstanding.
