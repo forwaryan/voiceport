@@ -68,6 +68,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if ProcessInfo.processInfo.arguments.contains("--show-window") { showWindow() }
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Task { @MainActor in
+            let stopped = await controller.shutdownAndWait()
+            sender.reply(toApplicationShouldTerminate: stopped)
+        }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         hotkey?.unregister()
         controller.shutdown()

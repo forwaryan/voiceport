@@ -4,7 +4,7 @@
 
 ## 1. 产品目标
 
-产品目标是在 macOS 和 Windows 上用统一快捷键录音，复用自己的 Codex / ChatGPT 登录调用云端听写，将文字送入 Orca、其他 coding 工具以及支持粘贴的文本输入框。当前优先 macOS，已有实现和下文原生 API 均指 Swift/macOS 基线；用户补充双平台目标后，建议后续迁移为 Rust 共享核心与平台适配，步骤和未实现范围见 [跨平台路线](CROSS_PLATFORM.md)。文字由用户检查并发送。
+产品目标是在 macOS 和 Windows 上用统一快捷键录音，复用自己的 Codex / ChatGPT 登录调用云端听写，将文字送入 Orca、其他 coding 工具以及支持粘贴的文本输入框。当前优先 macOS，已有实现和下文原生 API 均指 Swift/macOS 基线；用户补充双平台目标并明确启动 Rust loop 后，现已开始 Rust 共享核心与平台适配迁移，步骤、当前任务和未实现范围见 [跨平台路线](CROSS_PLATFORM.md)。文字由用户检查并发送。
 
 ```text
 VoicePort
@@ -39,7 +39,7 @@ M0–M3 是本地可独立实施范围。M4 中用户声音、账号调用和受
 - `VoicePortCore`：Foundation 核心库，隔离认证、HTTP、错误和投递策略，便于离线测试。
 - `voiceport-cli`：CLI，提供 `demo`、`doctor` 和 `transcribe`，便于同音频对照与诊断。CLI 与应用二进制使用不同名称，避免 macOS 默认大小写不敏感磁盘将 `voiceport` / `VoicePort` 视作同一路径。
 - `VoicePort`：AppKit 菜单栏和全局快捷键；SwiftUI 结果/设置面板；AVFoundation 录音；Accessibility/CGEvent 粘贴。
-- 不添加第三方运行时依赖。脚本仅负责 .app 打包、验证和开发 loop 状态记录。
+- Swift/macOS 基线不添加第三方运行时依赖。Rust 新版本的依赖与范围见下节；脚本负责 .app 打包、验证和开发 loop 状态记录。
 - 本机 Command Line Tools 缺少 XCTest / Swift Testing，因此核心检查采用 `bash scripts/test_core.sh`：将核心源文件与独立断言程序一并编译执行。公开 API 不因测试暴露内部认证细节；`python3 -I scripts/verify.py` 汇总完整验证。首版不以 `swift test` 作为入口。
 - 开发 loop 与产品运行状态完全分开；应用本身不调用模型编程工具。
 
@@ -56,6 +56,48 @@ resources/Info.plist      Bundle ID、麦克风用途、菜单栏应用配置
 automation/              开发任务定义
 .voiceport/              被 Git 忽略的执行账本与验证证据
 ```
+
+### Rust 新版本切片（VP-009）
+
+Rust转写由根Cargo workspace的 `crates/voiceport-core` 和 `crates/voiceport-cli` 提供，二进制 `voiceport-rs`，Rust 1.95+ / edition 2024。VP-013另新增开发中的 `crates/voiceport-windows`：直接复用核心API的控制器、PCM WAV及显式--run的Win32托盘/消息循环/快捷键动作/手动复制壳已有部分编译/测试证据；完整默认Windows all-target类型检查已通过，实际链接仍缺GNU运行库，没有PE成品和Windows运行，录音/安全存储等平台能力未完成，后台转写调度已交付但未通过独立验收，见 [Windows进展](WINDOWS.md)。核心已实现文件登录与固定端点转写；CLI 已实现 help/demo/doctor/transcribe。VP-009 的 59 文件 freeze-01 已通过本机离线独立验收，协调者核对完整字节与实际日志后完成账本。36 项既有检查、8 组独立反例、37 个 release CLI 用例、真实 release SIGINT 130 和 4 项 loop 回归通过，边界见验证记录。VP-010 会话状态机与有界 JSONL 也已通过本机离线独立验收。VP-011 已把 .app 默认转写切换为打包内 Rust host，修复后的 freeze-02 已完成独立离线验收与协调核对；VP-012完整开发包、入口及依赖许可已通过freeze-02独立验收并完成账本，当前VP-013 Windows系统适配的部分freeze-01已独立退回，确认Actions取消后普通轮询不恢复停止状态，任务释放后新录音仍Busy；原开发交付修复后，新完整freeze-02已由原独立会话亲自确认缺陷修复和相邻状态行为，无新已实现范围阻断；原11断言修前101历史保留，当前独立执行0，当前Mac25步/52Rust及完整Windows目标检查通过，协调完整核对后接受本次返修阶段检查。完整VP-013仍未接受。续作03已交付生产后台执行器、结果回收与显式手动重试：进程单worker许可和完成槽保留唯一票据到实际线程结束，取消/退出先失效，手动Retry保留路径语言且不自动投递；异常owner drop通过有界进程持有保留活线程及录音引用，后续显式提交才回收已结束线程。该实现的完整freeze-03已由原独立会话以VP013-I-002退回：is_finished可先于线程局部析构完成，消息线程在Poll/取消Poll/orphan reap同步join，明确门闩反例三路均等待释放，成功预期0实际1。独立53项Rust、Mac25步和完整Windows默认目标检查仍通过；协调核对完整冻结/历史/1489新证据后真实retry/start新attempt，原开发须将可能等待的join移到受控后台路径或证明实际OS停止，保证消息线程不等待并保留唯一票据/File/许可到真实停止。不能只检查结果槽或计时后释放；原开发返修02已交付并通过协调材料核对：单一进程级清理线程启动至多一个worker并真实join，release/acquire停止确认后才准许消费Job/File/许可；一条闲置清理线程随进程保留，初始化失败不启动worker，异常owner仍有界持有。新增真实TLS及发布后panic检查，最终54Rust/fmt/严格clippy/完整Windows默认目标检查通过。原样after探针仍因孤立任务即时成功假设退出101，保留失败；仅恢复尾增加显式Retry的适配三处原响应断言均通过，原11断言保持。新设计的初始化、确认时序、清理线程退出和异常资源边界仍须原独立在新完整冻结自行复核。Windows类型检查不能代替完整链接/实机或录音/安全存储/保护投递及打包验收。
+
+Rust 使用 reqwest 0.12.28（关闭默认 features，仅 rustls-tls/multipart）、Tokio/tokio-util、Serde/serde_json、base64 和 dirs；测试使用 tempfile。Cargo.lock 固定解析版本，`scripts/test_rust.sh` 依次执行 tests/fmt/clippy，release 单独构建。依赖范围见 [第三方说明](../THIRD_PARTY_NOTICES.md)，具体命令见 [README](../README.md)。
+
+Rust 保留逐请求重读、API-key 拒绝、JWT 到期 30 秒余量、安全头脱敏、禁重定向/自动重试/刷新和原文返回。生产 User-Agent 为 `VoicePort-Rust/0.1`，下节 `VoicePort/0.1` 对应 Swift。Rust 另禁用自动系统/环境代理；此选择和真实 TLS/企业证书兼容性需要后续验证。
+
+Rust 实际读取音频不超过 20,000,000 字节，认证文件和保留的响应正文各不超过 1,000,000 字节；正文超限 chunk 不追加，不把缓冲限制写成精确网络收包限制。连接上限 15 秒、每次读取停顿上限 90 秒、请求至正文读取总上限 110 秒；与 Swift URLSession 计时语义有差异。本地同步文件读取发生在 HTTP 计时前，有字节限制和前后取消检查，但单次文件调用不能中途取消，文件内容/身份也不承诺在同 UID 并发修改下原子。网络等待及逐 chunk 读取支持取消；CLI Ctrl-C 退出 130，无法撤回已被服务接收的音频。
+
+CLI 不录音或自动投递；`demo` 无网络/登录读取，`doctor` 只看文件是否存在，不证明有效。成功退出 0、运行错误 1、参数错误 2。Windows完整默认目标类型检查已通过，链接/运行及真实云端仍未验证；macOS 宿主集成已独立离线验收，完整开发包已在VP-012 freeze-02通过独立离线验收，具体边界见 [跨平台路线](CROSS_PLATFORM.md) 和 [验证记录](VALIDATION.md)。
+
+### Rust 会话与 JSONL 子进程（VP-010 本机离线独立验收通过）
+
+`voiceport-rs host [--auth PATH]` 通过 stdin/stdout 处理协议 v1，启动只发 ready。只有 transcribe/retry 调用既有转写客户端，status 不返回文字或路径。进程级 generation 不依赖调用方 request_id；取消/替换/退出先失效当前身份再取消，拒绝旧成功、错误及服务取消。服务自行取消进入 failed，只有当前失败会话能以原路径/语言手动重试，使用新身份并带 is_retry=true；原生层须关闭自动投递。成功只保留当前身份、不保存转写历史或重试路径；录音文件始终由原生层持有与清理，Rust host 不删除文件。
+
+完整 [JSONL 契约](HOST_PROTOCOL.md) 定义严格字段、关联事件、无效帧恢复和资源上限：输入 16,384 字节、输出 2,000,000 字节（不含 LF），输入/输出队列容量各 1、一个异步服务任务、单 writer 序列化并确认 flush，每帧 enqueue/write/flush 合计最多 5 秒。进程终身最多保留 1,024 个不同有效请求 ID，不淘汰重用；第 1,025 个返回 request_limit 后退出 0。EOF/shutdown 取消并退出；输出阻塞/EPIPE/超限失败退出，Ctrl-C 退出 130。两个 detached stdio 线程只用于本次进程生命周期，不作为可反复调用的常驻 daemon。
+
+VP-011 原生接入须处理子进程退出/重启，并同时绑定进程身份与内部 session，拒绝跨重启的迟到回调。使用 Foundation Process 直接启动打包内二进制，不拼接 shell、不传原始凭据；继续复用已验收 Swift 录音占用与受保护投递。当前开发自检包含真实 release 的启动/错误/控制路径，合成成功服务仅在单独 Cargo example 复用实际 host/session/parser/writer；不把夹具成功当作生产云端成功。VP-010 freeze-01 已独立接受：41 项既有检查、6 项独立 Rust 检查和 46 个有效断言的真实子进程用例通过，协调者核对后完成账本。真实输出中断可能留下不完整 JSON 尾片段，VP-011 必须只接受完整 LF 帧并在 EOF 丢弃尾片段；每帧 deadline 不替代原生请求总 deadline。macOS 接入和 Windows 仍各自验收。
+
+### macOS 原生 Rust 接入（VP-011 freeze-02 本机离线独立验收通过）
+
+原独立验证已确认 VP011-I-001 修复，并完成首轮剩余协议/重试/预算/进程/lease 矩阵；69 文件/22 目录完整冻结及历史材料无漂移，31 核心/73 应用和八项最终命令符合预期。协调核对后已实际完成 VP-011；VP-012完整离线开发包和适用依赖许可现已在freeze-02独立接受。各组检查覆盖有重叠，不相加为单一覆盖总数；真实活跃普通 GUI 退出、云端/目标接收和 Windows 仍未验。
+
+实际 DictationController 默认构造懒加载 RustBridge，经 Foundation Process 直接运行 `Contents/Helpers/voiceport-rs host`。没有 shell/PATH 查找、自动构建或 Swift 网络回退；缺 helper 时给可读错误并保留手动重试音频。默认构造和 smoke 不启动 child 或读取凭据。正常打包构建 Swift 与 locked Rust release，通过 cargo metadata 定位实际 target_directory，安装 0755 helper，先签 helper 再签外层；`--skip-build` 要求两种 release 产物均已存在。
+
+bridge 在后台串行队列持有 Process 与 pipe，非阻塞读写、按字节累积完整 LF 帧；输出累计最多 2,000,000 字节加一个 8192 字节读取块，超限或不完整 EOF 失败，尾片段不带入新 child。stderr 使用独立描述符持续丢弃，不进 UI 或历史。协议处理核对 version/event/type/重复顶层键与 request/session/is_retry/阶段；每次建立或回收 child 更换 incarnation。freeze-01 独立反例确认 VP011-I-001：父端仅检查 session 字符串格式，未保留同一 incarnation 内的已接受身份，第二个 request_id 复用 s1 仍返回旧文字，原控制器随后调用自动投递边界并删除第二段音频。返修已实现每 child 的 UInt64 高水位：完整 ASCII canonical session 解析成功后要求 generation 严格大于高水位，accepted 即占用身份，无论终态成功或失败；允许跳号，拒绝重复、回退、格式错误和溢出，不使用无界身份集合。只在新建 child 或确认回收后重置，新 child 的 s1 仍可用。异常仍走原有界回收/unsafeStop 路径，不能提前释放可能在读的录音。原验证随后在完整 freeze-02 亲自复核原断言及剩余范围，已独立接受；接受绑定保存的完整快照，不把后续 VP-012 文档或包装改动当作旧冻结。
+
+实际时限分别为 ready 5 秒、每次写 5 秒、每次控制回复 5 秒、accepted 后 terminal 等待 130 秒。启动至 accepted 可额外耗费 15 秒；异常取消/退出另有控制等待，再给 0.05 秒自然退出宽限、SIGTERM 后 2 秒及 SIGKILL 后 2 秒观察。130 秒不是整个操作总时限，单次同步 Process/文件系统调用仍无中途取消保证。该串行 API 供单控制器操作生命周期使用，不承诺多调用方并发 RPC。
+
+用户取消先失效本地 SessionGate 并取消任务，保持录音 lease，待 bridge 确认 child 已停才清理音频、恢复可开始状态；停止无法确认时保留占用并禁用新录音/重试。AppDelegate 返回 terminateLater，通过 shutdownAndWait 的停止结果决定是否继续退出；投递者 shutdown 仍同步执行。服务返回明确 failed 时保留录音，活着的失败会话发 retry；子进程丢失/预算退出不自动重传，用户显式手动重试可新建 child 发 transcribe。录音开始时固定本段 language，重试沿用该值，且无论 wire is_retry 是否为 true，手动重试都禁自动投递。
+
+### Rust/macOS 完整离线开发包（VP-012 freeze-02 独立验收通过）
+
+`python3 -I scripts/verify.py --app-smoke` 运行locked Rust tests/fmt/clippy、正常双release打包、Swift core/app/loop与包装反例、两种release CLI正反路径、双产物/签名对应及已知无I/O菜单smoke。首次freeze-01虽通过常规入口，仍因根目录链接、替换主程序、未知许可和漏整包四输入被错误接受而独立退回。返修后的schema2完整清单覆盖762文件/270目录，lstat检查必需根和后代普通类型、链接与特殊文件，并将目录POSIX模式纳入指纹。根planning与私有协调材料可变；产品输入的初始错误和运行漂移必须失败，运行期反例使用自建副本与明确测试seam。
+
+正常package与skip-build继续要求Swift和Rust两个实际release产物，Cargo target_directory由metadata取得。checker显式接收APP、RUST_RELEASE和SWIFT_VOICEPORT_RELEASE；Info与入口/模式须匹配，Rust同名签名副本和含正确Swift产物的同名重签bundle分别证明安装helper及主程序身份，不能以任意arm64有效签名代替正确产品。未知主程序不会为识别身份被执行。
+
+实际包安装120个native metadata图crate的687份完整材料，原635份逐项保留，新增52份不按后缀限制的归属补充。runtime可达、build/proc-macro、dev重叠与其他平台lock分别说明，不把图可达或资料文件都描述为实际链接。许可校验只读重建锁定本机target/feature图、声明/选择与缓存完整材料集，源manifest须与此相符，安装manifest再绑定已验证源；未知/少包/重复/缺build_inputs及材料集合漂移不能只靠自洽通过，正常检查不生成资源。开发材料审阅和归档校验保留ring内嵌BoringSSL/fiat/once_cell、Unicode/证书、完整MPL包源及原GPT Voice归属；原独立随后完成覆盖、分类和条款充分性审阅：实际release normal/build树103包、normal边100包、workspace含dev树107包，metadata另13个可选节点未在实际workspace树启用。保守图角色不是实际链接清单；不声称法律审定、公证或外发批准。
+
+返修01开发41 Rust、31核心、73应用、4 loop、11 packaging及25命令通过；原四例在正控制有效时修前负面runner退出1、修后退出0，六signed破坏对照仍拒绝。协调核对全部当前输入/快照、65保护字节与模式、历史材料及实际日志来源，不代替独立接受。原删除清单异常、旧Rust产物现象、返修首次错误helper夹具及两次可选cache校验文件假设失败均保留；具体旧构建缓存失配机制未实证。原独立现已在完整freeze-02及全新自有Cargo target完成全部原反例和剩余许可/入口范围：23项清单、6项入口边界、20个有效重签变异包、24项源许可反例及实际25步入口符合预期，完整条款充分性通过。协调核对762文件/270目录、30020历史材料及23554新证据后已真实finish；本次四文档仅同步接受状态，原快照保持不变。safe smoke在缓存清理/录音/auth/上传前退出，不能代表活跃普通GUI或真实录音/云端/目标接收。
 
 ## 4. 身份与接口契约
 
@@ -92,7 +134,7 @@ idle → requestingPermission → recording → transcribing → delivering → 
                                                └─ error → failed → 手动重试
 ```
 
-每次录音生成 session ID。异步返回只允许修改当前 session；取消先使 ID 无效，再终止网络并删除本次音频。快速连按、正在上传时新录音、待剪贴板恢复时新会话都应被串行化。投递恢复窗口期间不接受新会话或取消。
+每次录音生成 session ID。异步返回只允许修改当前 session；取消先使 ID 无效，再停止后台，确认安全后尝试删除本次音频。Rust 接入中，Swift Task 取消不能单独证明 child 已停读，音频占用必须维持到停止确认。快速连按、正在上传时新录音、待剪贴板恢复时新会话都应被串行化。投递恢复窗口期间不接受新会话或取消。
 
 服务层自行取消仍有效的请求时进入 failed，并保留音频供手动重试；用户取消和旧 session 的迟到结果不修改当前状态。权限拒绝和录音启动失败不提供无效音频重试。
 

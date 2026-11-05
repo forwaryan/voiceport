@@ -1,0 +1,18 @@
+[package]
+name = "voiceport-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "voiceport-rs"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+voiceport-core = { path = "../voiceport-core" }
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

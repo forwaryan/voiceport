@@ -25,6 +25,9 @@ final class DictationController: ObservableObject {
     private let paste: any TextDelivery
     private let defaults: UserDefaults
     private let requestMicrophonePermission: @MainActor () async -> Bool
+    private let backend: (any NativeTranscription)?
+    private var cleanupPending = false
+    private var recordedLanguage: String?
     private let transcribeAudio: @Sendable (URL, String?) async throws -> String
     private let waitForTick: @Sendable () async throws -> Void
     private var gate = SessionGate()
@@ -36,24 +39,28 @@ final class DictationController: ObservableObject {
          paste: any TextDelivery = PasteCoordinator(),
          defaults: UserDefaults = .standard,
          requestMicrophonePermission: @escaping @MainActor () async -> Bool = { await AudioRecorder.requestPermission() },
-         transcribeAudio: @escaping @Sendable (URL, String?) async throws -> String = { file, language in
-             try await TranscriptionClient().transcribe(file: file, language: language)
-         },
+         transcribeAudio: (@Sendable (URL, String?) async throws -> String)? = nil,
+         backend: (any NativeTranscription)? = nil,
          waitForTick: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) {
         self.audio = audio
         self.paste = paste
         self.defaults = defaults
         self.requestMicrophonePermission = requestMicrophonePermission
-        self.transcribeAudio = transcribeAudio
+        let selectedBackend: (any NativeTranscription)? = transcribeAudio == nil ? (backend ?? RustBridge()) : nil
+        self.backend = selectedBackend
+        self.transcribeAudio = transcribeAudio ?? { file, language in
+            guard let selectedBackend else { throw RustBridgeError.missing }
+            return try await selectedBackend.transcribe(file, language: language, retry: false)
+        }
         self.waitForTick = waitForTick
         automaticPaste = defaults.object(forKey: "automaticPaste") as? Bool ?? true
         language = defaults.string(forKey: "language") ?? ""
         alternativeShortcut = defaults.bool(forKey: "alternativeShortcut")
     }
 
-    var canCancel: Bool { [.requestingPermission, .recording, .transcribing].contains(phase) }
-    var canStart: Bool { [.idle, .ready, .failed].contains(phase) }
-    var canRetry: Bool { phase == .failed && audioFile != nil }
+    var canCancel: Bool { !cleanupPending && [.requestingPermission, .recording, .transcribing].contains(phase) }
+    var canStart: Bool { !cleanupPending && [.idle, .ready, .failed].contains(phase) }
+    var canRetry: Bool { !cleanupPending && phase == .failed && audioFile != nil }
     var shortcutLabel: String { alternativeShortcut ? "⌃⇧Space" : "⌃⌥Space" }
     var status: String {
         switch phase {
@@ -77,6 +84,7 @@ final class DictationController: ObservableObject {
         // A new recording replaces the previous in-memory result and retry audio.
         audio.cancel()
         audioFile = nil
+        recordedLanguage = language.isEmpty ? nil : language
         let id = gate.begin()
         paste.begin()
         transcript = ""
@@ -122,11 +130,18 @@ final class DictationController: ObservableObject {
         gate.cancel()
         operation?.cancel()
         timer?.cancel()
-        audio.cancel()
-        audioFile = nil
         paste.clear()
-        phase = .idle
-        message = "已取消，未投递文字。"
+        if let backend {
+            cleanupPending = true
+            message = "正在停止转写并回收进程，录音仍保持占用。"
+            Task {
+                let stopped = await backend.stop()
+                if stopped { audio.cancel(); audioFile = nil; cleanupPending = false; phase = .idle; message = "已取消，未投递文字。" }
+                else { message = "无法确认转写进程停止，录音保持占用，请稍后退出重试。" }
+            }
+        } else {
+            audio.cancel(); audioFile = nil; phase = .idle; message = "已取消，未投递文字。"
+        }
     }
 
     func copyResult() {
@@ -141,7 +156,17 @@ final class DictationController: ObservableObject {
         operation?.cancel()
         timer?.cancel()
         paste.shutdown()
-        audio.cancel()
+        if let backend {
+            cleanupPending = true
+            Task { if await backend.stop() { audio.cancel(); cleanupPending = false } }
+        } else { audio.cancel() }
+    }
+
+    func shutdownAndWait() async -> Bool {
+        cleanupPending = true
+        gate.cancel(); operation?.cancel(); timer?.cancel(); paste.shutdown()
+        if let backend, !(await backend.stop()) { return false }
+        audio.cancel(); audioFile = nil; return true
     }
 
     private func startTimer() {
@@ -159,10 +184,12 @@ final class DictationController: ObservableObject {
     private func transcribe(file: URL, id: String, allowAutomaticPaste: Bool) {
         phase = .transcribing
         message = "正在上传到 ChatGPT 听写服务；可取消。"
-        let selectedLanguage = language.isEmpty ? nil : language
+        let selectedLanguage = recordedLanguage
         operation = Task {
             do {
-                let text = try await transcribeAudio(file, selectedLanguage)
+                let text: String
+                if let backend { text = try await backend.transcribe(file, language: selectedLanguage, retry: !allowAutomaticPaste) }
+                else { text = try await transcribeAudio(file, selectedLanguage) }
                 guard gate.accepts(id), !Task.isCancelled else { return }
                 transcript = text
                 audio.cancel()
@@ -191,6 +218,7 @@ final class DictationController: ObservableObject {
         timer?.cancel()
         paste.clear()
         phase = .failed
+        if let error = error as? RustBridgeError, case .unsafeStop = error { cleanupPending = true }
         message = (error as? LocalizedError)?.errorDescription ?? "操作失败，请检查麦克风和网络后重试。"
     }
 }
