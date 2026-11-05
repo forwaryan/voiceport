@@ -291,6 +291,14 @@ freeze-04的独立失败保持：合法清理Spawner的实际线程在TLS析构�
 
 实际Windows链接/PE/运行、设备采集、ACL/sharing/reparse-safe存储与held lease/cleanup、保护投递、Windows包/许可仍未完成。项目阈值5和最后一轮直接保存交接规则由独立只读核对，不额外压测或强制压缩。
 
+### Windows私有存储续作01开发交付（未独立接受）
+
+原开发在已同步main的新分支交付9修改/3新增：私有存储模块与原生实现、Recording私有字段/所有权guard、仅构造表达式适配的既有测试、存储聚焦测试、Windows绑定features及WINDOWS说明。接受过的executor/actions/core/Swift字节不变。资源manifest仅Windows Cargo输入hash更新，120包行/特性/范围/选择和687材料保持。
+
+最终60workspace Rust、fmt、严格clippy、完整默认Windows all-target及native严格clippy、材料一致性、已拥有Darwin debug help/safe smoke均为开发自检0；14命令的原始argv/env/日志与最终源摘要保持。原11断言用一处构造表达式适配执行0，原字节/patch单独保留，不称字节不变执行。3项原生集成测试只编译未执行，5项portable新测试不能代替NTFS权限/共享/路径实测。两次native编译101及失败源码保留，最终检查0。
+
+协调材料核对782文件/276目录、770保护、288新证据8713408字节、最终快照/原字节和5项外部产物身份一致。首次checker误将external artifact记录路径字符串当列表，原脚本/错误保存后按真实schema更正并0；未改开发证据或重跑开发测试。报告c164ed14ab7e326ffc4d73a4f6f708981611dea129546819fa77d93a786335a0、index97b9d7038c05d26d7d6890a1eefefcbf5e42df263ffffdbc8e8fb4cda855ddbb。待新完整冻结原独立复核，VP-013整体false；未操作真实录音/auth/云端/目标。
+
 ## 待完成的系统层验证
 
 | 场景 | 当前状态 | 验收方法 |

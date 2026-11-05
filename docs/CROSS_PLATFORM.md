@@ -4,6 +4,8 @@
 
 当前补充（2026-11-05）：PR1 已合并并同步 main，当前修复分支为 `fix/windows-cleanup-stop`。freeze-04 被原独立以 VP013-I-003 退回：合法清理线程在 TLS 内尚可领取请求时误判停止，Poll/Exit/orphan 会 panic。返修03改用请求显式双重 Job/许可所有权和真实 receiver 生命周期；原四例自检由0/1/1/1变为全0，健康后续请求及原11断言保持。完整freeze-05现已由原独立验证者确认VP013-I-003修复并通过阶段检查：亲自运行原样四例、所有权/健康后续/丢失循环/自动释放及当前Mac25步55Rust和完整Windows默认目标检查。协调核对后接受返修阶段，不能外推为Windows产品接受。
 
+存储续作01已由原开发交付：新增惰性私有存储、保守的Windows ACL/路径/reparse检查、原子新文件和有界WAV完成边界，Recording私有字段携带根/祖先/marker占用引用到Controller/Job真实停止。协调核对782输入/276目录、770保护和288新证据后准备新冻结；开发60Rust/严格clippy/完整默认Windows检查通过，3项原生测试只编译未执行，不能声称NTFS安全语义或Windows产品接受。设备采集/Start-Stop、清理、保护投递及链接/运行/分发仍未完成。
+
 ## 执行架构
 
 采用 Rust 共享核心与各系统适配层，逐步迁移已有行为。根 Cargo workspace 下建立 crates/voiceport-core 和 crates/voiceport-cli，独立二进制命名 voiceport-rs，避免与 Swift 的 VoicePort/voiceport-cli 碰撞。macOS 初期保留现有 Swift/AppKit/SwiftUI 外壳，后端通过有界 JSONL 子进程协议接入 Rust，明确会话身份、取消、重试和退出资源归属；凭据不通过 argv 传递，应用直接启动打包内二进制，不拼接 shell。

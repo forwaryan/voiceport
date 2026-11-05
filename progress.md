@@ -1,5 +1,12 @@
 # 进度记录
 
+## 2026-11-05 — Windows存储续作01开发交付
+
+- 原开发task_574e1e110952 / ctx_030aa41cecae已真实msg_6f8e797572a3 succeeded，source_writes_stopped=true、product_accepted=false；同attempt保持，新分支feat/windows-private-storage基于已合并同步的main ed4cb30。9修改3新增仅在指定存储/Recording所有权/构造适配测试/Windowsfeatures/说明与manifest范围。
+- 开发最终60Rust、fmt/严格clippy、完整默认Windows目标/native lint、材料和Darwin safe smoke/help通过，14命令均0；3native集成测试只编译，5portable存储测试不能证明NTFS安全。原11仅一处构造适配后11通过，原字节/patch保留；两次native编译101及失败源码保持。770保护、120包/687材料不变，manifest只Cargo输入hash变化。
+- 协调核对782输入/276目录、最终快照/原字节/288新证据8713408字节及5产物身份后通过；首次checker误把artifact记录路径字符串当列表而1，原脚本/error保存后按真实schema更正并0，未重跑开发测试。当前集成状态文档并commit/push，再完整freeze06回原独立；不能将开发自检/编译当原生安全接受。
+- freeze05阶段接受与旧拒绝链保持。此前Git回执误覆盖后已恢复原字节、但inode/mtime变化的披露必须跨交接保留；新merged回执独立文件，不再覆盖历史材料。轮换阈值5，最后一轮直接保存交接，无额外压测或强制压缩。
+
 ## 2026-11-05 — freeze05返修阶段独立通过
 
 - 原独立task_3b2f84f8b85e / ctx_27c804ff57d2已真实msg_27bf5bd18d1e succeeded，verification_completed=true、partial_checkpoint_review_passed=true、全产品false，绑定attempt5469b64b-5a08-4f1f-b29d-64bc3d49937c与原HEAD16c13ce11efbc30d6d83a89aa68fe027de4b5399。VP013-I-003修复确认、无新已实现范围阻断；原样四例全0，新所有权/健康后续/丢失循环/自动释放和相邻回归通过。Mac25步55Rust/31core/73app/4loop/11packaging、693包/签名/helper/smoke及完整默认Windows检查0；16ringCOFF、961938有效rmeta。原serviceTLS101/collector1和仅恢复尾manualRetry适配0分别保持。

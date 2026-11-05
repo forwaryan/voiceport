@@ -63,6 +63,8 @@ Rust转写由根Cargo workspace的 `crates/voiceport-core` 和 `crates/voiceport
 
 当前返修03更新：freeze-04已由原独立以VP013-I-003退回，合法清理线程仍在TLS中可领取请求时的is_finished推断会误消费Job并panic。现以UI和请求显式双重Job/许可所有权替代推断，清理请求真实销毁或后台实际join后才释放并确认；健康状态绑定真实receiver生命周期。UI owner丢失后清理侧也可在真实停止后自行释放，无需另一次UI回收。原清理TLS四例自检均0、健康后续请求可执行；最终55Rust/fmt/严格clippy/完整Windows默认目标检查0。完整freeze-05已由原独立亲自确认原样清理TLS四例及新所有权/健康后续/丢失循环/自动释放控制通过，当前Mac25步55Rust及完整Windows默认目标检查0。协调核对完整冻结/证据后接受返修阶段；全产品未接受，旧freeze和失败保持。下一实施切片先补Windows私有存储与held lease，设备采集和Start/Stop接线须在安全存储边界成立后推进；Windows原生运行分别留证。
 
+Windows私有存储续作01已交付开发基础：惰性Storage仅显式创建才做I/O，受限本地NTFS路径/祖先ACL策略、私有根与marker、原子随机新文件和同一持有对象的有界WAV完成；Recording字段私有并携带Arc根/祖先/marker引用，现有Controller/Job/失败重试/取消/TLS/异常owner的真实停止边界不变。无删除扫描、设备采集或Start/Stop启用。开发60Rust及完整默认Windows目标检查通过，原生集成测试仅编译，ACL/sharing/reparse安全和平台运行未接受；保守策略/威胁边界与残留私有partial限制见WINDOWS.md，新完整冻结须原独立审查。
+
 Rust 使用 reqwest 0.12.28（关闭默认 features，仅 rustls-tls/multipart）、Tokio/tokio-util、Serde/serde_json、base64 和 dirs；测试使用 tempfile。Cargo.lock 固定解析版本，`scripts/test_rust.sh` 依次执行 tests/fmt/clippy，release 单独构建。依赖范围见 [第三方说明](../THIRD_PARTY_NOTICES.md)，具体命令见 [README](../README.md)。
 
 Rust 保留逐请求重读、API-key 拒绝、JWT 到期 30 秒余量、安全头脱敏、禁重定向/自动重试/刷新和原文返回。生产 User-Agent 为 `VoicePort-Rust/0.1`，下节 `VoicePort/0.1` 对应 Swift。Rust 另禁用自动系统/环境代理；此选择和真实 TLS/企业证书兼容性需要后续验证。

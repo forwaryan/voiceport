@@ -13,6 +13,8 @@
 - 自动跨窗口交接尚未通过真实压缩触发验收；不能把模型按固定步骤交接的 hook 约束说成外部进程监督器。后续协调者须按 `.claude/COORDINATOR_ROTATION.md` 处理阈值和失败恢复。
 - Windows freeze-04 独立失败 VP013-I-003 永久保留。原开发返修03已停写并交付：请求显式双重 Job/许可所有权、真实 receiver 生命周期替代 is_finished 推断；原清理 TLS 探针修前 control0/poll1/exit1/orphan1，修后四例均0，健康后续请求可继续执行。55 Rust、fmt、严格 clippy、完整 Windows 默认目标检查均为开发自检0。当前源码已分逻辑commit/push，PR2已创建；完整freeze-05现已由原独立确认VP013-I-003修复且通过阶段检查。协调核对779公共+5操作输入、771保护、66261历史普通及1742新证据107932774字节后接受返修阶段，继续PR合并/main同步，再以Windows私有存储/held lease作为下一切片；VP-013整体仍未接受。
 
+- 当前Windows私有存储续作01已由原开发停写交付：9修改3新增，惰性Storage与受限ACL/reparse路径/同对象WAV完成，Recording私有guard保持真实停止边界。开发60Rust/fmt/严格clippy/默认Windows全目标/材料检查通过，3native测试仅编译。协调核对782输入/276目录/770保护及288新证据后提交推送阶段，再完整冻结交原独立；VP-013仍running且未接受。
+
 ## 阶段
 
 ### Phase 1: 还原需求与约束

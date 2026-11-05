@@ -1,5 +1,10 @@
 # 调研与发现
 
+## 2026-11-05 — Windows存储候选边界
+
+- 存储续作把Recording路径/File/语言设为私有，并将根/祖先/marker guard通过Arc随Controller/Job保留；现有caller-owned构造只保证生命周期，不授予ACL/路径安全。原executor/actions真实停止规则未改。
+- 候选原生存储限制在保守支持的本地固定NTFS路径/ACL；complex ACL/未知对象拒绝，不自动修复。Sharing不约束所有属性/安全请求，同用户/特权/预存恶意handle/驱动重映射等边界明确披露；失败可能留下私有不可接纳partial，无清理扫描。3项native测试只编译，实际Windows安全/运行仍须实证，不能由60项portable workspace通过外推。
+
 ## 2026-11-05 — freeze05阶段通过后的边界
 
 - 原独立亲自确认VP013-I-003在freeze05修复，无新已实现范围阻断；原cleanupTLS四例全0，新请求所有权/receiver生命周期/健康后续与自动owner丢失释放控制通过。Mac25步55Rust和完整Windows默认目标检查通过。原serviceTLS恢复尾未经修改仍101，单独manualRetry适配0保持，不把两者混称。

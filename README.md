@@ -6,6 +6,8 @@ macOS 全局语音输入工具：使用自己的 Codex / ChatGPT 登录调用云
 
 最新协调状态（2026-11-05）：Windows freeze-04 独立复核发现 **VP013-I-003**，清理线程仍在 TLS 析构中时可能误判停止并触发 panic；返修03的完整 freeze-05 已由原独立验证者确认 VP013-I-003 修复并通过阶段检查：原样清理 TLS 四例全部通过，实际所有权、健康后续请求及当前 Mac/Windows 编译回归通过；协调核对后接受本次返修阶段，VP-013 整体仍未接受。主协调者已按原 Run 完成交接；当前运行阈值与项目默认值统一为每个协调会话完成 **5 次压缩后轮换**，后续继任继承。达到阈值的最后一轮直接保存和交接，不额外压测或强制压缩，见 [协调者轮换](.claude/COORDINATOR_ROTATION.md)。原 14 项隔离测试及真实 PreToolUse hook 加载证据保留，不为验收轮换额外触发压缩。
 
+Windows 存储续作（开发自检，待独立复核）：已新增显式私有存储入口、受限原生 ACL/路径检查和持有根目录/文件占用的 Recording 所有权边界；未启用录音、Start/Stop、清理或自动投递。开发 60 项 workspace 测试、严格 clippy、完整默认 Windows 目标检查与材料一致性检查通过；3 项 Windows 原生集成测试仅完成类型检查，实际 NTFS 权限、共享和运行语义仍未验证。需新完整冻结交原独立复核，VP-013 仍未接受。
+
 ## 构建与启动
 
 需要 macOS 13+、Swift 6 Command Line Tools 和 Rust 1.95+。正常打包构建 Swift 与 locked Rust release，安装并先签名 `Contents/Helpers/voiceport-rs`，再签外层 .app；本机 arm64 构建。`--skip-build` 使用现有 release 产物，要求 Swift 和 Rust 产物都已存在。运行已打包应用无需安装 Rust 工具链。
