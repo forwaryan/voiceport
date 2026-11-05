@@ -183,6 +183,9 @@ struct Owner<B: Backend, O: Output> {
     drained: usize,
     frame: Box<Frame>,
     unconfirmed: bool,
+    // A returned release error needs a new explicit cleanup call. Unlike an
+    // interrupted call, successful explicit recovery can clear this condition.
+    explicit_recovery_required: bool,
     more_returned_data: bool,
 }
 // Field-level unwind protection: Session::drop itself may panic in caller
@@ -255,6 +258,7 @@ impl<B: Backend, O: Output> Session<B, O> {
                 drained: 0,
                 frame: Box::default(),
                 unconfirmed: false,
+                explicit_recovery_required: false,
                 more_returned_data: false,
             }))),
             result: None,
@@ -370,9 +374,11 @@ impl<B: Backend, O: Output> Session<B, O> {
             })
             .is_err()
             {
+                o.explicit_recovery_required = true;
                 o.fail(Error::Reset);
                 return Err(Error::Reset);
             }
+            o.explicit_recovery_required = false;
             o.cleanup = Cleanup::Drain;
         }
         if matches!(o.cleanup, Cleanup::Drain) {
@@ -417,9 +423,11 @@ impl<B: Backend, O: Output> Session<B, O> {
             })
             .is_err()
             {
+                o.explicit_recovery_required = true;
                 o.fail(Error::Unprepare);
                 return Err(Error::Unprepare);
             }
+            o.explicit_recovery_required = false;
             o.cleanup = Cleanup::Close;
         }
         if matches!(o.cleanup, Cleanup::Close) {
@@ -428,9 +436,11 @@ impl<B: Backend, O: Output> Session<B, O> {
             })
             .is_err()
             {
+                o.explicit_recovery_required = true;
                 o.fail(Error::Close);
                 return Err(Error::Close);
             }
+            o.explicit_recovery_required = false;
             // This synchronous off-UI drop must RETURN before output/permit are
             // released. Weak expiry/close-result publication is not that proof.
             confirmed_call(&mut o.unconfirmed, || drop(o.backend.take()));
@@ -507,6 +517,17 @@ impl<B: Backend, O: Output> Owner<B, O> {
 impl<B: Backend, O: Output> Drop for Session<B, O> {
     fn drop(&mut self) {
         if self.phase() == Phase::Released || std::thread::panicking() {
+            return;
+        }
+        // Do not turn disposal into an explicit retry of a release operation
+        // that already returned an error. The first error alone is not proof of
+        // this state: it may instead describe open/read/output or an old stage
+        // that a subsequent explicit call has successfully recovered.
+        if self
+            .owner
+            .as_ref()
+            .is_some_and(|o| o.explicit_recovery_required)
+        {
             return;
         }
         let _ = self.cancel();

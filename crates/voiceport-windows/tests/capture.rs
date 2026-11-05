@@ -575,3 +575,6 @@ fn reset_ack_without_returned_buffers_cannot_release_or_publish() {
 
 #[path = "capture/cleanup.rs"]
 mod cleanup;
+
+#[path = "capture/recovery.rs"]
+mod recovery;
