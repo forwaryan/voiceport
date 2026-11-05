@@ -24,7 +24,7 @@ struct AppChecks {
     @MainActor
     static func main() async {
         if let code = RecordingStorageTests.childExitCode(arguments: CommandLine.arguments) { exit(code) }
-        let tests = ControllerTests().tests + ClipboardTests().tests + TargetCaptureTests().tests + RecordingStorageTests().tests
+        let tests = ControllerTests().tests + ClipboardTests().tests + TargetCaptureTests().tests + RecordingStorageTests().tests + RustBridgeTests().tests
         var failures = 0
         for (name, test) in tests {
             do { try await test(); print("PASS \(name)") }
