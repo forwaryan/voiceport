@@ -1,5 +1,13 @@
 # 进度记录
 
+## 2026-11-05 — 独立06限定范围通过与Git集成安全点
+
+真实msg_caf06f0e7daf SUCCEEDED，独立源结论PASS_WITH_EXECUTION_LIMITS：R05-01/02/03解决，55/19/10/原04五组/review05四组和三组新增事务/兼容控制各一次通过；未发现本范围实质残留。协调核对69封存条目、32历史身份、六固定输入/七政策文档不变，接受精确repair06源码及两恢复文档的隔离支持范围，coordinator-acceptance-06.json保存。源码/证据停写，开发实际exited/released；独立完成后仍live/reclaimable不冒称退出。原FAILED/初始oracle失败均保留，真实PreCompact/四压缩/自动生命周期/native激活未执行、VP013同attemptfalse。安全点继续final逻辑提交推送、PR5正常ready/merge及main同步，再制作完整capture freeze08、原独立采集角色真新会话续验；不把Git集成或操作源接受当产品接受。
+
+## 2026-11-05 — 返修06交付并固定独立06输入
+
+msg_acf6c299283d正式succeeded并声明停写，helper/tests两文件修R05-01/02/03：诊断写OSError走真实stderr回退不撤销已提交恢复权，首次权威写失败仍阻止；消费字段/路由/宿主输入类型显式校验；候选scan成功后才更新hook元数据。开发55生产、原19/10、原04五组、review05四组各一次通过，原51测试体、七反例及旧32/15断言不改；新oracle错误/限定重跑与历史exit1均保留。协调核对80封存证据、32相关旧身份、六恢复诊断失败仍允/四畸形history正确veto/八语义拒绝，未复做委派测试。review-pins-06固定helper014eeb1e/testsbf440d07及四未改设置/文档和七未改旁证。worker真实sessionf29451ef/context1/0，SessionStart未观察，完成后早期live/reclaimable不称exit。新独立06须真新加载证明复核新事务/兼容边界，后按实际结论final Git/PR5/main-sync和capture freeze08；VP013同attemptfalse，实际生命周期/native激活未执行。证据evidence/session-rotation-06/coordinator-repair-reconciliation.json；协调控制台计数变量遮蔽的小错另记reconciliation-console-correction.json，实际51-body断言和保存结果已通过不改。
+
 ## 2026-11-05 — 独立05确认核心修复并因三项残留退回
 
 msg_dda1b489d629正式FAILED：51/19/10和适配后五组原04控制各运行一次通过，R04-01原20场景及锁内先提交后abort独立通过，R04-02原6恢复通过；新增诊断写失败6恢复仍exit2、hook_events:null四宿主/事件exit1无有效veto、四种畸形schema/cursor/drift记录仍供窄恢复权（不声称普通工作放行或运行时成员权）。协调核对62封存证据及六输入/七政策文档不变，保留review05 FAILED、初始探针oracle错误与限定重跑，不复做委派测试。结束review05现场冻结，旧快照不改；返修05开发现已exited/released，独立完成后仍live/reclaimable，不混淆。先分逻辑commit/push返修05候选/状态并更新draftPR5，再明确新沿革repair06只helper/tests统一检查诊断副作用/权威状态边界及被消费字段类型；修后新pin原独立。VP013同attempt running/false，native信任/真实生命周期/采集接受未执行，capture freeze08继续待办。证据evidence/session-rotation-06/coordinator-return-reconciliation.json。

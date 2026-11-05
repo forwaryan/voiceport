@@ -29,6 +29,14 @@
 
 ## 最新工作边界
 
+独立06已真实msg_caf06f0e7daf SUCCEEDED/PASS_WITH_EXECUTION_LIMITS，R05-01/02/03均独立解决、无本范围实质残留；55/19/10/原04五组/review05四组及三组独立事务控制各一次通过。协调核对69封存证据、32历史身份及六输入/七文档不变，接受精确repair06源码与两恢复文档支持的隔离范围，记录evidence/session-rotation-06/coordinator-acceptance-06.json。实际PreCompact/四真实压缩/完整自动生命周期/native信任激活仍未执行，VP013同attempt running/false；原FAILED不重分类。源码/证据停写，开发06已exited/released，独立完成后live/reclaimable不称退出；安全点执行final source/status commit/push、PR5正常ready/merge/main同步，再从同步main制作完整capture freeze08并沿原独立采集角色新上下文续审。旧freeze07行政未完成及16项材料保留，不自动录音/上传/真实输入。
+
+前轮边界沿革：
+
+返修06已真实msg_acf6c299283d succeeded并停写，开发55生产、原19/10控制、原04五组和review05四组控制各一次通过，原51测试体及旧断言不改。协调80封存条目/32历史身份/六新输入/七文档核对，原六恢复诊断失败、四畸形history veto和八语义拒绝结果符合自检；review-pins-06固定helper014eeb1e/testsbf440d07，两设置/两恢复文档不变。新独立06真新session/terminal/真实hook/初始0复核源与政策支持及新事务/兼容路径，不把开发自检当接受。完成后早期进程live/reclaimable与停写声明分列；失败历史/初始oracle错误保留。待实际独立结论再final commit/push/正常mergePR5/main同步和完整capture freeze08，VP013同attempt running/false。证据evidence/session-rotation-06/coordinator-repair-reconciliation.json。
+
+前轮边界沿革：
+
 独立05已真实msg_dda1b489d629 FAILED，51/19/10及适配后五组原04探针独立通过，R04-01核心已独立确认；剩余R05-01诊断写失败阻断恢复、R05-02 hook_events:null漏校验导致exit1无有效veto、R05-03四种畸形schema/cursor/drift证据仍获窄恢复权。协调核对62封存条目与六输入/七文档不变，结束review05现场边界并保留快照/全部失败；返修05开发已实际exited/released，独立完成后仍live/reclaimable不冒称退出。先把已完成返修05源码/状态分逻辑commit/push并更新draftPR5，再明确新开发沿革repair06只helper/tests聚焦诊断与权威分离、完整消费字段校验/双宿主错误否决；不以新增日志路径变更恢复前提。完成新pin独立后才正常merge/main同步及capture freeze08。原Run/VP013attempt running/false，native/实际生命周期未执行。证据evidence/session-rotation-06/coordinator-return-reconciliation.json。
 
 前轮边界沿革：
