@@ -8,6 +8,8 @@ macOS 全局语音输入工具：使用自己的 Codex / ChatGPT 登录调用云
 
 Windows 存储续作的完整 freeze-06 已通过原独立源码、编译与离线所有权阶段检查，协调核对完整冻结和证据后接受该阶段。新增的显式私有存储入口、受限原生 ACL/路径检查和 Recording 目录/文件持有边界已审查；独立 Mac 25 步入口（60 Rust、31 Swift 核心、73 应用、4 loop、11 packaging）、完整默认 Windows 目标检查及新增存储/真实线程 TLS 所有权控制通过。3 项 Windows 原生集成测试仅编译未执行，实际 NTFS 权限、共享、路径与运行安全仍未验收。录音、Start/Stop、清理和自动投递保持禁用，完整 VP-013 未接受。
 
+Windows 采集续作已交付开发候选，待原独立审查：新增惰性采集入口、合成后端共用的同步后台所有权流程，以及固定缓冲 WinMM 后端；组合已持有的私有 Pending，确认设备关闭后才完成 WAV。开发 71 项 workspace 测试、fmt/严格 clippy、完整默认 Windows 目标检查和材料检查通过；新增 1 项采集原生测试与既有 3 项存储原生测试仅编译未执行。该批量后端的系统调用与 Drop 可能阻塞，未轮询或停止时没有自主墙钟停止保证。桌面 Start/Stop 仍禁用，未进行真实录音；独立及原生运行验收均未完成。
+
 ## 构建与启动
 
 需要 macOS 13+、Swift 6 Command Line Tools 和 Rust 1.95+。正常打包构建 Swift 与 locked Rust release，安装并先签名 `Contents/Helpers/voiceport-rs`，再签外层 .app；本机 arm64 构建。`--skip-build` 使用现有 release 产物，要求 Swift 和 Rust 产物都已存在。运行已打包应用无需安装 Rust 工具链。

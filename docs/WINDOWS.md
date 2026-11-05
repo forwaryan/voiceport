@@ -174,3 +174,99 @@ Capture, Start/Stop, deletion and automatic delivery remain disabled. Native
 runtime, retention cleanup, protected delivery, successful Windows link/PE and
 packaging/material gates remain mandatory. See [validation](VALIDATION.md) for
 execution, evidence and historical receipt-restoration boundaries.
+
+## Capture01: explicit off-UI acquisition foundation (not native runtime acceptance)
+
+The new `capture` module is unwired library code. NativeCapture/default values,
+Actions/help/safe smoke do not create storage, enumerate/open devices, request
+permission, record, read auth or start a service. Native Start/Stop remain disabled.
+On non-Windows explicit NativeCapture.prepare returns static Unsupported with zero
+IO. On Windows it accepts only an already held native storage::Root, reserves the
+single process capture budget and creates its private Pending before device work.
+The returned NativeSession.begin explicitly opens/prepares/queues/starts the device.
+There is no public native arbitrary-File/path entry. Existing Root/Pending,
+Recording/Controller/Job, executor/actions/shell and WAV behavior are unchanged.
+
+Backend and Output are trusted embedding interfaces used by the production Session
+pipeline and synthetic QA. Caller-owned synthetic outputs promise object lifetime,
+not native ACL safety. NativeSession wraps its backend privately and always uses
+one process budget; isolated Budget values are only for independently owned
+synthetic contexts. Identities are checked, globally monotonic UInt64 session IDs
+with checked exhaustion, selected device ID, exact format and consecutive packet
+sequence. Malformed, zero/odd/oversized, foreign, duplicate, non-DONE and late frames
+cannot produce output success. At most one result can be taken; cancel invalidates
+before reset/draining, stop cannot undo cancellation and closed sessions cannot
+begin or consume new frames. Language and the same native Pending flow to finalize.
+
+Windows uses legacy WinMM waveIn with CALLBACK_EVENT and zero-time event polling,
+not a Rust callback/resampler/framework. Exact PCM query plus WAVE_FORMAT_DIRECT
+forbids ACM conversion; the actual opened device handle's ID is bound. The interface
+is mono signed16-bit PCM at16kHz: at most2,880,000 samples/180 seconds and5,760,044
+WAV bytes. Swift's existing mono AAC24kHz/64kbps format remains unchanged. No sample
+conversion is implemented. waveIn is a conservative small dependency already in
+the locked bindings, not a recommendation over modern WASAPI for future work.
+
+Two stable, initially queued, fixed buffers contain the entire180-second sample
+budget plus a4096-sample overflow sentinel (5,768,192 data bytes total). No refill
+or reuse occurs, avoiding a requeue gap that WinMM could silently discard without
+an overflow notification. This backend is bounded batch acquisition, not live
+streaming: normally partial data is returned only after explicit Stop/reset.
+If the sentinel completes, the run fails; excess data during final drain fails
+instead of truncating into success. When running accounting reaches the maximum,
+Session requests stop/reset; empty, excess, partial IO and malformed runs never
+finalize. There is no autonomous timer/worker: the off-UI owner must poll/stop;
+blocked/absent polling can leave the device active, and later output is rejected
+if the sample budget was exceeded. No hard wall-clock microphone-stop guarantee
+or interruptible driver/file syscall is claimed.
+
+Header and sample allocations never move while WinMM may hold their pointers.
+Headers have an explicit aligned UnsafeCell wrapper (the packed bindings are
+read by value); driver completion flags are polled volatile at verified aligned
+offsets. Sample memory is UnsafeCell and copied only after WHDR_DONE with validated
+pointer, user identity, buffer length, byte count, alignment, prepared/not-inqueue
+flags and bounded offset. Each copied packet has at most4096 samples. No Rust
+callback unwinds across FFI, no unsafe Send/Sync is asserted, and the native owner
+is thread-bound. The binding declares waveInGetID's output pointer const; the code
+passes a raw pointer derived from unique mutable self rather than an immutable
+Rust reference. Native driver/OS memory-order and lifetime promises need actual
+Windows review/tests; compiler success is not runtime safety evidence.
+
+Stop/error/cancel uses stop, successful reset, bounded drain, confirmed unprepare
+and close. A reset acknowledgement alone does not free buffers. Up to four drain
+packets per call and a fixed maximum packet count bound progress without growing
+queues. Errors permanently forbid this recording's success, even when later cleanup
+recovers. Wav range rejection alone leaves its earlier prefix finishable; Pending
+already latches every append error permanently. Capture independently latches
+its accounting/output error, so neither a valid prefix nor later cleanup can
+turn an over-limit or partial-write capture into success. Output finalization occurs only after close and the backend destructor
+body has actually returned. The same Pending's finalization then supplies its
+immutable Recording and accepted ancestor/marker/File guards. There is no deletion,
+transcription, retry, history or alternate storage policy in capture.
+
+This is a synchronous **off-UI owner API**. Native calls, output writes and Drop
+may block; future GUI integration needs a dedicated owner context and separate
+review. The message pump never calls this code now. Unknown reset/drain/unprepare/
+close keeps the complete owner, output guards and process capacity. Explicit cleanup
+polling may retry release steps, never capture or service work. Drop attempts bounded
+cleanup once and, if release remains unconfirmed (or during unwinding), deliberately
+retains one bounded native owner/permit until process termination. It does not start
+reapers/replacements or infer actual stop from timeout, result publication, Weak
+expiry or JoinHandle::is_finished. This conservative lost-owner case requires process
+restart, not silent recovery; no universal panic/abnormal kernel-stop guarantee.
+
+Portable production-pipeline tests use newly owned synthetic Files and controllable
+backends: exact PCM/language/identity, empty/maximum/excess, partial actual file writes,
+each open/prepare/start/read/write/stop/reset/unprepare/close/finalize error, malformed
+and stale frames, cancel/late data, capacity/replacement, reset acknowledged before
+buffer return, destructor-body gates and unknown Drop ownership. Native API/device+
+private-NTFS integration is an explicit ignored test; together with the three existing
+storage tests it is compiled only here, never run. Successful portable controls do
+not prove Windows driver, device, permission, ACL, sharing or NTFS semantics.
+
+Microsoft documents [waveInOpen format/event flags](https://learn.microsoft.com/en-us/windows/win32/api/mmeapi/nf-mmeapi-waveinopen),
+[queued input and possible data loss](https://learn.microsoft.com/en-us/windows/win32/multimedia/managing-waveform-audio-recording),
+[reset returning pending buffers](https://learn.microsoft.com/en-us/windows/win32/api/mmeapi/nf-mmeapi-waveinreset),
+and [unprepare before freeing buffers](https://learn.microsoft.com/en-us/previous-versions/dd743853%28v%3Dvs.85%29).
+Actual Windows device/NTFS gates, full PE/link/runtime, future user Start/Stop,
+protected delivery, residual cleanup and Windows distribution/material review remain
+mandatory. Source/compile/offline developer checks do not accept full VP-013.
