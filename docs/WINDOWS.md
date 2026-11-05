@@ -247,9 +247,11 @@ This is a synchronous **off-UI owner API**. Native calls, output writes and Drop
 may block; future GUI integration needs a dedicated owner context and separate
 review. The message pump never calls this code now. Unknown reset/drain/unprepare/
 close keeps the complete owner, output guards and process capacity. Explicit cleanup
-polling may retry release steps, never capture or service work. Drop attempts bounded
-cleanup once and, if release remains unconfirmed (or during unwinding), deliberately
-retains one bounded native owner/permit until process termination. It does not start
+polling may retry release steps, never capture or service work. Ordinary off-UI
+Drop drains all bounded already-returned packets, while each poll retains its
+four-packet limit. Drop continues only after a full returned-packet quota, never
+on Idle or an unknown reset/unprepare/close. If release remains unconfirmed (or
+while already unwinding), the owner/permit is retained until process termination. It does not start
 reapers/replacements or infer actual stop from timeout, result publication, Weak
 expiry or JoinHandle::is_finished. This conservative lost-owner case requires process
 restart, not silent recovery; no universal panic/abnormal kernel-stop guarantee.
@@ -270,3 +272,38 @@ and [unprepare before freeing buffers](https://learn.microsoft.com/en-us/previou
 Actual Windows device/NTFS gates, full PE/link/runtime, future user Start/Stop,
 protected delivery, residual cleanup and Windows distribution/material review remain
 mandatory. Source/compile/offline developer checks do not accept full VP-013.
+
+
+## Capture repair02: confirmed unwind retention and ordinary Drop drainage
+
+Freeze08 was rejected for VP013-C08-001 and VP013-C08-002: a destructor panic
+inside Session::drop bypassed its final leak statement and freed the normal owner
+field, and ordinary returned data beyond four packets leaked admission unnecessarily.
+The exact independent13 fixture/assertions remain unchanged: baseline10pass/3fail101
+and repaired13pass0 are separately retained, alongside the two adjacent controls.
+These developer checks are not independent acceptance or Windows runtime evidence.
+
+Session now keeps its allocation in a field-level OwnerSlot. Its own destructor
+retains the entire still-unconfirmed Box even if Session::drop unwinds. A latch
+surrounds calls into backends/outputs, including their complete destruction and
+Output::finish; only NORMAL RETURN clears it. If an embedding caller catches a
+panic, later begin/stop/cancel/poll cannot reinterpret it as cleanup or retry that
+interrupted work. They retain admission/remaining output guards and return only a
+static failure. In particular backend destructor panic keeps remaining
+output/root guards, and output destruction/finish panic keeps capacity. Rust may
+unwind fields of the value already being destroyed; this policy retains the whole
+remaining owner and cannot resurrect a consumed panicking value. No valid audio is
+published on these paths. Propagating panic, abort/double-panic and native FFI/kernel
+failure are not claimed as graceful GUI recovery by an external catch harness.
+
+A normal off-UI Drop now permits a finite larger drain budget: only a full quota
+of four returned packets enables another pass, bounded by MAX_DRAIN_PACKETS and
+one End allowance. Idle, release errors and an interrupted operation terminate
+attempts immediately with conservative ownership. Ordinary five-packet, exact
+maximum, overflow-sentinel and finite drain-limit disposal can reach confirmed
+unprepare/close/destructor completion and allow a later admission. This is bounded
+work, not a timeout or proof inferred from silence. Normal owners are actually
+freed, avoiding per-session retention in the successful lifecycle. No reaper,
+thread, new queue, unsafe Send/Sync, GUI wiring, device operation, automatic retry,
+file deletion, format change or native storage alteration was added. All original
+native capture/NTFS/security/link/runtime and future product gates remain open.

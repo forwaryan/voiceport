@@ -29,6 +29,10 @@
 
 ## 最新工作边界
 
+原开发 capture返修02 已正式交付并停写：OwnerSlot在字段展开时保留未确认Owner/Permit，normal-return latch覆盖backend/output调用、完整析构与finish；普通off-UI Drop只在满批已返回数据后有限续排，poll仍限四批，Idle/未知释放立即保留。原13测试体/Toml/lock/相邻夹具字节相同，开发修前10pass3fail101、修后13pass0；新增5组及工作区76、fmt、严格clippy、完整默认Windows检查/native lint均0。协调94封存普通/17目录、786公共/278目录、781保护+6操作、73453历史普通和旧965独立记录核对通过；协调checker首次结束证明schema误取字段1已保存原脚本/输出后纠正，未重跑开发测试。原开发真实resumed Codex session处于第3轮，当前SessionStart/PreToolUse加载已观察，仅此会话证明，旧native激活失败Task和实际PreCompact/完整生命周期未执行事实不重分类。当前7feb749c返修attempt running/false，先分逻辑commit/push并更新draftPR6，再完整freeze09交原独立采集逻辑角色真新会话复核两缺陷及相邻路径；开发自检不算独立接受，旧freeze08 FAILED和三失败断言永久保留。
+
+前轮边界沿革：
+
 capture freeze08 已由指定独立角色完成并真实退回：VP013-C08-001 析构 panic 使未确认释放的 Owner/Permit 在展开中提前释放；VP013-C08-002 普通 Drop 只排空四批，正常已返回的第五批使容量永久占用。原成功断言保持，独立13项为10通过/3失败（expected0/actual101），另2相邻控制通过；完整Mac25步含71Rust/31core/73app/4loop/11packaging及完整默认Windows目标检查通过，均不抵消已实现范围失败。协调封存/源码/785公共+6操作/768保护/73453历史普通及965新证据核对首次0，明确结束freeze08现场只读边界，原快照/失败不改。按真实退回关闭旧attempt并start返修attempt，原Run和开发/独立角色沿革保留；修复仅capture所有权/有界正常Drop与必要测试、Windows说明，修后必须完整新冻结回原独立。Git从已同步main建立fix/windows-capture-drop；真实设备、原生安全/runtime、GUI owner/Start-Stop及全产品仍未接受，不自动录音/上传/真实输入。原开发恢复须先证明当前真实hook和上下文未超限；无加载/信任则停止并升级，不绕过。
 
 前轮边界沿革：

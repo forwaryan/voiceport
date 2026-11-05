@@ -1,5 +1,9 @@
 # 进度记录
 
+## 2026-11-05 — 原开发capture返修02交付，待新冻结独立复核
+
+msg_c531a2474e2e真实succeeded并停写，仅3修改1新增：capture OwnerSlot与normal-return latch防止未确认析构/finish/方法panic后恢复容量，有界普通Drop完成已返回数据排空，未知释放/Idle不转圈、不强制释放；native backend/accepted storage等保护输入不变。原13/Toml/lock/adjacent字节完全相同，开发baseline10pass3fail101保持、修后13pass0及adjacent2pass，新增5组、工作区76、fmt/strictclippy/完整DEFAULT Windows/nativeclippy均0。协调check-vp013-capture-repair-02.py核对94封存普通/17目录、786公共/278目录、781保护+6操作、73453旧SHA refs及965独立08封存记录，未重跑委派测试；checker首次误读结束启动证明顶层session而1，原脚本与精确输出保存在独立failure-01后按authentic_state.owner+metadata.id修正并通过。原开发session01a1a5dd/精确terminal/真实native PreToolUse+SessionStart/当前helper、2次压缩第3轮已核对；本会话加载已观察，历史激活失败Task不改、实际veto/自动生命周期仍未执行。开发自检与协调交付核对不作独立接受；当前attempt7feb749c仍running/false。先源码/测试和文档状态分逻辑commit/push、更新draftPR6，再建立完整freeze09，原独立采集角色真新会话复核两原始反例/消费panic与普通Drop相邻路径、完整受影响入口；失败freeze08/旧证据不改，不自动录音/上传/真实输入。
+
 ## 2026-11-05 — capture freeze08 独立失败，进入有界Drop返修
 
 指定独立msg_bb4d3feb4fcc报告FAILED_IMPLEMENTED_SCOPE，实际新session/真实PreToolUse/初始与最终0已核对，SessionStart未观察。两缺陷三条成功断言失败：backend/output析构panic释放未确认容量，以及16385样本正常已返回数据直接Drop后永久占用容量；10通过/3失败exit101原样保留，另2相邻控制通过。完整Mac25步、71Rust、31core、73app、4loop、11packaging和默认Windows all-target check通过，1采集+3存储native测试仅编译。协调check-vp013-rejection-08.py首次0核对封存965普通/296目录/143129425字节/31产物、785公共+6操作、768保护、73453历史普通及10links/6specials，未重跑委派测试。失败freeze08及capture07行政未完成、所有旧失败永久保留。独立和原开发已实际exited/released；按真实实现缺陷retry旧产品attempt并start新返修attempt，非行政轮换重开。当前从main4459aff建立fix/windows-capture-drop，返修回原开发并先验真实hook/上下文，修后完整新冻结、原独立复核；全VP013仍false，实际native/GUI/设备/cleanup/delivery/完整link与材料门槛未满足。PR5已正常merge/main同步，Git集成不作产品验收。
