@@ -29,11 +29,11 @@ fn user_copy_only_after_current_result_and_failed_copy_retains_it() {
     assert!(sink.copies.is_empty());
     let path = d.path().join("owned.wav");
     let job = ui
-        .admit_finalized(Recording {
-            file: std::fs::File::create_new(&path).unwrap(),
+        .admit_finalized(Recording::caller_owned(
+            std::fs::File::create_new(&path).unwrap(),
             path,
-            language: Some("zh".into()),
-        })
+            Some("zh".into()),
+        ))
         .unwrap();
     ui.complete(job, Ok("raw\ntext".into()));
     assert!(ui.can_copy());
@@ -54,11 +54,11 @@ fn exit_keeps_actions_responsive_until_ticket_drop_and_ignores_late_text() {
     let mut ui = Actions::default();
     let path = d.path().join("owned.wav");
     let job = ui
-        .admit_finalized(Recording {
-            file: std::fs::File::create_new(&path).unwrap(),
-            path: path.clone(),
-            language: None,
-        })
+        .admit_finalized(Recording::caller_owned(
+            std::fs::File::create_new(&path).unwrap(),
+            path.clone(),
+            None,
+        ))
         .unwrap();
     let mut sink = Sink {
         copies: vec![],
@@ -81,11 +81,11 @@ fn coalesced_exit_and_cancel_override_queued_copy() {
         let path = d.path().join("owned.wav");
         let mut ui = Actions::default();
         let job = ui
-            .admit_finalized(Recording {
-                file: std::fs::File::create_new(&path).unwrap(),
+            .admit_finalized(Recording::caller_owned(
+                std::fs::File::create_new(&path).unwrap(),
                 path,
-                language: None,
-            })
+                None,
+            ))
             .unwrap();
         ui.complete(job, Ok("private text".into()));
         let mut sink = Sink {
@@ -110,11 +110,11 @@ fn ordinary_cancel_poll_recovers_after_completion_or_drop_without_extra_cancel()
             };
             let recording = |name: &str| {
                 let path = d.path().join(name);
-                Recording {
-                    file: std::fs::File::create_new(&path).unwrap(),
+                Recording::caller_owned(
+                    std::fs::File::create_new(&path).unwrap(),
                     path,
-                    language: Some("zh".into()),
-                }
+                    Some("zh".into()),
+                )
             };
             let poll = |ui: &mut Actions, sink: &mut Sink| {
                 if dispatch {

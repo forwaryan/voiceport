@@ -37,11 +37,11 @@ impl Service for Held {
 }
 fn rec(d: &std::path::Path, n: &str) -> Recording {
     let path = d.join(n);
-    Recording {
-        file: std::fs::File::create_new(&path).unwrap(),
+    Recording::caller_owned(
+        std::fs::File::create_new(&path).unwrap(),
         path,
-        language: Some("zh".into()),
-    }
+        Some("zh".into()),
+    )
 }
 fn pump(ui: &mut Actions, s: &mut Sink, done: impl Fn(&Actions) -> bool) {
     let end = Instant::now() + Duration::from_secs(5);

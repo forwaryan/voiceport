@@ -66,11 +66,7 @@ fn rec(root: &std::path::Path, name: &str) -> Recording {
         use std::os::fd::AsRawFd;
         FD.store(file.as_raw_fd(), std::sync::atomic::Ordering::SeqCst);
     }
-    Recording {
-        file,
-        path,
-        language: Some("en".into()),
-    }
+    Recording::caller_owned(file, path, Some("en".into()))
 }
 fn pump(a: &mut Actions, s: &mut Sink) {
     let deadline = Instant::now() + Duration::from_secs(5);

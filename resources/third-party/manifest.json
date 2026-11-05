@@ -239,7 +239,7 @@
     "Cargo.lock": "5798b5242984ae679cff6447c2b600c1d2166c0b89454bac9799ce84d21f794e",
     "crates/voiceport-cli/Cargo.toml": "357a127670ea787f3f51a55284f2e1e14372cbb549a4e1b94e5e787d8ea588db",
     "crates/voiceport-core/Cargo.toml": "24373b4c020cb68638193871625c013657cda89f27d318805d35158868d391bf",
-    "crates/voiceport-windows/Cargo.toml": "5224b050b6d08dad04140d42c15070077176a6d2b29aafc0af457a562c3b6f6a"
+    "crates/voiceport-windows/Cargo.toml": "1f8a9362ddf128445ec0b5ec7e4d4f82c1551e5fac049e0c73911da9b1b627c7"
   },
   "schema": 1,
   "target": "aarch64-apple-darwin",
