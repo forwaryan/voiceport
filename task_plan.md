@@ -15,6 +15,8 @@
 
 - Windows私有存储续作01已提交推送PR3，完整freeze-06由原独立task_efd03ffe42f8 / ctx_79e1ee651d6f通过源码/编译/离线所有权阶段；协调check-vp013-accept-06.py首次0核对782公共+5操作输入/276+2目录/766保护/69107历史普通及1851新证据119311468字节后接受阶段。独立Mac25步60Rust、完整默认Windows目标检查及新存储/真实TLS guard控制通过；3native测试仅编译，实际NTFS安全与平台运行未接受。原service-TLS101与manualRetry适配0分列，历史构造器和一处只读accessor迁移均显式保存。VP-013原attempt保持running，不finish。接着按授权更新状态、提交推送、正常合并PR3并安全同步main；下一切片为惰性Windows设备采集基础，合成后端与交叉编译验证，保持桌面Start/Stop禁用及原生安全/设备实测门槛。
 
+- PR3已正常合并，main同步a86934eb5765869ddc32836cbe58471b52d885d2后建立feat/windows-capture-foundation。原开发续作05 task_a1066a7a191a / ctx_1f746fb9da0b已msg_c973ec95a9cd succeeded并停写，交付惰性capture/Session/WinMM候选（4修改3新增）。check-vp013-capture-01.py首次0核对785输入/277目录/778保护公共+5操作输入/71765历史普通及101新证据2234880字节。开发71Rust、12最终命令及完整Windows目标0，1采集+3存储native测试仅编译。提交推送后完整freeze07回原独立ctx_79e1ee651d6f；仅开发自检，全VP013同attempt保持running/false，真实设备和桌面Start/Stop仍禁用。用户再次明确允许协调者自主合并PR，满足正常条件后继续合并同步main，无需逐次确认。
+
 ## 阶段
 
 ### Phase 1: 还原需求与约束

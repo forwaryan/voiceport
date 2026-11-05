@@ -65,6 +65,8 @@ Rust转写由根Cargo workspace的 `crates/voiceport-core` 和 `crates/voiceport
 
 Windows私有存储续作01的完整freeze-06已由原独立审查并通过源码/编译/离线所有权阶段，协调完整核对后接受本阶段。惰性Storage仅显式创建才做I/O，受限本地NTFS路径/祖先ACL策略、私有根与marker、原子随机新文件和同一持有对象的有界WAV完成；Recording私有字段携带Arc根/祖先/marker引用，Controller/Job/失败重试/取消/TLS/异常owner持有到真实停止。独立Mac25步60Rust、完整默认Windows all-target检查、新存储策略与实际线程TLS所有权反例/正控制通过。无删除扫描、设备采集或Start/Stop启用；3项native测试仅编译，ACL/sharing/reparse安全和平台运行仍未接受。保守威胁边界与私有partial残留限制见WINDOWS.md。下一独立可实施切片为惰性设备采集基础与受控合成后端验证；原生采集及安全存储实测前保持桌面Start/Stop禁用，完整VP-013所有必需范围保留。
 
+Windows采集续作01现已交付未接线候选：NativeCapture构造无I/O，显式prepare从持有Root取得Pending，begin才打开/准备/开始WinMM；生产Session管道也用于合成后端控制。Windows格式仍为16kHz单声道PCM16位，与Swift AAC24kHz不同；固定180秒主缓冲加溢出哨兵，不引入重采样。停止、reset与实际缓冲归还、unprepare/close和backend析构完成后才完成同一Pending；失败/取消禁止部分成功，未知释放保留有界owner/许可。同步调用及Drop可能阻塞，只允许未来后台owner接入，无自主墙钟停止保证。开发71Rust及完整Windows检查通过，新增1项native测试未执行；尚须新完整冻结和原独立审查，不能启用桌面Start/Stop或声称原生安全/运行已接受。
+
 Rust 使用 reqwest 0.12.28（关闭默认 features，仅 rustls-tls/multipart）、Tokio/tokio-util、Serde/serde_json、base64 和 dirs；测试使用 tempfile。Cargo.lock 固定解析版本，`scripts/test_rust.sh` 依次执行 tests/fmt/clippy，release 单独构建。依赖范围见 [第三方说明](../THIRD_PARTY_NOTICES.md)，具体命令见 [README](../README.md)。
 
 Rust 保留逐请求重读、API-key 拒绝、JWT 到期 30 秒余量、安全头脱敏、禁重定向/自动重试/刷新和原文返回。生产 User-Agent 为 `VoicePort-Rust/0.1`，下节 `VoicePort/0.1` 对应 Swift。Rust 另禁用自动系统/环境代理；此选择和真实 TLS/企业证书兼容性需要后续验证。

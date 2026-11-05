@@ -245,3 +245,5 @@ pub mod actions;
 pub mod shell;
 
 pub mod executor;
+
+pub mod capture;

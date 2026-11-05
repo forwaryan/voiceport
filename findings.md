@@ -173,3 +173,9 @@
 - 新Recording私有字段保持File-before-guard析构顺序，实际服务线程TLS/失败/manualRetry/cancel/Exit/异常owner的guard控制通过。Weak失效先于析构体事件是测试同步错误，原101/poison日志保留，等实际析构事件后通过；无生产修改。fixture构造器迁移与一处只读path accessor额外迁移显式保存，原serviceTLS语义101及manualRetry-only适配0不得混称原样通过。
 - 当前Mac25步60Rust与31core/73app/4loop/11packaging、693包/签名/helper/safe smoke通过。120包行/687材料未变不等于Windows分发范围完整。历史Git回执误覆盖后已恢复字节/hash，inode/mtime变化仍如实保留并由freeze06核对，不能称从未触碰。
 - 设备采集基础可在现有条件下实现并以合成后端、所有权/失败反例及完整目标编译检查验证；普通UI的Start/Stop须等原生安全存储及设备运行门槛，不以静态阶段接受启用真实录音。完整VP013仍running/false。
+
+## 2026-11-05 — capture01候选边界
+
+- 原开发惰性采集候选通过材料核对，尚非独立接受。WinMM事件/poll、固定180秒主buffer+4096sample哨兵避免动态补队列，代价是批量数据通常直到显式stop/reset才可读；没有自主墙钟停止保证。所有native调用与Drop可阻塞，禁止直接接消息线程，当前Start/Stop未启用。
+- reset成功不等于buffer释放，必须继续actual-return/unprepare/close及backend析构体完成；未知释放保留一个有界owner/预算且拒绝替换。独立应自行挑战全部失败/取消/Drop/格式/缓冲身份和exact-max路径，不把合成后端当driver/NTFS保证。
+- 71workspace/12最终命令0为开发自测，1采集+3存储native只编译。101新材料2234880字节及778公共+5操作保护/71765历史普通核对通过，未重跑测试。既有核心/所有权/Swift与120包687材料保持；原native和fake失败、生成器单组件exit缺口及记录regeneration0均保留。下一完整freeze07必须回原独立，产品仍未接受。

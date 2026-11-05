@@ -309,6 +309,14 @@ freeze-04的独立失败保持：合法清理Spawner的实际线程在TLS析构�
 
 历史Git回执曾在freeze-05接受后被协调误写，已恢复原字节/hash，但inode/mtime变化未伪造恢复；原独立在freeze-06明确核对该披露和旧记录，不能声称历史文件从未被触碰。无协调测试重跑、真实录音/auth/云端/剪贴板/目标或权限操作。实际NTFS ACL/sharing/reparse/安全与竞态、Windows运行、采集和Start/Stop、残留清理、保护投递、完整link/PE与打包材料仍必需；完整VP-013未接受。
 
+### Windows采集续作01开发交付（待独立审查）
+
+新增惰性采集facade、共用合成后端的生产Session管道与固定缓冲WinMM候选；4修改/3新增，785公共文件/277目录。保持778公共+5操作保护输入、71765历史普通材料/10链接/6特殊，101新证据2234880字节及21外部产物行一致。开发12最终命令退出0，源摘要全程不变：71workspace Rust（60既有+11采集组）、fmt/严格clippy、完整默认Windows all-target、native严格clippy、材料一致性及自有Darwin help/safe smoke。16ring COFF只证明目标编译，1采集+3存储native测试均未执行；没有link/PE/Windows运行。
+
+初次9组采集测试8过1失败101：合成backend未打开也发数据，保留原始9组源码重建来源与后加partial-IO版本区别，仅修fake使未打开返回End；随后10组、最终11组通过。native初次严格clippy101与失败源码保留，修三项lint后通过。首次生成器shell组合未单独捕获组件exit，原输出保留，后续独立记录regeneration0且最终产品字节未变。未知reset/buffer归还/close及析构体门闩、空/最大/溢出、真实合成部分写45字节错误、外来/重复/迟到frame等控制为portable证据，不替代设备/NTFS安全。
+
+协调check-vp013-capture-01.py首次0，仅材料核对、不重跑开发测试。开发报告SHA2560115356bb5f1f5478da108de01c8fb05979c288798edd5cde4d87d8f6b02530d，index5c09b67860f07f43da14f0b587fdc86ed056cddc810037afb2c093a891544a08。120包行/687材料保持，manifest只改Windows Cargo输入hash；不代表Windows分发许可完整。新完整冻结和原独立审查仍必需；同步设备调用/Drop可阻塞，未轮询或停止时无自主墙钟停止保证。桌面Start/Stop禁用，无真实录音/auth/云端/目标/权限操作。产品未接受。
+
 ## 待完成的系统层验证
 
 | 场景 | 当前状态 | 验收方法 |

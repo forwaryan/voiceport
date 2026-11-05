@@ -6,6 +6,8 @@
 
 存储续作01的完整freeze-06已通过原独立源码/编译/离线所有权阶段检查，协调完整核对后接受该阶段：782公共+5操作输入、276+2目录、766保护和69107历史普通材料保持，1851新证据119311468字节一致。惰性私有存储、保守Windows ACL/路径/reparse策略、原子新文件、有界WAV完成及Recording根/祖先/marker持有到Controller/Job真实停止已审查；独立Mac25步60Rust及完整默认Windows all-target检查通过，新存储/真实TLS所有权控制通过。历史fixture仅必要构造器迁移，另一个只读路径accessor迁移单列，不称字节未变执行；原service-TLS101与manual-Retry适配0分列。3项原生测试只编译未执行，实际NTFS安全仍未接受。设备采集/Start-Stop、清理、保护投递及链接/运行/分发仍必需，完整VP-013未接受。
 
+采集续作01开发交付已完成协调材料核对：785公共文件/277目录，4修改/3新增，778保护公共+5操作输入不变，101新证据2234880字节一致。惰性NativeCapture与合成后端共用Session管道；显式prepare先取得私有Pending，begin才进入WinMM设备调用。固定16kHz单声道PCM16位/180秒主缓冲与溢出哨兵，停止/reset确认、归还缓冲、unprepare/close及析构完成后才准许同对象WAV入场；未知释放保持有界owner/许可。开发71Rust和完整默认Windows检查通过，1采集+3存储native测试仅编译。调用和Drop均须后台执行，未接托盘Start/Stop、无自主墙钟停止保证；新完整冻结与原独立复核仍必需，产品false。
+
 ## 执行架构
 
 采用 Rust 共享核心与各系统适配层，逐步迁移已有行为。根 Cargo workspace 下建立 crates/voiceport-core 和 crates/voiceport-cli，独立二进制命名 voiceport-rs，避免与 Swift 的 VoicePort/voiceport-cli 碰撞。macOS 初期保留现有 Swift/AppKit/SwiftUI 外壳，后端通过有界 JSONL 子进程协议接入 Rust，明确会话身份、取消、重试和退出资源归属；凭据不通过 argv 传递，应用直接启动打包内二进制，不拼接 shell。

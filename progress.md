@@ -255,3 +255,9 @@
 - 已实际消费msg_4aca4d0cc94a，task_efd03ffe42f8 / ctx_79e1ee651d6f succeeded，原独立确认源码/编译/离线所有权checkpoint通过且fullVP013=false。check-vp013-accept-06.py首次0：276+2目录模式、766保护、69107历史普通/10链接/6特殊与1851新证据119311468字节/337目录、37外部产物一致。report c6f3e2d7f89ddb234a06bb19809265b2291882b94fc0ae3a45e92d907f7244fe；index12ccf7a5e688cf9d8a383b004f5202fa4ae908ce165d395d88dfe576f3d89e67。独立Mac25步60Rust/31core/73app/4loop/11packaging、693包文件及完整默认Windows all-target0；16COFF与1735541有效rmeta，3native测试只编译。新增9存储控制、原11/cleanupTLS四例及实际TLS所有权控制通过；原serviceTLS101与manualRetry适配0、构造器和一处只读accessor迁移、各夹具/collector失败修正都单列。
 - 接受绑定原freeze06；同VP013 attempt5469b64b-5a08-4f1f-b29d-64bc3d49937c保持running，无retry/start/finish。未改旧快照/报告/index或重跑委派测试。历史Git回执误写后恢复字节但inode/mtime变化的披露经原独立核对，跨后续交接保留。
 - 已集成五份产品状态文档与计划，准备提交推送/正常合并PR3及安全同步main。下一独立可推进切片为惰性设备采集基础和合成后端；真实设备/NTFS/Start-Stop/清理/保护投递/link/PE/分发等门槛保持，无自动真实录音/auth/上传/目标操作。
+
+## 2026-11-05 — capture01开发交付
+
+- PR3实际合并a86934e并同步main，从该基线建立feat/windows-capture-foundation，原开发续作05 task_a1066a7a191a / ctx_1f746fb9da0b。用户重申允许自主合并PR，继续按正常合并条件执行。
+- 已实际消费msg_c973ec95a9cd succeeded；惰性capture/共用Session/WinMM固定缓冲候选停写交付。check-vp013-capture-01.py首次0，4修改/3新增、785公共输入/277目录、778公共+5操作保护输入、71765历史普通/10链接/6特殊及101新证据2234880字节、21外部产物行保持。12最终命令0和71workspace测试从日志核对，1采集+3存储native仅编译未执行，未重跑开发测试。
+- 初次fake未打开也产音频导致101及native严格lint101保留；后续修正、partial-IO45字节、未知归还/析构体确认及11最终采集组均为portable自测。源和现有Controller/Recording/Job/storage/wav/executor/actions/Swift/tests保持；manifest仅Win32_Media_Audio输入指纹变化，120包/687材料不变。代码已逻辑提交15a8319，继续状态文档提交推送/新完整freeze07/原独立ctx_79e1ee651d6f。无真实设备/云端/目标或Start/Stop启用，产品未接受。
