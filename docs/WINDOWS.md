@@ -65,3 +65,112 @@ A lawful cleanup loop can run inside the returned thread's TLS destructor after 
 The accepted freeze-05 executor gives UI Running and queued/active RequestOwner explicit references to the Job and shared process permit. Only actual unclaimed request disposal or a real off-UI worker join allows RequestOwner to release its references, before publishing stopped. UI uses Acquire before consuming its remaining unique Job. Cleanup availability follows the whole actual receiver guard lifetime, allowing a loop delayed into TLS to serve healthy later requests. Dropping the UI cancels and releases only its own references; cleanup releases after actual stop without later UI reaping. There is no orphan queue or closure-finished inference. Unknown join loss conservatively retains a bounded Job/permit; no forced thread stop is used.
 
 The original independent verifier reran the unchanged four-case cleanup TLS fixture, new current/cancel/exit/drop ownership and healthy follow-up controls, lost-loop disposal, automatic orphan release, prior service-TLS/original11 and current regressions. The coordinator accepted that implemented repair scope. Five-compaction coordinator rotation was checked read-only; no extra rotation stress or forced compaction was performed. All mandatory Windows native recording, private storage/leases/cleanup, protected delivery, successful full linking/runtime and distribution/material gates remain open.
+
+## Storage01: private native ownership foundation (developer, not accepted security)
+
+The new `storage::Storage` value is inert: construction, default Actions, help and
+safe smoke do no storage IO. Only explicit `open_or_create` resolves Windows
+LocalAppData, and explicit `Root::create` creates a recording. The tray still does
+not call these APIs: capture and Start/Stop remain disabled. No scanning, adoption
+of unknown files, deletion, ACL repair, cleanup thread, upload CLI or automatic
+paste is added. On non-Windows `open_or_create` returns Unsupported without IO.
+
+The candidate native boundary supports only bounded drive-qualified local paths
+on a fixed NTFS volume. UNC/device/extended namespaces, streams, dot/empty
+components, DOS device aliases and trailing-dot/space aliases are rejected. Parent
+paths are at most180 UTF8 bytes/24 components, leaving room below legacy Win32
+path limits for the fixed version directory and random filename. Unicode names
+are supported within that deliberately conservative bound. Every existing
+ancestor is opened with OPEN_REPARSE_POINT, checked by handle as a non-reparse
+directory and retained with read-only sharing (no write/delete sharing). Active
+ancestor allow ACEs granting data/attribute/EA mutation, delete-child/delete,
+owner/DACL mutation or generic write/all to an untrusted SID are refused; complex
+unknown ACEs fail closed. Owners must be the process user, SYSTEM, Administrators
+or the fixed Windows TrustedInstaller service SID. Inherit-only ACEs do not grant
+rights on the inspected ancestor; basic deny ACEs only reduce access. Creating
+subdirectories elsewhere in an ancestor alone is not treated as permission to
+replace a pinned existing component. This conservative policy can reject valid
+complex profiles; there is no insecure fallback or permission repair.
+
+`VoicePort-recordings-v1` is created with an explicit protected DACL containing
+exactly one current-process-user SID full-access ACE, with the same SID owner.
+Existing roots must already match; a preexisting inherited/broad/unknown ACL,
+reparse point, wrong type or missing marker is refused. The small exact version
+marker includes the current SID, has the same private DACL, and is opened/retained
+rather than inferred from its filename. Marker hardlinks and wrong bytes/lengths
+are rejected. A failed initial marker write may leave a non-adoptable private
+root; the API never silently repairs or removes it. One Root is reused for
+creation: reopening a newly created root concurrently may conservatively fail
+because its marker writer is still held.
+
+Each file name is128 random bits from the system RNG plus `.wav`, with at most
+8 CREATE_NEW collision attempts and no caller-chosen leaf. File creation passes
+the same explicit descriptor and uses read/write access with FILE_SHARE_READ
+only; handles are non-inheritable. Type, reparse status, link count1, owner and
+DACL are checked through the actual open handle. The bounded existing mono16kHz
+PCM writer produces at most5,760,044 bytes/180 seconds; any append failure
+permanently forbids finalization. Finalize rejects empty/partial output, flushes
+and syncs the same file, rechecks its volume/file ID/security and rewinds it.
+No replacement file is opened during this conversion. Partial/failed files are
+left private and non-admitted; dropping them closes owned handles, never deletes.
+
+Recording now has private path/File/language fields and retains an optional
+Arc lifetime guard; this prevents replacing a native finalized pair while keeping
+an unrelated guard. The caller_owned constructors remain explicit **caller
+ownership contracts**, not security validators. The native finalizer moves its
+root/ancestor/marker guards into Recording. Controller and actual executor Job
+references therefore keep those guards through failure retention, language-fixed
+manual Retry, cancellation, worker/TLS teardown and abnormal Actions drop. No
+accepted executor/actions stop logic changed. The held recording handle denies
+competing write/delete opens; Rust/core's read-only path reopen uses compatible
+sharing. This last compatibility, rename denial, exact DACL creation and all
+native integration assertions still require real Windows execution.
+
+The rationale is pinned object identities plus restricted ancestor/private ACLs,
+not a universal absolute-path TOCTOU proof. Windows sharing does **not** constrain
+all attribute/security requests. Same-user malicious code (including duplicate
+handles/impersonation), administrators/SYSTEM/TrustedInstaller, previously granted
+hostile security/attribute handles, privileged backup/restore access, drive-letter
+remapping, filter drivers and kernel compromise are outside this foundation's
+threat model. No native security acceptance or general Windows lease guarantee
+follows from cross-compilation. See Microsoft's
+[CreateFile sharing and reparse rules](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilea)
+and [handle-based security query](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo).
+
+Portable tests exercise bounded path rejection, inert unsupported construction,
+static errors and guard lifetime through failure/retry/success/cancel and real
+worker thread-local teardown/owner drop using synthetic Files. Existing controller,
+actions, service/cleanup TLS matrices retain their assertions after the narrow
+constructor adaptation. Windows-only integration tests assert real private-root
+creation/adoption refusal, marker tampering/hardlinks, atomic collision preservation,
+WAV admission/poison rules, read compatibility, competing-write/rename refusal
+and eventual release. They are explicitly ignored and **not executed here**;
+full default Windows target checks typecheck them and the native APIs only.
+
+This slice still has no actual Windows runtime or linked PE, device capture,
+>24h residual cleanup, protected UIA/clipboard delivery, user recording/target
+acceptance, or Windows distribution/material review. Those remain mandatory
+full VP-013 gates. The unchanged native Mac license generator only updates its
+manifest input fingerprint for the Windows binding-feature declaration; recorded
+package/material/selection/scope comparisons determine the actual delta, not a
+claim about Windows shipped dependencies. Full product_accepted remains false.
+
+## Independent freeze06 checkpoint
+
+The original independent reviewer passed the complete source/compile/offline
+ownership checkpoint, and the coordinator checked the sealed reports, complete
+1851-record evidence index and all frozen/history identities before accepting
+that bounded stage. The current Mac entry passes25 steps including60 Rust tests;
+the fresh default Windows all-target check passes with16 real ring COFF objects.
+New policy, WAV, guard and actual service-thread TLS controls pass. Historical
+fixtures retain their exact originals and necessary constructor patches; one
+ownership helper additionally needs a read-only path accessor migration. Earlier
+service-TLS original semantics still fail101; the explicit manual-Retry recovery
+adaptation passes separately. Test-fixture and collector failures remain recorded.
+
+This decision does not accept native NTFS ACL/sharing/reparse/security or device
+runtime behavior. Three native integration tests were compiled and not executed.
+Capture, Start/Stop, deletion and automatic delivery remain disabled. Native
+runtime, retention cleanup, protected delivery, successful Windows link/PE and
+packaging/material gates remain mandatory. See [validation](VALIDATION.md) for
+execution, evidence and historical receipt-restoration boundaries.

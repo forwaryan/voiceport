@@ -54,14 +54,7 @@ fn recording(root: &Path, name: &str) -> (Recording, i32) {
     let fd = file.as_raw_fd();
     #[cfg(not(unix))]
     let fd = -1;
-    (
-        Recording {
-            file,
-            path,
-            language: Some("en".into()),
-        },
-        fd,
-    )
+    (Recording::caller_owned(file, path, Some("en".into())), fd)
 }
 fn until(mut f: impl FnMut() -> bool) {
     let end = Instant::now() + Duration::from_secs(5);

@@ -12,12 +12,48 @@ pub mod wav;
 
 /// Already finalized recording supplied by a platform owner. The caller must
 /// establish native ACL/ownership/sharing before admission. This crate does not
-/// create/delete/scan any recording directory, or infer ownership from a path.
+/// infer ownership from a path. Native storage finalization retains its handle
+/// guards here. Fields are private so that a finalized native path/File pair
+/// cannot be replaced while retaining an unrelated guard.
 pub struct Recording {
-    pub file: File,
-    pub path: PathBuf,
-    pub language: Option<String>,
+    _file: File,
+    path: PathBuf,
+    language: Option<String>,
+    _guards: Option<Arc<dyn Send + Sync>>,
 }
+impl Recording {
+    /// Caller establishes path/File ownership. This is NOT a native storage lease.
+    pub fn caller_owned(file: File, path: PathBuf, language: Option<String>) -> Self {
+        Self {
+            _file: file,
+            path,
+            language,
+            _guards: None,
+        }
+    }
+    /// Retain caller-supplied ownership through every Job/controller reference.
+    /// This adds lifetime only; it does not validate ACLs, sharing or path identity.
+    pub fn caller_owned_with_guard(
+        file: File,
+        path: PathBuf,
+        language: Option<String>,
+        guards: Arc<dyn Send + Sync>,
+    ) -> Self {
+        Self {
+            _file: file,
+            path,
+            language,
+            _guards: Some(guards),
+        }
+    }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    pub fn language(&self) -> Option<&str> {
+        self.language.as_deref()
+    }
+}
+pub mod storage;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Idle,

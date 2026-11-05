@@ -6,11 +6,7 @@ use voiceport_windows::{
 fn rec(dir: &std::path::Path, name: &str) -> Recording {
     let path = dir.join(name);
     let file = File::create_new(&path).unwrap();
-    Recording {
-        file,
-        path,
-        language: Some("zh".into()),
-    }
+    Recording::caller_owned(file, path, Some("zh".into()))
 }
 #[test]
 fn failed_retry_preserves_file_language_and_manual_result() {
