@@ -275,6 +275,14 @@ freeze-03永久保留为rejected executor checkpoint。retry-vp013-02.py已真�
 
 协调check-vp013-revision-02.py首次实际0核对778输入/275目录、3修改1新增/原字节快照/772保护及全部既有模式、62159历史普通材料含隐藏pycache/10链接/6特殊、1258新证据20840524字节/313目录。index SHA256dc6bf78832ea715dee63115f4dd1430ce94a62f093e1b903b7de0f939d45f8d4，全部report纳入索引，仅自身排除；完整历史与原反例/适配patch/实际日志和最终16对象身份核对一致。开发公共摘要57b889b5c2ce735025b2ed8f66fbd1ffc4ab358d65fddaced1d3c52c48141a43，协调本次四文档集成后另建完整冻结，不把两种输入时点混称。此为开发自检与材料核对，非独立接受；完整VP-013仍未完成。
 
+### VP013-I-003返修03开发交付，待原独立复核
+
+freeze-04的独立失败保持：合法清理Spawner的实际线程在TLS析构内执行所给循环，未领取请求仍可被领取，is_finished不能证明请求已释放；Poll/Exit/orphan三例误判停止并panic。原开发返修03仅修改executor并新增cleanup_tls聚焦回归：请求与UI显式共同持有Job/进程许可，真实请求销毁或后台OS join后才释放并发布停止确认；清理健康状态按真实receiver生命周期判断。UI丢失后清理侧保留资源至真实停止并自行释放，仍保持单worker/单进程清理线程/单请求及结果槽。
+
+原样cleanup TLS探针修前control0/poll1/exit1/orphan1，最终修后四例均0；没有压低成功断言、抑制panic或改恢复尾。新增测试另检同一TLS清理循环的健康后续请求及冷启动丢失循环，既有service-worker TLS/FD及显式Retry回归保持。原11断言和最终55 workspace Rust、fmt、严格clippy、完整默认Windows all-target检查均为开发自检0；没有新增链接/PE/实机证据，也未重复广泛Mac/许可审计。
+
+协调材料核对779输入/275目录、777原有保护输入、273条新普通证据6581392字节及79项产物身份一致；报告SHA25600ffc3287837b253e3a25adef623f4a8664b6aef7b99b62e5a0acaeed213b6e7，index153e404e3519dfd9b8921fb6c7cb561951d65639fe9539d580fa5adb2276af52。首次协调核对把schema2库存摘要误当文件序列化hash而exit1，原脚本/错误保留；纠正字段后exit0，未改产品或重跑开发测试。新完整冻结和原独立复核仍必需，VP-013整体未接受。
+
 ## 待完成的系统层验证
 
 | 场景 | 当前状态 | 验收方法 |

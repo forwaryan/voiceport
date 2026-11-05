@@ -1,9 +1,15 @@
 # 进度记录
 
+## 2026-11-05 — 阈值统一为5与返修03交付
+
+- 当前继任已绑定原Run并claim成功，epoch2、consumer generation3，产品attempt与原开发/原验证保持，paused=false。用户追加要求当前阈值和项目默认值统一为5；已通过configure真实生效，adopt默认、loop、协调文档、自动交接包与后续启动提示同步。到阈值的最后一轮直接保存和交接，不额外压测或强制压缩；本轮没有触发真实压缩。
+- 16项隔离生命周期测试通过，覆盖默认5、前4个合成边界不触发、第5个触发、packet和claim继承及既有失败/暂停/worker保留规则；只在临时项目模拟。首次新增CLI测试误取mock参数位置5而失败，改取实际threshold位置4后通过；未修改生产行为来迎合断言。差异空白检查通过，不额外跑产品压测。
+- 原开发返修03已真实worker_done succeeded并停写：仅executor及新增cleanup TLS回归，原四例从0/1/1/1变为全0；55Rust/fmt/严格clippy/完整Windows默认检查为开发自检0。协调核对779输入/275目录、777保护、273新证据6581392字节及79产物身份一致。首次checker把schema2摘要误作文件hash导致exit1，原checker/error保留后按实际字段纠正并0，未改开发材料或重跑开发自检。当前继续按既有流程分逻辑commit/push、完整冻结并交原独立，VP-013不报接受。
+
 ## 2026-11-05 — 协调者轮换与分组提交
 
 - 用户要求新协调者接任并研究 GitHub 的压缩轮换方法。已核对原会话最初 11 次压缩；交接期间再压缩一次。原协调者已成功取消待执行 loop 并写退任交接包，新协调者通过正常 `run-use` 绑定既有 Run，实际 consumer_generation 升为 2。误用 `--takeover-legacy` 被宿主拒绝后，改用适合非 legacy Run 的正常命令成功，未新建 Run 或替换 worker。
-- 已实现 `.claude/hooks/coordinator_rotation.py`、项目 hooks、隔离生命周期测试和操作说明。默认阈值 2，可由活动 owner 配置；完成边界 UUID 去重，worker 不计数，阈值后限制继续派发/写入，真实停 loop 后落盘精简交接包并单次启动继任，继任核对 Run 和 token/epoch 后继续。启动超时锁存，不重复开会话；暂停和产品身份保留。
+- 已实现 `.claude/hooks/coordinator_rotation.py`、项目 hooks、隔离生命周期测试和操作说明。初版阈值为 2（当前已按用户要求统一为 5），可由活动 owner 配置；完成边界 UUID 去重，worker 不计数，阈值后限制继续派发/写入，真实停 loop 后落盘精简交接包并单次启动继任，继任核对 Run 和 token/epoch 后继续。启动超时锁存，不重复开会话；暂停和产品身份保留。
 - 14 项隔离测试通过；真实当前 transcript 管道检查记录 1 次压缩；临时探针证明本会话 PreToolUse hook 已实际加载，探针命令已移除。尚未跑真实压缩触发的自动跨窗口全流程。
 - 交接期间收到 Windows freeze-04 独立失败 VP013-I-003：清理线程 TLS 内仍覆盖合法工作时，未领取请求 fallback 误判停止导致 Poll/Exit/orphan 路径 panic。保留失败报告与冻结，未将源码进度称为完整验收。
 - 用户追加要求先把已写代码分多个 commit 并 push，并明确把 commit/push、PR 合并和拉取最新 main 全部纳入 loop。已写入共用契约、协调者提示词、`.claude/loop.md` 和跨会话交接策略；有实际产出的阶段及时保存，满足仓库合并条件后合并并在安全点同步 main，从最新 main 开下一功能分支，不再跨多轮积压未提交代码。当前按 Rust workspace、macOS bridge、打包许可、协调轮换和文档分组；不提交 `.voiceport`、音频、凭据、build/cache 或运行调度锁。
