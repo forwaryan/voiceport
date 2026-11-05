@@ -572,3 +572,6 @@ fn reset_ack_without_returned_buffers_cannot_release_or_publish() {
     drop(r);
     assert_eq!(c.load(Ordering::SeqCst), 1);
 }
+
+#[path = "capture/cleanup.rs"]
+mod cleanup;

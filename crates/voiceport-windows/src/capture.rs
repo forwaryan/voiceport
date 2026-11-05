@@ -42,6 +42,7 @@ pub enum Error {
     Unprepare,
     Close,
     Finalize,
+    Cleanup,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -64,6 +65,7 @@ impl fmt::Display for Error {
             Self::Unprepare => "Capture buffer release not confirmed",
             Self::Close => "Capture device close not confirmed",
             Self::Finalize => "Capture could not finalize",
+            Self::Cleanup => "Capture cleanup did not complete",
         })
     }
 }
@@ -180,13 +182,46 @@ struct Owner<B: Backend, O: Output> {
     sequence: u64,
     drained: usize,
     frame: Box<Frame>,
+    unconfirmed: bool,
+    more_returned_data: bool,
+}
+// Field-level unwind protection: Session::drop itself may panic in caller
+// backend/output code. A normal Box field would then destroy unconfirmed guards.
+// Keep the whole allocation (including its addresses) until normal release.
+struct OwnerSlot<B: Backend, O: Output>(Option<Box<Owner<B, O>>>);
+impl<B: Backend, O: Output> OwnerSlot<B, O> {
+    fn as_ref(&self) -> Option<&Owner<B, O>> {
+        self.0.as_deref()
+    }
+    fn as_mut(&mut self) -> Option<&mut Owner<B, O>> {
+        self.0.as_deref_mut()
+    }
+}
+impl<B: Backend, O: Output> Drop for OwnerSlot<B, O> {
+    fn drop(&mut self) {
+        if let Some(owner) = self.0.take() {
+            if owner.phase == Phase::Released && !owner.unconfirmed {
+                drop(owner);
+            } else {
+                let _ = Box::leak(owner);
+            }
+        }
+    }
+}
+// A panic propagates normally, but cannot reset this latch. Even if the caller
+// catches it, later methods cannot retry/confirm the interrupted operation.
+fn confirmed_call<T>(unconfirmed: &mut bool, call: impl FnOnce() -> T) -> T {
+    *unconfirmed = true;
+    let result = call();
+    *unconfirmed = false;
+    result
 }
 /// Synchronous off-UI session; not connected to native tray actions. Each poll
 /// copies at most one running packet or four drain packets. Unknown cleanup
 /// retains self; Drop deliberately leaks at most the occupied native owner, with
 /// its process permit, rather than freeing driver pointers or allowing reuse.
 pub struct Session<B: Backend, O: Output> {
-    owner: Option<Box<Owner<B, O>>>,
+    owner: OwnerSlot<B, O>,
     result: Option<Recording>,
 }
 impl<B: Backend, O: Output> Session<B, O> {
@@ -204,7 +239,7 @@ impl<B: Backend, O: Output> Session<B, O> {
             .map_err(|_| Error::Exhausted)?
             + 1;
         Ok(Self {
-            owner: Some(Box::new(Owner {
+            owner: OwnerSlot(Some(Box::new(Owner {
                 backend: Some(backend),
                 output: Some(output),
                 permit: Some(permit),
@@ -219,7 +254,9 @@ impl<B: Backend, O: Output> Session<B, O> {
                 sequence: 0,
                 drained: 0,
                 frame: Box::default(),
-            })),
+                unconfirmed: false,
+                more_returned_data: false,
+            }))),
             result: None,
         })
     }
@@ -239,7 +276,8 @@ impl<B: Backend, O: Output> Session<B, O> {
         }
         // Mark before any backend call: failure/panic cannot permit re-entry.
         o.phase = Phase::Running;
-        let r = (|| {
+        o.confirmed()?;
+        let r = confirmed_call(&mut o.unconfirmed, || {
             let b = o.backend.as_mut().ok_or(Error::Closed)?;
             let device = b.open(o.id, PCM).map_err(|_| Error::Open)?;
             o.device = Some(device);
@@ -248,7 +286,7 @@ impl<B: Backend, O: Output> Session<B, O> {
             }
             b.prepare().map_err(|_| Error::Prepare)?;
             b.start().map_err(|_| Error::Start)
-        })();
+        });
         if let Err(e) = r {
             o.fail(e);
             let _ = self.poll();
@@ -258,6 +296,7 @@ impl<B: Backend, O: Output> Session<B, O> {
     }
     pub fn stop(&mut self) -> Result<Phase> {
         let o = self.owner.as_mut().ok_or(Error::Closed)?;
+        o.confirmed()?;
         if o.phase == Phase::Running {
             o.phase = Phase::Stopping;
             o.keep = true;
@@ -280,15 +319,16 @@ impl<B: Backend, O: Output> Session<B, O> {
     }
     pub fn poll(&mut self) -> Result<Phase> {
         let o = self.owner.as_mut().ok_or(Error::Closed)?;
+        o.confirmed()?;
         match o.phase {
             Phase::Prepared | Phase::Released => return Ok(o.phase),
             Phase::Running => {
-                match o
-                    .backend
-                    .as_mut()
-                    .ok_or(Error::Closed)?
-                    .read(false, &mut o.frame)
-                {
+                match confirmed_call(&mut o.unconfirmed, || {
+                    o.backend
+                        .as_mut()
+                        .ok_or(Error::Closed)?
+                        .read(false, &mut o.frame)
+                }) {
                     Ok(Read::Idle) => return Ok(Phase::Running),
                     Ok(Read::Data) => {
                         if let Err(e) = o.accept_frame() {
@@ -312,14 +352,24 @@ impl<B: Backend, O: Output> Session<B, O> {
     }
     fn cleanup(&mut self) -> Result<Phase> {
         let o = self.owner.as_mut().ok_or(Error::Closed)?;
+        o.confirmed()?;
+        o.more_returned_data = false;
         if matches!(o.cleanup, Cleanup::Stop) {
-            if o.backend.as_mut().ok_or(Error::Closed)?.stop().is_err() {
+            if confirmed_call(&mut o.unconfirmed, || {
+                o.backend.as_mut().ok_or(Error::Closed)?.stop()
+            })
+            .is_err()
+            {
                 o.fail(Error::Stop);
             }
             o.cleanup = Cleanup::Reset;
         }
         if matches!(o.cleanup, Cleanup::Reset) {
-            if o.backend.as_mut().ok_or(Error::Closed)?.reset().is_err() {
+            if confirmed_call(&mut o.unconfirmed, || {
+                o.backend.as_mut().ok_or(Error::Closed)?.reset()
+            })
+            .is_err()
+            {
                 o.fail(Error::Reset);
                 return Err(Error::Reset);
             }
@@ -327,12 +377,12 @@ impl<B: Backend, O: Output> Session<B, O> {
         }
         if matches!(o.cleanup, Cleanup::Drain) {
             for _ in 0..4 {
-                match o
-                    .backend
-                    .as_mut()
-                    .ok_or(Error::Closed)?
-                    .read(true, &mut o.frame)
-                {
+                match confirmed_call(&mut o.unconfirmed, || {
+                    o.backend
+                        .as_mut()
+                        .ok_or(Error::Closed)?
+                        .read(true, &mut o.frame)
+                }) {
                     Ok(Read::End) => {
                         o.cleanup = Cleanup::Unprepare;
                         break;
@@ -357,15 +407,15 @@ impl<B: Backend, O: Output> Session<B, O> {
                 }
             }
             if matches!(o.cleanup, Cleanup::Drain) {
+                o.more_returned_data = true; // four returned packets; not Idle
                 return Ok(Phase::Stopping);
             }
         }
         if matches!(o.cleanup, Cleanup::Unprepare) {
-            if o.backend
-                .as_mut()
-                .ok_or(Error::Closed)?
-                .unprepare()
-                .is_err()
+            if confirmed_call(&mut o.unconfirmed, || {
+                o.backend.as_mut().ok_or(Error::Closed)?.unprepare()
+            })
+            .is_err()
             {
                 o.fail(Error::Unprepare);
                 return Err(Error::Unprepare);
@@ -373,17 +423,21 @@ impl<B: Backend, O: Output> Session<B, O> {
             o.cleanup = Cleanup::Close;
         }
         if matches!(o.cleanup, Cleanup::Close) {
-            if o.backend.as_mut().ok_or(Error::Closed)?.close().is_err() {
+            if confirmed_call(&mut o.unconfirmed, || {
+                o.backend.as_mut().ok_or(Error::Closed)?.close()
+            })
+            .is_err()
+            {
                 o.fail(Error::Close);
                 return Err(Error::Close);
             }
             // This synchronous off-UI drop must RETURN before output/permit are
             // released. Weak expiry/close-result publication is not that proof.
-            drop(o.backend.take());
+            confirmed_call(&mut o.unconfirmed, || drop(o.backend.take()));
             o.cleanup = Cleanup::Done;
             let output = o.output.take().ok_or(Error::Closed)?;
             if o.keep && o.error.is_none() && o.samples != 0 {
-                match output.finish(o.language.take()) {
+                match confirmed_call(&mut o.unconfirmed, || output.finish(o.language.take())) {
                     Ok(r) => self.result = Some(r),
                     Err(_) => o.fail(Error::Finalize),
                 }
@@ -391,7 +445,7 @@ impl<B: Backend, O: Output> Session<B, O> {
                 if o.keep && o.error.is_none() {
                     o.fail(Error::Empty);
                 }
-                drop(output);
+                confirmed_call(&mut o.unconfirmed, || drop(output));
             }
             o.phase = Phase::Released;
             // Retain the last static error, but return process capacity only
@@ -406,6 +460,14 @@ impl<B: Backend, O: Output> Session<B, O> {
     }
 }
 impl<B: Backend, O: Output> Owner<B, O> {
+    fn confirmed(&mut self) -> Result<()> {
+        if self.unconfirmed {
+            self.fail(Error::Cleanup);
+            Err(Error::Cleanup)
+        } else {
+            Ok(())
+        }
+    }
     fn fail(&mut self, e: Error) {
         self.error.get_or_insert(e);
         self.keep = false;
@@ -431,28 +493,37 @@ impl<B: Backend, O: Output> Owner<B, O> {
         }
         self.samples += n;
         if self.error.is_none() && (self.phase == Phase::Running || self.keep) {
-            self.output
-                .as_mut()
-                .ok_or(Error::Closed)?
-                .append(&f.samples[..n])
-                .map_err(|_| Error::Write)?;
+            confirmed_call(&mut self.unconfirmed, || {
+                self.output
+                    .as_mut()
+                    .ok_or(Error::Closed)?
+                    .append(&f.samples[..n])
+            })
+            .map_err(|_| Error::Write)?;
         }
         Ok(())
     }
 }
 impl<B: Backend, O: Output> Drop for Session<B, O> {
     fn drop(&mut self) {
-        if self.phase() == Phase::Released {
+        if self.phase() == Phase::Released || std::thread::panicking() {
             return;
         }
-        if !std::thread::panicking() {
-            let _ = self.cancel();
+        let _ = self.cancel();
+        // The off-UI destructor may drain ALL bounded already-returned data.
+        // Poll remains four packets. Never spin on Idle or retry an unknown
+        // reset/unprepare/close. The global packet ceiling also bounds a bad
+        // backend; the extra pass allows End after a full final quota.
+        for _ in 0..=MAX_DRAIN_PACKETS.div_ceil(4) {
+            if !self.owner.as_ref().is_some_and(|o| {
+                o.phase == Phase::Stopping && !o.unconfirmed && o.more_returned_data
+            }) {
+                break;
+            }
+            let _ = self.poll();
         }
-        if self.phase() != Phase::Released
-            && let Some(o) = self.owner.take()
-        {
-            let _ = Box::leak(o);
-        }
+        // OwnerSlot's Drop, including unwind from ANY call above, retains an
+        // unconfirmed owner/permit. Normal released owners are actually freed.
     }
 }
 #[derive(Default)]
