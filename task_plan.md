@@ -29,6 +29,14 @@
 
 ## 最新工作边界
 
+独立05已真实msg_dda1b489d629 FAILED，51/19/10及适配后五组原04探针独立通过，R04-01核心已独立确认；剩余R05-01诊断写失败阻断恢复、R05-02 hook_events:null漏校验导致exit1无有效veto、R05-03四种畸形schema/cursor/drift证据仍获窄恢复权。协调核对62封存条目与六输入/七文档不变，结束review05现场边界并保留快照/全部失败；返修05开发已实际exited/released，独立完成后仍live/reclaimable不冒称退出。先把已完成返修05源码/状态分逻辑commit/push并更新draftPR5，再明确新开发沿革repair06只helper/tests聚焦诊断与权威分离、完整消费字段校验/双宿主错误否决；不以新增日志路径变更恢复前提。完成新pin独立后才正常merge/main同步及capture freeze08。原Run/VP013attempt running/false，native/实际生命周期未执行。证据evidence/session-rotation-06/coordinator-return-reconciliation.json。
+
+前轮边界沿革：
+
+返修05已msg_d0db2013f50c正式succeeded并停写，协调核对62封存证据/21历史身份/46原测试体和探针一行适配，开发51/19/10与修正后五组控制通过，原失败exit1保留。已固定review-pins-05六输入（helper bd0950e9/tests f6659342、两设置/两恢复文档不变）及七未改政策文档；新独立05以真新session/精确terminal/真实PreToolUse/初始0复核源与政策支持，不重复开发测试、不提前接受。返修完成后进程早期观察live/reclaimable、autoRelease08:59:01，与源码/证据停写声明分列；不称实际退出。待独立实际结论再final commit/push、PR5正常merge/main同步、完整capture freeze08。VP013同attempt running/false，原FAILED和原生/真实生命周期未执行边界不变。证据evidence/session-rotation-05/coordinator-repair-reconciliation.json。
+
+此前边界沿革：
+
 2026-11-05 新协调4f882144/term_c7ce7c33已从自己的terminal绑定原Run，generation4/claim epoch3成功，paused=false，真实PreToolUse/当前helper/新transcript初始0已核对，SessionStart未观察。接回真实msg_c763265d9b12：独立04 FAILED，46/19/10通过但R04-01（transcript错误丢漂移锁存，A返回可工作/压缩）、R04-02（坏transcript阻断Read/status/escalation恢复）未解决。协调核对45封存证据和六输入/七文档不变，两旧进程现已真实exited/released；旧review04现场冻结边界结束，快照/失败不改，仅下一明确helper/tests返修05可写。先commit/push返修04候选并更新draft PR5真实失败，再原开发逻辑沿革的真新会话聚焦两反例；完成后新pin独立，不重开产品attempt。VP013仍running/false，native信任/真实生命周期未执行，capture freeze08继续待办。证据evidence/session-rotation-05/coordinator-return-reconciliation.json。
 
 以下保留前轮边界沿革：

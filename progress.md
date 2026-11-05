@@ -1,5 +1,13 @@
 # 进度记录
 
+## 2026-11-05 — 独立05确认核心修复并因三项残留退回
+
+msg_dda1b489d629正式FAILED：51/19/10和适配后五组原04控制各运行一次通过，R04-01原20场景及锁内先提交后abort独立通过，R04-02原6恢复通过；新增诊断写失败6恢复仍exit2、hook_events:null四宿主/事件exit1无有效veto、四种畸形schema/cursor/drift记录仍供窄恢复权（不声称普通工作放行或运行时成员权）。协调核对62封存证据及六输入/七政策文档不变，保留review05 FAILED、初始探针oracle错误与限定重跑，不复做委派测试。结束review05现场冻结，旧快照不改；返修05开发现已exited/released，独立完成后仍live/reclaimable，不混淆。先分逻辑commit/push返修05候选/状态并更新draftPR5，再明确新沿革repair06只helper/tests统一检查诊断副作用/权威状态边界及被消费字段类型；修后新pin原独立。VP013同attempt running/false，native信任/真实生命周期/采集接受未执行，capture freeze08继续待办。证据evidence/session-rotation-06/coordinator-return-reconciliation.json。
+
+## 2026-11-05 — 返修05交付与六输入重新固定
+
+msg_d0db2013f50c正式succeeded，R04-01/R04-02仅两源码文件返修；开发51测试、原19/原10控制和一行宿主识别适配后的五组探针通过。原46测试体与五组/32断言不变，原baseline和repaired-original exit1原样保留；适配经msg_22b6f14c19ba限定授权，两个86raw结果按宿主/事件严格校验，不把continue:false普遍当veto。协调核对62封存条目、21历史身份、两最终源码和四未改固定输入/七政策文档，保存review-pins-05与coordinator-repair-reconciliation；未重跑委派测试。worker真实session918bfbfd/context1/0边界，真实PreToolUse和final helper一致，SessionStart未观察。源码/证据停写声明与完成后live/reclaimable观察分列，不伪造退出。新真独立05审六固定输入，之后按实际结论commit/push/正常mergePR5/main同步并完整capture freeze08。旧FAILED/政策03旧快照接受、同Run/VP013attempt/false及native信任/实际生命周期未执行保持。
+
 ## 2026-11-05 — 新协调接管与独立04退回
 
 新session4f882144/term_c7ce7c33真实绑定原Run generation4并claim epoch3成功，未暂停；真实PreToolUse与指定helper hash/terminal一致，transcript新身份初始0，SessionStart未观察。收回已读真实msg_c763265d9b12，review04 FAILED：46/19/10独立控制通过但两新反例确认transcript错误丢终端漂移锁存，以及坏transcript封堵文档恢复例外。协调核对45封存条目、六固定输入/七政策文档及失败报告身份，两旧worker现已实际exited/released，不反写早先live观察。结束review04现场冻结并保留旧字节/FAILED，先提交推送返修04候选与真实失败状态，再显式新开发沿革返修05仅helper/tests，后续新pin独立。原Run/产品attempt/旧角色沿革保持，Full VP013false，PR5保持draft，capture freeze08/原生信任/真实生命周期未执行。证据evidence/session-rotation-05/coordinator-return-reconciliation.json。
