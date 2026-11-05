@@ -1,6 +1,6 @@
 # VoicePort 协调者轮换
 
-本项目默认在一个主协调者完成 **2 次压缩**后，停止该会话的动态 loop，保存精简交接包，在同一 checkout 启动新的 Claude 协调会话，并接管原 Orca Run。开发者和独立验证者保持原会话、Task/Dispatch、product_attempt 和冻结版本。
+本项目默认在一个主协调者完成 **5 次压缩**后，停止该会话的动态 loop，保存精简交接包，在同一 checkout 启动新的 Claude 协调会话，并接管原 Orca Run。开发者和独立验证者保持原会话、Task/Dispatch、product_attempt 和冻结版本。到阈值的最后一轮，在当前工具自然返回后直接保存和交接，不额外压测，也不强制压缩来触发或验证轮换。
 
 这是项目的协调工具，不是 Claude Code `/loop` 自带的换窗口功能。工具只维护 `.voiceport/coordinator-rotation.json`，不替代产品账本或 Orca 的实际 Run 所有权。当前实现面向本项目 macOS/POSIX 协调环境，需要 `python3`、`fcntl` 和支持 `agent launch`/`run-use` 的 Orca。
 
@@ -8,7 +8,7 @@
 
 `.claude/settings.json` 安装 `PostCompact`、`SessionStart`、`PreToolUse` 和 `Stop` 命令 hook。PostCompact 之后扫描本会话 transcript 的完整 `compact_boundary` 记录，以实际 UUID 去重，自动/手动压缩均计数。SessionStart 和下次工具调用补查异步延迟写入的边界；不会按 hook 次数、summary 哈希或 prompt_id 计数。JSONL 的未完成末行留到下次处理，inode 变化或截断后重扫并保留 UUID 去重。边界 schema 变化会报告错误，不悄悄猜测次数。
 
-状态锁保护计数、请求和 epoch 更新；一次 epoch 只产生一个确定的轮换请求。仅 `owner` 对应的会话计数。worker hook 不改轮换状态。阈值保存在私有状态的 `threshold` 字段，初始化时可用 `adopt --threshold N` 配置，后续协调者继承该值。活动协调者也可运行 `python3 -I .claude/hooks/coordinator_rotation.py configure --session ACTUAL_SESSION_ID --threshold N`，下次 hook 核对时生效；交接已触发后不能提高阈值逃过交接。不要直接改正在使用的状态文件。
+状态锁保护计数、请求和 epoch 更新；一次 epoch 只产生一个确定的轮换请求。仅 `owner` 对应的会话计数。worker hook 不改轮换状态。阈值保存在私有状态的 `threshold` 字段，初始化时可用 `adopt --threshold N` 配置，后续协调者继承该值。活动协调者也可运行 `python3 -I .claude/hooks/coordinator_rotation.py configure --session ACTUAL_SESSION_ID --threshold N`，下次 hook 核对时生效；交接已触发后不能提高阈值逃过交接。若持久目标文字也含旧阈值，可在同一次 `configure` 加 `--goal '更新后的目标'` 同步后续交接描述。不要直接改正在使用的状态文件。
 
 ## 首次启用
 
@@ -19,7 +19,7 @@
 ```sh
 orca orchestration run-use --id ACTUAL_RUN --json
 orca orchestration run-current --full --json
-python3 -I .claude/hooks/coordinator_rotation.py adopt --session ACTUAL_SESSION_ID --run ACTUAL_RUN --transcript /absolute/path/to/session.jsonl --threshold 2 --goal '当前用户目标与边界' --loop-prompt '已授权的原 loop 提示词' --retired-session OLD_SESSION_ID
+python3 -I .claude/hooks/coordinator_rotation.py adopt --session ACTUAL_SESSION_ID --run ACTUAL_RUN --transcript /absolute/path/to/session.jsonl --threshold 5 --goal '当前用户目标与边界' --loop-prompt '已授权的原 loop 提示词' --retired-session OLD_SESSION_ID
 ```
 
 普通 Run 使用不带 `--takeover-legacy` 的 `run-use`；该额外参数仅用于自动迁移的 legacy Run，本项目当前 Run 已实测会拒绝误用。`adopt` 会核对调用者的实际 Run 绑定，并把当前会话已记录的压缩计入，不从零掩盖已有压缩。不得为接管另建 Run。运行中的本机身份和 token 只放 `.voiceport`，不提交到 Git。
@@ -32,7 +32,7 @@ python3 -I .claude/hooks/coordinator_rotation.py adopt --session ACTUAL_SESSION_
 2. 运行 `python3 -I .claude/hooks/coordinator_rotation.py retire --session ACTUAL_SESSION_ID --transcript /absolute/path/to/session.jsonl`。工具检查最后一次 loop 操作确实成功停止，原子写入最多 48KB 的私有交接包，然后登记退任。
 3. 运行 `python3 -I .claude/hooks/coordinator_rotation.py launch --session ACTUAL_SESSION_ID`。它通过 Orca 在同一 checkout 启动一个新会话，传递实际交接路径、原 Run、一次性 token 和接管步骤。取得 launch 回执后结束本协调者的 turn；不要监督新协调者或继续调度。
 4. 新会话读取交接包，加载 orchestration 技能，从自己的终端接管既有 Run，再执行 prompt 给出的 `claim --session ACTUAL_NEW_SESSION_ID --token TOKEN`。claim 核对真实 Run、交接包哈希和未消费 token，在锁内递增 epoch、清零新会话计数。旧会话仍被 fence，即便重新打开也不能恢复协调写入。
-5. 新会话确认领取成功后再处理收件箱、核对 worker 和继续原任务。暂停状态跨交接保留；若没有暂停且仍有可推进任务，显式用交接包的 `loop_prompt` 启动 `/loop`。原会话定时器不会自动转移。等待 worker 以 Orca 完成事件为主，兜底至少 1200 秒。
+5. 新会话确认领取成功后再处理收件箱、核对 worker 和继续原任务。交接包显式记录 `rotation_threshold`（当前为 5）及 `rotation_policy`，继任沿用运行阈值和“最后一轮直接保存交接、不额外压测或强制压缩”的规则；`claim` 保留既有阈值，不重置为旧默认值。暂停状态跨交接保留；若没有暂停且仍有可推进任务，显式用交接包的 `loop_prompt` 启动 `/loop`。原会话定时器不会自动转移。等待 worker 以 Orca 完成事件为主，兜底至少 1200 秒。
 
 轮换需要协调模型执行上述固定交接步骤；hook 本身不在 PostCompact 中直接杀进程或伪造 ScheduleWakeup 回执。若模型停止响应，系统保持请求/退任状态，不能保证无人值守自愈。工具 hook 是协调约束，不是阻止任意 shell 或恶意会话绕过的安全沙箱；非 owner 的普通 worker 仍按原任务允许范围工作。
 

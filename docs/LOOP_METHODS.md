@@ -81,7 +81,7 @@ worker 严格采用本次 preamble 的 from/task/dispatch；问题用 `ask` 后�
 2. 创建或更新 PR，列明具体行为、验证、已知失败和未测边界。满足仓库检查及合并条件后合并；工作进度已提交不等于产品已接受。已知缺陷按公开限定的开发 checkpoint 记录，不把 WIP 说成完成。保留独立返修链和失败证据。
 3. 合并后 fetch，确认没有活动 writer/冻结验证依赖当前 HEAD 或分支、工作区无未处理改动，再切换 main 并 `git pull --ff-only origin main`；核对本地 main 和 origin/main 相同。继续开发从最新 main 创建新的功能分支；冲突或保护条件按真实原因处理，不 force push、不 admin 绕过、不清空未提交内容。
 4. 协调者在私有运行记录保存 commit SHA、远端分支、PR URL、merge 回执和 main 同步状态；后续交接包携带未完成的 Git 操作，不能在换窗口后丢失交付步骤。
-5. 每个协调会话默认完成两次压缩后轮换，具体 hook、阈值配置、停 loop/退任/新会话启动/原 Run 领取和失败恢复见 [协调者轮换](../.claude/COORDINATOR_ROTATION.md)。保留现有 worker、产品 attempt、冻结和暂停状态；旧协调者退任后不得续订循环。
+5. 每个协调会话默认完成 5 次压缩后轮换；当前运行阈值与项目默认值统一为 5，后续交接包和继任保持此值。达到阈值的最后一轮，当前工具自然返回后直接保存和交接，不额外压测，也不强制压缩来触发或验证轮换。具体 hook、阈值配置、停 loop/退任/新会话启动/原 Run 领取和失败恢复见 [协调者轮换](../.claude/COORDINATOR_ROTATION.md)。保留现有 worker、产品 attempt、冻结和暂停状态；旧协调者退任后不得续订循环。
 
 ## 7. 授权、采用取舍与后续能力
 

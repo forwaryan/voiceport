@@ -215,6 +215,36 @@ class RotationTests(unittest.TestCase):
         self.assertIn('--prompt', state['request']['launch_argv'])
         self.assertEqual(state['phase'], 'launching')
 
+    def test_adopt_cli_defaults_to_five_completed_compactions(self):
+        argv = ['rotation', 'adopt', '--session', 'new', '--run', 'run_one',
+                '--transcript', str(self.transcript), '--goal', 'deliver', '--loop-prompt', 'continue']
+        with patch.object(sys, 'argv', argv), patch.object(r, 'adopt', return_value=self.state) as adopt, patch('builtins.print'):
+            r.main()
+        self.assertEqual(adopt.call_args.args[4], 5)
+
+    def test_five_boundary_policy_survives_packet_and_claim(self):
+        r.configure(self.root, 'old', 5, goal='deliver with five completed compactions')
+        for number in range(1, 5):
+            self.boundary(str(number))
+            self.assertEqual(r.hook(self.root, self.payload()), {})
+        self.assertEqual(r.load(self.path)['phase'], 'active')
+        self.boundary('5')
+        self.assertEqual(r.hook(self.root, self.payload())['hookSpecificOutput']['permissionDecision'], 'deny')
+        self.stop()
+        request = r.retire(self.root, 'old', str(self.transcript))
+        packet = r.load(self.root / request['packet'])
+        self.assertEqual(packet['rotation_threshold'], 5)
+        self.assertEqual(packet['goal'], 'deliver with five completed compactions')
+        self.assertEqual(packet['rotation_policy'], r.FINAL_ROUND_POLICY)
+        with patch.object(r, 'invoke', return_value={'ok': True, 'result': {'launch': {'prompt': {'outcome': 'journaled'}}}}):
+            r.launch(self.root, 'old')
+        state = r.load(self.path)
+        self.assertIn(r.FINAL_ROUND_POLICY, state['request']['launch_argv'][-1])
+        with patch.object(r, 'bound_run', return_value={}):
+            r.claim(self.root, 'new', state['request']['token'])
+        self.assertEqual(r.load(self.path)['threshold'], 5)
+        self.assertEqual(r.load(self.path)['boundaries'], [])
+
     def test_no_state_is_noop_and_bad_state_fails_tool_hook(self):
         self.path.unlink()
         self.assertEqual(r.hook(self.root, self.payload()), {})

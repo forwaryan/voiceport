@@ -17,6 +17,9 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 STATE_NAME = 'coordinator-rotation.json'
 SCRIPT = '.claude/hooks/coordinator_rotation.py'
+DEFAULT_THRESHOLD = 5
+FINAL_ROUND_POLICY = ('At the rotation threshold, save and hand off directly after the current tool returns; '
+                      'do not add stress tests or force compaction to trigger or validate rotation.')
 
 
 def now():
@@ -153,6 +156,8 @@ def handoff_snapshot(root, state):
         'run_id': state['run_id'], 'epoch': state['epoch'], 'from_session': state['owner'],
         'goal': state['goal'], 'loop_prompt': state['loop_prompt'],
         'paused': ledger['paused'], 'coordination': registry,
+        'rotation_threshold': state['threshold'],
+        'rotation_policy': FINAL_ROUND_POLICY,
         'tasks': {key: {'status': value['status'],
                         'attempt': value['attempts'][-1]['id'] if value['attempts'] else None}
                   for key, value in ledger['tasks'].items()},
@@ -218,6 +223,7 @@ def launch(root, session):
                   f"with run-use --id {state['run_id']} from YOUR terminal (use --takeover-legacy only for an automatically adopted legacy Run), then run python3 -I {SCRIPT} claim "
                   f"--session YOUR_ACTUAL_SESSION_ID --token {token}. "
                   "Do not create a Run or replace workers. Confirm binding and claim before consuming mail. "
+                  f"Inherit the packet's rotation_threshold ({state['threshold']}). {FINAL_ROUND_POLICY} "
                   "Honor persistent pause. If allowed work remains, explicitly start /loop with the packet's "
                   "original loop_prompt; scheduled loops do not transfer automatically. Then handle current work. "
                   "If binding/claim fails, end without writing product state or scheduling.")
@@ -241,7 +247,7 @@ def launch(root, session):
     return receipt
 
 
-def configure(root, session, threshold):
+def configure(root, session, threshold, goal=None):
     if threshold < 1:
         raise ValueError('threshold must be positive')
     with transaction(root) as state:
@@ -249,6 +255,8 @@ def configure(root, session, threshold):
         if state['phase'] != 'active':
             raise ValueError('cannot change threshold during a transfer')
         state['threshold'] = threshold
+        if goal is not None:
+            state['goal'] = goal
         return {'threshold': threshold, 'effective': 'next hook boundary'}
 
 
@@ -279,7 +287,7 @@ def rotation_hint(state):
             f"Finish the current tool boundary, call ScheduleWakeup(stop=true), then Bash: "
             f"python3 -I {SCRIPT} retire --session {state['owner']} --transcript YOUR_TRANSCRIPT_PATH; "
             f"then python3 -I {SCRIPT} launch --session {state['owner']}. "
-            "End this coordinator turn after launch receipt. Preserve workers/freeze; do not start new work.")
+            f"End this coordinator turn after launch receipt. Preserve workers/freeze; do not start new work. {FINAL_ROUND_POLICY}")
 
 
 def allowed_during_rotation(payload, state):
@@ -344,12 +352,13 @@ def main():
             cmd.add_argument('--transcript', required=True)
         if action == 'adopt':
             cmd.add_argument('--run', required=True)
-            cmd.add_argument('--threshold', type=int, default=2)
+            cmd.add_argument('--threshold', type=int, default=DEFAULT_THRESHOLD)
             cmd.add_argument('--goal', required=True)
             cmd.add_argument('--loop-prompt', required=True)
             cmd.add_argument('--retired-session', action='append', default=[])
         if action == 'configure':
             cmd.add_argument('--threshold', type=int, required=True)
+            cmd.add_argument('--goal', help='update the goal carried into future handoffs')
         if action == 'claim':
             cmd.add_argument('--token', required=True)
     args = parser.parse_args()
@@ -369,7 +378,7 @@ def main():
         elif args.action == 'launch':
             value = launch(args.root, args.session)
         elif args.action == 'configure':
-            value = configure(args.root, args.session, args.threshold)
+            value = configure(args.root, args.session, args.threshold, args.goal)
         else:
             value = claim(args.root, args.session, args.token)
         print(json.dumps(value, ensure_ascii=False))
