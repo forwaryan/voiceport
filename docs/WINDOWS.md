@@ -322,3 +322,27 @@ Interrupted calls retain the permanent unconfirmed latch and cannot recover.
 Native release and complete backend/output destructor return, including fields,
 remain required before capacity returns. These are portable policy self-checks;
 independent review and all native runtime/product gates remain outstanding.
+
+## Capture freeze10: independently accepted bounded checkpoint
+
+The original independent capture role verified the repaired frozen source and
+confirmed C09-001 fixed, with the prior unwind-retention and finite ordinary
+Drop fixes preserved. Exact unchanged final16, original13 and two adjacent
+controls pass. Six additional independent groups cover 381 cases, including
+all error variants, partial explicit recovery, a new release failure reached
+inside Drop, interrupted recovery and a complete backend field-destructor gate.
+The fresh full local entry passes 25 steps with 82 Rust tests and the existing
+Swift/loop/packaging suites; current helper/main signing and safe smoke pass.
+The full locked default Windows all-target check passes with real AMD64 COFF
+and useful nonempty metadata. One capture and three storage tests are compiled
+only. This accepts source, compile and portable ownership behavior; native
+NTFS/device/driver/security/runtime, dedicated off-UI capture ownership and GUI
+human Start/Stop, retention cleanup, protected delivery, successful full Windows
+link/runtime and packaging/material completeness remain mandatory.
+
+The independent session's project SessionStart hook returned an error because
+its transcript did not yet exist. The later authentic PreToolUse, exact new
+session/terminal and zero compaction count established loading under the startup
+policy; the failed startup event remains failed. Actual PreCompact veto and the
+full automatic rotation lifecycle remain unexecuted. No real recording, upload,
+clipboard/keystroke delivery or ordinary GUI action was performed by this review.

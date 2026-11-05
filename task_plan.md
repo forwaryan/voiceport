@@ -29,6 +29,12 @@
 
 ## 最新工作边界
 
+完整freeze10已由原独立msg_171500dd9ff5通过限定源码/编译/离线所有权阶段：C09-001独立FIXED，C08-001/002仍FIXED，无新增本范围缺陷。原final16/original13/adjacent2分别16/13/2pass0，六组新增挑战381例全0；fresh完整25步含82Rust/31core/73app/4loop/11packaging及6预期负例、当前693文件helper/main签名与安全smoke、完整locked DEFAULTWindows/16COFF/2120719字节有效metadata通过，1采集+3存储仅编译。协调check-vp013-accept-10.py首次0核对929新普通/260目录/129056217字节/1466产物、787公共/278目录+6操作/3目录、783保护、77222历史普通/25134历史目录mode/10links/6specials及796语义Git输入；未重跑委派测试。真新独立session08a2b209/精确terminal/当前helper真实PreToolUse/初始最终0核对；项目SessionStart因transcript尚未存在exit1保持失败，不冒称成功激活，实际PreCompact/完整生命周期未执行。旧08/09失败、生成dist重建例外和全部checker错误/纠正历史保留。
+
+原开发03和独立10现已实际exited/released，协调接受记录evidence/vp013-coordinator-checkpoint-acceptance-10.json；当前VP013同attemptcd2c8d7d仍running/false，不finish或再retry。安全点先状态commit/push、PR6正常ready/merge、fetch与main安全快进同步，再从合并main沿原开发角色真新changed-scope续作专用off-UI capture owner：惰性构造、有界控制/结果、取消/迟到拒绝和实际线程/析构释放证明，合成后端与编译先行，不将Start/Stop接到真实GUI或自动开启设备。实际NTFS/device/driver/security/runtime、cleanup/protected delivery、完整Windowslink/PE/packaging与真实轮换生命周期仍是必须门槛；无自动录音/上传/真实目标输入。
+
+前轮边界沿革：
+
 原开发角色返修03已真实msg_139db395f13f交付并停写。独立的explicit_recovery_required记录正常返回的reset/unprepare/close错误，直接Drop保留owner/output/permit；新显式stop/cancel/poll成功完成该阶段后才解除，后续新阶段失败重新要求显式恢复。首错与永久panic中断标记不混用，先前C08的字段展开保留和普通有限排空行为继续。原first13挑战修前10pass3fail101、三暂时故障修前0pass3fail101不改；修后原final16/original13/adjacent2分别16/13/2pass0。新增6组在旧源3pass3fail101，最终工作区82/fmt/host严格clippy/完整DEFAULT Windows及native严格clippy均0，1采集+3存储仅编译。
 
 协调核对126封存普通/12目录/267指定外部产物、787公共/278目录、783未改公共+6操作、75338冻结历史普通/24573目录mode/102228现有历史身份条目；新session01a1ab9e真实native SessionStart/PreToolUse/当前helper/精确terminal/初始最终0通过，不改旧失败激活Task或实际PreCompact/完整生命周期未执行事实。协调checker首次对旧repair02索引误取selected_external_artifacts而1，原脚本/输出保留后按其external_key_records及09独立索引分别核对0，未重跑委派测试。当前attemptcd2c8d7d保持running/false；交付核对不是独立接受。先分逻辑commit/push源码测试与文档状态、更新draftPR6，再完整freeze10沿原09/08独立角色真新changed-freeze会话复核C09反例及显式恢复/首错/panic/有界Drop相邻路径。失败08/09/旧证据不变，修复独立通过前不合并，全产品/native/runtime/GUI/fullWindows仍false。
