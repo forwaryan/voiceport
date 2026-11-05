@@ -513,6 +513,8 @@ def require_terminal(state):
     terminal = os.environ.get('ORCA_TERMINAL_HANDLE')
     if not terminal or terminal != state.get('terminal'):
         raise ValueError('actual ORCA_TERMINAL_HANDLE must match the recorded session terminal')
+    if state.get('terminal_drift'):
+        raise ValueError('session terminal drift is fenced; coordinator must stop/release and start a fresh session')
 
 
 @contextmanager
@@ -568,6 +570,55 @@ def allowed_worker_handoff(root, payload, state):
     return False
 
 
+def terminal_drift_hint(state):
+    return (f"Session {state['owner']} is fenced for terminal drift: stored terminal={state.get('terminal')!r}, "
+            f"actual ORCA_TERMINAL_HANDLE={os.environ.get('ORCA_TERMINAL_HANDLE')!r}; "
+            f"first mismatch={state['terminal_drift']!r}. Stop ordinary work and compaction; "
+            "do not rebind state, reset counts, or checkpoint/send as the old terminal. "
+            "Escalate using your actual Orca preamble terminal/Task/Dispatch, then end the turn. "
+            "Coordinator must capture an administrative handoff from true state/transcript and retained prior work "
+            "(no successful old-terminal checkpoint), stop/release the exact mismatched assignment with actual exit proof, "
+            "then start a genuinely fresh session: same Task retry if spec unchanged, explicit successor if changed; "
+            "preserve logical role/Task/Dispatch history. Confirm new session ID, exact terminal and zero count; "
+            "this old session stays fenced, including if reopened at its original terminal. " + FINAL_ROUND_POLICY)
+
+
+def allowed_terminal_recovery(payload, state):
+    """Read/status or one exact actual-caller escalation, never arbitrary shell/notes/skills."""
+    name = payload.get('tool_name', '').split('.')[-1]
+    data = payload.get('tool_input', {})
+    if name == 'Read':
+        return True
+    if name == 'exec_command':
+        name, data = 'Bash', {'command': data.get('cmd', '')}
+    if name != 'Bash':
+        return False
+    command = data.get('command', '')
+    if not isinstance(command, str) or len(command.encode('utf-8')) > 48000:
+        return False
+    if any(c in command for c in (';', '\n', '\r', '\x00', '`', '$', '|', '&', '>', '<', '(', ')',
+                                   '*', '?', '[', ']', '{', '}', '~')):
+        return False
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    if argv == ['python3', '-I', SCRIPT, 'session-status', '--session', state['owner']]:
+        return True
+    flags = {'--from', '--type', '--subject', '--body', '--task-id', '--dispatch-id'}
+    if (argv[:3] != ['orca', 'orchestration', 'send'] or len(argv) != 15
+            or set(argv[3::2]) != flags):
+        return False
+    values = dict(zip(argv[3::2], argv[4::2]))
+    actual = os.environ.get('ORCA_TERMINAL_HANDLE')
+    # Orca validates Task/Dispatch membership against the actual caller. Never use
+    # stale registry mapping as authority or accept a send on behalf of terminal A.
+    return (bool(actual) and values['--from'] == actual and values['--type'] == 'escalation'
+            and bool(values['--subject'].strip()) and bool(values['--body'].strip())
+            and re.fullmatch(r'task_[A-Za-z0-9_-]+', values['--task-id']) is not None
+            and re.fullmatch(r'ctx_[A-Za-z0-9_-]+', values['--dispatch-id']) is not None)
+
+
 def codex_output(payload, value):
     if payload.get('hook_event_name') == 'PreCompact' and value.get('decision') == 'block':
         return {'continue': False, 'stopReason': value['reason']}
@@ -592,6 +643,21 @@ def worker_hook(root, payload):
             raise ValueError('transcript_path unavailable; cannot enforce per-session context limit')
         if transcript:
             scan(state, transcript)
+        actual = os.environ.get('ORCA_TERMINAL_HANDLE')
+        if not actual or actual != state.get('terminal'):
+            # Latch the first mismatch without rebinding or changing the count.
+            state.setdefault('terminal_drift', {'stored_terminal': state.get('terminal'),
+                             'actual_terminal': actual, 'detected_at': now(), 'event': event})
+        if state.get('terminal_drift'):
+            hint = terminal_drift_hint(state)
+            if event == 'PreCompact':
+                return {'decision': 'block', 'reason': hint}
+            if event == 'PreToolUse' and not allowed_terminal_recovery(payload, state):
+                return {'hookSpecificOutput': {'hookEventName': event, 'permissionDecision': 'deny',
+                                              'permissionDecisionReason': hint}}
+            if event == 'SessionStart':
+                return {'hookSpecificOutput': {'hookEventName': event, 'additionalContext': hint}}
+            return {}  # Ending the turn is recovery, including recursive/native Stop.
         if state['phase'] == 'active':
             return {}
         hint = worker_hint(root, state)

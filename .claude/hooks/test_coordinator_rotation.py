@@ -279,6 +279,165 @@ class RotationTests(unittest.TestCase):
         self.assertEqual(r.hook(self.root, self.payload(session='fresh-worker')), {})
         self.assertEqual(r.load(r.session_path(self.root, 'fresh-worker'))['boundaries'], [])
 
+    def test_terminal_drift_fences_active_work_and_compaction_without_reset(self):
+        for harness in ('claude', 'codex'):
+            session = 'drift-' + harness
+            if harness == 'codex':
+                self.transcript_for(session).write_text(json.dumps({'type': 'session_meta', 'payload': {'id': session}}) + '\n')
+                self.append({'type': 'compacted', 'payload': {'window_id': 'one'}}, session)
+            else:
+                self.boundary('one', session)
+            payload = {**self.payload(session=session), 'rotation_harness': harness}
+            self.assertEqual(r.hook(self.root, payload), {})
+            with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': 'terminal-B'}):
+                self.assertEqual(r.hook(self.root, payload).get('hookSpecificOutput', {}).get('permissionDecision'), 'deny')
+                start = r.hook(self.root, {**payload, 'hook_event_name': 'SessionStart'})
+                self.assertIn('terminal', start['hookSpecificOutput']['additionalContext'])
+                for name, data in [('Edit', {}), ('Bash', {'command': 'cargo test'}),
+                                   ('Write', {'file_path': str(r.notes_path(self.root, session))}),
+                                   ('Skill', {'skill': 'run'})]:
+                    value = r.hook(self.root, {**payload, 'tool_name': name, 'tool_input': data})
+                    self.assertEqual(r.codex_output(payload, value).get('decision') if harness == 'codex'
+                                     else value['hookSpecificOutput']['permissionDecision'],
+                                     'block' if harness == 'codex' else 'deny')
+                compact = {**payload, 'hook_event_name': 'PreCompact'}
+                result = r.hook(self.root, compact)
+                if harness == 'codex':
+                    result = r.codex_output(compact, result)
+                self.assertEqual(result.get('continue') if harness == 'codex' else result['decision'],
+                                 False if harness == 'codex' else 'block')
+                for active in (False, True):
+                    self.assertEqual(r.hook(self.root, {**payload, 'hook_event_name': 'Stop', 'stop_hook_active': active}), {})
+            state = r.load(r.session_path(self.root, session))
+            self.assertEqual(state['terminal'], 'worker-terminal')
+            self.assertEqual(state['boundaries'], ['codex:one'] if harness == 'codex' else ['one'])
+            self.assertEqual(state['terminal_drift']['actual_terminal'], 'terminal-B')
+            # Returning to A, even below the cap, cannot reopen a drifted/settled role.
+            self.assertEqual(r.hook(self.root, payload)['hookSpecificOutput']['permissionDecision'], 'deny')
+
+    def test_terminal_drift_only_allows_read_status_and_actual_dispatch_escalation(self):
+        import shlex
+        payload = self.payload(session='worker')
+        r.hook(self.root, payload)
+        with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': 'terminal-B'}):
+            r.hook(self.root, payload)
+            command = shlex.join(['orca', 'orchestration', 'send', '--from', 'terminal-B', '--type', 'escalation',
+                                  '--subject', 'Blocked terminal drift', '--body', 'Stop work. Administrative recovery required.',
+                                  '--task-id', 'task_actual', '--dispatch-id', 'ctx_actual'])
+            for name, data in [('Read', {}), ('Bash', {'command': f'python3 -I {r.SCRIPT} session-status --session worker'}),
+                               ('Bash', {'command': command}), ('exec_command', {'cmd': command})]:
+                self.assertEqual(r.hook(self.root, {**payload, 'tool_name': name, 'tool_input': data}), {})
+            for bad in [command.replace('terminal-B', 'worker-terminal'), command.replace('escalation', 'worker_done'),
+                        command + ' --to run_other', command + '; cargo test', command + ' --body duplicate',
+                        command.replace('Blocked terminal drift', '*'), command.replace('Blocked terminal drift', '{a,b}'),
+                        command.replace('ctx_actual', 'unknown'), f'python3 -I {r.SCRIPT} checkpoint --session worker',
+                        'python3 -c "print(1)"', 'orca orchestration send --from terminal-B']:
+                result = r.hook(self.root, {**payload, 'tool_name': 'Bash', 'tool_input': {'command': bad}})
+                self.assertEqual(result.get('hookSpecificOutput', {}).get('permissionDecision'), 'deny', bad)
+
+    def test_terminal_drift_fourth_boundary_cannot_checkpoint_as_old_caller(self):
+        notes = self.worker_requested()
+        notes.parent.mkdir(parents=True, exist_ok=True)
+        notes.write_text('Retained original task/dispatch history and work.')
+        prior = notes.read_bytes()
+        with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': 'terminal-B'}), patch.object(r, 'invoke') as invoke:
+            r.hook(self.root, self.payload(session='worker'))
+            with self.assertRaisesRegex(ValueError, 'actual ORCA_TERMINAL_HANDLE'):
+                r.checkpoint(self.root, 'worker', 'must not overwrite')
+            invoke.assert_not_called()
+        with patch.object(r, 'invoke', return_value={'ok': True}) as invoke:
+            with self.assertRaisesRegex(ValueError, 'drift'):
+                r.checkpoint(self.root, 'worker')
+            invoke.assert_not_called()
+        self.assertEqual(notes.read_bytes(), prior)
+        self.assertEqual(len(r.load(r.session_path(self.root, 'worker'))['boundaries']), 4)
+
+    def test_terminal_drift_missing_identity_and_notified_sessions_stay_fenced(self):
+        for phase in ('active', 'requested', 'notifying', 'handoff_ready'):
+            session = 'phase-' + phase
+            payload = self.payload(session=session)
+            r.hook(self.root, payload)
+            path = r.session_path(self.root, session)
+            state = r.load(path)
+            state['phase'] = phase
+            r.atomic(path, state)
+            with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': ''}):
+                result = r.hook(self.root, payload)
+                self.assertEqual(result['hookSpecificOutput']['permissionDecision'], 'deny')
+                self.assertEqual(r.hook(self.root, {**payload, 'hook_event_name': 'Stop'}), {})
+            self.assertEqual(r.hook(self.root, payload)['hookSpecificOutput']['permissionDecision'], 'deny')
+            with self.assertRaisesRegex(ValueError, 'drift'):
+                r.checkpoint(self.root, session)
+        with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': ''}):
+            payload = self.payload(session='missing-initial-terminal')
+            self.assertEqual(r.hook(self.root, payload)['hookSpecificOutput']['permissionDecision'], 'deny')
+        self.assertEqual(r.hook(self.root, payload)['hookSpecificOutput']['permissionDecision'], 'deny')
+        self.assertEqual(r.load(r.session_path(self.root, 'missing-initial-terminal'))['terminal'], '')
+
+    def test_terminal_drift_retains_counts_after_growth_and_registry_reassignment(self):
+        payload = self.payload(session='worker')
+        self.boundary('one', 'worker')
+        r.hook(self.root, payload)
+        with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': 'terminal-B'}):
+            r.hook(self.root, {**payload, 'hook_event_name': 'PostCompact'})
+            original = r.load(r.session_path(self.root, 'worker'))['terminal_drift']
+            for index in range(2, 5):
+                self.boundary(str(index), 'worker')
+            registry = r.load(self.root / '.voiceport/coordination.json')
+            registry['workers'] = {'verifier': {'terminal': 'terminal-B', 'task_id': 'task-original', 'dispatch_id': 'ctx-new'}}
+            r.atomic(self.root / '.voiceport/coordination.json', registry)
+            self.assertEqual(r.hook(self.root, payload)['hookSpecificOutput']['permissionDecision'], 'deny')
+            self.transcript_for('worker').write_text(json.dumps({'sessionId': 'worker'}) + '\n')
+            self.assertEqual(r.hook(self.root, payload)['hookSpecificOutput']['permissionDecision'], 'deny')
+            state = r.load(r.session_path(self.root, 'worker'))
+            self.assertEqual(state['boundaries'], ['one', '2', '3', '4'])
+            self.assertEqual(state['terminal_drift'], original)
+            self.assertEqual(state['terminal'], 'worker-terminal')
+            with self.assertRaisesRegex(ValueError, 'actual ORCA_TERMINAL_HANDLE'):
+                r.checkpoint(self.root, 'worker', 'No old-terminal success')
+
+    def test_administrative_release_and_fresh_session_recovery_is_synthetic(self):
+        notes = self.worker_requested()
+        notes.parent.mkdir(parents=True, exist_ok=True)
+        notes.write_text('Original Task/Dispatch; provisional work retained, no successful checkpoint.')
+        protected = {p: p.read_bytes() for p in [self.path, self.root / '.voiceport/coordination.json',
+                                                self.root / '.voiceport/loop-state.json']}
+        with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': 'terminal-B'}):
+            r.hook(self.root, self.payload(session='worker'))
+            old = r.load(r.session_path(self.root, 'worker'))
+            # Coordinator-owned model only: no helper API stops/releases/starts workers.
+            administrative = {'old_session': 'worker', 'old_terminal': 'worker-terminal',
+                              'actual_terminal': 'terminal-B', 'task': 'task-original', 'dispatch': 'ctx-original',
+                              'exit': 'synthetic-confirmed', 'released': True, 'notes': notes.read_text()}
+            self.assertTrue(administrative['released'])
+            fresh = self.payload(session='fresh-worker-B')
+            self.assertEqual(r.hook(self.root, fresh), {})
+            state = r.load(r.session_path(self.root, 'fresh-worker-B'))
+            self.assertEqual((state['owner'], state['terminal'], state['boundaries']),
+                             ('fresh-worker-B', 'terminal-B', []))
+            self.assertEqual(r.load(r.session_path(self.root, 'worker')), old)
+            self.assertEqual(notes.read_text(), administrative['notes'])
+            for p, raw in protected.items():
+                self.assertEqual(p.read_bytes(), raw)
+            # Register the fresh synthetic retry, keeping explicit old assignment history.
+            registry = r.load(self.root / '.voiceport/coordination.json')
+            registry['workers']['verifier'].update(terminal='terminal-B', dispatch_id='ctx-fresh')
+            registry['history'] = [administrative]
+            r.atomic(self.root / '.voiceport/coordination.json', registry)
+            for index in range(4):
+                self.boundary(str(index), 'fresh-worker-B')
+            self.assertEqual(r.hook(self.root, fresh)['hookSpecificOutput']['permissionDecision'], 'deny')
+            with patch.object(r, 'invoke', return_value={'ok': True}) as invoke:
+                packet = r.checkpoint(self.root, 'fresh-worker-B', 'Fresh independent handoff notes.')
+                self.assertEqual(r.checkpoint(self.root, 'fresh-worker-B'), packet)
+                self.assertEqual(invoke.call_count, 1)
+                self.assertIn('terminal-B', invoke.call_args.args[1])
+            self.assertEqual(packet['task'], 'task-original')
+            self.assertEqual(packet['dispatch'], 'ctx-fresh')
+            self.assertEqual(r.hook(self.root, {**fresh, 'hook_event_name': 'Stop'}), {})
+            self.assertEqual(r.load(r.session_path(self.root, 'worker')), old)
+            self.assertEqual(r.hook(self.root, self.payload(session='worker'))['hookSpecificOutput']['permissionDecision'], 'deny')
+
     def test_already_over_limit_worker_is_not_reset_by_resume(self):
         for index in range(10):
             self.boundary(str(index), 'worker')
