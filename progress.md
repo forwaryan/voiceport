@@ -1,5 +1,9 @@
 # 进度记录
 
+## 2026-11-05 — capture freeze08 独立失败，进入有界Drop返修
+
+指定独立msg_bb4d3feb4fcc报告FAILED_IMPLEMENTED_SCOPE，实际新session/真实PreToolUse/初始与最终0已核对，SessionStart未观察。两缺陷三条成功断言失败：backend/output析构panic释放未确认容量，以及16385样本正常已返回数据直接Drop后永久占用容量；10通过/3失败exit101原样保留，另2相邻控制通过。完整Mac25步、71Rust、31core、73app、4loop、11packaging和默认Windows all-target check通过，1采集+3存储native测试仅编译。协调check-vp013-rejection-08.py首次0核对封存965普通/296目录/143129425字节/31产物、785公共+6操作、768保护、73453历史普通及10links/6specials，未重跑委派测试。失败freeze08及capture07行政未完成、所有旧失败永久保留。独立和原开发已实际exited/released；按真实实现缺陷retry旧产品attempt并start新返修attempt，非行政轮换重开。当前从main4459aff建立fix/windows-capture-drop，返修回原开发并先验真实hook/上下文，修后完整新冻结、原独立复核；全VP013仍false，实际native/GUI/设备/cleanup/delivery/完整link与材料门槛未满足。PR5已正常merge/main同步，Git集成不作产品验收。
+
 ## 2026-11-05 — 独立06限定范围通过与Git集成安全点
 
 真实msg_caf06f0e7daf SUCCEEDED，独立源结论PASS_WITH_EXECUTION_LIMITS：R05-01/02/03解决，55/19/10/原04五组/review05四组和三组新增事务/兼容控制各一次通过；未发现本范围实质残留。协调核对69封存条目、32历史身份、六固定输入/七政策文档不变，接受精确repair06源码及两恢复文档的隔离支持范围，coordinator-acceptance-06.json保存。源码/证据停写，开发实际exited/released；独立完成后仍live/reclaimable不冒称退出。原FAILED/初始oracle失败均保留，真实PreCompact/四压缩/自动生命周期/native激活未执行、VP013同attemptfalse。安全点继续final逻辑提交推送、PR5正常ready/merge及main同步，再制作完整capture freeze08、原独立采集角色真新会话续验；不把Git集成或操作源接受当产品接受。

@@ -29,6 +29,10 @@
 
 ## 最新工作边界
 
+capture freeze08 已由指定独立角色完成并真实退回：VP013-C08-001 析构 panic 使未确认释放的 Owner/Permit 在展开中提前释放；VP013-C08-002 普通 Drop 只排空四批，正常已返回的第五批使容量永久占用。原成功断言保持，独立13项为10通过/3失败（expected0/actual101），另2相邻控制通过；完整Mac25步含71Rust/31core/73app/4loop/11packaging及完整默认Windows目标检查通过，均不抵消已实现范围失败。协调封存/源码/785公共+6操作/768保护/73453历史普通及965新证据核对首次0，明确结束freeze08现场只读边界，原快照/失败不改。按真实退回关闭旧attempt并start返修attempt，原Run和开发/独立角色沿革保留；修复仅capture所有权/有界正常Drop与必要测试、Windows说明，修后必须完整新冻结回原独立。Git从已同步main建立fix/windows-capture-drop；真实设备、原生安全/runtime、GUI owner/Start-Stop及全产品仍未接受，不自动录音/上传/真实输入。原开发恢复须先证明当前真实hook和上下文未超限；无加载/信任则停止并升级，不绕过。
+
+前轮边界沿革：
+
 独立06已真实msg_caf06f0e7daf SUCCEEDED/PASS_WITH_EXECUTION_LIMITS，R05-01/02/03均独立解决、无本范围实质残留；55/19/10/原04五组/review05四组及三组独立事务控制各一次通过。协调核对69封存证据、32历史身份及六输入/七文档不变，接受精确repair06源码与两恢复文档支持的隔离范围，记录evidence/session-rotation-06/coordinator-acceptance-06.json。实际PreCompact/四真实压缩/完整自动生命周期/native信任激活仍未执行，VP013同attempt running/false；原FAILED不重分类。源码/证据停写，开发06已exited/released，独立完成后live/reclaimable不称退出；安全点执行final source/status commit/push、PR5正常ready/merge/main同步，再从同步main制作完整capture freeze08并沿原独立采集角色新上下文续审。旧freeze07行政未完成及16项材料保留，不自动录音/上传/真实输入。
 
 前轮边界沿革：
