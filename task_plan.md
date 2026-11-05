@@ -29,6 +29,12 @@
 
 ## 最新工作边界
 
+完整freeze09由原独立采集角色真实msg_82ffcbb35b57退回。原VP013-C08-001/002已独立确认修复；新增P2 VP013-C09-001：显式stop在reset/unprepare/close正常返回错误后，Session Drop首次无条件cancel又poll，隐式重试未知释放步骤。持续失败三例expected调用1/actual2，首次挑战10pass3fail101；移除暂时故障后直接Drop三例expected(1,容量占用,guard析构0)，actual(2,容量释放,guard析构1)，均101。显式poll恢复正控制与原13/相邻2仍通过；这违反已指定的显式恢复边界，不声称已演示释放仍由driver持有的指针或实际Windows复现。完整25步含76Rust/31core/73app/4loop/11packaging和DEFAULT Windows编译通过，不能抵消失败。
+
+协调核对932封存普通/262目录/819外部产物、786公共/278目录+6操作/3目录、782保护、75338历史普通/24573历史目录mode/10links/6specials及795 Git输入通过，未重跑委派测试。协调新checker首次错选接管前worker stub而AssertionError1，原脚本/日志保留；改用实际协调lease、Run绑定和真实transcript两次压缩后核对0，未改worker证据或计数。原开发和独立均实际exited/released。真实实现退回已retry旧attempt7feb749c并start新attemptcd2c8d7d-c39a-43ac-893c-15e140b88c87，同Run/角色沿革/旧快照不变，非行政换窗重开。PR6保持draft；先提交推送本次失败状态，再沿原开发角色changed-spec真新会话返修03，仅capture释放错误的隐式/显式重试边界与必要测试/Windows说明。旧native开发session绑定已释放终端，不send恢复到新terminal、不重绑/清零；真实新session/current hook/初始0证明先于源码工作，缺加载/信任即升级停止。修后完整新冻结和原独立复核仍必需，全VP013/native/runtime/GUI/fullWindows仍false。
+
+前轮边界沿革：
+
 原开发 capture返修02 已正式交付并停写：OwnerSlot在字段展开时保留未确认Owner/Permit，normal-return latch覆盖backend/output调用、完整析构与finish；普通off-UI Drop只在满批已返回数据后有限续排，poll仍限四批，Idle/未知释放立即保留。原13测试体/Toml/lock/相邻夹具字节相同，开发修前10pass3fail101、修后13pass0；新增5组及工作区76、fmt、严格clippy、完整默认Windows检查/native lint均0。协调94封存普通/17目录、786公共/278目录、781保护+6操作、73453历史普通和旧965独立记录核对通过；协调checker首次结束证明schema误取字段1已保存原脚本/输出后纠正，未重跑开发测试。原开发真实resumed Codex session处于第3轮，当前SessionStart/PreToolUse加载已观察，仅此会话证明，旧native激活失败Task和实际PreCompact/完整生命周期未执行事实不重分类。当前7feb749c返修attempt running/false，先分逻辑commit/push并更新draftPR6，再完整freeze09交原独立采集逻辑角色真新会话复核两缺陷及相邻路径；开发自检不算独立接受，旧freeze08 FAILED和三失败断言永久保留。
 
 前轮边界沿革：

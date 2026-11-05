@@ -1,5 +1,11 @@
 # 进度记录
 
+## 2026-11-05 — freeze09确认原修复并因隐式cleanup重试退回
+
+原独立msg_82ffcbb35b57正式FAILED_IMPLEMENTED_SCOPE。原C08-001/002独立FIXED；新增P2 VP013-C09-001位于capture.rs:512：显式stop的reset/unprepare/close错误后，Drop首次cancel隐式poll重试同一步。首次13组10pass3fail101，三条暂时故障确认expected(调用1,预算占用,guard析构0)、actual(2,预算释放,guard析构1)，均101，原成功断言不改。显式poll恢复正控制、原13和相邻2通过；完整Mac25步/76Rust、签名693文件安全smoke、DEFAULT Windows编译16COFF/1非空有效metadata通过，1采集+3存储仅编译，不推断原生指针误释放或Windows实测。
+
+协调rejection-check-09已核对932普通/262目录/83552617字节/819产物、786公共+6操作、782保护、75338历史普通/24573历史目录mode/10links/6specials和795 Git输入。新checker首次误选接管前worker stub导致AssertionError1，原脚本/原输出保存在handoffs/vp013-rejection09-checker-failure-01；纠正为实际协调lease、Run绑定和transcript两次压缩后0，未重跑委派测试/改证据/重置状态。实际两个旧进程均exited/released后，按真实实现退回retry旧7feb749c、start新cd2c8d7d-c39a-43ac-893c-15e140b88c87，transition见evidence/vp013-capture-repair-03-transition.json。PR6仍draft，当前先提交推送失败状态；沿原开发角色真新changed-spec successor返修03，须先证真实新session/terminal/当前hook/初始0，不恢复旧native绑定到新终端。聚焦隐式Drop与显式恢复边界，保住panic保留/普通有界Drop/后续准入/首错，不弱化旧断言；修后完整新冻结、原独立复核。全产品仍false，自动录音/上传/真实输入仍禁止。
+
 ## 2026-11-05 — 原开发capture返修02交付，待新冻结独立复核
 
 msg_c531a2474e2e真实succeeded并停写，仅3修改1新增：capture OwnerSlot与normal-return latch防止未确认析构/finish/方法panic后恢复容量，有界普通Drop完成已返回数据排空，未知释放/Idle不转圈、不强制释放；native backend/accepted storage等保护输入不变。原13/Toml/lock/adjacent字节完全相同，开发baseline10pass3fail101保持、修后13pass0及adjacent2pass，新增5组、工作区76、fmt/strictclippy/完整DEFAULT Windows/nativeclippy均0。协调check-vp013-capture-repair-02.py核对94封存普通/17目录、786公共/278目录、781保护+6操作、73453旧SHA refs及965独立08封存记录，未重跑委派测试；checker首次误读结束启动证明顶层session而1，原脚本与精确输出保存在独立failure-01后按authentic_state.owner+metadata.id修正并通过。原开发session01a1a5dd/精确terminal/真实native PreToolUse+SessionStart/当前helper、2次压缩第3轮已核对；本会话加载已观察，历史激活失败Task不改、实际veto/自动生命周期仍未执行。开发自检与协调交付核对不作独立接受；当前attempt7feb749c仍running/false。先源码/测试和文档状态分逻辑commit/push、更新draftPR6，再建立完整freeze09，原独立采集角色真新会话复核两原始反例/消费panic与普通Drop相邻路径、完整受影响入口；失败freeze08/旧证据不改，不自动录音/上传/真实输入。
