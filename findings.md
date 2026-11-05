@@ -1,5 +1,11 @@
 # 调研与发现
 
+## 2026-11-05 — freeze05阶段通过后的边界
+
+- 原独立亲自确认VP013-I-003在freeze05修复，无新已实现范围阻断；原cleanupTLS四例全0，新请求所有权/receiver生命周期/健康后续与自动owner丢失释放控制通过。Mac25步55Rust和完整Windows默认目标检查通过。原serviceTLS恢复尾未经修改仍101，单独manualRetry适配0保持，不把两者混称。
+- Git index原始字节包含源码树以外的状态；协调看到rawhash与验证记录不同，不能单凭它宣称源码漂移或推断具体变化原因。此次实际核对HEAD、完整输入/模式/集合、cached diff及index源码树一致后通过；原失败材料保留。
+- Windows仍需私有ACL/sharing/reparse-safe存储与held lease/cleanup，再设备采集与Start/Stop接线；全链接/PE/实机、保护投递和分发材料也未完成。接受当前返修阶段不能完成VP-013。
+
 ## 2026-11-05 — 当前轮换规则与返修03
 
 - 用户要求当前阈值和项目默认值统一为5，继任继承。到阈值的最后一轮直接保存和交接，不额外压测或强制压缩来触发或验证轮换；不得把合成边界测试称作真实压缩。运行configure、adopt默认、loop、文档、packet和launch提示已同步，16项隔离生命周期测试通过。

@@ -283,6 +283,14 @@ freeze-04的独立失败保持：合法清理Spawner的实际线程在TLS析构�
 
 协调材料核对779输入/275目录、777原有保护输入、273条新普通证据6581392字节及79项产物身份一致；报告SHA25600ffc3287837b253e3a25adef623f4a8664b6aef7b99b62e5a0acaeed213b6e7，index153e404e3519dfd9b8921fb6c7cb561951d65639fe9539d580fa5adb2276af52。首次协调核对把schema2库存摘要误当文件序列化hash而exit1，原脚本/错误保留；纠正字段后exit0，未改产品或重跑开发测试。新完整冻结和原独立复核仍必需，VP-013整体未接受。
 
+### freeze-05原独立返修阶段接受（全Windows产品未接受）
+
+原独立已确认VP013-I-003修复且未发现新已实现范围阻断。原样清理TLS四例亲自执行均0，六组新所有权/健康后续/丢失循环/自动释放控制通过；早前service TLS、原11及相邻行为保持。当前Mac25步入口包含55Rust/31core/73app/4loop/11packaging及签名/693包文件/helper/safe smoke；完整默认Windows all-target检查0，16真实ring COFF与961938字节有效rmeta。原service-TLS未经修改仍101/collector1，其恢复尾显式manual Retry适配另为0，原失败保持。
+
+协调核对779公共+5操作输入、275+2目录模式、771保护、66261历史普通/10链接/6特殊及1742新证据107932774字节后接受本次返修阶段。报告SHA256e57897d7afa8123cf871028f02e0ddf2349b314bdb96836d0cc8147d27480f50，index b99e2331fc41c9b863d9e79ea6a80e106ccd04fae338a199d53018bf2302f21e。首次协调检查发现当前Git index原始字节hash与验证记录不同；原脚本/错误保留，具体变化原因未实证。随后确认HEAD、完整文件/模式/集合及index对应源码树无变化、cached diff为空，按源码语义核对后通过，未重跑委派测试。freeze-05的接受仅绑定原快照，后续状态文档集成另记；不重写freeze-04拒绝及早前历史。
+
+实际Windows链接/PE/运行、设备采集、ACL/sharing/reparse-safe存储与held lease/cleanup、保护投递、Windows包/许可仍未完成。项目阈值5和最后一轮直接保存交接规则由独立只读核对，不额外压测或强制压缩。
+
 ## 待完成的系统层验证
 
 | 场景 | 当前状态 | 验收方法 |
