@@ -346,3 +346,70 @@ session/terminal and zero compaction count established loading under the startup
 policy; the failed startup event remains failed. Actual PreCompact veto and the
 full automatic rotation lifecycle remain unexecuted. No real recording, upload,
 clipboard/keystroke delivery or ordinary GUI action was performed by this review.
+
+## Dedicated capture owner foundation01 (developer candidate)
+
+`capture::owner::CaptureOwner` is an inert library control handle. Default and
+`NativeFactory` construction perform no IO and start no thread. Only explicit
+library `start` lazily initializes one persistent process supervisor and one
+admitted capture thread. The native factory discovers and holds the reviewed
+native `Root`, creates `Pending` under the private native capture budget and
+constructs the thread-bound `NativeSession` inside that capture thread. All
+prepare/begin/read/append/stop/reset/drain/unprepare/close/finalize and session
+field destruction stay there. No unsafe Send/Sync is added. Generic factories
+are trusted injection seams: their bounded command values/destructors must be
+inert, create the session inside the owner, and fully dispose partial resources
+before returning a normal factory error. They do not establish native security.
+
+The process admits one generation and retains at most one Recording-or-static-
+error slot, fixed atomic stop/cancellation/recovery controls and one current
+owner join handle. No PCM enters control/result storage. Caller methods use
+atomics, thread wakeups and a result `try_lock`; Start/Stop/Cancel/Poll/Exit/Drop
+never join or execute backend/output/native cleanup. Explicit start may incur
+allocation and OS thread creation/syscall scheduling; this is no hard-real-time
+latency guarantee. Repeated controls coalesce. Cancel/Exit/Drop invalidate before
+consumption, and a stale generation cannot claim or revive an outcome. Only
+explicit `take_result` transfers a finalized Recording's exact existing guards
+for possible future Controller use; no Controller or service submission occurs.
+
+The owner wakes on controls and otherwise parks between bounded low-level
+polls. Existing maximum/sentinel/drain/no-prefix behavior is unchanged. There is
+no additional wall-clock stop policy: the 180-second sample limit and native
+DONE/sentinel checks apply, and an uninterruptible backend/file/destructor can
+retain capacity indefinitely. Scheduling or elapsed time never proves release.
+The small read-only `cleanup_status` query observes the actual interrupted and
+returned-release-error latches, including cleanup failure hidden by begin's
+first error. A returned reset/unprepare/close error parks the owner. Only a NEW
+explicit `recover` after that failure retries; background ticks, Stop, Cancel,
+snapshot Poll and Drop do not. Successful recovery may advance bounded drain
+work; another unknown stage parks again. The first error remains distinct and
+failed or cancelled prefixes never become successful recordings. Interrupted
+calls are permanent and cannot use explicit recovery.
+
+The supervisor performs the genuine off-caller OS join after lawful capture
+release and complete factory/session/output destruction. Join covers real owner
+exit and TLS teardown. Body flags, publication, Weak expiry, is_finished,
+timeouts or acknowledgments before join cannot publish Ready/Stopped or admit
+replacement. Unclaimed/cancelled/late Recording disposal runs on the capture owner or
+supervisor,
+including complete guard destruction, before capacity returns; unclaimed results
+cannot accumulate across replacements. A claimed Recording is thereafter caller
+owned. Unknown cleanup, factory/method/destructor panic, uncaught worker panic,
+missing acknowledgment or lost supervisor conservatively retains bounded
+ownership and blocks replacement, even if a thread that leaked an uncertain
+Session was joined. Already-consumed panicking objects cannot be resurrected;
+remaining resources/admission stay retained. Abort/double-panic/FFI/kernel failure
+is not graceful recovery. A proven no-start supervisor initialization failure
+requires explicit `recover_infrastructure`; unknown loss cannot reset it. After
+a handle is dropped with unknown release, this slice exposes no public retained-
+handle rebinding or automatic recovery: process capacity stays blocked.
+
+Portable OS-thread/channel gates cover method/IO/finalize/complete field/TLS
+entry, cancellation and unclaimed guard disposal. These are developer self-
+checks; the native factory is compiled only. Native tray Start/Stop, hotkey,
+capture/service dispatch remain disabled and unwired. Actual native NTFS/device/
+driver/security/runtime, GUI human Start/Stop, retention cleanup, protected
+delivery, full Windows link/PE/runtime and packaging/material completeness, plus
+actual PreCompact/full rotation lifecycle, remain mandatory. No native recording,
+auth/network/upload, clipboard/keys/targets/permissions, cleanup scanner/deletion,
+dependency change or product acceptance is part of this slice.
