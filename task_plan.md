@@ -29,6 +29,12 @@
 
 ## 最新工作边界
 
+2026-11-05 新协调4f882144/term_c7ce7c33已从自己的terminal绑定原Run，generation4/claim epoch3成功，paused=false，真实PreToolUse/当前helper/新transcript初始0已核对，SessionStart未观察。接回真实msg_c763265d9b12：独立04 FAILED，46/19/10通过但R04-01（transcript错误丢漂移锁存，A返回可工作/压缩）、R04-02（坏transcript阻断Read/status/escalation恢复）未解决。协调核对45封存证据和六输入/七文档不变，两旧进程现已真实exited/released；旧review04现场冻结边界结束，快照/失败不改，仅下一明确helper/tests返修05可写。先commit/push返修04候选并更新draft PR5真实失败，再原开发逻辑沿革的真新会话聚焦两反例；完成后新pin独立，不重开产品attempt。VP013仍running/false，native信任/真实生命周期未执行，capture freeze08继续待办。证据evidence/session-rotation-05/coordinator-return-reconciliation.json。
+
+以下保留前轮边界沿革：
+
+返修04已真实交付，开发46/19/10和双宿主合成恢复通过；协调69证据/六固定输入/七未改政策文档核对完成。新review-pins-04冻结helper/tests、两设置及两恢复文档，回原独立逻辑角色的真新会话同时接受操作源/两文档；根规划/registry不纳入固定输入。旧失败/政策03旧快照接受不改，PR5仍draft，待新独立后commit/push final修复、正常merge及main同步，再完整capture freeze。source/evidence停写声明与早先live/reclaimable进程观察分列，不伪造exit。
+
 操作03已真实FAILED：原7反例全部解决，但恢复同session到新terminal时活跃工具放行而到上限checkpoint拒绝；整体生命周期不接受。明确结束旧四输入评审边界并保留报告，下一返修04在普通工作前拦terminal漂移，采用主协调精确停止/释放后新真实session续接的窄恢复路线，不静默改state/清次数/冒用caller。仅helper/tests和协调轮换/HANDOFF文档获授权，须新pin回独立；既有九文档政策接受仍绑定原快照。先保存候选阶段逻辑commit/push，剩余失败显式标注，随后真实开发返修。VP013同attempt仍running/false，采集独立待新完整freeze。
 
 九文档策略03已由原独立msg_a2720cf8090a ACCEPTED并协调核对，P02-01/P02-02解决；仅文档范围接受。当前等待新真实操作独立task_5c798b4fa492/ctx_3e1715b9efa8对四固定操作输入给实际结论，不改输入/不重跑委派测试；再分逻辑commit/push轮换修正、新完整freeze08继续采集独立。旧失败、终端例外与原生/产品未验收边界保持。

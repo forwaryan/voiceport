@@ -1,5 +1,13 @@
 # 进度记录
 
+## 2026-11-05 — 新协调接管与独立04退回
+
+新session4f882144/term_c7ce7c33真实绑定原Run generation4并claim epoch3成功，未暂停；真实PreToolUse与指定helper hash/terminal一致，transcript新身份初始0，SessionStart未观察。收回已读真实msg_c763265d9b12，review04 FAILED：46/19/10独立控制通过但两新反例确认transcript错误丢终端漂移锁存，以及坏transcript封堵文档恢复例外。协调核对45封存条目、六固定输入/七政策文档及失败报告身份，两旧worker现已实际exited/released，不反写早先live观察。结束review04现场冻结并保留旧字节/FAILED，先提交推送返修04候选与真实失败状态，再显式新开发沿革返修05仅helper/tests，后续新pin独立。原Run/产品attempt/旧角色沿革保持，Full VP013false，PR5保持draft，capture freeze08/原生信任/真实生命周期未执行。证据evidence/session-rotation-05/coordinator-return-reconciliation.json。
+
+## 2026-11-05 — 终端漂移返修04交付与新固定输入
+
+msg_82fbb3827446真实succeeded，四授权文件完成持久terminal_drift拦截及行政fresh恢复说明；开发46测试、19不变控制、10不变附加控制、双宿主合成恢复通过，初始失败与夹具修正保留，原40测试体不改。协调核对69项封存证据、四最终修改与两不变设置输入hash/模式、其余七政策文档未改，保存review-pins-04六输入/七旁证和coordinator-repair-reconciliation。开发source/evidence声明停写；早先worker-show仍live/reclaimable等自动release，未把该回执称exited。新独立04须真新session/精确terminal/真实加载/零计数，无漂移例外，复核源和两改动文档；不重复全73011历史扫描/不强压。PR5仍draft待独立，0129f7c已推送候选之后四修改待新接受再commit/push/merge/main-sync；VP013同attempt保持false，采集待新完整freeze。
+
 ## 2026-11-05 — 操作03整体退回：恢复终端漂移
 
 msg_7a65ae4c4770真实FAILED：固定40测试、19显式迁移控制及原7反例均独立通过，但新10控制中1项确认合法旧会话恢复新terminal后仍获普通工具放行，到4边界checkpoint因保存旧terminal正确拒绝，形成交接死路。原7修复通过不等于整体操作接受。旧失败/91历史证据及新报告固定保留，明确结束本轮源码评审边界；下一返修04仅helper/tests和协调轮换/HANDOFF两文档，优先未解决terminal漂移先拒绝普通工作，主协调核对行政交接、精确stop/release再新真实session恢复，不静默rebind/不重置次数/不冒用旧caller。九文档政策03接受仍绑定原快照，新增恢复说明需独立复核。当前先把已验证阶段分逻辑commit/push为候选，明确剩余失败，再启动新真实修复会话；产品attempt不退回或finish，PR4/bf128fe/main同步保持。

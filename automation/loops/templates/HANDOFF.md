@@ -121,7 +121,11 @@ ORCA orchestration send --from <本次from> --type worker_done --subject <准确
 
 新角色接单前核对真正新 session，不能仅凭新 terminal：从真实 transcript 的起始身份/时间和已完成压缩记录，独立核对实际 hook 状态的 `owner`、`terminal`、`harness`、`boundaries=[]`、`hook_events` 中的 PreToolUse 及 `hook_implementation_sha256` 与指定版本一致。worker 状态在 `.voiceport/session-rotations/<actual-session>.json`；协调者另有 lease，不能把 worker 状态写入 owner lease。Claude 按 `compact_boundary` UUID 去重，Codex 按真实 `session_meta.payload.id` 验证身份并按 `compacted.payload.window_id` 去重；恢复旧 transcript 不清零。SessionStart 若未观察到须披露，真实 PreToolUse 加新 transcript 证明可满足启动条件，不能伪造状态、手动合成激活或把测试 stdin 当加载证明。原生 Codex 必须由用户在原生 UI 信任具体 hook 定义并证明当前进程实际加载，未证明则该前端阻塞；不写信任库或代发批准按键。Claude 支撑成功不替代失败/未执行的原生 Codex Task。Claude PreCompact veto 为 `decision:block`，Codex PreCompact 为 `continue:false`，Codex PreToolUse 为 `decision:block`；真实 veto 生命周期未执行要保留未测。
 
-worker 在 `.voiceport/handoffs/session-rotation-ACTUAL_SESSION_ID.md` 保存非空、最多 48KB 的精简笔记，使用真实身份，不填示例回执：
+**先检查实际 terminal 绑定。** 同一 session 的实际 `ORCA_TERMINAL_HANDLE` 与 hook 保存 terminal 不一致或缺失时，即使计数 0、角色已结算后重开或 registry 已移到新 terminal，也立即停止普通工作与压缩。helper 锁存首个 `terminal_drift`，保留实际 session、旧 terminal、单调计数和旧笔记；返回原 terminal 仍 fence，checkpoint 不得冒用旧 caller 或宣称成功。worker 仅可 Read、精确 session-status、以当前真实 preamble 的 from/Task/Dispatch 发有界 escalation，然后结束 turn；不能 Write/Edit 笔记、执行 Skill 或任意 shell。escalation 命令只用 `orca orchestration send` 的六组参数 `--from ACTUAL_TERMINAL --type escalation --subject '简短主题' --body '简短事实与停止请求' --task-id ACTUAL_TASK --dispatch-id ACTUAL_DISPATCH`，不重复、不加参数，最多 48KB 且无 shell 元字符/换行/分号。Orca 校验真实 dispatch，不能借旧 registry 代发；Stop（含递归）允许结束，双宿主 veto 格式保持上述规则。
+
+协调者从真实 state/transcript 与保留工作采集行政 handoff，记录实际/保存 terminal、session、完成压缩数、原角色/Task/Dispatch 沿革、笔记/证据、活动工具和旧 checkpoint 未成功。依 recovery 停止精确 mismatched assignment，取得真实 exited/released 后启动 genuinely fresh session；spec/freeze 不变走同 Task retry/new-start，改变则建显式 successor，保留 Run/产品 attempt 和历史。验证新 ID、实际 terminal 与 hook 状态一致、真实 PreToolUse 当前 helper hash、bounded transcript 初始身份/时间与零计数；SessionStart 缺失如实写 startup addendum。旧会话持续 fence，不能重绑/清零/改信任或仅 send 恢复旧 transcript。此恢复不由 helper 自动 stop/launch；mock 恢复模型不代表真实生命周期接受。operational03 FAILED、policy03 旧九文档快照结论保留，修改后须重新固定相关输入独立复核；原生信任仍失败/未执行，Full VP-013/capture 仍 false。
+
+terminal 绑定一致且没有 drift 锁存的 worker 在 `.voiceport/handoffs/session-rotation-ACTUAL_SESSION_ID.md` 保存非空、最多 48KB 的精简笔记，使用真实身份，不填示例回执：
 
 ```yaml
 actual_session_and_terminal: <实际 session/terminal/harness 与当前轮数、完成压缩记录和加载证据>

@@ -58,6 +58,18 @@ worker 不启动继任、不停协调者 loop、不改 ledger/角色注册或结
 4. 若原 Task/spec/freeze 仍适用，在同一 Task 上按 Orca recovery 的 retry/new-start 继续。若 spec/freeze 已改变，建立显式 successor assignment，记录原 Task/Dispatch/role lineage；产品 attempt 不因行政轮换重开，也不凭行政失败拒绝产品。
 5. 新窗口用 `worker-start` 和实际 fresh-agent 回执。对已到上限的旧 dispatch 直接 `send` 可能恢复原 transcript，禁止当作换新上下文。实际 session ID 必须变化、首次计数为 0，旧证据保持只读，新证据使用新路径。
 
+### 实际 terminal 与保存绑定不一致：先 fence，再由协调者新开会话
+
+同一 session 从 terminal A 恢复到实际 terminal B（包括已经结算的角色被重新打开）不能继续普通工作，即使完成压缩次数为 0、注册表已改到 B 或旧 Task 尚未完成。worker hook 在普通工具与 PreCompact 前核对实际 `ORCA_TERMINAL_HANDLE`；发现缺失或不一致会锁存 `terminal_drift` 的首个实际/保存 terminal、事件与时间。原 `owner`、保存 terminal、笔记及完成压缩记录保留；后续有效 transcript 扫描只增加已完成记录。返回 terminal A 也不解除 fence，checkpoint 仍核对实际 caller 相等并拒绝已锁存 drift；不发送旧 terminal 的成功交接。
+
+1. worker 立即停止普通工作与压缩，披露实际和保存的 terminal、session 与计数，按当前真实 Orca preamble 的 from/Task/Dispatch 发 escalation，然后结束 turn。不要手改绑定/清零、冒用 A、补造 SessionStart 或把旧笔记当成功 checkpoint。drift 路径不拦 Stop，包含递归 Stop；双宿主保持各自的 PreCompact/PreToolUse veto 输出。
+2. fence 只允许 Read、精确 `python3 -I .claude/hooks/coordinator_rotation.py session-status --session ACTUAL_SESSION_ID` 和一条有界的 `orca orchestration send` escalation。该 shell 命令仅接受 `--from ACTUAL_TERMINAL --type escalation --subject '简短主题' --body '简短事实与停止请求' --task-id ACTUAL_TASK --dispatch-id ACTUAL_DISPATCH` 六组不重复参数，Task/Dispatch 必须来自实际 preamble 并由 Orca 验证；不加其他参数。命令最多 48KB，避免 shell 元字符（正文也不要换行、分号或命令替换）；不允许任意 Bash/exec_command、Skill、Write/Edit，连原 checkpoint 笔记也不开放。该例是接口格式，不是实际回执。
+3. 协调者从真实状态、transcript 与已保留工作采集行政 handoff，记下未成功的旧 terminal checkpoint、原角色/Task/Dispatch history、实际绑定差异、计数、证据和仍运行工具。行政 handoff 由协调者保存，worker 不通过 fence 外写文件；此采集不替代旧 worker 的 checkpoint 成功。
+4. 协调者依 Orca recovery 对精确 mismatched assignment guarded stop，取得实际 exited/资源释放后再开 genuinely fresh session。spec/freeze 不变走同一 Task 的 retry/new-start；改变则建显式 successor，保留原角色/Task/Dispatch 沿革、Run 和产品 attempt。只发 send 恢复旧对话、只改 registry、收到 stop 请求、静默或超时均不算退出或新会话。
+5. 新 session ID 必须不同，实际 terminal 与新 hook 状态完全相等，真实 PreToolUse 加载当前指定 helper hash，bounded transcript 初始身份/时间与首次完成压缩数 0 一致。SessionStart 未观察到用上述 startup addendum 如实补证，不伪造。旧 session 永久保留 fence 与旧证据；正常 fresh session 仍按初始加最多四次压缩、最后一轮直接 checkpoint/handoff 执行。
+
+这里没有 terminal/token migration、自动 stop/launch 或信任绕过子系统。临时根目录/mock Orca 的 gate 与恢复模型是开发控制；实际 stop/release/launch、PreCompact veto 及完整生命周期未因这些控制获得接受。独立 operational03 的 FAILED 和 policy03 对旧九文档精确快照的结论均保留；本次改动须重新固定相关 operational/docs 输入并独立复核。原生 Codex 信任 Task 仍失败/未执行，Full VP-013/capture 仍 false。
+
 ## 失败恢复和 Git
 
 `requested` 只做交接；`retired` 可单次 launch；`launching` 或 checkpoint `notifying` 表示已尝试，超时也不能重复 fresh 启动/发送。按实际 Orca receipt 的 replay ID 恢复；没有证明则报告未知状态，不能凭静默另开重复写者。claim/身份/哈希失败不写产品、不起 loop。worker `handoff_ready` 只证明交接准备与升级送达，不证明旧进程已经退出。
