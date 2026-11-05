@@ -9,13 +9,39 @@
 ## 2026-11-05 协调交接与提交优先级
 
 - 用户明确要求由新会话接任，并支持压缩达到阈值切换协调者；随后要求先将已写代码拆成多个 commit 并 push，并将 commit/push、合并 PR、拉取最新 main 都写入持续 loop。首批已由 PR1 合并并同步 main；当前分支 `fix/windows-cleanup-stop`，交付 Windows 聚焦返修和阈值规则更新；保留私有运行证据、凭据、录音和构建产物在本地。
-- 原协调者已实际停止动态 loop 并退任；新协调者已绑定原 Run，保留现有产品 attempt 和真实角色。项目轮换工具当前运行阈值与默认值统一为每会话 5 次已完成压缩，后续继任继承；达到阈值的最后一轮直接保存和交接，不额外压测或强制压缩。采用 UUID 去重、锁、退任检查、单次 Orca 启动和 token/epoch 领取；原 14 项隔离测试及真实 PreToolUse 加载检查证据保留。
+- 主协调者沿用原Run，维护方案/账本并通过多会话loop推进开发与独立验证。2026-11-05用户指出验证窗口已压缩10次：旧实现只约束协调者，未覆盖worker。现统一所有角色最多5轮上下文=初始+4次压缩，进入最后一轮即保存换窗并veto第5次压缩，无额外压测/强制压缩。双宿主按真实session计数，新窗口须新session ID/初始0及实际hook加载证明；原生Codex信任缺失先阻塞，不能只凭JSON声称生效。保留Run/产品attempt/逻辑角色与Task/Dispatch沿革，旧证据不变。
 - 自动跨窗口交接尚未通过真实压缩触发验收；不能把模型按固定步骤交接的 hook 约束说成外部进程监督器。后续协调者须按 `.claude/COORDINATOR_ROTATION.md` 处理阈值和失败恢复。
 - Windows freeze-04 独立失败 VP013-I-003 永久保留。原开发返修03已停写并交付：请求显式双重 Job/许可所有权、真实 receiver 生命周期替代 is_finished 推断；原清理 TLS 探针修前 control0/poll1/exit1/orphan1，修后四例均0，健康后续请求可继续执行。55 Rust、fmt、严格 clippy、完整 Windows 默认目标检查均为开发自检0。当前源码已分逻辑commit/push，PR2已创建；完整freeze-05现已由原独立确认VP013-I-003修复且通过阶段检查。协调核对779公共+5操作输入、771保护、66261历史普通及1742新证据107932774字节后接受返修阶段，继续PR合并/main同步，再以Windows私有存储/held lease作为下一切片；VP-013整体仍未接受。
 
 - Windows私有存储续作01已提交推送PR3，完整freeze-06由原独立task_efd03ffe42f8 / ctx_79e1ee651d6f通过源码/编译/离线所有权阶段；协调check-vp013-accept-06.py首次0核对782公共+5操作输入/276+2目录/766保护/69107历史普通及1851新证据119311468字节后接受阶段。独立Mac25步60Rust、完整默认Windows目标检查及新存储/真实TLS guard控制通过；3native测试仅编译，实际NTFS安全与平台运行未接受。原service-TLS101与manualRetry适配0分列，历史构造器和一处只读accessor迁移均显式保存。VP-013原attempt保持running，不finish。接着按授权更新状态、提交推送、正常合并PR3并安全同步main；下一切片为惰性Windows设备采集基础，合成后端与交叉编译验证，保持桌面Start/Stop禁用及原生安全/设备实测门槛。
 
 - PR3已正常合并，main同步a86934eb5765869ddc32836cbe58471b52d885d2后建立feat/windows-capture-foundation。原开发续作05 task_a1066a7a191a / ctx_1f746fb9da0b已msg_c973ec95a9cd succeeded并停写，交付惰性capture/Session/WinMM候选（4修改3新增）。check-vp013-capture-01.py首次0核对785输入/277目录/778保护公共+5操作输入/71765历史普通及101新证据2234880字节。开发71Rust、12最终命令及完整Windows目标0，1采集+3存储native测试仅编译。提交推送后完整freeze07回原独立ctx_79e1ee651d6f；仅开发自检，全VP013同attempt保持running/false，真实设备和桌面Start/Stop仍禁用。用户再次明确允许协调者自主合并PR，满足正常条件后继续合并同步main，无需逐次确认。
+
+- 当前优先级：旧freeze07验证已按用户轮换指令guarded-stop确认退出并释放，16项未完成证据保留，行政中断不算产品退回。协调者只改操作机制/文档；native开发启动被新增hooks信任提示挡在agent_readiness，Task未送达，保留该实际阻塞；已另起Claude文档支撑窗口同步角色文档，新独立窗口核查固定的四个操作输入与窄范围控制。配置/文档完成提交推送后建立完整freeze08再由原独立角色新上下文继续采集验收。VP-013原attempt仍running/false；PR4待独立，不合并未完成评审。
+
+## 2026-11-05 操作审查失败后的当前优先级
+
+独立task_bc7c0039fdce/ctx_a9a953b3b687已真实msg_81ea1bb2c3c1报告FAILED：23项套件通过，但19项独立控制中7项失败（同inode重写漏计、协调者缺transcript放行、Claude/Codex身份缺口、通知后notes可改、notes跟随symlink、checkpoint实际terminal不核对）。失败报告/初始阻塞/四输入原字节完整保留，明确结束该窄范围固定输入边界，仅授权helper/tests返修02。文档支撑task_d776312c40fe/ctx_d2cc78eb7bfe已msg_3e971eea8611成功，六文档交付hash核对一致；两worker均实际exited/released。接续两路真实会话：实现返修与九份固定策略文档只读独立核查；源码完成后重新pin，由原独立逻辑角色复核，再提交推送、新完整freeze08恢复采集。native信任UI仍阻塞且Task未执行，VP013同attempt保持running/false。详见私有evidence/session-rotation-02/transition.json。
+
+## 2026-11-05 最新Git执行状态
+
+用户明确要求所有PR立即合并并同步本地，已正常合并唯一open PR4，merge bf128fe2295f94cbabf388bdf41ce264180bac8a；open PR为0。当前分支HEAD、本地main、origin/main都已到此提交，核对合并文件树与原候选相同后仅快进refs，未覆盖当前两worker的未提交改动。采集独立和全产品仍未接受；新指令改变Git集成时点，不伪造验收。旧open回执保留，新merge/local-sync回执见evidence/git-merge-capture-04-user-request/receipt.json。后续继续操作返修/文档独立核查，再提交轮换修正并在新完整freeze继续采集独立，不重复合并PR4。
+
+## 最新工作边界
+
+操作03已真实FAILED：原7反例全部解决，但恢复同session到新terminal时活跃工具放行而到上限checkpoint拒绝；整体生命周期不接受。明确结束旧四输入评审边界并保留报告，下一返修04在普通工作前拦terminal漂移，采用主协调精确停止/释放后新真实session续接的窄恢复路线，不静默改state/清次数/冒用caller。仅helper/tests和协调轮换/HANDOFF文档获授权，须新pin回独立；既有九文档政策接受仍绑定原快照。先保存候选阶段逻辑commit/push，剩余失败显式标注，随后真实开发返修。VP013同attempt仍running/false，采集独立待新完整freeze。
+
+九文档策略03已由原独立msg_a2720cf8090a ACCEPTED并协调核对，P02-01/P02-02解决；仅文档范围接受。当前等待新真实操作独立task_5c798b4fa492/ctx_3e1715b9efa8对四固定操作输入给实际结论，不改输入/不重跑委派测试；再分逻辑commit/push轮换修正、新完整freeze08继续采集独立。旧失败、终端例外与原生/产品未验收边界保持。
+
+实时扫描续作已msg_7186df11709d完成且exited/released，开发40测试/19控制自检通过。协调核对四输入及两manifest共71项证据身份，当前真实Read重试通过，新操作pins03已固定，转原独立逻辑角色的新实际上下文验收。并行策略03恢复旧session于新terminal，state仍旧terminal；真实transcript/0计数/当前加载一致，仅文档只读工作获明确例外（msg_598f5a8121e7），不改state、不宣称checkpoint/全生命周期通过；操作独立须评估影响。两独立结论后继续commit/push轮换修正和新完整capture freeze，原产品attempt仍false。
+
+此前工作边界（沿革）：
+
+文档返修03已真实交付并exited/released，三文件和15证据核对一致，新的九文档pins03回原独立逻辑角色复核。源码返修02已交开发自检37测试/19迁移控制，不能称独立通过；实际协调Read出现transcript扫描期间变化拦截，原开发同会话新任务task_36fc3677e4bc/ctx_aada54d3498d继续核查正常追加/改写语义，旧repair02证据不改，新live-scan-03路径，源码尚未重新pin。两路结束后独立源码接受，再commit/push轮换修正与新完整freeze08继续采集。PR4已merged，本地bf128fe同步，无需重复合并，产品同attempt保持false。
+
+## 文档返修03沿革
+
+九文档独立核查已完成并RETURNED两项：P02-01现行fail-closed/身份/checkpoint保证须注明初次操作审查7反例、返修和新pin独立未完成；P02-02 README Rust CLI状态须反映已接受的执行器/存储阶段与待独立采集候选，不能仍说未实现/旧join拒绝。核对保存九输入原字节后显式结束该文档固定边界，仅授权README、COORDINATOR_ROTATION、HANDOFF三文件返修，与helper/tests开发无冲突。两路真实交付后再pin回原独立逻辑角色；PR4已按用户新指令合并同步，无需重复，产品仍false。
 
 ## 阶段
 

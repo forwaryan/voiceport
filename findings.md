@@ -1,5 +1,21 @@
 # 调研与发现
 
+## 2026-11-05 — 策略要求不能写成未经接受的当前保证
+
+策略独立P02-01确认五上下文及角色交接规则一致，但协调文档把未知schema/缺transcript失败和checkpoint身份校验写为当前无条件保证，与初次操作FAILED的确定反例冲突。应明确目标要求与实现返修/新pin验收待完成，加载证明不代替行为接受。P02-02发现README继承的Rust CLI段仍称存储未实现/旧同步join未验收，须与后来freeze05/06有限阶段接受和capture候选一致；历史拒绝继续保留。完成负向评审的runtime succeeded仅表示审查任务交付，policy verdict仍RETURNED。
+
+## 2026-11-05 — 首次全角色操作审查的七个反例
+
+原独立新上下文完成19项独立控制，发现7项确定反例，尽管23项已有单测通过：以inode/size/offset为唯一增量判断会漏同inode等长重写；协调者也须对缺transcript fail closed；Claude须证明真实身份，Codex无compacted时仍须已验证session_meta；通知后notes必须禁止继续写且缓存返回须校验hash；notes应无symlink/父目录替换并拒绝非普通文件；checkpoint须核实际环境terminal而非只信历史state/registry。此为临时项目对真实helper的可重复控制，不冒充宿主已出现这些故障或已实测压缩veto。FAILED报告和原字节保留，源码窄冻结显式结束后交开发返修，新的固定输入须再独立核查；不影响产品attempt/既有接受历史。
+
+## 2026-11-05 — worker十次压缩的实际原因与双宿主修正
+
+- 旧coordinator_rotation.py对非owner直接return，所谓5次限制没有覆盖worker。Orca新terminal handle不证明新对话，原独立preview实际Compactions:10。保留旧实现/测试沿革，新增按actual session独立计数、最后一轮限定交接并拦后续压缩；不能把worker续作身份变化当次数归零。
+- 为消除“最后一次仍压缩”的歧义，现按最多5轮上下文=初始+最多4次完成压缩，进入最后一轮即直接保存换窗。Claude2.1.318的PreCompact支持decision:block/exit2，但continue:false不能veto；Codex0.166.0相反，此事件用continue:false，PreToolUse用decision:block。已安装实现/schema及只读官方文档为来源证据，不冒称真实compaction生命周期执行。
+- 原生Codex项目hooks需具体定义hash获信任，文件存在不代表生效；每个新窗口先核对真实SessionStart/PreToolUse生成的状态、实际session/terminal和helperhash，缺证明停止该前端工作。原生rollout的session_meta.id和compacted.window_id已在本项目历史中确认，parser拒绝未知结构。实际compaction veto与跨窗全流程不强压验证。
+- 新独立实际PreToolUse已加载但未观测SessionStart；初次把两个事件同时设为强制门槛导致无必要阻塞。原失败证据保留，改用真实PreToolUse+精确新session/terminal/helperhash+独立transcript身份/时间与0次边界核对，辅助事件未观察如实披露，不伪造或强压来补标记。native Codex实际被agent-hooks-review-prompt拦在接单前，不能从Claude成功外推native加载。
+- 修轮换必须显式结束旧freeze07 live评审边界、保存行政交接后再改操作输入；旧快照/index/报告不改。产品attempt/接受/拒绝历史不因窗口轮换重写，新的操作审查与后续capture完整冻结分开。
+
 ## 2026-11-05 — Windows存储候选边界
 
 - 存储续作把Recording路径/File/语言设为私有，并将根/祖先/marker guard通过Arc随Controller/Job保留；现有caller-owned构造只保证生命周期，不授予ACL/路径安全。原executor/actions真实停止规则未改。

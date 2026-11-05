@@ -32,7 +32,7 @@
 
 worker 严格采用本次 preamble 的 from/task/dispatch；问题用 `ask` 后结束当前轮，阻塞用 escalation。完成仅发送一次 `worker_done --outcome succeeded|failed`，附真实报告路径和文件列表；正文为已做、发现、剩余三句。未完成不能报 succeeded。收到确认后结束当前轮等待；失败按回执恢复，不能假装已送达。worker 不自行启动子代理、其他 worker 或计时循环。
 
-返修由协调者执行 `ORCA orchestration send --to dispatch:<原开发dispatch> --subject <主题> --body <具体反例及交接路径>`，复核同样发回原验证 dispatch。读取实际回执：已结束 worker 的 follow-up 可能生成新的 Task/Dispatch，沿用原角色上下文但必须登记新的身份与 predecessor；不能把旧 dispatch 当作新回执。宿主拒绝恢复时记录事实并按该版本指南处理，不通过另开角色绕过。
+未达到上下文上限的返修由协调者执行 `ORCA orchestration send --to dispatch:<原开发dispatch> --subject <主题> --body <具体反例及交接路径>`，复核同样发回原验证 dispatch。读取实际回执：已结束 worker 的 follow-up 可能生成新的 Task/Dispatch，沿用原角色上下文但必须登记新的身份与 predecessor；不能把旧 dispatch 当作新回执。宿主拒绝恢复时记录事实并按该版本指南处理，不通过另开角色绕过。用户已授权的上下文轮换按第6节保留原逻辑角色与证据链、明确创建新session；不能为了“原会话”无限恢复已达上限的对话。
 
 ## 3. 分派、依赖与冻结
 
@@ -81,7 +81,8 @@ worker 严格采用本次 preamble 的 from/task/dispatch；问题用 `ask` 后�
 2. 创建或更新 PR，列明具体行为、验证、已知失败和未测边界。满足仓库检查及合并条件后合并；工作进度已提交不等于产品已接受。已知缺陷按公开限定的开发 checkpoint 记录，不把 WIP 说成完成。保留独立返修链和失败证据。
 3. 合并后 fetch，确认没有活动 writer/冻结验证依赖当前 HEAD 或分支、工作区无未处理改动，再切换 main 并 `git pull --ff-only origin main`；核对本地 main 和 origin/main 相同。继续开发从最新 main 创建新的功能分支；冲突或保护条件按真实原因处理，不 force push、不 admin 绕过、不清空未提交内容。
 4. 协调者在私有运行记录保存 commit SHA、远端分支、PR URL、merge 回执和 main 同步状态；后续交接包携带未完成的 Git 操作，不能在换窗口后丢失交付步骤。
-5. 每个协调会话默认完成 5 次压缩后轮换；当前运行阈值与项目默认值统一为 5，后续交接包和继任保持此值。达到阈值的最后一轮，当前工具自然返回后直接保存和交接，不额外压测，也不强制压缩来触发或验证轮换。具体 hook、阈值配置、停 loop/退任/新会话启动/原 Run 领取和失败恢复见 [协调者轮换](../.claude/COORDINATOR_ROTATION.md)。保留现有 worker、产品 attempt、冻结和暂停状态；旧协调者退任后不得续订循环。
+5. 所有角色统一最多 **5 轮上下文 = 初始轮 + 最多 4 次已完成压缩**；进入最后一轮即保存交接并换窗口，禁止第 5 次压缩。不额外压测或强制压缩。Claude 与原生 Codex 分别使用正确的 PreCompact veto，独立计数并核对真实 hook 加载/信任；原生 Codex 定义未获信任时先报告阻塞，不能冒称生效。协调者停 loop/退任/单次启动/claim；worker 保存精简 checkpoint、升级并结束 turn，由协调者确认旧 dispatch 已退出后创建真正的新上下文。实际 session ID 必须变化且首次计数为 0，新 terminal handle 或旧 dispatch follow-up 不等于新会话。原 Run、产品 attempt、逻辑角色及 Task/Dispatch 沿革、冻结和证据保持；行政轮换不伪造验收或重开产品 attempt。详见 [全角色会话轮换](../.claude/COORDINATOR_ROTATION.md)。
+6. 主协调者持续维护方案/账本，多个真实 Orca 开发、独立验证及按需支撑会话并行处理无冲突的工作；各 worker 不自行开 loop。配置和角色文档也是冻结输入，若轮换修正改变它们，先明确中断旧评审、保留快照/半成品原始证据，再建立新冻结继续；不能静默改变旧评审对象。
 
 ## 7. 授权、采用取舍与后续能力
 
