@@ -8,6 +8,12 @@
     {"id":"VP-005","title":"受保护投递和剪贴板恢复","depends_on":["VP-004"],"acceptance":"应用/焦点/剪贴板/安全输入检查落实，只有 Command+V，回退结果可复制"},
     {"id":"VP-006","title":"录音残留清理、打包、整体离线验证与使用文档","depends_on":["VP-005"],"acceptance":"录音临时存储归属明确，启动只清理已确认归属且过期/无活动占用的残留，不误删活动、未知或链接目标；隔离目录反例、完整离线测试、release、CLI、bundle 与启动通过，使用和保留规则有文档；独立会话验收"},
     {"id":"VP-007","title":"真实录音、云端和 Orca 兼容验收","depends_on":["VP-006"],"acceptance":"真实用户录音、权限、登录、云端返回和 Orca 收到文字逐项留证；不足明确阻塞"},
-    {"id":"VP-008","title":"与 Codex App 做同音频质量对照","depends_on":["VP-007"],"acceptance":"5–10 段同音频对照记录关键 token、语义、延迟和粘贴结果；扣量无法证明则保留未知"}
+    {"id":"VP-008","title":"与 Codex App 做同音频质量对照","depends_on":["VP-007"],"acceptance":"5–10 段同音频对照记录关键 token、语义、延迟和粘贴结果；扣量无法证明则保留未知"},
+    {"id":"VP-009","title":"Rust 转写核心与 CLI 离线可运行切片","depends_on":["VP-006"],"acceptance":"Cargo workspace 与锁文件、认证/受限上传/响应错误/取消、voiceport-rs help/demo/doctor/transcribe 完成；保留 Swift 行为基线；Rust tests/fmt/clippy/release 和 CLI 正反用例通过；最终冻结后独立会话验收，不读真实凭据或上传真实音频"},
+    {"id":"VP-010","title":"Rust 会话状态机与宿主进程协议","depends_on":["VP-009"],"acceptance":"Rust 负责会话身份、取消/重试/迟到拒绝，提供有界 JSONL 宿主协议；异常输入、并发/取消、进程退出与脱敏反例通过，冻结后独立验收"},
+    {"id":"VP-011","title":"macOS 原生应用接入 Rust 后端","depends_on":["VP-010"],"acceptance":"原生 UI/录音/投递通过受控子进程接入 Rust；无 shell 拼接或参数凭据；身份/超时/取消/退出/重试与打包路径正确，保留原受保护投递规则；离线应用反例与独立验收通过"},
+    {"id":"VP-012","title":"Rust macOS 开发包与完整离线交付","depends_on":["VP-011"],"acceptance":"release 包含实际 Rust 后端，Rust 与 Swift 完整离线检查、CLI、签名、启动和使用文档通过，完整输入冻结由独立会话验收；真实录音/云端/目标接收另列"},
+    {"id":"VP-013","title":"Windows 平台适配与本机运行验收","depends_on":["VP-010"],"acceptance":"按共享接口实现 Windows 录音/托盘/快捷键/受保护投递与文件生命周期；分别留存 Windows 构建和实际运行证据；无 Windows 环境时保留外部阻塞，不把 Mac 构建或交叉检查当作 Windows 验收"},
+    {"id":"VP-014","title":"Rust macOS 真实录音云端和目标接收","depends_on":["VP-012"],"acceptance":"用户参与录音/权限/账号调用，实际 Rust 后端返回文字，Orca/目标真实收到且未自动发送；缺少输入或授权事件则记录阻塞；不沿用 Swift 的真实环境状态宣称 Rust 通过"}
   ]
 }

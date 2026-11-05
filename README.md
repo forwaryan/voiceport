@@ -2,11 +2,13 @@
 
 macOS 全局语音输入工具：使用自己的 Codex / ChatGPT 登录调用云端听写，将文字输入 Orca 等 coding 软件。用户检查后自行发送。
 
-当前可运行版本为原生 Swift/macOS 首版；VP-006 的完整离线独立验收已通过，真实录音、账号转写和 Orca 接收待用户参与验证。产品目标同时支持 macOS 和 Windows，当前优先 macOS；后续建议逐步引入 Rust 共享核心与平台适配，详见 [跨平台路线](docs/CROSS_PLATFORM.md)，Rust/Windows 版本尚未实现。方案与实施记录见 [完整方案](docs/SOLUTION.md)、[Loop 规则](docs/LOOP_METHODS.md)、[任务计划](task_plan.md)、[进度](progress.md) 和 [验证与解除条件](docs/VALIDATION.md)。
+当前桌面应用保留 Swift/macOS 原生外壳，默认转写已接到打包内 Rust 子进程。VP-006 Swift 行为基线、VP-009 Rust 核心/CLI、VP-010 会话/宿主协议已通过各自本机离线独立验收；VP-011 原生接入 freeze-01 曾因同一 child 重复 session 可误接旧文字而独立退回；修复后的 freeze-02 已由原独立会话完成缺陷及剩余矩阵复核，31 核心/73 应用与本轮离线检查通过，协调核对后已完成 VP-011。VP-012 完整开发包的 freeze-02 已通过原独立会话验收和协调核对，账本已完成：762文件/270目录、schema2目录模式指纹、双产物签名对应、120个metadata依赖的687份材料，以及41 Rust、31核心、73应用、4 loop、11 packaging和真实25步入口符合预期。首次freeze-01三类四反例的退回历史保留；新冻结独立复核了原缺陷、23项清单边界、6项入口边界、20个有效重签变异包、24项源许可反例及完整条款充分性。Windows平台任务VP-013已开始，当前可用主机为macOS，尚无已连接Windows环境。真实录音、账号转写和 Orca 接收待用户参与验证。产品目标同时支持 macOS 和 Windows，当前优先 macOS；Windows完整默认目标类型检查已通过，链接和运行尚未通过；当前部分实现曾因取消后普通轮询无法恢复新任务而被独立退回；修复后的完整freeze-02已由原独立会话确认缺陷修复，协调核对后接受本次阶段检查。原11项断言、相邻取消/退出路径及当前Mac25步/52Rust和完整Windows目标检查通过。VP-013整体仍未接受。续作03已交付后台执行器、结果回收和显式手动重试，新完整freeze-03已由原独立会话退回：VP013-I-002确认工作线程的is_finished可先于线程局部资源清理结束，同步join使普通Poll、取消Poll及孤立任务回收等待，实际门闩反例成功预期0、退出1。独立53项Rust、Mac25步和完整Windows默认目标检查通过，未覆盖该行为失败；协调核对后已真实retry/start返修attempt。返修02已交付并通过材料核对：join移到单一进程级清理线程，保留唯一Job/File/许可直到真实停止；54项Rust及完整Windows默认目标检查通过。原样after探针仍101，孤立任务恢复尾增加显式Retry的适配保持三路响应断言且通过，原失败不改称成功；新完整冻结仍须原独立复核。录音、安全存储、保护投递及完整Windows链接/实机/打包仍未完成。迁移步骤见 [跨平台路线](docs/CROSS_PLATFORM.md)。方案与实施记录见 [完整方案](docs/SOLUTION.md)、[Loop 规则](docs/LOOP_METHODS.md)、[任务计划](task_plan.md)、[进度](progress.md) 和 [验证与解除条件](docs/VALIDATION.md)。
+
+最新协调状态（2026-11-05）：Windows freeze-04 独立复核发现 **VP013-I-003**，清理线程仍在 TLS 析构中时可能误判停止并触发 panic；该阶段和 VP-013 整体均未接受，已有源码作为开发进度保存。主协调者已完成交接；项目现提供默认每个协调会话完成 **2 次压缩后轮换**的 hook、持久状态和 Orca 交接工具，见 [协调者轮换](.claude/COORDINATOR_ROTATION.md)。轮换工具 14 项隔离测试通过，当前会话已验证真实 PreToolUse hook 加载；尚未完成真实压缩触发后的自动跨窗口交接验收。
 
 ## 构建与启动
 
-需要 macOS 13+ 和 Swift 6 Command Line Tools。本机 arm64 构建；无第三方运行时依赖。
+需要 macOS 13+、Swift 6 Command Line Tools 和 Rust 1.95+。正常打包构建 Swift 与 locked Rust release，安装并先签名 `Contents/Helpers/voiceport-rs`，再签外层 .app；本机 arm64 构建。`--skip-build` 使用现有 release 产物，要求 Swift 和 Rust 产物都已存在。运行已打包应用无需安装 Rust 工具链。
 
 ```bash
 bash scripts/package_app.sh
@@ -32,9 +34,50 @@ swift run voiceport-cli transcribe /path/to/audio.m4a --language zh
 
 `demo` 明确为离线模拟，不录音、不读取凭据、不调用云端。`doctor` 只报告登录文件是否存在。可使用 `--auth /path/to/auth.json` 指定自己的登录文件，勿把凭据复制到仓库。支持 m4a/mp4、wav、mp3、webm、ogg、flac，最大 20 MB。
 
+## Rust CLI（VP-009 本机离线独立验收通过）
+
+需要 Rust 1.95+。根 workspace 包含 `voiceport-core`、`voiceport-cli` 和开发中的 `voiceport-windows`，版本由 Cargo.lock 固定；当前 macOS 应用通过独立的 Rust host 转写，Swift CLI 保留为行为基线与对照工具。Windows crate已有转写阶段控制器、PCM WAV编码及显式 `--run` 的Win32托盘/消息循环/快捷键动作/手动复制壳。完整默认功能Windows目标类型检查已通过，但链接仍缺GNU运行库、没有PE成品或Windows运行；录音和安全存储未实现；后台转写调度已交付，但因线程清理期间同步join阻塞未通过独立验收，尚不能用于Windows桌面听写。
+
+```bash
+cargo build --workspace --release --locked
+./target/release/voiceport-rs --help
+./target/release/voiceport-rs demo
+```
+
+`doctor [--auth PATH]` 只检查登录文件是否存在，不读内容、不证明有效。`transcribe AUDIO [--language zh] [--auth PATH]` 会使用自己的 ChatGPT 文件登录上传指定音频，运行示例为：
+
+```bash
+./target/release/voiceport-rs transcribe /path/to/audio.m4a --language zh
+```
+
+默认路径为 `CODEX_HOME/auth.json`，否则平台用户目录下的 `.codex/auth.json`。不刷新 token、不自动重传、不录音或投递；Ctrl-C 取消网络等待与响应读取。退出码为 0 成功、1 运行错误、2 参数错误、130 取消；错误写入 stderr，转写原文写入 stdout。
+
+固定 HTTPS 端点，禁重定向、cookie 持久化和自动系统/环境代理。支持的格式与 Swift CLI 相同，实际音频读取上限 20,000,000 字节；认证文件及保留的响应正文分别限 1,000,000 字节。连接/读取停顿/总请求上限分别为 15/90/110 秒，本地文件读取不计入网络超时。代理/TLS 兼容性、Windows 构建运行及系统集成尚未验证，详见 [跨平台路线](docs/CROSS_PLATFORM.md)。
+
+## Rust 子进程接口（VP-010 本机离线独立验收通过）
+
+`./target/release/voiceport-rs host [--auth PATH]` 使用 stdin/stdout JSONL 管道。启动只输出 `ready`，不读取登录或音频、不联网；只有明确的 `transcribe` 或 `retry` 命令调用转写。可依次输入以下两行检查空闲状态并退出：
+
+```json
+{"version":1,"action":"status","request_id":"q1"}
+{"version":1,"action":"shutdown","request_id":"end"}
+```
+
+协议包含转写、手动重试、取消、状态和退出；完整字段及事件见 [宿主协议 v1](docs/HOST_PROTOCOL.md)。输入帧最多 16,384 字节，输出帧最多 2,000,000 字节（均不含 LF），每帧写出确认总上限 5 秒。每个进程最多保留 1,024 个不同有效请求 ID，达到预算后返回错误并正常退出，宿主须处理重启。会话身份只在同一子进程内有效，重启后须以新进程身份隔离旧回调。手动重试结果带 `is_retry=true`，原生宿主须关闭自动投递；Rust 子进程不删除传入的音频文件，文件持有与清理由原生层负责。macOS 原生接入已通过 VP-011 本机离线独立验收；完整开发包已通过 VP-012 freeze-02 本机离线独立验收，Windows 未验证。
+
+原生 bridge 按需直接启动打包 helper，参数仅 `host`；缺 helper 或进程失败会保留录音并提示手动重试。父端只接受完整 LF 帧，EOF 丢弃未完成片段；后台串行处理管道并丢弃 stderr，不把原始协议或诊断展示到界面。ready、每次写入、每次控制回复各限 5 秒，终态等待另限 130 秒；启动控制阶段可另加 15 秒，异常取消/退出还会增加控制等待及最多 4.05 秒的终止/回收等待，因此 130 秒不是端到端总时限。同步系统调用不保证可中断。
+
+取消先失效本地会话，确认子进程停止后才清理音频、释放占用；无法确认时保留录音占用并禁用新录音/重试。正常应用退出异步等待停止确认。失败重试保留录音时的语言；手动重试始终关闭自动投递。子进程丢失或预算退出不自动重传，用户显式重试可以新建进程并重新提交。
+
 ## 验证
 
 ```bash
+# Rust workspace tests、格式和严格 lint；使用合成登录/文件和本次回环服务
+bash scripts/test_rust.sh
+
+# Rust release 构建（不在上述脚本内）
+cargo build --workspace --release --locked
+
 # 核心认证、请求/响应、异步网络、取消和投递反例；不需要 Xcode 测试框架
 bash scripts/test_core.sh
 
@@ -69,3 +112,7 @@ python3 -I scripts/loop_state.py status
 - Orca 原生麦克风按钮的后端适配属于后续工作；首版使用 VoicePort 独立快捷键。
 
 参考及许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 完整离线开发包验证
+
+`python3 -I scripts/verify.py --app-smoke` 实际执行 locked Rust/Swift 检查、正常构建打包、两种 release CLI、许可材料/签名/helper 对应和安全菜单 smoke，保存完整起止产品清单与原始命令日志。验证强制 Cargo 离线缓存及本次自建合成 CODEX_HOME/TMPDIR；不运行普通 GUI 或真实转写。完整资源、时限、skip-build 和许可边界见 [PACKAGING.md](docs/PACKAGING.md)。普通开发运行属于自检；VP-012 freeze-02已由另一真实会话亲自运行最终入口、独立反例和完整许可审查后接受，协调核对后完成账本。接受绑定保存的完整快照；后续实现变更仍需新的冻结与独立验收。
