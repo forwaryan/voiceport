@@ -158,6 +158,14 @@ pub enum Phase {
     Stopping,
     Released,
 }
+/// Read-only control-plane observation; never proves complete destruction/join.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CleanupStatus {
+    Progress,
+    RecoveryRequired,
+    Interrupted,
+    Released,
+}
 #[derive(Clone, Copy)]
 enum Cleanup {
     Stop,
@@ -272,6 +280,14 @@ impl<B: Backend, O: Output> Session<B, O> {
     }
     pub fn error(&self) -> Option<Error> {
         self.owner.as_ref().and_then(|o| o.error)
+    }
+    pub fn cleanup_status(&self) -> CleanupStatus {
+        match self.owner.as_ref() {
+            Some(o) if o.unconfirmed => CleanupStatus::Interrupted,
+            Some(o) if o.explicit_recovery_required => CleanupStatus::RecoveryRequired,
+            Some(o) if o.phase != Phase::Released => CleanupStatus::Progress,
+            _ => CleanupStatus::Released,
+        }
     }
     pub fn begin(&mut self) -> Result<()> {
         let o = self.owner.as_mut().ok_or(Error::Closed)?;
@@ -561,3 +577,4 @@ impl NativeCapture {
 mod native;
 #[cfg(windows)]
 pub use native::NativeSession;
+pub mod owner;
