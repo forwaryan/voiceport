@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 STATE_NAME = 'coordinator-rotation.json'
 SCRIPT = '.claude/hooks/coordinator_rotation.py'
 DEFAULT_THRESHOLD = 5
+HOOK_EVENTS = ('SessionStart', 'PreToolUse', 'PreCompact', 'PostCompact', 'Stop')
 FINAL_ROUND_POLICY = ('All roles have at most five context rounds: the initial context plus at most four '
                       'completed compactions. On entering the final round, save and hand off immediately '
                       'after the current tool returns; veto further compaction. Never force compaction or '
@@ -517,43 +518,77 @@ def require_terminal(state):
         raise ValueError('session terminal drift is fenced; coordinator must stop/release and start a fresh session')
 
 
-def validate_session_state(state, session):
-    """Private saved authority must be coherent before it can fence or recover."""
-    if not isinstance(state, dict) or state.get('owner') != session:
-        raise ValueError('saved session identity does not match the actual session')
-    if (not {'schema_version', 'epoch', 'threshold', 'phase', 'boundaries',
-             'terminal', 'created_at', 'request'}.issubset(state)
-            or state.get('schema_version') != 1 or type(state.get('epoch')) is not int
-            or state['epoch'] < 1 or type(state.get('threshold')) is not int
+def validate_hook_accounting(state):
+    """Validate JSON shapes consumed by hook routing and transcript accounting.
+
+    Coordinator records predate schema_version/harness and may retain their last
+    request after claim. Do not impose worker lifecycle fields on that role.
+    """
+    if (not isinstance(state, dict) or not isinstance(state.get('owner'), str)
+            or not state['owner'] or type(state.get('epoch')) is not int or state['epoch'] < 1
+            or type(state.get('threshold')) is not int
             or not 1 <= state['threshold'] <= DEFAULT_THRESHOLD
-            or state.get('phase') not in ('active', 'requested', 'notifying', 'handoff_ready')
-            or not isinstance(state.get('created_at'), str) or not state['created_at']
-            or (state.get('terminal') is not None and not isinstance(state['terminal'], str))):
-        raise ValueError('invalid saved session authority')
+            or not isinstance(state.get('phase'), str)):
+        raise ValueError('invalid saved hook accounting')
     boundaries = state.get('boundaries')
     if (not isinstance(boundaries, list)
             or any(not isinstance(b, str) or not b for b in boundaries)
             or len(set(boundaries)) != len(boundaries)):
         raise ValueError('invalid saved session boundaries; refuse to reset counts')
+
+
+def validate_saved_timestamp(value):
+    if not isinstance(value, str):
+        raise ValueError('invalid saved session timestamp')
+    timestamp = datetime.fromisoformat(value)
+    if timestamp.tzinfo is None:
+        raise ValueError('saved session timestamp has no timezone')
+
+
+def validate_session_state(state, session):
+    """Private saved authority must be coherent before it can fence or recover."""
+    if not isinstance(state, dict) or state.get('owner') != session:
+        raise ValueError('saved session identity does not match the actual session')
+    validate_hook_accounting(state)
+    if (not {'schema_version', 'epoch', 'threshold', 'phase', 'boundaries',
+             'terminal', 'created_at', 'request'}.issubset(state)
+            or type(state.get('schema_version')) is not int or state['schema_version'] != 1
+            or state.get('phase') not in ('active', 'requested', 'notifying', 'handoff_ready')
+            or not isinstance(state.get('created_at'), str) or not state['created_at']
+            or (state.get('terminal') is not None and not isinstance(state['terminal'], str))):
+        raise ValueError('invalid saved session authority')
+    # Optional history on older records is absent, never an arbitrary iterable.
+    if 'hook_events' in state:
+        events = state['hook_events']
+        if not isinstance(events, list) or any(not isinstance(e, str) or e not in HOOK_EVENTS for e in events):
+            raise ValueError('invalid saved hook event history')
+    if state['request'] is not None and not isinstance(state['request'], dict):
+        raise ValueError('invalid saved session request')
+    if 'checkpoint' in state and not isinstance(state['checkpoint'], dict):
+        raise ValueError('invalid saved checkpoint')
+    validate_saved_timestamp(state['created_at'])
     if 'harness' in state and state['harness'] not in ('claude', 'codex'):
         raise ValueError('invalid saved session harness')
     if 'transcript_session_verified' in state and type(state['transcript_session_verified']) is not bool:
         raise ValueError('invalid saved transcript verification')
-    if state.get('transcript_session_verified'):
+    if state.get('transcript_session_verified') or 'transcript_cursor' in state:
         cursor = state.get('transcript_cursor')
         if (state.get('harness') not in ('claude', 'codex') or not isinstance(cursor, dict)
                 or not isinstance(cursor.get('path'), str) or not cursor['path']
                 or type(cursor.get('offset')) is not int or cursor['offset'] < 0
-                or type(cursor.get('inode')) is not int):
+                or type(cursor.get('inode')) is not int or cursor['inode'] <= 0):
             raise ValueError('invalid saved transcript verification evidence')
     if 'terminal_drift' in state:
         drift = state['terminal_drift']
-        if (not isinstance(drift, dict) or drift.get('stored_terminal') != state.get('terminal')
-                or not isinstance(drift.get('detected_at'), str) or not drift['detected_at']
-                or not isinstance(drift.get('event'), str)
-                or (drift.get('actual_terminal') is not None
-                    and not isinstance(drift['actual_terminal'], str))):
+        if (not isinstance(drift, dict)
+                or not {'stored_terminal', 'actual_terminal', 'detected_at', 'event'}.issubset(drift)
+                or drift['stored_terminal'] != state['terminal']
+                or not isinstance(drift['detected_at'], str) or not drift['detected_at']
+                or not isinstance(drift['event'], str) or drift['event'] not in HOOK_EVENTS
+                or (drift['actual_terminal'] is not None and not isinstance(drift['actual_terminal'], str))
+                or (drift['actual_terminal'] and drift['actual_terminal'] == state['terminal'])):
             raise ValueError('invalid saved terminal drift evidence')
+        validate_saved_timestamp(drift['detected_at'])
 
 
 @contextmanager
@@ -688,34 +723,44 @@ def worker_hook(root, payload):
                 # Commit only this observation, under the session lock, BEFORE the
                 # abortable scan transaction. A transcript exception must not lose it.
                 atomic(session_path(root, state['owner']), state)
-        state['harness'] = harness
-        state['hook_events'] = sorted(set(state.get('hook_events', [])) | {event})
-        state['hook_implementation_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         transcript = payload.get('transcript_path')
+        # Legacy unverified records can acquire a harness only through a successful
+        # scan. Use a candidate so failed scans never persist provisional history.
+        candidate = {**state, 'harness': harness, 'boundaries': list(state['boundaries'])}
         try:
             if not transcript and event in ('PreToolUse', 'PreCompact'):
                 raise ValueError('transcript_path unavailable; cannot enforce per-session context limit')
             if transcript:
-                scan(state, transcript)
+                scan(candidate, transcript)
         except (ValueError, OSError) as error:
             if not authenticated or not state.get('terminal_drift'):
                 raise
             # Diagnostic sidecar is not authority and never changes verification,
             # count, phase, checkpoint or uncertain-delivery state. Keep the most
             # recent failed scan even after a later successful scan; Read can inspect it.
-            atomic(session_path(root, state['owner']).with_suffix('.scan-error.json'), {
+            diagnostic = {
                 'owner': state['owner'], 'harness': harness, 'event': event,
                 'stored_terminal': state.get('terminal'), 'actual_terminal': actual,
                 'at_utc': now(), 'error_type': type(error).__name__, 'error': str(error),
                 'transcript_path': transcript, 'scan_verified': False,
                 'last_verified_completed_compactions': len(state['boundaries']),
                 'last_verified_cursor': state.get('transcript_cursor'),
-            })
+            }
+            try:
+                atomic(session_path(root, state['owner']).with_suffix('.scan-error.json'), diagnostic)
+            except OSError as diagnostic_error:
+                # This optional write cannot revoke an already committed fence.
+                # stderr is the supported fallback; never claim it was persisted.
+                print(f'Rotation scan failed: {error}; scan diagnostic not persisted: {diagnostic_error}',
+                      file=sys.stderr)
             if event == 'Stop':
                 return {}  # Failed scans never prevent recursive/native drift Stop.
             if event == 'PreToolUse' and allowed_terminal_recovery(payload, state):
                 return {}  # Prior saved authority only; this scan did not verify anything.
             raise
+        state.update(candidate)
+        state['hook_events'] = sorted(set(state.get('hook_events', [])) | {event})
+        state['hook_implementation_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         actual = os.environ.get('ORCA_TERMINAL_HANDLE')
         if not actual or actual != state.get('terminal'):
             # Latch the first mismatch without rebinding or changing the count.
@@ -798,12 +843,30 @@ def checkpoint(root, session, notes_text=None):
 
 
 def hook(root, payload):
-    event = payload.get('hook_event_name')
+    if not isinstance(payload, dict) or payload.get('hook_event_name') not in HOOK_EVENTS:
+        raise ValueError('invalid hook event payload')
+    event = payload['hook_event_name']
     session = payload.get('session_id')
+    session_path(root, session)  # Validate before routing through any saved role.
+    if event == 'PreToolUse':
+        tool, data = payload.get('tool_name', ''), payload.get('tool_input', {})
+        if not isinstance(tool, str) or not isinstance(data, dict):
+            raise ValueError('invalid tool payload')
+        command_key = 'cmd' if tool.split('.')[-1] == 'exec_command' else 'command'
+        if command_key in data and not isinstance(data[command_key], str):
+            raise ValueError('invalid tool command')
+    if payload.get('transcript_path') is not None and not isinstance(payload['transcript_path'], str):
+        raise ValueError('invalid transcript path')
     with transaction(root) as state:
-        if not state:
+        if state is None:
             return {}
-        if session in state['retired_sessions']:
+        validate_hook_accounting(state)
+        retired = state.get('retired_sessions')
+        if (not isinstance(retired, list) or any(not isinstance(s, str) or not s for s in retired)
+                or state['phase'] not in ('active', 'requested', 'retired', 'launching')
+                or ('harness' in state and state['harness'] not in ('claude', 'codex'))):
+            raise ValueError('invalid saved coordinator hook routing')
+        if session in retired:
             if event == 'PreCompact':
                 return {'decision': 'block', 'reason': 'This coordinator retired; resume its successor.'}
             if event == 'PreToolUse' and not allowed_during_rotation(payload, state):
@@ -861,6 +924,8 @@ def main():
     try:
         if args.action == 'hook':
             payload = json.load(sys.stdin)
+            if not isinstance(payload, dict):
+                raise ValueError('hook payload must be an object')
             payload['rotation_harness'] = args.harness
             value = hook(args.root, payload)
             if args.harness == 'codex':
@@ -889,7 +954,8 @@ def main():
         if args.action == 'hook':
             print(f'Coordinator rotation hook failed: {error}', file=sys.stderr)
             # Block tools on broken state instead of silently bypassing fencing.
-            event = locals().get('payload', {}).get('hook_event_name')
+            failed_payload = locals().get('payload')
+            event = failed_payload.get('hook_event_name') if isinstance(failed_payload, dict) else None
             if event == 'PreCompact' and args.harness == 'codex':
                 print(json.dumps({'continue': False, 'stopReason': 'Rotation state unreadable; compaction refused.'}))
                 sys.exit(0)

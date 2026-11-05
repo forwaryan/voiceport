@@ -1137,6 +1137,164 @@ class RotationTests(unittest.TestCase):
             self.assertEqual(len(r.load(sp)['boundaries']), 1)
             self.assertFalse(r.load(sp.with_suffix('.scan-error.json'))['scan_verified'])
 
+    def test_diagnostic_storage_failure_preserves_recovery_and_saved_authority(self):
+        import contextlib
+        import errno
+        import io
+        import shlex
+        for harness in ('claude', 'codex'):
+            for fault in ('directory', errno.ENOSPC, errno.EIO):
+                session = f'diagnostic-{harness}-{fault}'
+                path, payload, sp = self.error_session(session, harness)
+                with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': 'terminal-B'}):
+                    r.hook(self.root, payload)
+                    state = r.load(sp)
+                    state.update(phase='notifying', request={'id': 'retained'},
+                                 checkpoint={'notes_sha256': 'retained'}, notify_error='Unknown delivery',
+                                 hook_implementation_sha256='0' * 64)
+                    r.atomic(sp, state)
+                    saved = sp.read_bytes()
+                    notes = r.notes_path(self.root, session)
+                    notes.parent.mkdir(exist_ok=True)
+                    notes.write_text('Retained notes; no repeat notification.')
+                    path.write_text('{broken json}\n')
+                    sidecar = sp.with_suffix('.scan-error.json')
+                    if fault == 'directory':
+                        sidecar.mkdir()
+                    atomic = r.atomic
+                    def write(target, value):
+                        if target == sidecar and fault != 'directory':
+                            raise OSError(fault, 'Synthetic diagnostic storage failure')
+                        return atomic(target, value)
+                    command = shlex.join(['orca', 'orchestration', 'send', '--from', 'terminal-B',
+                                          '--type', 'escalation', '--subject', 'Blocked', '--body', 'Stop exact assignment.',
+                                          '--task-id', 'task_actual', '--dispatch-id', 'ctx_actual'])
+                    log = io.StringIO()
+                    with patch.object(r, 'atomic', side_effect=write), contextlib.redirect_stderr(log), patch.object(r, 'invoke') as invoke:
+                        for name, data in [('Read', {}), ('Bash', {'command': f'python3 -I {r.SCRIPT} session-status --session {session}'}),
+                                           ('Bash', {'command': command}), ('exec_command', {'cmd': command})]:
+                            self.assertEqual(r.hook(self.root, {**payload, 'tool_name': name, 'tool_input': data}), {})
+                        for event in ('PreToolUse', 'PreCompact'):
+                            with self.assertRaises(ValueError):
+                                r.hook(self.root, {**payload, 'hook_event_name': event})
+                        for recursive in (False, True):
+                            self.assertEqual(r.hook(self.root, {**payload, 'hook_event_name': 'Stop',
+                                                               'stop_hook_active': recursive, 'stopHookActive': recursive}), {})
+                        invoke.assert_not_called()
+                    self.assertIn('scan diagnostic not persisted:', log.getvalue())
+                    self.assertIn('Rotation scan failed:', log.getvalue())
+                    self.assertEqual(sp.read_bytes(), saved)
+                    self.assertEqual(notes.read_text(), 'Retained notes; no repeat notification.')
+                    self.assertTrue(sidecar.is_dir() if fault == 'directory' else not sidecar.exists())
+
+    def test_first_drift_commit_failure_and_programming_fault_never_allow_recovery(self):
+        import errno
+        for harness in ('claude', 'codex'):
+            session = 'commit-failure-' + harness
+            path, payload, sp = self.error_session(session, harness)
+            saved = sp.read_bytes()
+            atomic = r.atomic
+            def unwritable(target, value):
+                if target == sp:
+                    raise OSError(errno.ENOSPC, 'Synthetic authority storage failure')
+                return atomic(target, value)
+            with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': 'terminal-B'}), patch.object(r, 'invoke') as invoke:
+                with patch.object(r, 'atomic', side_effect=unwritable), patch.object(r, 'scan') as scan:
+                    for name in ('Read', 'Edit'):
+                        with self.assertRaises(OSError):
+                            r.hook(self.root, {**payload, 'tool_name': name})
+                    scan.assert_not_called()
+                self.assertEqual(sp.read_bytes(), saved)
+                self.assertFalse(sp.with_suffix('.scan-error.json').exists())
+                with patch.object(r, 'scan', side_effect=TypeError('Unrelated programming fault')):
+                    with self.assertRaisesRegex(TypeError, 'Unrelated programming fault'):
+                        r.hook(self.root, {**payload, 'tool_name': 'Read'})
+                self.assertFalse(sp.with_suffix('.scan-error.json').exists())
+                invoke.assert_not_called()
+
+    def assert_saved_state_host_veto(self, payload, harness, events=('PreToolUse', 'PreCompact')):
+        import contextlib
+        import io
+        for event in events:
+            stdout, stderr = io.StringIO(), io.StringIO()
+            argv = ['rotation', '--root', str(self.root), 'hook', '--harness', harness]
+            with patch.object(sys, 'argv', argv), patch.object(sys, 'stdin', io.StringIO(json.dumps({**payload, 'hook_event_name': event}))), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                if harness == 'codex' and event == 'PreCompact':
+                    with self.assertRaises(SystemExit) as raised:
+                        r.main()
+                    self.assertEqual(raised.exception.code, 0)
+                    value = json.loads(stdout.getvalue())
+                    self.assertIs(value['continue'], False)
+                    self.assertTrue(value['stopReason'])
+                else:
+                    with self.assertRaises(SystemExit) as raised:
+                        r.main()
+                    self.assertEqual(raised.exception.code, 2)
+                    self.assertEqual(stdout.getvalue(), '')
+            self.assertIn('hook failed:', stderr.getvalue())
+            self.assertNotIn('Traceback', stderr.getvalue())
+
+    def test_consumed_saved_field_shapes_and_coherent_drift_reject_before_scan(self):
+        for harness in ('claude', 'codex'):
+            session = 'field-shapes-' + harness
+            path, payload, sp = self.error_session(session, harness)
+            with patch.dict(os.environ, {'ORCA_TERMINAL_HANDLE': 'terminal-B'}):
+                r.hook(self.root, payload)
+                saved = r.load(sp)
+                cursor, drift = saved['transcript_cursor'], saved['terminal_drift']
+                mutations = [{'schema_version': True}, {'epoch': 1.0}, {'threshold': True}, {'phase': []},
+                             {'created_at': 'invalid'}, {'created_at': '2026-01-01T00:00:00'}, {'terminal': []},
+                             {'hook_events': None}, {'hook_events': 'PreToolUse'}, {'hook_events': {}},
+                             {'hook_events': [[]]}, {'hook_events': [None]}, {'hook_events': ['unsupported']},
+                             {'request': []}, {'checkpoint': []}, {'boundaries': [{}]},
+                             {'harness': []}, {'transcript_session_verified': 1},
+                             {'transcript_cursor': {**cursor, 'inode': -1}},
+                             {'transcript_cursor': {**cursor, 'inode': 0}},
+                             {'transcript_cursor': {**cursor, 'inode': True}},
+                             {'transcript_cursor': {**cursor, 'offset': True}},
+                             {'transcript_cursor': {**cursor, 'path': []}},
+                             {'terminal_drift': {k: v for k, v in drift.items() if k != 'actual_terminal'}},
+                             {'terminal_drift': {**drift, 'event': ''}},
+                             {'terminal_drift': {**drift, 'event': []}},
+                             {'terminal_drift': {**drift, 'actual_terminal': []}},
+                             {'terminal_drift': {**drift, 'actual_terminal': saved['terminal']}},
+                             {'terminal_drift': {**drift, 'detected_at': 'invalid'}}]
+                for mutation in mutations:
+                    with self.subTest(harness=harness, mutation=mutation):
+                        r.atomic(sp, {**saved, **mutation})
+                        before = sp.read_bytes()
+                        # A valid transcript must not silently repair malformed authority.
+                        with patch.object(r, 'scan') as scan:
+                            self.assert_saved_state_host_veto(payload, harness)
+                            scan.assert_not_called()
+                        self.assertEqual(sp.read_bytes(), before)
+                        self.assertFalse(sp.with_suffix('.scan-error.json').exists())
+                # Missing optional history is supported for legacy records; observed
+                # absent callers are explicitly present null/empty, never omitted.
+                for actual in (None, ''):
+                    legacy = {**saved, 'terminal_drift': {**drift, 'actual_terminal': actual}}
+                    legacy.pop('hook_events')
+                    r.atomic(sp, legacy)
+                    path.write_text('{broken json}\n')
+                    before = sp.read_bytes()
+                    self.assertEqual(r.hook(self.root, {**payload, 'tool_name': 'Read'}), {})
+                    self.assertEqual(sp.read_bytes(), before)
+                    sp.with_suffix('.scan-error.json').unlink()
+
+    def test_coordinator_routing_and_tool_input_shapes_use_host_denial(self):
+        saved = r.load(self.path)
+        for harness in ('claude', 'codex'):
+            for mutation in ({'retired_sessions': None}, {'retired_sessions': [{}]}, {'boundaries': None},
+                             {'boundaries': [[]]}, {'phase': []}, {'threshold': True}, {'epoch': []}):
+                r.atomic(self.path, {**saved, **mutation})
+                before = self.path.read_bytes()
+                self.assert_saved_state_host_veto(self.payload(), harness)
+                self.assertEqual(self.path.read_bytes(), before)
+            r.atomic(self.path, saved)
+            for tool, data in ((None, {}), ('Read', []), ('Bash', {'command': []}), ('exec_command', {'cmd': {}})):
+                self.assert_saved_state_host_veto({**self.payload(), 'tool_name': tool, 'tool_input': data}, harness,
+                                                  events=('PreToolUse',))
+
     def test_no_state_is_noop_and_bad_state_fails_tool_hook(self):
         self.path.unlink()
         self.assertEqual(r.hook(self.root, self.payload()), {})
