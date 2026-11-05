@@ -2,6 +2,8 @@
 
 更新：2026-11-05。用户要求 macOS 和 Windows 都要支持，目前优先 macOS，并明确启动 Rust 新版本 loop。Swift/macOS 基线提交 6d6f42c 已推送 GitHub main；Rust 工作在 feat/rust-core 分支，VP-009 核心/CLI、VP-010 会话/宿主协议及 VP-011 macOS 原生接入均已通过各自本机离线独立验收。VP-011 freeze-01 曾因父端 session 复用防护缺失而退回；修复后的完整 freeze-02 已由原验证复核缺陷及全部剩余离线范围，协调核对后实际完成账本。VP-012 freeze-02已由原独立会话接受，协调核对762文件/270目录、30020历史普通材料、23554新证据及实际日志后已真实finish。23项清单、6项入口边界、20个有效重签变异包、24项源许可反例、实际全新Cargo target的25步入口及完整许可充分性通过；41 Rust/31核心/73应用/4 loop/11 packaging符合预期。原635材料保留并新增52份归属文件，120个metadata包的687材料全部来源对应。实际release normal/build树为103包，normal边为100包，workspace含dev树为107包；metadata另含13个未启用可选节点，不能视为实际链接清单。旧freeze-01三类四反例及协调摘要排序错误保留。接受绑定原完整快照，本次四文档状态更新另记。Rust 和 Windows 的结果分别验证，现有 Swift 验收不能替代。
 
+当前补充（2026-11-05）：PR1 已合并并同步 main，当前修复分支为 `fix/windows-cleanup-stop`。freeze-04 被原独立以 VP013-I-003 退回：合法清理线程在 TLS 内尚可领取请求时误判停止，Poll/Exit/orphan 会 panic。返修03改用请求显式双重 Job/许可所有权和真实 receiver 生命周期；原四例自检由0/1/1/1变为全0，健康后续请求及原11断言保持。完整freeze-05现已由原独立验证者确认VP013-I-003修复并通过阶段检查：亲自运行原样四例、所有权/健康后续/丢失循环/自动释放及当前Mac25步55Rust和完整Windows默认目标检查。协调核对后接受返修阶段，不能外推为Windows产品接受。
+
 ## 执行架构
 
 采用 Rust 共享核心与各系统适配层，逐步迁移已有行为。根 Cargo workspace 下建立 crates/voiceport-core 和 crates/voiceport-cli，独立二进制命名 voiceport-rs，避免与 Swift 的 VoicePort/voiceport-cli 碰撞。macOS 初期保留现有 Swift/AppKit/SwiftUI 外壳，后端通过有界 JSONL 子进程协议接入 Rust，明确会话身份、取消、重试和退出资源归属；凭据不通过 argv 传递，应用直接启动打包内二进制，不拼接 shell。
