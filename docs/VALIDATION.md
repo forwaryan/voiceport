@@ -299,6 +299,16 @@ freeze-04的独立失败保持：合法清理Spawner的实际线程在TLS析构�
 
 协调材料核对782文件/276目录、770保护、288新证据8713408字节、最终快照/原字节和5项外部产物身份一致。首次checker误将external artifact记录路径字符串当列表，原脚本/错误保存后按真实schema更正并0；未改开发证据或重跑开发测试。报告c164ed14ab7e326ffc4d73a4f6f708981611dea129546819fa77d93a786335a0、index97b9d7038c05d26d7d6890a1eefefcbf5e42df263ffffdbc8e8fb4cda855ddbb。待新完整冻结原独立复核，VP-013整体false；未操作真实录音/auth/云端/目标。
 
+### freeze-06原独立存储阶段接受（原生安全与完整产品未接受）
+
+原独立亲自审查全部新storage/native/Recording源码、测试与威胁边界，未确认新已实现范围阻断。Mac完整25步通过60Rust/31core/73app/4loop/11packaging、fmt/严格clippy及六项预期非零CLI；693包文件/签名来源/helper ready-status-shutdown/safe smoke通过。全新Windows默认all-target检查0，16真实ring AMD64 COFF、1735541字节有效adapter rmeta；三个空测试rmeta不作为运行证据，3项native测试只编译未执行。
+
+原11、cleanup-TLS四例、prior12与真实服务TLS/冷失败/160生命周期通过，历史原文与必要构造器迁移补丁保持；ownership另需一处只读path accessor迁移，首次编译101单列。9项新存储策略/WAV/guard控制通过；初次异常drop控制将Weak失效误当析构体完成而101，增加实际析构事件确认后通过，全部原所有权断言保留。负向API实际编译101并确认E0616/E0277。原service-TLS构造器迁移版仍101/collector1，只有两个已打印Poll观察通过，缺失第三项不计成功；恢复尾manual-Retry语义适配另为0。独立诊断collector与self-exclusion排序假设失败/修正均保留，无生产修复或自动重传。
+
+协调check-vp013-accept-06.py首次0：782公共+5操作输入、276+2目录、766保护、69107历史普通/10链接/6特殊及完整集合/模式保持，1851新普通证据119311468字节/337目录和37项外部产物身份一致。报告SHA256c6f3e2d7f89ddb234a06bb19809265b2291882b94fc0ae3a45e92d907f7244fe，index12ccf7a5e688cf9d8a383b004f5202fa4ae908ce165d395d88dfe576f3d89e67。只接受原freeze-06源码/编译/离线所有权阶段；状态文档集成另记，原快照/报告/index保持。120包行和687材料未变；Windows Cargo features变化不代表Windows分发许可完整。
+
+历史Git回执曾在freeze-05接受后被协调误写，已恢复原字节/hash，但inode/mtime变化未伪造恢复；原独立在freeze-06明确核对该披露和旧记录，不能声称历史文件从未被触碰。无协调测试重跑、真实录音/auth/云端/剪贴板/目标或权限操作。实际NTFS ACL/sharing/reparse/安全与竞态、Windows运行、采集和Start/Stop、残留清理、保护投递、完整link/PE与打包材料仍必需；完整VP-013未接受。
+
 ## 待完成的系统层验证
 
 | 场景 | 当前状态 | 验收方法 |

@@ -4,7 +4,7 @@
 
 当前补充（2026-11-05）：PR1 已合并并同步 main，当前修复分支为 `fix/windows-cleanup-stop`。freeze-04 被原独立以 VP013-I-003 退回：合法清理线程在 TLS 内尚可领取请求时误判停止，Poll/Exit/orphan 会 panic。返修03改用请求显式双重 Job/许可所有权和真实 receiver 生命周期；原四例自检由0/1/1/1变为全0，健康后续请求及原11断言保持。完整freeze-05现已由原独立验证者确认VP013-I-003修复并通过阶段检查：亲自运行原样四例、所有权/健康后续/丢失循环/自动释放及当前Mac25步55Rust和完整Windows默认目标检查。协调核对后接受返修阶段，不能外推为Windows产品接受。
 
-存储续作01已由原开发交付：新增惰性私有存储、保守的Windows ACL/路径/reparse检查、原子新文件和有界WAV完成边界，Recording私有字段携带根/祖先/marker占用引用到Controller/Job真实停止。协调核对782输入/276目录、770保护和288新证据后准备新冻结；开发60Rust/严格clippy/完整默认Windows检查通过，3项原生测试只编译未执行，不能声称NTFS安全语义或Windows产品接受。设备采集/Start-Stop、清理、保护投递及链接/运行/分发仍未完成。
+存储续作01的完整freeze-06已通过原独立源码/编译/离线所有权阶段检查，协调完整核对后接受该阶段：782公共+5操作输入、276+2目录、766保护和69107历史普通材料保持，1851新证据119311468字节一致。惰性私有存储、保守Windows ACL/路径/reparse策略、原子新文件、有界WAV完成及Recording根/祖先/marker持有到Controller/Job真实停止已审查；独立Mac25步60Rust及完整默认Windows all-target检查通过，新存储/真实TLS所有权控制通过。历史fixture仅必要构造器迁移，另一个只读路径accessor迁移单列，不称字节未变执行；原service-TLS101与manual-Retry适配0分列。3项原生测试只编译未执行，实际NTFS安全仍未接受。设备采集/Start-Stop、清理、保护投递及链接/运行/分发仍必需，完整VP-013未接受。
 
 ## 执行架构
 

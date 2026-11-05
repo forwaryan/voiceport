@@ -154,3 +154,23 @@ full VP-013 gates. The unchanged native Mac license generator only updates its
 manifest input fingerprint for the Windows binding-feature declaration; recorded
 package/material/selection/scope comparisons determine the actual delta, not a
 claim about Windows shipped dependencies. Full product_accepted remains false.
+
+## Independent freeze06 checkpoint
+
+The original independent reviewer passed the complete source/compile/offline
+ownership checkpoint, and the coordinator checked the sealed reports, complete
+1851-record evidence index and all frozen/history identities before accepting
+that bounded stage. The current Mac entry passes25 steps including60 Rust tests;
+the fresh default Windows all-target check passes with16 real ring COFF objects.
+New policy, WAV, guard and actual service-thread TLS controls pass. Historical
+fixtures retain their exact originals and necessary constructor patches; one
+ownership helper additionally needs a read-only path accessor migration. Earlier
+service-TLS original semantics still fail101; the explicit manual-Retry recovery
+adaptation passes separately. Test-fixture and collector failures remain recorded.
+
+This decision does not accept native NTFS ACL/sharing/reparse/security or device
+runtime behavior. Three native integration tests were compiled and not executed.
+Capture, Start/Stop, deletion and automatic delivery remain disabled. Native
+runtime, retention cleanup, protected delivery, successful Windows link/PE and
+packaging/material gates remain mandatory. See [validation](VALIDATION.md) for
+execution, evidence and historical receipt-restoration boundaries.
