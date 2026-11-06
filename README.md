@@ -1,122 +1,205 @@
 # VoicePort
 
-macOS 全局语音输入工具：使用自己的 Codex / ChatGPT 登录调用云端听写，将文字输入 Orca 等 coding 软件。用户检查后自行发送。
+**语音引擎随你选，文字落在光标处。**
 
-当前桌面应用保留 Swift/macOS 原生外壳，默认转写已接到打包内 Rust 子进程。VP-006 Swift 行为基线、VP-009 Rust 核心/CLI、VP-010 会话/宿主协议已通过各自本机离线独立验收；VP-011 原生接入 freeze-01 曾因同一 child 重复 session 可误接旧文字而独立退回；修复后的 freeze-02 已由原独立会话完成缺陷及剩余矩阵复核，31 核心/73 应用与本轮离线检查通过，协调核对后已完成 VP-011。VP-012 完整开发包的 freeze-02 已通过原独立会话验收和协调核对，账本已完成：762文件/270目录、schema2目录模式指纹、双产物签名对应、120个metadata依赖的687份材料，以及41 Rust、31核心、73应用、4 loop、11 packaging和真实25步入口符合预期。首次freeze-01三类四反例的退回历史保留；新冻结独立复核了原缺陷、23项清单边界、6项入口边界、20个有效重签变异包、24项源许可反例及完整条款充分性。Windows平台任务VP-013已开始，当前可用主机为macOS，尚无已连接Windows环境。真实录音、账号转写和 Orca 接收待用户参与验证。产品目标同时支持 macOS 和 Windows，当前优先 macOS；Windows完整默认目标类型检查已通过，链接和运行尚未通过；当前部分实现曾因取消后普通轮询无法恢复新任务而被独立退回；修复后的完整freeze-02已由原独立会话确认缺陷修复，协调核对后接受本次阶段检查。原11项断言、相邻取消/退出路径及当前Mac25步/52Rust和完整Windows目标检查通过。VP-013整体仍未接受。续作03已交付后台执行器、结果回收和显式手动重试，新完整freeze-03已由原独立会话退回：VP013-I-002确认工作线程的is_finished可先于线程局部资源清理结束，同步join使普通Poll、取消Poll及孤立任务回收等待，实际门闩反例成功预期0、退出1。独立53项Rust、Mac25步和完整Windows默认目标检查通过，未覆盖该行为失败；协调核对后已真实retry/start返修attempt。返修02已交付并通过材料核对：join移到单一进程级清理线程，保留唯一Job/File/许可直到真实停止；54项Rust及完整Windows默认目标检查通过。原样after探针仍101，孤立任务恢复尾增加显式Retry的适配保持三路响应断言且通过，原失败不改称成功；该返修当时待新完整冻结独立复核，后续 freeze-04 退回及 freeze-05/06 接受的阶段范围见下文。真实录音、原生存储安全、保护投递及完整Windows链接/实机/打包仍未完成。迁移步骤见 [跨平台路线](docs/CROSS_PLATFORM.md)。方案与实施记录见 [完整方案](docs/SOLUTION.md)、[Loop 规则](docs/LOOP_METHODS.md)、[任务计划](task_plan.md)、[进度](progress.md) 和 [验证与解除条件](docs/VALIDATION.md)。
+VoicePort 的产品目标是提供一个统一的桌面语音输入入口：**ChatGPT、微信语音或其他识别引擎，按你的习惯选择和替换。** 更换识别来源后，仍沿用同一套快捷键、录音、预览与输入流程，将文字送到正在使用的编辑器或终端，由你检查并发送。
 
-最新协调状态（2026-11-05）：Windows freeze-04 独立复核发现 **VP013-I-003**，清理线程仍在 TLS 析构中时可能误判停止并触发 panic；返修03的完整 freeze-05 已由原独立验证者确认 VP013-I-003 修复并通过阶段检查：原样清理 TLS 四例全部通过，实际所有权、健康后续请求及当前 Mac/Windows 编译回归通过；协调核对后接受本次返修阶段，VP-013 整体仍未接受。主协调者已按原 Run 完成交接；全部角色统一最多 **5 轮上下文**，即初始上下文加最多 **4 次已完成压缩**。进入最后一轮立即利用剩余空间保存交接，禁止第 5 次压缩，不额外压测或强制压缩。须证明真实新 session、首次计数 0 与当前进程实际 hook 加载，新 terminal 或配置文件存在均不足以证明；SessionStart 未观察到须披露，真实 PreToolUse 加新 transcript 证明可满足启动条件。worker checkpoint 升级后结束当前轮，主协调者确认精确旧 dispatch guarded stop 和 exited/释放后，才以 worker-start 续接原 Run、产品 attempt 与角色沿革，见 [全角色会话轮换](.claude/COORDINATOR_ROTATION.md)。首次轮换操作实现独立评审失败并保留 7 个可复现缺陷；当前返修和完成后的新固定输入独立复核待办，不预判返修成败。身份、计数、fail-closed 阻断与 checkpoint 完整性是策略要求，尚非独立接受的保证。真实新会话 PreToolUse 加载已有观察，SessionStart、实际 PreCompact veto 与完整自动生命周期仍未执行。原生 Codex 文档启动因 hook 信任提示失败且未接收/执行任务，待用户在原生 UI 信任并验证实际加载；独立 Claude 文档支撑不改变该失败结果。
+当前开发版以 macOS 为主，已接入 ChatGPT 最终转写和系统设备端实时预览。**微信语音、其他最终转写后端及用户可操作的引擎切换尚未实现**；下图展示的是包含这些能力的产品方向。
 
-Windows 存储续作的完整 freeze-06 已通过原独立源码、编译与离线所有权阶段检查，协调核对完整冻结和证据后接受该阶段。新增的显式私有存储入口、受限原生 ACL/路径检查和 Recording 目录/文件持有边界已审查；独立 Mac 25 步入口（60 Rust、31 Swift 核心、73 应用、4 loop、11 packaging）、完整默认 Windows 目标检查及新增存储/真实线程 TLS 所有权控制通过。3 项 Windows 原生集成测试仅编译未执行，实际 NTFS 权限、共享、路径与运行安全仍未验收。录音、Start/Stop、清理和自动投递保持禁用，完整 VP-013 未接受。
+<p align="center">
+  <img src="docs/images/voiceport-hero.png" alt="VoicePort 产品方向图：ChatGPT、微信语音与更多识别引擎汇入同一个语音输入入口，再将文字送到当前光标。ChatGPT 标为已接入，微信语音、其他引擎和切换能力标为规划中。" width="880">
+</p>
 
-Windows 采集续作已交付开发候选；freeze-07 旧评审因用户要求修订轮换策略而明确行政中断，旧验证进程已停止并确认退出，旧快照/证据保留，待策略工作结束后建立新完整冻结并独立审查；此次中断不作产品通过或退回，原 Run/产品 attempt 和开发角色沿革保留：新增惰性采集入口、合成后端共用的同步后台所有权流程，以及固定缓冲 WinMM 后端；组合已持有的私有 Pending，确认设备关闭后才完成 WAV。开发 71 项 workspace 测试、fmt/严格 clippy、完整默认 Windows 目标检查和材料检查通过；新增 1 项采集原生测试与既有 3 项存储原生测试仅编译未执行。该批量后端的系统调用与 Drop 可能阻塞，未轮询或停止时没有自主墙钟停止保证。桌面 Start/Stop 仍禁用，未进行真实录音；独立及原生运行验收均未完成。
+<p align="center">macOS 13+ · Swift 6 + Rust · 当前开发版 0.2.3</p>
 
-## 构建与启动
+> **当前状态：** macOS 应用已实现录音、转写和受保护的自动输入路径；Orca 中的完整语音输入流程仍待真实试用确认。Windows 正在开发，尚不能用于桌面听写。上图及下方分镜均为通过 `image-use` 生成的概念示意，非应用截图或验收证据。
 
-需要 macOS 13+、Swift 6 Command Line Tools 和 Rust 1.95+。正常打包构建 Swift 与 locked Rust release，安装并先签名 `Contents/Helpers/voiceport-rs`，再签外层 .app；本机 arm64 构建。`--skip-build` 使用现有 release 产物，要求 Swift 和 Rust 产物都已存在。运行已打包应用无需安装 Rust 工具链。
+[识别引擎](#识别引擎按你的习惯选) · [快速开始](#快速开始) · [听写如何工作](#听写如何工作) · [平台支持](#平台支持) · [常见问题](#常见问题) · [开发与验证](#开发与验证)
+
+## 为什么做 VoicePort
+
+写需求、补充上下文、描述问题时，想法往往先于打字出现。你可能喜欢 ChatGPT 的识别结果，也可能习惯微信语音，或者希望使用其他服务。VoicePort 希望把“用谁来识别”和“在哪里输入”分开，让你换引擎时也能继续使用熟悉的输入方式。
+
+**产品方向：识别引擎可以换，输入位置和操作习惯保持一致。**
+
+| 能力 | 使用体验与状态 |
+| --- | --- |
+| 识别引擎可替换 | 产品方向。计划让 ChatGPT、微信语音等后端共用一个输入入口；当前尚无引擎切换设置。 |
+| 全局快捷键 | 已实现。在目标应用中开始、结束听写，应用常驻菜单栏。 |
+| 本机实时预览 | 已实现。设备端识别可用时，边说边更新支持的输入框；不可用时继续录音，停录后转写。 |
+| 停录后转写 | 当前通过 ChatGPT 听写服务生成最终文字。 |
+| 保留你的控制权 | 已实现。不自动发送，不生成回车；焦点或输入内容变化时停止后续自动写入。 |
+| 失败后可恢复 | 已实现。云端转写失败时保留已有本机预览；保留的录音可手动重试。 |
+
+## 识别引擎，按你的习惯选
+
+目标体验是：**选择识别引擎 → 定位输入光标 → 说话 → 检查文字**。来源可以不同，文字都通过 VoicePort 的统一输入流程进入目标位置。
+
+| 来源 | 定位 | 当前状态 |
+| --- | --- | --- |
+| **ChatGPT 听写** | 使用自己的 ChatGPT 登录完成最终转写。 | 已接入，是当前开发版的最终转写来源。 |
+| **微信语音** | 作为可替换的识别来源，沿用相同快捷键和输入流程。 | 规划中，接入方式尚未确定。 |
+| **其他识别服务 / 自定义后端** | 为不同语言、识别偏好或部署需求提供更多选择。 | 扩展方向，尚无通用插件、配置界面或自动发现机制。 |
+| **macOS 设备端识别** | 录音期间提供本机实时预览。 | 已实现；目前是预览环节，不能作为可切换的最终转写后端。 |
+
+当前版始终使用 ChatGPT 做最终转写，不会自动切换服务。接入其他后端后，各自的登录、费用与数据去向需随所选来源明确说明；更换引擎也不应改变“由你确认发送”的操作边界。
+
+## 快速开始
+
+以下步骤用于当前已经接入的 **ChatGPT 路径**。
+
+### 1. 准备环境
+
+当前提供源码构建的 macOS 开发包，需要：
+
+- **macOS 13 或更新版本**。目前验证的是 Apple Silicon / arm64 构建。
+- **Swift 6** 工具链，以及 **Rust / Cargo 1.95+**。
+- **Python 3**，用于打包和许可材料检查。
+- 已安装 **Codex CLI**，并能通过自己的 ChatGPT 账号进行文件登录。
+
+当前没有经过公证的正式发行包；Intel Mac 和 Windows 安装包尚未完成验证。
+
+### 2. 登录、构建、启动
 
 ```bash
+git clone https://github.com/forwaryan/voiceport.git
+cd voiceport
+
+# 使用你自己的 ChatGPT 账号登录
+codex login
+
+# 构建 Swift 应用与 Rust 转写子进程，生成本机开发包
 bash scripts/package_app.sh
+
+# 打开结果与设置窗口
 open dist/VoicePort.app --args --show-window
 ```
 
-应用常驻菜单栏。先在“结果与设置”授予辅助功能权限，再点好目标输入框，按 **Control + Option + Space** 开始听写，文字会随本机识别结果更新；再按一次停录并由 ChatGPT 校正。应用启动及每次开始前检查当前进程的实际辅助功能授权；自动输入开启但授权未生效时不会开始录音，也不会先申请麦克风权限。当前开发包采用 ad-hoc 签名，更新二进制后系统列表里的开关可能仍亮着，但旧签名授权已失效：在系统设置 → 隐私与安全性 → 辅助功能中移除旧 VoicePort，再用加号添加正在使用的 `.app` 并打开开关，然后回到原输入框开始。关闭自动输入仍可仅转写到面板。可通过系统启动服务运行只读诊断，例如 `open -n -g -W --stdout /tmp/voiceport-permission.json /path/to/VoicePort.app --args --check-input-permission`，查看输出的 `accessibilityTrusted`。该模式不录音、不请求权限、不启动后端、不读凭据。不要以从已获授权终端直接执行包内程序的结果代替应用自身授权检查：直接执行可能继承终端的权限归属。首次开始时申请麦克风和语音识别权限，授权后回到原输入框。也可以使用菜单开始/停止。冲突时切换为 Control + Shift + Space。本机实时识别需要系统已安装所选语言的设备端识别能力；不支持、权限被拒或识别不可用时，会说明原因并继续原有的停录后转写流程，不会改用 Apple 云端识别。
+应用生成在 `dist/VoicePort.app`。运行打包后的应用无需安装 Rust 工具链；构建细节见 [打包说明](docs/PACKAGING.md)。
 
-登录由 Codex 管理，请先在自己的终端运行 `codex login`。首版读取 `CODEX_HOME/auth.json`，默认 `~/.codex/auth.json`，不修改该文件。只支持 ChatGPT 文件登录；API key 模式、仅存于 Keychain 的登录和应用内 token 刷新尚未支持。
+登录默认读取 `~/.codex/auth.json`，也支持 `CODEX_HOME/auth.json`。目前只支持 ChatGPT 文件登录，尚不支持 API key、仅保存在 Keychain 中的登录或应用内刷新登录。
 
-实时预览仅在本机识别，录音结束后仍上传至 ChatGPT 作最终校正。自动输入要求原输入框支持读取文字与选区，并能通过辅助功能写入选中文字或整个值；不再只接受 `AXValue` 可写的输入框。每次更新检查原应用、原控件、非安全输入、内容和光标，仅替换本次听写拥有的文字；最终结果替换预览，不重复追加。云端校正失败时保留已经输入的本机预览，避免因网络错误撤回可用文字。切换焦点、移动光标、编辑文字或能力检查失败会停止本次自动输入，结果保留在面板；未知或只读控件仍需手动复制。取消时只有原文字及选区仍匹配才撤回预览。自动输入将换行和控制字符转为空格，不触碰剪贴板、不发送 Return；手动复制保留原文。设置中可关闭自动输入。Orca 的 `Terminal input` 是终端输入通道，不是 CLI 整行文本。针对这个已确认的控件，应用用真实字符事件追加两次识别结果一致的前缀，停录时补入剩余本机文字；不会发送删除或回车，也不通过改写隐藏 textarea 来假装已输入。键盘、鼠标操作或焦点变化会停止后续输入；取消不撤回已进入终端的文字。最终校正与已输入文字不一致时仅保留在面板，不自动重写 CLI。Orca 需要时会启用其应用级 `AXManualAccessibility` 接口，不修改系统全局偏好。实际麦克风、系统权限及具体编辑器的接收效果仍需手动试用验证，离线测试不代表所有编辑器兼容。
+### 3. 授予权限
 
-## CLI
+| 权限 | 用途 | 未授权时 |
+| --- | --- | --- |
+| 麦克风 | 录制你主动开始的语音。 | 无法录音。 |
+| 语音识别 | 使用设备端识别，提供实时预览。 | 继续录音，停录后转写。 |
+| 辅助功能 | 确认原输入框、光标和文字输入能力。 | 自动输入开启时，会在录音前提示处理授权；也可关闭自动输入，仅转写到面板。 |
 
-CLI 名为 `voiceport-cli`，避免在 macOS 大小写不敏感磁盘上与应用 `VoicePort` 冲突。
+在“结果与设置”中点击 **授权辅助功能**，在系统设置中允许当前的 VoicePort。首次请求麦克风和语音识别权限后，请回到目标输入框，重新开始一次听写。
 
-```bash
-swift run voiceport-cli --help
-swift run voiceport-cli demo
-swift run voiceport-cli doctor
-swift run voiceport-cli transcribe /path/to/audio.m4a --language zh
-```
+> **更新开发版后需要留意：** 本机包使用 ad-hoc 签名。更新程序后，辅助功能列表里的开关可能仍亮着，但旧授权已经失效。请移除旧 VoicePort 条目，再添加正在运行的 `dist/VoicePort.app` 并启用。应用会检查当前进程的实际权限。
 
-`demo` 明确为离线模拟，不录音、不读取凭据、不调用云端。`doctor` 只报告登录文件是否存在。可使用 `--auth /path/to/auth.json` 指定自己的登录文件，勿把凭据复制到仓库。支持 m4a/mp4、wav、mp3、webm、ogg、flac，最大 20 MB。
+### 4. 在原输入位置开始说话
 
-## Rust CLI（VP-009 本机离线独立验收通过）
+1. 回到要输入文字的应用，点好光标位置。
+2. 按 **Control + Option + Space** 开始听写。
+3. 说完后，再按一次相同快捷键结束，等待最终转写。
+4. 检查文字，由你自行发送。
 
-需要 Rust 1.95+。根 workspace 包含 `voiceport-core`、`voiceport-cli` 和开发中的 `voiceport-windows`，版本由 Cargo.lock 固定；当前 macOS 应用通过独立的 Rust host 转写，Swift CLI 保留为行为基线与对照工具。Windows crate已有转写阶段控制器、PCM WAV编码及显式 `--run` 的Win32托盘/消息循环/快捷键动作/手动复制壳。后台执行器清理返修的 freeze-05 已接受源码/离线阶段，私有存储 freeze-06 已接受源码/编译/离线所有权阶段；此前同步 join 阻塞及后续 TLS 清理误判的独立退回保留为历史。采集已实现为惰性开发候选，独立复核未完成。完整默认功能Windows目标类型检查已通过，但 Windows 链接/PE、实际设备/NTFS/安全/运行及人控 Start/Stop 集成验收仍未完成；桌面 Start/Stop 保持禁用，尚不能用于Windows桌面听写，完整 VP-013 未接受。
+单次录音最长 **3 分钟**。快捷键冲突时，可在设置中切换为 **Control + Shift + Space**；也支持从菜单栏开始或结束。
+
+## 听写如何工作
+
+<p align="center">
+  <img src="docs/images/voiceport-workflow.png" alt="产品目标的四步分镜：选择识别引擎、定位光标、说话、检查文字。ChatGPT 已接入；微信语音、其他引擎及切换能力标为规划中，最后仍由使用者自行发送。" width="880">
+</p>
+
+上图展示包含引擎选择的目标流程，当前应用尚无第一步的切换功能。**当前实现是：录音时由 macOS 设备端识别提供预览，停录后由 ChatGPT 完成最终转写。** 本机识别不可用时，应用会说明原因，保留停录后转写的流程，不会自动改用 Apple 云端语音识别。
+
+不同输入位置有不同的处理方式：
+
+| 输入位置 | 实时文字 | 最终转写 |
+| --- | --- | --- |
+| 支持读取文字、选区和辅助功能写入的普通输入框 | 只更新本次听写拥有的文字范围，保留两侧内容。 | 在原范围内替换预览，避免重复追加。 |
+| Orca 的 `Terminal input` | 通过字符事件追加连续识别结果一致的前缀；停录时补入剩余本机文字。 | 只追加与已输入前缀一致的内容；需要改写已有文字的校正结果保留在面板。 |
+| 未知、只读或无法确认能力的控件 | 文字保留在结果面板。 | 可手动复制。 |
+
+听写时请保持原输入位置。切换焦点、编辑文字或移动光标可能使后续自动输入停止。密码字段与安全输入状态不会自动写入。
+
+**终端里的文字一旦输入，取消不会将其撤回。** 应用不会通过删除已有 CLI 内容来强行套用校正结果，也不会自动按回车。自动输入会把换行和控制字符转换为空格，手动复制则保留原文。
+
+## 平台支持
+
+| 部分 | 当前状态 |
+| --- | --- |
+| macOS 菜单栏应用 | 已提供源码构建；包括录音、本机预览、云端转写、结果面板和输入权限检查。 |
+| macOS 自动输入 | 已实现普通字段与 Orca 终端路径；具体应用兼容性和 Orca 完整语音输入仍需实测。 |
+| Rust 转写 CLI / 子进程 | 已实现文件转写、取消、手动重试和有界 JSONL 宿主协议。 |
+| Windows 桌面听写 | 开发中。采集所有权、后台执行和存储基础已合入；桌面 Start/Stop 尚未接通，不能作为可用的听写应用。 |
+
+Windows 的目标编译检查不等于实机运行通过；设备、NTFS 权限、完整链接与打包仍有未完成的验证。详见 [Windows 状态](docs/WINDOWS.md) 和 [跨平台路线](docs/CROSS_PLATFORM.md)。
+
+## 常见问题
+
+### 能识别，但文字没有进入光标位置？
+
+先看应用显示的具体输入状态。常见原因是辅助功能授权未生效、开始时焦点在 VoicePort 自己的窗口、原输入位置已经变化，或控件能力无法确认。
+
+重新授权当前应用后，回到目标输入框，再用全局快捷键开始。仅在面板点“复制”不会自动投递。对保留录音执行手动重试时，也不会把旧文字自动写入新的输入位置。
+
+### 没有实时预览，停录后才有文字？
+
+实时预览依赖已授权的系统语音识别，以及对应语言的设备端识别能力。可检查系统听写、语言资源和应用中的本机识别提示；自动识别、中文和 English 可在设置中选择。
+
+### 无法连接 ChatGPT 转写服务？
+
+确认 Codex 的 ChatGPT 登录可用，并检查网络。macOS 应用会将系统中显式配置的 HTTPS 代理传给 Rust 子进程；Rust CLI 也支持通过 `VOICEPORT_HTTPS_PROXY` 指定 HTTP / HTTPS 代理。代理 URL 不接受用户名或密码。
+
+应用不会自动重传失败的录音；网络恢复后，可在结果面板选择 **重试这段录音**。
+
+### 语音会发到哪里，是否保存历史？
+
+- **实时预览在本机识别。** 停录后的最终转写会上传录音到 `chatgpt.com/backend-api/transcribe`，使用你自己的 ChatGPT 登录。
+- 默认不保存转写历史或遥测，结果保留在内存中。录音位于 `~/Library/Caches/io.voiceport.recordings-v1`，使用受限的目录与文件权限。
+- 成功、取消或正常退出时会尝试删除本次录音；转写失败时可保留录音供手动重试。启动清理只处理严格超过 24 小时、归属确认且未占用的残留，并非到时必删。
+- 该听写接口未公开承诺稳定性或用量规则，也不能仅凭端点相同就断言与 Codex App 的模型、识别质量或扣量方式相同。
+
+## 命令行使用
+
+Rust CLI 适合转写已有音频，不负责录音或向输入框投递文字：
 
 ```bash
 cargo build --workspace --release --locked
-./target/release/voiceport-rs --help
+
+# 离线演示，不录音、不读取登录、不联网
 ./target/release/voiceport-rs demo
-```
 
-`doctor [--auth PATH]` 只检查登录文件是否存在，不读内容、不证明有效。`transcribe AUDIO [--language zh] [--auth PATH]` 会使用自己的 ChatGPT 文件登录上传指定音频，运行示例为：
+# 只检查登录文件是否存在，不证明登录有效
+./target/release/voiceport-rs doctor
 
-```bash
+# 上传指定文件并转写；Ctrl-C 取消
 ./target/release/voiceport-rs transcribe /path/to/audio.m4a --language zh
 ```
 
-默认路径为 `CODEX_HOME/auth.json`，否则平台用户目录下的 `.codex/auth.json`。不刷新 token、不自动重传、不录音或投递；Ctrl-C 取消网络等待与响应读取。退出码为 0 成功、1 运行错误、2 参数错误、130 取消；错误写入 stderr，转写原文写入 stdout。
+支持 m4a/mp4、wav、mp3、webm、ogg、flac，文件上限 **20 MB**。可使用 `--auth PATH` 指定登录文件。Swift 对照 CLI 的入口为 `swift run voiceport-cli --help`。
 
-固定 HTTPS 端点，禁重定向、cookie 持久化和自动系统/环境代理。支持的格式与 Swift CLI 相同，实际音频读取上限 20,000,000 字节；认证文件及保留的响应正文分别限 1,000,000 字节。连接/读取停顿/总请求上限分别为 15/90/110 秒，本地文件读取不计入网络超时。代理/TLS 兼容性、Windows 构建运行及系统集成尚未验证，详见 [跨平台路线](docs/CROSS_PLATFORM.md)。
+集成子进程可使用 `voiceport-rs host`。协议、消息大小、超时和会话边界见 [宿主协议](docs/HOST_PROTOCOL.md)。
 
-## Rust 子进程接口（VP-010 本机离线独立验收通过）
-
-`./target/release/voiceport-rs host [--auth PATH]` 使用 stdin/stdout JSONL 管道。启动只输出 `ready`，不读取登录或音频、不联网；只有明确的 `transcribe` 或 `retry` 命令调用转写。可依次输入以下两行检查空闲状态并退出：
-
-```json
-{"version":1,"action":"status","request_id":"q1"}
-{"version":1,"action":"shutdown","request_id":"end"}
-```
-
-协议包含转写、手动重试、取消、状态和退出；完整字段及事件见 [宿主协议 v1](docs/HOST_PROTOCOL.md)。输入帧最多 16,384 字节，输出帧最多 2,000,000 字节（均不含 LF），每帧写出确认总上限 5 秒。每个进程最多保留 1,024 个不同有效请求 ID，达到预算后返回错误并正常退出，宿主须处理重启。会话身份只在同一子进程内有效，重启后须以新进程身份隔离旧回调。手动重试结果带 `is_retry=true`，原生宿主须关闭自动投递；Rust 子进程不删除传入的音频文件，文件持有与清理由原生层负责。macOS 原生接入已通过 VP-011 本机离线独立验收；完整开发包已通过 VP-012 freeze-02 本机离线独立验收，Windows 未验证。
-
-原生 bridge 按需直接启动打包 helper，参数仅 `host`；缺 helper 或进程失败会保留录音并提示手动重试。父端只接受完整 LF 帧，EOF 丢弃未完成片段；后台串行处理管道并丢弃 stderr，不把原始协议或诊断展示到界面。ready、每次写入、每次控制回复各限 5 秒，终态等待另限 130 秒；启动控制阶段可另加 15 秒，异常取消/退出还会增加控制等待及最多 4.05 秒的终止/回收等待，因此 130 秒不是端到端总时限。同步系统调用不保证可中断。
-
-取消先失效本地会话，确认子进程停止后才清理音频、释放占用；无法确认时保留录音占用并禁用新录音/重试。正常应用退出异步等待停止确认。失败重试保留录音时的语言；手动重试始终关闭自动投递。子进程丢失或预算退出不自动重传，用户显式重试可以新建进程并重新提交。
-
-## 验证
+## 开发与验证
 
 ```bash
-# Rust workspace tests、格式和严格 lint；使用合成登录/文件和本次回环服务
+# Rust 工作区测试、格式和严格 Clippy
 bash scripts/test_rust.sh
 
-# Rust release 构建（不在上述脚本内）
-cargo build --workspace --release --locked
-
-# 核心认证、请求/响应、异步网络、取消和投递反例；不需要 Xcode 测试框架
+# Swift 核心与应用行为检查
 bash scripts/test_core.sh
-
-# 控制器/投递、默认目标采集、隔离录音存储与子进程锁；不录音、不访问一般剪贴板
 bash scripts/test_app.sh
-
-# Loop 状态恢复、依赖、暂停和迟到结果
-python3 -I -m unittest discover -s Tests/LoopTests -v
-
-# Release 构建、CLI、.app 打包/签名和启动检查
-python3 -I scripts/verify.py --app-smoke
 ```
 
-本机 Command Line Tools 不含 XCTest / Swift Testing，因此核心检查用 swiftc 编译独立断言程序。完整报告和日志保存在被 Git 忽略的 `.voiceport/evidence/`；这套离线验证不调用真实账号，不替代麦克风/Orca 实测。
+在 [`83e4978`](https://github.com/forwaryan/voiceport/commit/83e4978337b1684f9528ebdbea6fbe6cfa59a036) 合并基线上，最近一轮本地检查通过：**101 项 Rust 测试、31 项 Swift 核心检查、109 项应用检查**，以及配置已有 Zig 工具链后的完整 Windows 默认目标编译检查。应用行为检查使用模拟音频、权限与输入边界，不会自动启动真实录音或向你的输入框写字。
 
-## 开发 loop
+完整离线打包检查可运行 `python3 -I scripts/verify.py --app-smoke`。它会构建并重新签名开发包；源码依赖需已缓存。该流程不替代真实麦克风、账号转写或 Orca 接收验收，详见 [验证边界](docs/VALIDATION.md) 与 [打包说明](docs/PACKAGING.md)。
 
-```bash
-python3 -I scripts/loop_state.py status
-```
+| 继续阅读 | 内容 |
+| --- | --- |
+| [方案说明](docs/SOLUTION.md) | 产品目标、技术方案与实现背景。 |
+| [跨平台路线](docs/CROSS_PLATFORM.md) | Swift / Rust 分工及 Windows 迁移范围。 |
+| [Windows 状态](docs/WINDOWS.md) | 已实现的基础能力与未完成的原生验证。 |
+| [宿主协议](docs/HOST_PROTOCOL.md) | Rust JSONL 子进程接口。 |
+| [进度记录](progress.md) / [任务计划](task_plan.md) | 历史开发、返修与阶段验收记录。 |
+| [开发 Loop](docs/LOOP_METHODS.md) / [会话轮换](.claude/COORDINATOR_ROTATION.md) | 协作、独立验证与交接规则。 |
+| [第三方许可](THIRD_PARTY_NOTICES.md) | 依赖与参考项目的许可说明。 |
 
-任务定义在 `automation/tasks.json`，执行状态在 `.voiceport/loop-state.json`。主协调者一次选择一个依赖满足的产品任务，通过 Orca 分派不同真实开发、独立验证和按需评估会话；开发自检后冻结完整输入，再独立验收，返修回到原角色上下文。工作会话完成事件唤醒协调者，动态 `/loop` 作恢复兜底。状态工具只维护账本，宿主退出后不承诺继续运行。角色、暂停、外部阻塞和停止规则见 [Loop 契约](docs/LOOP_METHODS.md)。
-
-## 数据与已知边界
-
-- 音频上传到 `chatgpt.com/backend-api/transcribe`，使用当前用户自己的 ChatGPT 登录；接口未公开承诺稳定性和扣量规则。
-- 与 Codex App 的模型、识别质量和用量是否一致，尚需同音频对照，不能仅凭接口地址判断。
-- 默认无转写历史或遥测，结果仅保留在内存。录音位于 `~/Library/Caches/io.voiceport.recordings-v1`；管理目录使用 POSIX 0700，录音、归属标记和占用文件使用 0600。成功、取消和正常退出时尝试删除本次录音，失败时为手动重试保留。
-- 普通启动只尝试清理创建时间严格超过 24 小时、归属标记有效且未被活动会话占用的残留；停止录音后的上传和重试仍持有占用锁。`--smoke-test` 跳过清理。未知内容、链接、异常权限/时间、旧版无标记目录均保留，清理失败也可能留下文件；这不是到时必删的保证。
-- 当前验证覆盖本机隔离目录中的归属、POSIX 权限和跨进程占用；ACL、断电持久性、真实编码器输出及其他 macOS/文件系统兼容性仍待验证。
-- 开发包采用本机 ad-hoc 签名，尚未公证；更新二进制后系统可能要求重新授权。Intel、所有应用输入框兼容性尚未全面验证。
-- Orca 原生麦克风按钮的后端适配属于后续工作；首版使用 VoicePort 独立快捷键。
-
-参考及许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-## 完整离线开发包验证
-
-`python3 -I scripts/verify.py --app-smoke` 实际执行 locked Rust/Swift 检查、正常构建打包、两种 release CLI、许可材料/签名/helper 对应和安全菜单 smoke，保存完整起止产品清单与原始命令日志。验证强制 Cargo 离线缓存及本次自建合成 CODEX_HOME/TMPDIR；不运行普通 GUI 或真实转写。完整资源、时限、skip-build 和许可边界见 [PACKAGING.md](docs/PACKAGING.md)。普通开发运行属于自检；VP-012 freeze-02已由另一真实会话亲自运行最终入口、独立反例和完整许可审查后接受，协调核对后完成账本。接受绑定保存的完整快照；后续实现变更仍需新的冻结与独立验收。
+插图通过 `image-use` 直接调用 Codex 的 `gpt-image-2-codex` 图像工具生成，采用简洁的产品插画风格；实际生成参数与提示词见 [配图说明](docs/images/README.md)。
