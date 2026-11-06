@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import CoreFoundation
+import CFNetwork
 import VoicePortCore
 
 protocol NativeTranscription: Sendable {
@@ -95,12 +96,33 @@ final class RustBridge: NativeTranscription, @unchecked Sendable {
         if !ignoringCancellation && isCancelled() { throw CancellationError() }
         if ProcessInfo.processInfo.systemUptime >= end { throw RustBridgeError.timedOut }
     }
+    /// Finder-launched apps do not inherit a terminal's proxy variables. Pass
+    /// the user's explicit macOS HTTPS proxy to the helper without credentials.
+    static func networkEnvironment(_ base: [String: String], systemProxy: [String: Any]?) -> [String: String] {
+        var result = base
+        guard result["VOICEPORT_HTTPS_PROXY"] == nil,
+              let settings = systemProxy, (settings["HTTPSEnable"] as? NSNumber)?.intValue == 1,
+              let host = settings["HTTPSProxy"] as? String, !host.isEmpty, host.count <= 253,
+              host.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+              !host.contains(where: { "/@?#".contains($0) }),
+              let port = settings["HTTPSPort"] as? NSNumber,
+              (1...65535).contains(port.intValue), port.doubleValue == Double(port.intValue) else { return result }
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = host
+        components.port = port.intValue
+        if let url = components.url { result["VOICEPORT_HTTPS_PROXY"] = url.absoluteString }
+        return result
+    }
+
     private func spawn() throws {
         if let process, process.isRunning { return }
         guard reap() else { throw RustBridgeError.unsafeStop }
         guard FileManager.default.isExecutableFile(atPath: executable.path) else { throw RustBridgeError.missing }
         let child = Process(); let stdin = Pipe(); let stdout = Pipe(); let stderr = Pipe()
-        child.executableURL = executable; child.arguments = ["host"]; child.environment = environment
+        child.executableURL = executable; child.arguments = ["host"]
+        child.environment = environment ?? Self.networkEnvironment(ProcessInfo.processInfo.environment,
+            systemProxy: CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any])
         child.standardInput = stdin; child.standardOutput = stdout; child.standardError = stderr
         do { try child.run() } catch { throw RustBridgeError.missing }
         process = child; input = stdin; output = stdout; errors = stderr; incarnation = UUID(); sessionHighWater = 0; count = 0; failed = nil; bytes.removeAll()

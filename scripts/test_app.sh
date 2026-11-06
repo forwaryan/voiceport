@@ -15,6 +15,10 @@ swiftc -swift-version 6 -parse-as-library -module-name VoicePortAppChecks \
     Sources/VoicePortApp/RustBridge.swift \
     Sources/VoicePortApp/DictationController.swift \
     Sources/VoicePortApp/AudioRecorder.swift \
+    Sources/VoicePortApp/LiveAudioRecorder.swift \
+    Sources/VoicePortApp/FocusedTextDelivery.swift \
+    Sources/VoicePortApp/TerminalTextInsertion.swift \
+    Sources/VoicePortApp/TerminalKeyEvents.swift \
     Sources/VoicePortApp/RecordingStorage.swift \
     Sources/VoicePortApp/PasteCoordinator.swift \
     Tests/VoicePortAppTests/*.swift \

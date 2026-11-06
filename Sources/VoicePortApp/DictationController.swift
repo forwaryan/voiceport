@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import AVFoundation
 import Combine
 import VoicePortCore
@@ -10,8 +11,14 @@ final class DictationController: ObservableObject {
     @Published private(set) var transcript = ""
     @Published private(set) var message = "点好目标输入框，再按快捷键开始录音。"
     @Published private(set) var seconds = 0
+    @Published private(set) var localRecognitionActive = false
+    @Published private(set) var localRecognitionMessage = ""
+    @Published private(set) var inputDeliveryMessage = ""
     @Published var automaticPaste: Bool {
-        didSet { defaults.set(automaticPaste, forKey: "automaticPaste") }
+        didSet {
+            defaults.set(automaticPaste, forKey: "automaticPaste")
+            if !automaticPaste { paste.clear() }
+        }
     }
     @Published var language: String {
         didSet { defaults.set(language, forKey: "language") }
@@ -35,8 +42,8 @@ final class DictationController: ObservableObject {
     private var operation: Task<Void, Never>?
     private var timer: Task<Void, Never>?
 
-    init(audio: any AudioRecording = AudioRecorder(),
-         paste: any TextDelivery = PasteCoordinator(),
+    init(audio: any AudioRecording = LiveAudioRecorder(),
+         paste: any TextDelivery = FocusedTextDelivery(),
          defaults: UserDefaults = .standard,
          requestMicrophonePermission: @escaping @MainActor () async -> Bool = { await AudioRecorder.requestPermission() },
          transcribeAudio: (@Sendable (URL, String?) async throws -> String)? = nil,
@@ -66,7 +73,7 @@ final class DictationController: ObservableObject {
         switch phase {
         case .idle: "就绪"
         case .requestingPermission: "等待麦克风权限"
-        case .recording: String(format: "录音 %02d:%02d", seconds / 60, seconds % 60)
+        case .recording: String(format: localRecognitionActive ? "本机听写 %02d:%02d" : "录音 %02d:%02d", seconds / 60, seconds % 60)
         case .transcribing: "正在云端转写"
         case .delivering: "正在粘贴"
         case .ready: "文字已就绪"
@@ -81,14 +88,24 @@ final class DictationController: ObservableObject {
 
     func start() {
         guard canStart else { return }
+        // Capture while the user's app still has focus, before any permission UI.
+        paste.begin()
+        let inputFailure = (paste as? any LiveTextDelivery)?.preparationFailure
+        inputDeliveryMessage = automaticPaste ? (inputFailure?.message ?? "已捕获原输入框，听写期间请保持光标位置。") : "自动输入已关闭。"
+        if automaticPaste, inputFailure == .accessibility || inputFailure == .application {
+            message = inputDeliveryMessage
+            phase = .failed
+            return
+        }
         // A new recording replaces the previous in-memory result and retry audio.
         audio.cancel()
         audioFile = nil
         recordedLanguage = language.isEmpty ? nil : language
         let id = gate.begin()
-        paste.begin()
         transcript = ""
         seconds = 0
+        localRecognitionActive = false
+        localRecognitionMessage = ""
         phase = .requestingPermission
         message = "正在检查麦克风权限。"
         operation = Task {
@@ -101,9 +118,42 @@ final class DictationController: ObservableObject {
                 return
             }
             do {
+                var live = false
+                if let streaming = audio as? any LiveAudioRecording {
+                    live = await streaming.prepareLive(language: recordedLanguage, onPartial: { [weak self] text in
+                        guard let self, self.gate.accepts(id), self.phase == .recording else { return }
+                        self.transcript = text
+                        if self.automaticPaste, let delivery = self.paste as? any LiveTextDelivery {
+                            self.inputDeliveryMessage = delivery.preview(text)
+                            self.message = self.inputDeliveryMessage
+                        } else {
+                            self.message = "正在本机实时识别，自动输入已关闭；文字保留在面板。"
+                        }
+                    }, onStatus: { [weak self] status in
+                        guard let self, self.gate.accepts(id), [.requestingPermission, .recording].contains(self.phase) else { return }
+                        self.localRecognitionMessage = status
+                        if self.phase == .recording {
+                            self.localRecognitionActive = false
+                            if let error = (self.audio as? any LiveAudioRecording)?.recordingFailure {
+                                self.audioFile = nil
+                                self.fail(error, id: id)
+                                return
+                            }
+                        }
+                        self.message = status
+                    })
+                }
+                guard gate.accepts(id), !Task.isCancelled else { return }
+                let preparationMessage = message
                 audioFile = try audio.start()
+                localRecognitionActive = live
+                if live { localRecognitionMessage = "本机实时识别已启用；预览不经过云端。" }
                 phase = .recording
-                message = "正在录音，再按 \(shortcutLabel) 结束。最长 3 分钟。"
+                message = live
+                    ? "正在本机实时听写；停录后用 ChatGPT 校正。再按 \(shortcutLabel) 结束，最长 3 分钟。"
+                    : (audio is any LiveAudioRecording
+                       ? "\(preparationMessage) 本次继续录音，停录后转写。"
+                       : "正在录音，再按 \(shortcutLabel) 结束。最长 3 分钟。")
                 startTimer()
             } catch {
                 fail(error, id: id)
@@ -115,6 +165,12 @@ final class DictationController: ObservableObject {
         guard phase == .recording, let id = gate.current, let file = audioFile else { return }
         timer?.cancel()
         audio.stop()
+        if let error = (audio as? any LiveAudioRecording)?.recordingFailure {
+            audioFile = nil
+            fail(error, id: id)
+            return
+        }
+        if automaticPaste { (paste as? any LiveTextDelivery)?.finishPreview() }
         transcribe(file: file, id: id, allowAutomaticPaste: true)
     }
 
@@ -136,17 +192,23 @@ final class DictationController: ObservableObject {
             message = "正在停止转写并回收进程，录音仍保持占用。"
             Task {
                 let stopped = await backend.stop()
-                if stopped { audio.cancel(); audioFile = nil; cleanupPending = false; phase = .idle; message = "已取消，未投递文字。" }
+                if stopped { audio.cancel(); audioFile = nil; cleanupPending = false; phase = .idle; message = "已取消，停止后续输入。" }
                 else { message = "无法确认转写进程停止，录音保持占用，请稍后退出重试。" }
             }
         } else {
-            audio.cancel(); audioFile = nil; phase = .idle; message = "已取消，未投递文字。"
+            audio.cancel(); audioFile = nil; phase = .idle; message = "已取消，停止后续输入。"
         }
     }
 
     func copyResult() {
         guard !transcript.isEmpty, phase != .delivering else { return }
         message = paste.copy(transcript) ? "已复制原始文字，请在目标输入框手动粘贴。" : "复制失败，文字仍保留在面板中。"
+    }
+
+    func checkInputPermission() {
+        if automaticPaste && !AXIsProcessTrusted() {
+            inputDeliveryMessage = InputTargetFailure.accessibility.message
+        }
     }
 
     func requestAccessibility() { paste.requestAccessibility() }
@@ -198,12 +260,13 @@ final class DictationController: ObservableObject {
                 let deliveryMessage = await paste.deliver(text, automatic: automaticPaste && allowAutomaticPaste)
                 guard gate.accepts(id), !Task.isCancelled else { return }
                 message = deliveryMessage
+                inputDeliveryMessage = deliveryMessage
                 phase = .ready
             } catch is CancellationError {
                 // User cancellation invalidates the gate first. A service-side cancellation of the
                 // still-current session must leave a visible, retryable state instead of hanging.
                 guard gate.accepts(id) else { return }
-                paste.clear()
+                retainPreviewAfterTranscriptionFailure()
                 phase = .failed
                 message = "转写已中断，可手动重试这段录音或重新录音。"
             } catch {
@@ -212,11 +275,17 @@ final class DictationController: ObservableObject {
         }
     }
 
+    private func retainPreviewAfterTranscriptionFailure() {
+        if phase == .transcribing, !transcript.isEmpty, let live = paste as? any LiveTextDelivery {
+            live.retainPreview()
+        } else { paste.clear() }
+    }
+
     private func fail(_ error: Error, id: String) {
         guard gate.accepts(id) else { return }
         audio.stop()
         timer?.cancel()
-        paste.clear()
+        retainPreviewAfterTranscriptionFailure()
         phase = .failed
         if let error = error as? RustBridgeError, case .unsafeStop = error { cleanupPending = true }
         message = (error as? LocalizedError)?.errorDescription ?? "操作失败，请检查麦克风和网络后重试。"

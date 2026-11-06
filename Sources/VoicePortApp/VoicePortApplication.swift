@@ -1,4 +1,6 @@
 import AppKit
+import ApplicationServices
+import Carbon
 import Combine
 import SwiftUI
 
@@ -7,6 +9,19 @@ struct VoicePortApplication {
     @MainActor
     static func main() {
         let application = NSApplication.shared
+        // Diagnose this signed bundle's effective trust without constructing audio,
+        // storage or backend dependencies, prompting, or inspecting user text.
+        if ProcessInfo.processInfo.arguments.contains("--check-input-permission") {
+            let result: [String: Any] = [
+                "accessibilityTrusted": AXIsProcessTrusted(),
+                "secureInput": IsSecureEventInputEnabled(),
+                "bundlePath": Bundle.main.bundlePath,
+                "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]),
+               let json = String(data: data, encoding: .utf8) { print(json) }
+            return
+        }
         let delegate = AppDelegate()
         application.delegate = delegate
         application.setActivationPolicy(.accessory)
@@ -62,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApplication.shared.terminate(nil)
             return
         }
+        controller.checkInputPermission()
         // Best-effort metadata-only cleanup. Smoke mode returns before this;
         // constructing the controller/recorder/store above performs no store I/O.
         _ = RecordingStorage.cleanupAtLaunch(arguments: ProcessInfo.processInfo.arguments)
@@ -124,6 +140,14 @@ private struct ResultView: View {
             }
             Text(controller.message).font(.callout).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if !controller.inputDeliveryMessage.isEmpty && controller.inputDeliveryMessage != controller.message {
+                Text(controller.inputDeliveryMessage).font(.callout).foregroundStyle(.secondary)
+                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if !controller.localRecognitionMessage.isEmpty {
+                Text(controller.localRecognitionMessage).font(.caption).foregroundStyle(.secondary)
+                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            }
             ScrollView {
                 Text(controller.transcript.isEmpty ? "转写结果会保留在这里。" : controller.transcript)
                     .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(12)
@@ -146,8 +170,8 @@ private struct ResultView: View {
                 }
             }
             Divider()
-            Toggle("校验目标与剪贴板后自动粘贴", isOn: $controller.automaticPaste)
-                .accessibilityLabel("校验目标与剪贴板后自动粘贴")
+            Toggle("在原输入框实时输入，停录后校正", isOn: $controller.automaticPaste)
+                .accessibilityLabel("在原输入框实时输入，停录后校正")
                 .accessibilityIdentifier("automaticPaste")
             Picker("识别语言", selection: $controller.language) {
                 Text("自动识别").tag("")
@@ -167,10 +191,10 @@ private struct ResultView: View {
                 Button("授权辅助功能") { controller.requestAccessibility() }
                     .accessibilityLabel("授权辅助功能")
                     .accessibilityIdentifier("requestAccessibility")
-                Text("麦克风在首次录音时申请。登录请在终端运行 codex login。")
+                Text("首次开始时申请麦克风与语音识别权限。登录请在终端运行 codex login。")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Text("录音将上传至 ChatGPT；不保存转写历史。自动粘贴会将换行转为空格，原文可复制。请检查后自行发送。")
+            Text("实时预览仅用本机识别；停录后录音上传至 ChatGPT 校正。Orca 终端只追加文字，校正差异保留在面板。本机识别不可用时改为停录后转写。切换输入框或编辑文字会停止自动写入，结果仍在面板。不保存转写历史，也不会自动发送。")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(24).frame(minWidth: 510, minHeight: 540)
