@@ -1,5 +1,17 @@
 # 进度记录
 
+## 2026-11-05 — 后台采集owner01交付已核对，待完整冻结独立复核
+
+原开发msg_dc9ee6e2ccb9 succeeded，task_9b4a5d143b12/ctx_6aa95cc7a52f已实际exited/released。开发17组owner/99Rust、byte-exact16/13/2、fmt/strict host-nativeclippy及完整locked DEFAULTWindows通过，16COFF及两有效metadata，4native仅编译；真实新session01a1abda/current helper/精确terminal/SessionStart与PreToolUse/初始最终0协调直接核对。协调124封存普通/22目录/521外部产物、789公共/278目录/784原公共保护+6操作、77222历史SHA/25134历史目录mode/104676初始证据身份通过，未重跑开发测试。初次协调checker1误将PR6/main正常同步前的字节相同live测试inode/mtime当当前身份；原脚本/输出保存在handoffs/vp013-owner01-checker-failure-01，按12条精确live源引用分类并严格核对当前post-integration身份后纠正0。旧报告/index/快照/失败不改，例外不覆盖证据或build/dist。
+
+仅开发交付核对，不是独立验收。现先分逻辑commit/push和draftPR，完整freeze11后交原独立角色真新changed-freeze会话复核owner及原C08/C09/完整离线入口。当前同attemptcd2c8d7d running/false；GUI Start/Stop保持未接，无自动原生设备/录音/上传/输入；实际NTFS/security/device/runtime、retention/delivery/fullWindowslink/packaging和真实轮换门槛保留。
+
+## 2026-11-05 — PR6已合并同步，后台采集owner开发与最小查询扩展
+
+PR6正常合并41667c09，接受状态304d7aa已push；本地main、origin/main、远端main和候选tree核对一致，clean回执evidence/vp013-capture-10-git-merge.json。feat/windows-capture-owner从该merge派发原开发角色task_9b4a5d143b12/ctx_6aa95cc7a52f，沿原开发/返修02/03，无新Run或产品attempt。协调对真实新native session01a1abda/current helper/精确terminal/真实SessionStart与PreToolUse/初始0及authentic transcript核对通过；完整PreCompact/生命周期未执行。
+
+question msg_69f185fb1ad4请求最小只读native facade cleanup_status；直接核对Session::begin确实忽略内部poll结果并返回首错，授权新增只读委托及capture.rs状态查询，不改旧方法、backend/storage或释放转换。addendum handoffs/vp013-capture-owner-01-cleanup-query-addendum.md，决策及实际reply msg_111dccab644f见evidence/vp013-capture-owner-01-cleanup-query-decision.json。要求区分普通排空、返回释放错误和永久中断，新增针对性测试，native delta纳入后续完整冻结独立审查。无新测试/验收结论，同attemptcd2c8d7d running/false；后台owner开发继续，GUI未接、不自动录音/上传/真实输入。根计划本次变动属于协调维护，不是worker源码变更。
+
 ## 2026-11-05 — 原独立freeze10阶段通过，准备PR6正常集成
 
 msg_171500dd9ff5真实PASS_BOUNDED_SOURCE_COMPILE_PORTABLE_CHECKPOINT，C09-001 FIXED且C08-001/002保持，无本范围残留。exact final16/original13/adjacent2全0，新增6组381例通过；fresh完整25步82Rust/31core/73app/4loop/11packaging/6预期负例、693文件实际签名/安全smoke与DEFAULTWindows编译通过，1capture+3storage仅编译。协调accept-10首次0核对929普通/260目录/129056217字节/1466外部产物、787公共+6操作/783保护、77222旧普通/25134旧目录mode/10links/6specials/796Git输入；未重跑委派测试。新session08a2b209/真实当前PreToolUse/精确terminal/初始最终0已核对；项目SessionStart因transcript未创建exit1保留，Orca自己的startup0不混用，实际PreCompact/full lifecycle未执行。
