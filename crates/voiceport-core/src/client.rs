@@ -23,26 +23,54 @@ pub struct TranscriptionClient {
 
 impl TranscriptionClient {
     pub fn new(auth_file: PathBuf) -> Result<Self> {
-        Self::configured(
+        let proxy = std::env::var("VOICEPORT_HTTPS_PROXY").ok();
+        Self::configured_with_proxy(
             auth_file,
             ENDPOINT,
             Duration::from_secs(110),
             Duration::from_secs(90),
+            proxy.as_deref(),
         )
     }
 
+    #[cfg(test)]
     fn configured(
         auth_file: PathBuf,
         endpoint: &str,
         timeout: Duration,
         read_timeout: Duration,
     ) -> Result<Self> {
+        Self::configured_with_proxy(auth_file, endpoint, timeout, read_timeout, None)
+    }
+
+    fn configured_with_proxy(
+        auth_file: PathBuf,
+        endpoint: &str,
+        timeout: Duration,
+        read_timeout: Duration,
+        proxy: Option<&str>,
+    ) -> Result<Self> {
         let endpoint = Url::parse(endpoint).map_err(|_| Error::Network)?;
-        let client = Client::builder()
+        let mut builder = Client::builder()
             .https_only(endpoint.scheme() == "https")
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
-            .no_proxy()
+            .no_proxy();
+        if let Some(proxy) = proxy {
+            let url = Url::parse(proxy).map_err(|_| Error::Network)?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+                || !matches!(url.path(), "" | "/")
+            {
+                return Err(Error::Network);
+            }
+            builder = builder.proxy(reqwest::Proxy::https(url).map_err(|_| Error::Network)?);
+        }
+        let client = builder
             .connect_timeout(Duration::from_secs(15))
             .read_timeout(read_timeout)
             .timeout(timeout)

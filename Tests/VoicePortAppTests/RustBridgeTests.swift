@@ -2,10 +2,25 @@ import Foundation
 import Darwin
 import VoicePortCore
 @MainActor struct RustBridgeTests {
-    var tests: [(String,@MainActor () async throws -> Void)] { IdentityRegressionTests().tests + [("Rust bridge budget exhausts without replay and restarts", budget), ("default controller uses lazy Rust backend", defaultController), ("native cancel keeps audio until child stops", cleanupOrder), ("Rust bridge split UTF8 and original text", original), ("Rust bridge failed session uses wire retry", retry), ("Rust bridge rejects tails frames identities and timeouts", failures), ("Rust bridge cancellation reaps child before completion", cancel), ("Rust bridge real Rust offline errors and retry", realRust), ("Rust bridge strict parser rejects duplicate and mistyped fields", parser)] }
+    var tests: [(String,@MainActor () async throws -> Void)] { IdentityRegressionTests().tests + [("system HTTPS proxy is forwarded without secrets or preference changes", proxyEnvironment), ("Rust bridge budget exhausts without replay and restarts", budget), ("default controller uses lazy Rust backend", defaultController), ("native cancel keeps audio until child stops", cleanupOrder), ("Rust bridge split UTF8 and original text", original), ("Rust bridge failed session uses wire retry", retry), ("Rust bridge rejects tails frames identities and timeouts", failures), ("Rust bridge cancellation reaps child before completion", cancel), ("Rust bridge real Rust offline errors and retry", realRust), ("Rust bridge strict parser rejects duplicate and mistyped fields", parser)] }
     var realExecutable: URL {
         let packaged = URL(fileURLWithPath:"dist/VoicePort.app/Contents/Helpers/voiceport-rs")
         return FileManager.default.isExecutableFile(atPath:packaged.path) ? packaged : URL(fileURLWithPath:".build/vp011-real-helper")
+    }
+    func proxyEnvironment() async throws {
+        let proxy: [String: Any] = ["HTTPSEnable": NSNumber(value: 1), "HTTPSProxy": "127.0.0.1", "HTTPSPort": NSNumber(value: 7897)]
+        let base = ["PATH": "/synthetic/bin", "CODEX_HOME": "/synthetic/auth"]
+        let result = RustBridge.networkEnvironment(base, systemProxy: proxy)
+        try appRequire(result["VOICEPORT_HTTPS_PROXY"] == "http://127.0.0.1:7897")
+        try appRequire(result["PATH"] == base["PATH"] && result["CODEX_HOME"] == base["CODEX_HOME"])
+        for invalid: [String: Any] in [[:], ["HTTPSEnable": 0],
+            ["HTTPSEnable": 1, "HTTPSProxy": "user:password@host", "HTTPSPort": 7897],
+            ["HTTPSEnable": 1, "HTTPSProxy": "127.0.0.1", "HTTPSPort": 0],
+            ["HTTPSEnable": 1, "HTTPSProxy": "127.0.0.1", "HTTPSPort": 7897.5]] {
+            try appRequire(RustBridge.networkEnvironment(base, systemProxy: invalid) == base)
+        }
+        let explicit = ["VOICEPORT_HTTPS_PROXY": "http://localhost:1234"]
+        try appRequire(RustBridge.networkEnvironment(explicit, systemProxy: proxy) == explicit)
     }
     func bridge(_ mode:String) -> RustBridge {
         RustBridge(executable: URL(fileURLWithPath: ".build/vp011-host-fixture"),environment: ["VP011_MODE":mode],limits:.init(control: ["ok","retry"].contains(mode) ? 2 : 0.3,job: ["ok","retry"].contains(mode) ? 2 : 0.3,terminate:0.1))

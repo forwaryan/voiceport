@@ -12,7 +12,7 @@ else
     exit 2
 fi
 binary_directory="$(swift build -c release --show-bin-path)"
-app_directory="$project_directory/dist/VoicePort.app"
+app_directory="${VOICEPORT_APP_DIRECTORY:-$project_directory/dist/VoicePort.app}"
 rust_target_directory="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 python3 -I scripts/license_materials.py
 [[ -x "$rust_target_directory/release/voiceport-rs" && -x "$binary_directory/VoicePort" ]] || { printf 'Both Swift and Rust release products are required\n' >&2; exit 1; }

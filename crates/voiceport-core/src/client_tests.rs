@@ -560,6 +560,73 @@ async fn chunked_valid_json_cannot_bypass_response_limit() {
 }
 
 #[tokio::test]
+async fn explicit_https_proxy_uses_connect_without_leaking_credentials() {
+    let fixture = Fixture::new();
+    let (proxy, _) = listener().await;
+    let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = timeout(Duration::from_secs(3), proxy.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut headers = Vec::new();
+        while !headers.windows(4).any(|v| v == b"\r\n\r\n") {
+            let mut block = [0; 1024];
+            let count = timeout(Duration::from_secs(3), stream.read(&mut block))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(count > 0 && headers.len() < 16_384);
+            headers.extend_from_slice(&block[..count]);
+        }
+        let headers = String::from_utf8(headers).unwrap().to_lowercase();
+        assert!(headers.starts_with("connect chatgpt.com:443 http/1.1"));
+        assert!(!headers.contains("synthetic-token"));
+        assert!(!headers.contains("synthetic-account"));
+        assert!(!headers.contains("authorization:"));
+        respond(&mut stream, 502, "", b"").await;
+    });
+    let client = TranscriptionClient::configured_with_proxy(
+        fixture.auth.clone(),
+        ENDPOINT,
+        Duration::from_secs(3),
+        Duration::from_secs(2),
+        Some(&proxy_url),
+    )
+    .unwrap();
+    assert_eq!(
+        client
+            .transcribe(&fixture.audio, None, &CancellationToken::new())
+            .await
+            .unwrap_err(),
+        Error::Network
+    );
+    server.await.unwrap();
+}
+
+#[test]
+fn invalid_or_credential_bearing_proxy_is_rejected_without_disclosing_it() {
+    let fixture = Fixture::new();
+    for proxy in [
+        "not-a-url",
+        "file:///private",
+        "http://user:private-password@localhost:7897",
+        "http://localhost/path",
+        "http://localhost?private",
+        "http://localhost#private",
+    ] {
+        let result = TranscriptionClient::configured_with_proxy(
+            fixture.auth.clone(),
+            ENDPOINT,
+            Duration::from_secs(3),
+            Duration::from_secs(2),
+            Some(proxy),
+        );
+        assert!(matches!(result, Err(Error::Network)));
+    }
+}
+
+#[tokio::test]
 async fn production_builder_requires_https_and_fixed_endpoint() {
     let fixture = Fixture::new();
     let client = TranscriptionClient::new(fixture.auth.clone()).unwrap();
