@@ -78,6 +78,9 @@ impl NativeSession {
     pub fn error(&self) -> Option<Error> {
         self.0.error()
     }
+    pub fn cleanup_status(&self) -> CleanupStatus {
+        self.0.cleanup_status()
+    }
     pub fn take_recording(&mut self) -> Option<Recording> {
         self.0.take_recording()
     }
