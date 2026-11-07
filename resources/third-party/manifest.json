@@ -235,15 +235,16 @@
   ],
   "lock_only_policy": "Not in this native target metadata graph; not labelled shipped or linked. Cargo.lock records public source/checksum. These excluded-platform packages are not included as runtime license material.",
   "build_inputs": {
-    "Cargo.toml": "3f0895f2b3c85253ce41ec58807231f10d57860c5ee67cdb842f9d397fe76dd7",
-    "Cargo.lock": "5798b5242984ae679cff6447c2b600c1d2166c0b89454bac9799ce84d21f794e",
+    "Cargo.toml": "d6e26ae83ce62b9f24d8a10bc047c3cab1b1066910205eafdab8a8ac27e9b7b4",
+    "Cargo.lock": "2ac27e3bd1ada10d55fa735732212f5a073a30feffb51edb3bd142412949965c",
     "crates/voiceport-cli/Cargo.toml": "357a127670ea787f3f51a55284f2e1e14372cbb549a4e1b94e5e787d8ea588db",
     "crates/voiceport-core/Cargo.toml": "24373b4c020cb68638193871625c013657cda89f27d318805d35158868d391bf",
+    "crates/voiceport-macos/Cargo.toml": "9c988ad270943d817e4df96bc3dba66b7ecaa3cbda90a0aa05c2d734bbe1f1e9",
     "crates/voiceport-windows/Cargo.toml": "b331679c8bbd64bce735bf2700f2b6a0e38d249569906d3089a7c615c8afbeec"
   },
   "schema": 1,
   "target": "aarch64-apple-darwin",
-  "cargo_lock_sha256": "5798b5242984ae679cff6447c2b600c1d2166c0b89454bac9799ce84d21f794e",
+  "cargo_lock_sha256": "2ac27e3bd1ada10d55fa735732212f5a073a30feffb51edb3bd142412949965c",
   "policy": "Overinclusive source materials. runtime means reachable normal target dependency, NOT proof every object is linked; build includes proc macros/build tools; dev and other-platform/lock-only are separately labelled. Complete notice-bearing source files are supplementary attribution material, not build inputs.",
   "packages": [
     {
@@ -379,6 +380,60 @@
           "source_relative": "src/lib.rs",
           "sha256": "f8d141a1ba6b1996b33eb34669786ef389d4d5226edad46cec22a561588c324b",
           "bytes": 36325
+        }
+      ]
+    },
+    {
+      "name": "block2",
+      "version": "0.6.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#block2@0.6.2",
+      "declared_spdx": "MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "alloc",
+        "default",
+        "std"
+      ],
+      "source_manifest": "cargo-registry/block2-0.6.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/block2-0.6.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "5b87885cad87999d141e83cc8af4b073192f584b2b92cea77e2d87636621a264",
+          "bytes": 107
+        },
+        {
+          "path": "crates/block2-0.6.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "d18aec0c39956f1a29b6d157c13ec51ce53d7c2a2982c307528215f8870720ac",
+          "bytes": 2171
+        },
+        {
+          "path": "crates/block2-0.6.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "b4167b582b2f75f9a1be75495c41b765344fd03c"
+          }
+        },
+        {
+          "path": "crates/block2-0.6.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "b4167b582b2f75f9a1be75495c41b765344fd03c"
+          }
         }
       ]
     },
@@ -524,6 +579,584 @@
       ]
     },
     {
+      "name": "core-foundation",
+      "version": "0.10.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#core-foundation@0.10.1",
+      "declared_spdx": "MIT OR Apache-2.0",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "default",
+        "link"
+      ],
+      "source_manifest": "cargo-registry/core-foundation-0.10.1/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/core-foundation-0.10.1/LICENSE-APACHE",
+          "source_relative": "LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/LICENSE-MIT",
+          "source_relative": "LICENSE-MIT",
+          "sha256": "62065228e42caebca7e7d7db1204cbb867033de5982ca4009928915e4095f3a3",
+          "bytes": 1067
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/array.rs",
+          "source_relative": "src/array.rs",
+          "sha256": "e06910f35677121a3deb7bae32a5e14e35b68ee9c8828e39c7cc535c7ede10cc",
+          "bytes": 8862
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/attributed_string.rs",
+          "source_relative": "src/attributed_string.rs",
+          "sha256": "7c129d266872bf9e0f8cbd9477d8cc27405b806395e59e1647bedf9af06f8949",
+          "bytes": 2749
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/base.rs",
+          "source_relative": "src/base.rs",
+          "sha256": "65a42956a2fc9d99289ceb0affca729995a851ca39b20e57cebc26a73bfdc405",
+          "bytes": 13592
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/boolean.rs",
+          "source_relative": "src/boolean.rs",
+          "sha256": "60aef5be531e867f03524c32a88609100d07d9166184545feab760af9eb3d7ec",
+          "bytes": 1833
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/bundle.rs",
+          "source_relative": "src/bundle.rs",
+          "sha256": "5ba0f8a075245810f410423b973345fbde18297ff283c7f654f093e7ad4c614c",
+          "bytes": 6145
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/characterset.rs",
+          "source_relative": "src/characterset.rs",
+          "sha256": "fa564357fa7e65d50588d4d98d19984cff60c19563daa2516c313b1ca255fa9a",
+          "bytes": 741
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/data.rs",
+          "source_relative": "src/data.rs",
+          "sha256": "455427195d89a1948ea8fa14d313f991b1dd3683a2c0eba6268878ed7b16db40",
+          "bytes": 4613
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/date.rs",
+          "source_relative": "src/date.rs",
+          "sha256": "e2a15f5c304ddcb78facd3d70c41e9b7ad4be483723f686592756767904a31d0",
+          "bytes": 1763
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/dictionary.rs",
+          "source_relative": "src/dictionary.rs",
+          "sha256": "fac9c0b355265d24f5a08645d89ad64b49d7ec4c9b5c5ab1aa9299401efc8940",
+          "bytes": 14427
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/error.rs",
+          "source_relative": "src/error.rs",
+          "sha256": "433982fb7b421f5bf386d7eba22a7ffb8673486bb6455ff3fa30c875b064f718",
+          "bytes": 1931
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/filedescriptor.rs",
+          "source_relative": "src/filedescriptor.rs",
+          "sha256": "7537a6ff756c9cc6af27c02125de7928725c1de3c5bf197b7667d5556fe01877",
+          "bytes": 5689
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/lib.rs",
+          "source_relative": "src/lib.rs",
+          "sha256": "cf85ac28d0ecf199a242ee6595a6fade94fed298208fe67fc7989805257e4bee",
+          "bytes": 8619
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/number.rs",
+          "source_relative": "src/number.rs",
+          "sha256": "3842940c489a7e56cde76e9a4bbf71863b1afb078372268f4215d227d026ef66",
+          "bytes": 3878
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/propertylist.rs",
+          "source_relative": "src/propertylist.rs",
+          "sha256": "82bc964d83eeafd28b18aeb969d9c205d73905fa5724c8a793d1360db7cc5446",
+          "bytes": 11376
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/runloop.rs",
+          "source_relative": "src/runloop.rs",
+          "sha256": "0476dcac0a46300b84458e610a9ac9a318a759022c27343ac66f185a6dfdc459",
+          "bytes": 9117
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/set.rs",
+          "source_relative": "src/set.rs",
+          "sha256": "846f3b569647ba451af85aacbea449a6df96c9359b6eaa16c6e3822e72da2234",
+          "bytes": 1806
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/string.rs",
+          "source_relative": "src/string.rs",
+          "sha256": "16139be0d4d93f0eb3b9553ee1c6813e21820f79c23e4886086ce5566d641680",
+          "bytes": 6289
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/timezone.rs",
+          "source_relative": "src/timezone.rs",
+          "sha256": "1930ae99f2553d353b6d79f31f26f8df3f3af9eaadeff8f374b4aa9b91a214e9",
+          "bytes": 2112
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/url.rs",
+          "source_relative": "src/url.rs",
+          "sha256": "86b55777b61766aeba5840b46ccd8a3c143af2f80c187d16255fa08ea3f1e7c8",
+          "bytes": 5657
+        },
+        {
+          "path": "crates/core-foundation-0.10.1/src/uuid.rs",
+          "source_relative": "src/uuid.rs",
+          "sha256": "f9720e2e4369e1b22c1dc9bcbb49a38a824ad5eb92cd7fae86d79c3ce1d1a384",
+          "bytes": 2530
+        }
+      ]
+    },
+    {
+      "name": "core-foundation-sys",
+      "version": "0.8.7",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#core-foundation-sys@0.8.7",
+      "declared_spdx": "MIT OR Apache-2.0",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "link"
+      ],
+      "source_manifest": "cargo-registry/core-foundation-sys-0.8.7/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/core-foundation-sys-0.8.7/LICENSE-APACHE",
+          "source_relative": "LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/LICENSE-MIT",
+          "source_relative": "LICENSE-MIT",
+          "sha256": "62065228e42caebca7e7d7db1204cbb867033de5982ca4009928915e4095f3a3",
+          "bytes": 1067
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/array.rs",
+          "source_relative": "src/array.rs",
+          "sha256": "4d469ca3f6aceb42dfaf7b26aa9ef14a8ebce05e02d0beda985fa32f2ec48963",
+          "bytes": 4728
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/attributed_string.rs",
+          "source_relative": "src/attributed_string.rs",
+          "sha256": "7042f3fbf6904efecb15f01ce2e96eecf84973e0fef9be4c10d14944b0f90a24",
+          "bytes": 4162
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/bag.rs",
+          "source_relative": "src/bag.rs",
+          "sha256": "dec9ff467ac713526c3be8148ae41b21ab8840f393733bb53c77224ef089787c",
+          "bytes": 3651
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/base.rs",
+          "source_relative": "src/base.rs",
+          "sha256": "5d0dee358519712e881e2edbea0ca6d3539958ed1ff3d70aa136af7e25292f22",
+          "bytes": 6305
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/binary_heap.rs",
+          "source_relative": "src/binary_heap.rs",
+          "sha256": "0565125dbdb1fa578888e00f5b195ab91f0bf65881eabcd39de99ca811d756de",
+          "bytes": 3149
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/bit_vector.rs",
+          "source_relative": "src/bit_vector.rs",
+          "sha256": "dcdaa573d90b25bdc6b98f2330110e8591b7c329601643dcc6aa23b1b9ec7210",
+          "bytes": 2784
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/bundle.rs",
+          "source_relative": "src/bundle.rs",
+          "sha256": "83ac9d7c45f06161767588c465eed086a773714734da0614d98d000326df3603",
+          "bytes": 8974
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/calendar.rs",
+          "source_relative": "src/calendar.rs",
+          "sha256": "b73796956e50d92f0479479e84246712804537d694e4cdd01d5440e5fbcbd333",
+          "bytes": 4897
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/characterset.rs",
+          "source_relative": "src/characterset.rs",
+          "sha256": "ba60f78884cd860e151df35c1953bcd6eae46d9f27c36584b66e508e2301a7a8",
+          "bytes": 4854
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/data.rs",
+          "source_relative": "src/data.rs",
+          "sha256": "fe4e2effbfd9348575507d06aa53cd583808c908f9e03ac1a076b077230c9c01",
+          "bytes": 2794
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/date.rs",
+          "source_relative": "src/date.rs",
+          "sha256": "971d681f6eeefa3764d8a43e53cbf7c937c419331207c7bb003a25c9b0b0722f",
+          "bytes": 1312
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/date_formatter.rs",
+          "source_relative": "src/date_formatter.rs",
+          "sha256": "05e84ac3cf4c0daae2e939a9bedddfd10dd5309ea1536bf8241de41971d11f8a",
+          "bytes": 8231
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/dictionary.rs",
+          "source_relative": "src/dictionary.rs",
+          "sha256": "ac23d99208131049c82c13b37a99b4fd129224d1dafcd65ff2f9de200d73e9d1",
+          "bytes": 5071
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/error.rs",
+          "source_relative": "src/error.rs",
+          "sha256": "b523faa8c498e1115c72e71a10e7a3bf8bcc01588cb02e70dc9fd45cbdaa35f6",
+          "bytes": 2260
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/file_security.rs",
+          "source_relative": "src/file_security.rs",
+          "sha256": "542c5d8eef22424479abcb448601611d85c9cc96e41cd6cd6de5ea3efe1213a6",
+          "bytes": 3352
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/filedescriptor.rs",
+          "source_relative": "src/filedescriptor.rs",
+          "sha256": "706eebde408713cc49bbab078e86fe51e95fe29b167420bbcbb573847dcf29e2",
+          "bytes": 2805
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/lib.rs",
+          "source_relative": "src/lib.rs",
+          "sha256": "5c14390b7b45c769ea53664621c1a9f5fa39fda509288d9e13018170213bbe4b",
+          "bytes": 1999
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/locale.rs",
+          "source_relative": "src/locale.rs",
+          "sha256": "372190a9cb5659fba0b92598c5dcbdaa3f90b29b3440ddcfe77931e85c1f96d9",
+          "bytes": 6233
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/mach_port.rs",
+          "source_relative": "src/mach_port.rs",
+          "sha256": "e52c2ce794e82ebeeb0cba170902409f18626b7d9e29d6dcd333e9c13411408a",
+          "bytes": 2629
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/messageport.rs",
+          "source_relative": "src/messageport.rs",
+          "sha256": "d8e342f0eabe47f6f4746fdbf996bf9008b4b5f1fa24e0bc4ecd73b2de81b234",
+          "bytes": 3716
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/notification_center.rs",
+          "source_relative": "src/notification_center.rs",
+          "sha256": "0ab30523bc4ac799016970c9c59594cbb3afeda054705c15d0979eb07abb7c7d",
+          "bytes": 3231
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/number.rs",
+          "source_relative": "src/number.rs",
+          "sha256": "28b10c9d2361cac18549ef66839f595e98490096e756e9a7f25536b6ceb1f687",
+          "bytes": 3497
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/number_formatter.rs",
+          "source_relative": "src/number_formatter.rs",
+          "sha256": "024fbd3b2ecaecf19cfdb463e0f0096d1fa28bc4ce636659e53459d1b01af658",
+          "bytes": 8454
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/plugin.rs",
+          "source_relative": "src/plugin.rs",
+          "sha256": "0904b1b4b882e626d5d63ac91c540dfdf65f5f4428cf38c9def6acfc7ed84cd3",
+          "bytes": 4007
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/preferences.rs",
+          "source_relative": "src/preferences.rs",
+          "sha256": "49d8ac0c669a01678fa0dc26d6cb13bc72004c8422e525bf3e26f01feb5a3693",
+          "bytes": 3517
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/propertylist.rs",
+          "source_relative": "src/propertylist.rs",
+          "sha256": "f7f12cb8c67098e5b96cb8a63b4a947549a2cbf7a6523ce314141b4f8cc202c4",
+          "bytes": 3882
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/runloop.rs",
+          "source_relative": "src/runloop.rs",
+          "sha256": "8fa6e5e74a013f8101d5a4f6616818573adc7ed197e28b799dca4c3a1cedaac9",
+          "bytes": 10446
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/set.rs",
+          "source_relative": "src/set.rs",
+          "sha256": "0e619ec75a6b975be6b6d59ed3b01c803dd635020288b178db949b1c45442d17",
+          "bytes": 3576
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/socket.rs",
+          "source_relative": "src/socket.rs",
+          "sha256": "b67737b8c04142fa4d198c19f0867fd653837e529bf2665e78750c94f469a793",
+          "bytes": 6816
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/stream.rs",
+          "source_relative": "src/stream.rs",
+          "sha256": "f9b1099191010a96ce0aadcc22385732710dfc1521873096a9db67ad80472e36",
+          "bytes": 10444
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/string.rs",
+          "source_relative": "src/string.rs",
+          "sha256": "fa46e7b7865709494bb05c9c7c6006f165fafa956ab41f053af0e4b41904efa4",
+          "bytes": 24649
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/string_tokenizer.rs",
+          "source_relative": "src/string_tokenizer.rs",
+          "sha256": "0da4ae1a841591871602f21cc1c9b51289a0514a255b269e4b61afdeb0097c10",
+          "bytes": 3451
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/timezone.rs",
+          "source_relative": "src/timezone.rs",
+          "sha256": "f584ea76627f12f33eba25d7ea054c2d2c10a2d96474fce12858ccb4bdf688c1",
+          "bytes": 3458
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/tree.rs",
+          "source_relative": "src/tree.rs",
+          "sha256": "50d513ea1801797c549218c51f5ebf77be4cf80901b12ce3ba0a223c602995d4",
+          "bytes": 2772
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/url.rs",
+          "source_relative": "src/url.rs",
+          "sha256": "cb08b0bd24708e6572711f4f82b88370e811aabf4f58f22c34f0f873a44c7486",
+          "bytes": 21916
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/url_enumerator.rs",
+          "source_relative": "src/url_enumerator.rs",
+          "sha256": "bd531f31f6c62b2849d5ccbc82bfc3ae3866c4cdd6768b6c2fe380f24c290540",
+          "bytes": 2689
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/user_notification.rs",
+          "source_relative": "src/user_notification.rs",
+          "sha256": "e86b052817028847e62121752e7d58f8ed6f8ad15f5ef947c1fa93bbd0fcbf26",
+          "bytes": 5336
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/uuid.rs",
+          "source_relative": "src/uuid.rs",
+          "sha256": "48af493dc6c8b00d804d6ae92a2fd71eabdae8a2be0500baaa55ce56345c350a",
+          "bytes": 2444
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/xml_node.rs",
+          "source_relative": "src/xml_node.rs",
+          "sha256": "c7894a4d08f695ba75d539b3c8d6cc3a90544000786fe3f9cd9c02ad7541213b",
+          "bytes": 4717
+        },
+        {
+          "path": "crates/core-foundation-sys-0.8.7/src/xml_parser.rs",
+          "source_relative": "src/xml_parser.rs",
+          "sha256": "ac8a3d2c71ec8ec80603ce5ef214147c0e93bed211c1559a47f14fc31cb0bbaf",
+          "bytes": 7068
+        }
+      ]
+    },
+    {
+      "name": "core-graphics",
+      "version": "0.25.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#core-graphics@0.25.0",
+      "declared_spdx": "MIT OR Apache-2.0",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "default",
+        "link"
+      ],
+      "source_manifest": "cargo-registry/core-graphics-0.25.0/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/core-graphics-0.25.0/COPYRIGHT",
+          "source_relative": "COPYRIGHT",
+          "sha256": "ec82b96487e9e778ee610c7ab245162464782cfa1f555c2299333f8dbe5c036a",
+          "bytes": 321
+        },
+        {
+          "path": "crates/core-graphics-0.25.0/LICENSE-APACHE",
+          "source_relative": "LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "crates/core-graphics-0.25.0/LICENSE-MIT",
+          "source_relative": "LICENSE-MIT",
+          "sha256": "62065228e42caebca7e7d7db1204cbb867033de5982ca4009928915e4095f3a3",
+          "bytes": 1067
+        },
+        {
+          "path": "crates/core-graphics-0.25.0/src/base.rs",
+          "source_relative": "src/base.rs",
+          "sha256": "838683ff67253f4aff1d4b4177531210ca73d4e61f05c5d96a8f196b2a88c787",
+          "bytes": 1830
+        },
+        {
+          "path": "crates/core-graphics-0.25.0/src/color.rs",
+          "source_relative": "src/color.rs",
+          "sha256": "787fc6c472ff11f2ca2a62c11c109df9a85ae5e66e49b53f3633db4ffc587b66",
+          "bytes": 1764
+        },
+        {
+          "path": "crates/core-graphics-0.25.0/src/color_space.rs",
+          "source_relative": "src/color_space.rs",
+          "sha256": "be7eaf9d77ddd0b27666aa269e6510baa2661a19a2c27edf16af974b879df67b",
+          "bytes": 5059
+        },
+        {
+          "path": "crates/core-graphics-0.25.0/src/context.rs",
+          "source_relative": "src/context.rs",
+          "sha256": "d82df4964ed1c7e9b6125decb8a371eacbf6bd464547f90bd552826e0935f0d9",
+          "bytes": 24370
+        },
+        {
+          "path": "crates/core-graphics-0.25.0/src/data_provider.rs",
+          "source_relative": "src/data_provider.rs",
+          "sha256": "7bab23472a584c88a87f616f2721523fc266f4d8341340fe1089a267c147a9c8",
+          "bytes": 6667
+        },
+        {
+          "path": "crates/core-graphics-0.25.0/src/display.rs",
+          "source_relative": "src/display.rs",
+          "sha256": "16ea68e645c00e880036a384a39c4be973faca92092f3ee6c11b15cc4fc25441",
+          "bytes": 34012
+        },
+        {
+          "path": "crates/core-graphics-0.25.0/src/font.rs",
+          "source_relative": "src/font.rs",
+          "sha256": "82ff958d47369d07136736b82845bd694ade1f4dd307d365afa89c99ec864c7e",
+          "bytes": 6833
+        },
+        {
+          "path": "crates/core-graphics-0.25.0/src/geometry.rs",
+          "source_relative": "src/geometry.rs",
+          "sha256": "5b68fa373ab116aba741e1b21dfe6d13f92b2d49f7d00a4ebe6cef19b4987caa",
+          "bytes": 469
+        },
+        {
+          "path": "crates/core-graphics-0.25.0/src/gradient.rs",
+          "source_relative": "src/gradient.rs",
+          "sha256": "21d32e2287429f1380423898bc031e820b3e02389acdec638ea9f5a8f000db47",
+          "bytes": 2723
+        },
+        {
+          "path": "crates/core-graphics-0.25.0/src/lib.rs",
+          "source_relative": "src/lib.rs",
+          "sha256": "dbdd1942e7a27cd76d8e48dcfc70e6e4923f5fc2d91a2ebef013bfc85353e41c",
+          "bytes": 835
+        },
+        {
+          "path": "crates/core-graphics-0.25.0/src/path.rs",
+          "source_relative": "src/path.rs",
+          "sha256": "43e1cc30d4e75de9d03948fc288362a4e6bb0f6c4028d7e94520693b5e019bc1",
+          "bytes": 4035
+        },
+        {
+          "path": "crates/core-graphics-0.25.0/src/window.rs",
+          "source_relative": "src/window.rs",
+          "sha256": "ab0ecaad614a279a084f90f2797fea05e33fc2316a9ea09019217fa599afcad2",
+          "bytes": 5856
+        }
+      ]
+    },
+    {
+      "name": "core-graphics-types",
+      "version": "0.2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#core-graphics-types@0.2.0",
+      "declared_spdx": "MIT OR Apache-2.0",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "link"
+      ],
+      "source_manifest": "cargo-registry/core-graphics-types-0.2.0/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/core-graphics-types-0.2.0/LICENSE-APACHE",
+          "source_relative": "LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "crates/core-graphics-types-0.2.0/LICENSE-MIT",
+          "source_relative": "LICENSE-MIT",
+          "sha256": "62065228e42caebca7e7d7db1204cbb867033de5982ca4009928915e4095f3a3",
+          "bytes": 1067
+        },
+        {
+          "path": "crates/core-graphics-types-0.2.0/src/base.rs",
+          "source_relative": "src/base.rs",
+          "sha256": "7e4e9c23f874443d0095f82d2786dc65b6b6635cbe8b3514999be80445a92bc8",
+          "bytes": 1484
+        },
+        {
+          "path": "crates/core-graphics-types-0.2.0/src/geometry.rs",
+          "source_relative": "src/geometry.rs",
+          "sha256": "7eda026c3db65cac836531565f85120132ab1ec84f76467a68ff040b8dc437c4",
+          "bytes": 4993
+        },
+        {
+          "path": "crates/core-graphics-types-0.2.0/src/lib.rs",
+          "source_relative": "src/lib.rs",
+          "sha256": "82b8fd756d805d5fc9dc8210fe1faaee94ed905fe21f58dc2114eac2c840981b",
+          "bytes": 459
+        }
+      ]
+    },
+    {
       "name": "dirs",
       "version": "6.0.0",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -576,6 +1209,82 @@
           "source_relative": "LICENSE-MIT",
           "sha256": "6a2e0ade09a7d5f816f11566fee2b151b32235a7fad52b41d49cce96f833c1a9",
           "bytes": 1069
+        }
+      ]
+    },
+    {
+      "name": "dispatch2",
+      "version": "0.3.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#dispatch2@0.3.1",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "alloc",
+        "block2",
+        "objc2"
+      ],
+      "source_manifest": "cargo-registry/dispatch2-0.3.1/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/dispatch2-0.3.1/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "26f5e6d699ba3ce13b8eea253ad7a7f7feb9345e9da3c01bb9b9bd911a6a7dba",
+          "bytes": 110
+        },
+        {
+          "path": "crates/dispatch2-0.3.1/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "f6aeef4bfe348b9e65e33db2bfb079be4149f9ab0f4b0b3bf3f5d04c144545af",
+          "bytes": 1516
+        },
+        {
+          "path": "crates/dispatch2-0.3.1/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "8852b424193ca41602281b3d7540d7c8ed51e49a"
+          }
+        },
+        {
+          "path": "crates/dispatch2-0.3.1/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "8852b424193ca41602281b3d7540d7c8ed51e49a"
+          }
+        },
+        {
+          "path": "crates/dispatch2-0.3.1/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "8852b424193ca41602281b3d7540d7c8ed51e49a"
+          }
+        },
+        {
+          "path": "crates/dispatch2-0.3.1/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "8852b424193ca41602281b3d7540d7c8ed51e49a"
+          }
         }
       ]
     },
@@ -750,6 +1459,95 @@
           "source_relative": "src/winapi.rs",
           "sha256": "b2c1db5806205215536dc520a57934418fef6707b39e69996b3f3a9ced7dda7e",
           "bytes": 4596
+        }
+      ]
+    },
+    {
+      "name": "foreign-types",
+      "version": "0.5.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#foreign-types@0.5.0",
+      "declared_spdx": "MIT/Apache-2.0",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "default",
+        "std"
+      ],
+      "source_manifest": "cargo-registry/foreign-types-0.5.0/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/foreign-types-0.5.0/LICENSE-APACHE",
+          "source_relative": "LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "crates/foreign-types-0.5.0/LICENSE-MIT",
+          "source_relative": "LICENSE-MIT",
+          "sha256": "333ea3aaa3cadb819f4acd9f9153f9feee060a995ca8710f32bc5bd9a4b91734",
+          "bytes": 1072
+        }
+      ]
+    },
+    {
+      "name": "foreign-types-macros",
+      "version": "0.2.4",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#foreign-types-macros@0.2.4",
+      "declared_spdx": "MIT/Apache-2.0",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "build"
+      ],
+      "enabled_features": [
+        "std"
+      ],
+      "source_manifest": "cargo-registry/foreign-types-macros-0.2.4/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/foreign-types-macros-0.2.4/LICENSE-APACHE",
+          "source_relative": "LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "crates/foreign-types-macros-0.2.4/LICENSE-MIT",
+          "source_relative": "LICENSE-MIT",
+          "sha256": "333ea3aaa3cadb819f4acd9f9153f9feee060a995ca8710f32bc5bd9a4b91734",
+          "bytes": 1072
+        }
+      ]
+    },
+    {
+      "name": "foreign-types-shared",
+      "version": "0.3.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#foreign-types-shared@0.3.1",
+      "declared_spdx": "MIT/Apache-2.0",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [],
+      "source_manifest": "cargo-registry/foreign-types-shared-0.3.1/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/foreign-types-shared-0.3.1/LICENSE-APACHE",
+          "source_relative": "LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "bytes": 11358
+        },
+        {
+          "path": "crates/foreign-types-shared-0.3.1/LICENSE-MIT",
+          "source_relative": "LICENSE-MIT",
+          "sha256": "333ea3aaa3cadb819f4acd9f9153f9feee060a995ca8710f32bc5bd9a4b91734",
+          "bytes": 1072
         }
       ]
     },
@@ -2102,6 +2900,2489 @@
           "source_relative": "LICENSE",
           "sha256": "07919255c7e04793d8ea760d6c2ce32d19f9ff02bdbdde3ce90b1e1880929a9b",
           "bytes": 1082
+        }
+      ]
+    },
+    {
+      "name": "objc2",
+      "version": "0.6.5",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2@0.6.5",
+      "declared_spdx": "MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "alloc",
+        "default",
+        "std"
+      ],
+      "source_manifest": "cargo-registry/objc2-0.6.5/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-0.6.5/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "5f7c8e095d3933c477ff1f71021b551cbfe497a62346a1dc8615debd9846e257",
+          "bytes": 106
+        },
+        {
+          "path": "crates/objc2-0.6.5/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "4a1e1561612efc4a8aea4dd574c781f6215fa5416696425227558fc782353cba",
+          "bytes": 7515
+        },
+        {
+          "path": "crates/objc2-0.6.5/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "d7d2fa23ceaa5e6096c923b081040e5d81b3b9df"
+          }
+        },
+        {
+          "path": "crates/objc2-0.6.5/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/d7d2fa23ceaa5e6096c923b081040e5d81b3b9df/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/d7d2fa23ceaa5e6096c923b081040e5d81b3b9df/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "d7d2fa23ceaa5e6096c923b081040e5d81b3b9df"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-app-kit",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-app-kit@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "AppKitDefines",
+        "AppKitErrors",
+        "NSATSTypesetter",
+        "NSAccessibility",
+        "NSAccessibilityColor",
+        "NSAccessibilityConstants",
+        "NSAccessibilityCustomAction",
+        "NSAccessibilityCustomRotor",
+        "NSAccessibilityElement",
+        "NSAccessibilityProtocols",
+        "NSActionCell",
+        "NSAdaptiveImageGlyph",
+        "NSAffineTransform",
+        "NSAlert",
+        "NSAlignmentFeedbackFilter",
+        "NSAnimation",
+        "NSAnimationContext",
+        "NSAppearance",
+        "NSAppleScriptExtensions",
+        "NSApplication",
+        "NSApplicationScripting",
+        "NSArrayController",
+        "NSAttributedString",
+        "NSBackgroundExtensionView",
+        "NSBezierPath",
+        "NSBitmapImageRep",
+        "NSBox",
+        "NSBrowser",
+        "NSBrowserCell",
+        "NSButton",
+        "NSButtonCell",
+        "NSButtonTouchBarItem",
+        "NSCIImageRep",
+        "NSCachedImageRep",
+        "NSCandidateListTouchBarItem",
+        "NSCell",
+        "NSClickGestureRecognizer",
+        "NSClipView",
+        "NSCollectionView",
+        "NSCollectionViewCompositionalLayout",
+        "NSCollectionViewFlowLayout",
+        "NSCollectionViewGridLayout",
+        "NSCollectionViewLayout",
+        "NSCollectionViewTransitionLayout",
+        "NSColor",
+        "NSColorList",
+        "NSColorPanel",
+        "NSColorPicker",
+        "NSColorPickerTouchBarItem",
+        "NSColorPicking",
+        "NSColorSampler",
+        "NSColorSpace",
+        "NSColorWell",
+        "NSComboBox",
+        "NSComboBoxCell",
+        "NSComboButton",
+        "NSControl",
+        "NSController",
+        "NSCursor",
+        "NSCustomImageRep",
+        "NSCustomTouchBarItem",
+        "NSDataAsset",
+        "NSDatePicker",
+        "NSDatePickerCell",
+        "NSDictionaryController",
+        "NSDiffableDataSource",
+        "NSDirection",
+        "NSDockTile",
+        "NSDocument",
+        "NSDocumentController",
+        "NSDocumentScripting",
+        "NSDragging",
+        "NSDraggingItem",
+        "NSDraggingSession",
+        "NSDrawer",
+        "NSEPSImageRep",
+        "NSErrors",
+        "NSEvent",
+        "NSFilePromiseProvider",
+        "NSFilePromiseReceiver",
+        "NSFileWrapperExtensions",
+        "NSFont",
+        "NSFontAssetRequest",
+        "NSFontCollection",
+        "NSFontDescriptor",
+        "NSFontManager",
+        "NSFontPanel",
+        "NSForm",
+        "NSFormCell",
+        "NSGestureRecognizer",
+        "NSGlassEffectView",
+        "NSGlyphGenerator",
+        "NSGlyphInfo",
+        "NSGradient",
+        "NSGraphics",
+        "NSGraphicsContext",
+        "NSGridView",
+        "NSGroupTouchBarItem",
+        "NSHapticFeedback",
+        "NSHelpManager",
+        "NSImage",
+        "NSImageCell",
+        "NSImageRep",
+        "NSImageView",
+        "NSInputManager",
+        "NSInputServer",
+        "NSInterfaceStyle",
+        "NSItemBadge",
+        "NSItemProvider",
+        "NSKeyValueBinding",
+        "NSLayoutAnchor",
+        "NSLayoutConstraint",
+        "NSLayoutGuide",
+        "NSLayoutManager",
+        "NSLevelIndicator",
+        "NSLevelIndicatorCell",
+        "NSMagnificationGestureRecognizer",
+        "NSMatrix",
+        "NSMediaLibraryBrowserController",
+        "NSMenu",
+        "NSMenuItem",
+        "NSMenuItemBadge",
+        "NSMenuItemCell",
+        "NSMenuToolbarItem",
+        "NSMovie",
+        "NSNib",
+        "NSNibConnector",
+        "NSNibControlConnector",
+        "NSNibDeclarations",
+        "NSNibLoading",
+        "NSNibOutletConnector",
+        "NSObjectController",
+        "NSOpenGL",
+        "NSOpenGLLayer",
+        "NSOpenGLView",
+        "NSOpenPanel",
+        "NSOutlineView",
+        "NSPDFImageRep",
+        "NSPDFInfo",
+        "NSPDFPanel",
+        "NSPICTImageRep",
+        "NSPageController",
+        "NSPageLayout",
+        "NSPanGestureRecognizer",
+        "NSPanel",
+        "NSParagraphStyle",
+        "NSPasteboard",
+        "NSPasteboardItem",
+        "NSPathCell",
+        "NSPathComponentCell",
+        "NSPathControl",
+        "NSPathControlItem",
+        "NSPersistentDocument",
+        "NSPickerTouchBarItem",
+        "NSPopUpButton",
+        "NSPopUpButtonCell",
+        "NSPopover",
+        "NSPopoverTouchBarItem",
+        "NSPredicateEditor",
+        "NSPredicateEditorRowTemplate",
+        "NSPressGestureRecognizer",
+        "NSPressureConfiguration",
+        "NSPreviewRepresentingActivityItem",
+        "NSPrintInfo",
+        "NSPrintOperation",
+        "NSPrintPanel",
+        "NSPrinter",
+        "NSProgressIndicator",
+        "NSResponder",
+        "NSRotationGestureRecognizer",
+        "NSRuleEditor",
+        "NSRulerMarker",
+        "NSRulerView",
+        "NSRunningApplication",
+        "NSSavePanel",
+        "NSScreen",
+        "NSScrollView",
+        "NSScroller",
+        "NSScrubber",
+        "NSScrubberItemView",
+        "NSScrubberLayout",
+        "NSSearchField",
+        "NSSearchFieldCell",
+        "NSSearchToolbarItem",
+        "NSSecureTextField",
+        "NSSegmentedCell",
+        "NSSegmentedControl",
+        "NSShadow",
+        "NSSharingCollaborationModeRestriction",
+        "NSSharingService",
+        "NSSharingServicePickerToolbarItem",
+        "NSSharingServicePickerTouchBarItem",
+        "NSSlider",
+        "NSSliderAccessory",
+        "NSSliderCell",
+        "NSSliderTouchBarItem",
+        "NSSound",
+        "NSSpeechRecognizer",
+        "NSSpeechSynthesizer",
+        "NSSpellChecker",
+        "NSSpellProtocol",
+        "NSSplitView",
+        "NSSplitViewController",
+        "NSSplitViewItem",
+        "NSSplitViewItemAccessoryViewController",
+        "NSStackView",
+        "NSStatusBar",
+        "NSStatusBarButton",
+        "NSStatusItem",
+        "NSStepper",
+        "NSStepperCell",
+        "NSStepperTouchBarItem",
+        "NSStoryboard",
+        "NSStoryboardSegue",
+        "NSStringDrawing",
+        "NSSwitch",
+        "NSTabView",
+        "NSTabViewController",
+        "NSTabViewItem",
+        "NSTableCellView",
+        "NSTableColumn",
+        "NSTableHeaderCell",
+        "NSTableHeaderView",
+        "NSTableRowView",
+        "NSTableView",
+        "NSTableViewDiffableDataSource",
+        "NSTableViewRowAction",
+        "NSText",
+        "NSTextAlternatives",
+        "NSTextAttachment",
+        "NSTextAttachmentCell",
+        "NSTextCheckingClient",
+        "NSTextCheckingController",
+        "NSTextContainer",
+        "NSTextContent",
+        "NSTextContentManager",
+        "NSTextElement",
+        "NSTextField",
+        "NSTextFieldCell",
+        "NSTextFinder",
+        "NSTextInputClient",
+        "NSTextInputContext",
+        "NSTextInsertionIndicator",
+        "NSTextLayoutFragment",
+        "NSTextLayoutManager",
+        "NSTextLineFragment",
+        "NSTextList",
+        "NSTextListElement",
+        "NSTextRange",
+        "NSTextSelection",
+        "NSTextSelectionNavigation",
+        "NSTextStorage",
+        "NSTextStorageScripting",
+        "NSTextTable",
+        "NSTextView",
+        "NSTextViewportLayoutController",
+        "NSTintConfiguration",
+        "NSTintProminence",
+        "NSTitlebarAccessoryViewController",
+        "NSTokenField",
+        "NSTokenFieldCell",
+        "NSToolbar",
+        "NSToolbarItem",
+        "NSToolbarItemGroup",
+        "NSTouch",
+        "NSTouchBar",
+        "NSTouchBarItem",
+        "NSTrackingArea",
+        "NSTrackingSeparatorToolbarItem",
+        "NSTreeController",
+        "NSTreeNode",
+        "NSTypesetter",
+        "NSUserActivity",
+        "NSUserDefaultsController",
+        "NSUserInterfaceCompression",
+        "NSUserInterfaceItemIdentification",
+        "NSUserInterfaceItemSearching",
+        "NSUserInterfaceLayout",
+        "NSUserInterfaceValidation",
+        "NSView",
+        "NSViewController",
+        "NSViewLayoutRegion",
+        "NSVisualEffectView",
+        "NSWindow",
+        "NSWindowController",
+        "NSWindowRestoration",
+        "NSWindowScripting",
+        "NSWindowTab",
+        "NSWindowTabGroup",
+        "NSWorkspace",
+        "NSWritingToolsCoordinator",
+        "NSWritingToolsCoordinatorAnimationParameters",
+        "NSWritingToolsCoordinatorContext",
+        "alloc",
+        "bitflags",
+        "block2",
+        "default",
+        "libc",
+        "objc2-cloud-kit",
+        "objc2-core-data",
+        "objc2-core-foundation",
+        "objc2-core-graphics",
+        "objc2-core-image",
+        "objc2-core-text",
+        "objc2-core-video",
+        "objc2-quartz-core",
+        "std"
+      ],
+      "source_manifest": "cargo-registry/objc2-app-kit-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-app-kit-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "07762c2a438c287ac124300928c9da0f96cefc1932ff8cadac13716fd1e195eb",
+          "bytes": 124
+        },
+        {
+          "path": "crates/objc2-app-kit-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "a15eb82815ce282d59a2f5be179556695ce678790129c30e1d86567c1e2c684e",
+          "bytes": 67231
+        },
+        {
+          "path": "crates/objc2-app-kit-0.3.2/src/generated/NSAttributedString.rs",
+          "source_relative": "src/generated/NSAttributedString.rs",
+          "sha256": "3956216c872c57b477348b381f8e6ac9b130d7a60280a5ca7b9edb48cc88e74a",
+          "bytes": 54105
+        },
+        {
+          "path": "crates/objc2-app-kit-0.3.2/src/generated/mod.rs",
+          "source_relative": "src/generated/mod.rs",
+          "sha256": "ed2ee03a54db629e9c6226f64103ed24d80c54404c621f2fe9d2ebf81847637e",
+          "bytes": 342404
+        },
+        {
+          "path": "crates/objc2-app-kit-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-app-kit-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-app-kit-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-app-kit-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-audio-toolbox",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-audio-toolbox@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "AUAudioUnit",
+        "AUComponent",
+        "AudioComponent",
+        "AudioUnitProperties",
+        "MusicPlayer",
+        "bitflags",
+        "block2"
+      ],
+      "source_manifest": "cargo-registry/objc2-audio-toolbox-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-audio-toolbox-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "82addff899c2a73551f4be851ad296e1b49b6ee7b58c3c253e1b931f60eba66e",
+          "bytes": 130
+        },
+        {
+          "path": "crates/objc2-audio-toolbox-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "87aa116c2f121808b33f1240073232ce4a645247229a855b25168978b9b85faa",
+          "bytes": 4162
+        },
+        {
+          "path": "crates/objc2-audio-toolbox-0.3.2/src/generated/AudioFile.rs",
+          "source_relative": "src/generated/AudioFile.rs",
+          "sha256": "25259fd7d8b22eb9da9b641440e5da354885fcb0ba842357ac673a7a48bc0704",
+          "bytes": 81078
+        },
+        {
+          "path": "crates/objc2-audio-toolbox-0.3.2/src/generated/mod.rs",
+          "source_relative": "src/generated/mod.rs",
+          "sha256": "5962b76f3d451bdec6a80e5ce5061d883337c2f001f70b14c1b31f87340fa315",
+          "bytes": 330233
+        },
+        {
+          "path": "crates/objc2-audio-toolbox-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-audio-toolbox-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-audio-toolbox-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-audio-toolbox-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-av-foundation",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-av-foundation@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "AVAnimation",
+        "AVAsset",
+        "AVAssetCache",
+        "AVAssetDownloadStorageManager",
+        "AVAssetDownloadTask",
+        "AVAssetExportSession",
+        "AVAssetImageGenerator",
+        "AVAssetPlaybackAssistant",
+        "AVAssetReader",
+        "AVAssetReaderOutput",
+        "AVAssetResourceLoader",
+        "AVAssetSegmentReport",
+        "AVAssetTrack",
+        "AVAssetTrackGroup",
+        "AVAssetTrackSegment",
+        "AVAssetVariant",
+        "AVAssetWriter",
+        "AVAssetWriterInput",
+        "AVAsynchronousKeyValueLoading",
+        "AVAudioBuffer",
+        "AVAudioChannelLayout",
+        "AVAudioConnectionPoint",
+        "AVAudioConverter",
+        "AVAudioEngine",
+        "AVAudioEnvironmentNode",
+        "AVAudioFile",
+        "AVAudioFormat",
+        "AVAudioIONode",
+        "AVAudioMix",
+        "AVAudioMixerNode",
+        "AVAudioMixing",
+        "AVAudioNode",
+        "AVAudioPlayer",
+        "AVAudioPlayerNode",
+        "AVAudioProcessingSettings",
+        "AVAudioRecorder",
+        "AVAudioRoutingArbiter",
+        "AVAudioSequencer",
+        "AVAudioSession",
+        "AVAudioSessionDeprecated",
+        "AVAudioSessionRoute",
+        "AVAudioSessionTypes",
+        "AVAudioSettings",
+        "AVAudioTime",
+        "AVAudioTypes",
+        "AVAudioUnit",
+        "AVAudioUnitComponent",
+        "AVAudioUnitDelay",
+        "AVAudioUnitDistortion",
+        "AVAudioUnitEQ",
+        "AVAudioUnitEffect",
+        "AVAudioUnitGenerator",
+        "AVAudioUnitMIDIInstrument",
+        "AVAudioUnitReverb",
+        "AVAudioUnitSampler",
+        "AVAudioUnitTimeEffect",
+        "AVAudioUnitTimePitch",
+        "AVAudioUnitVarispeed",
+        "AVBase",
+        "AVCameraCalibrationData",
+        "AVCaption",
+        "AVCaptionConversionValidator",
+        "AVCaptionFormatConformer",
+        "AVCaptionGroup",
+        "AVCaptionGrouper",
+        "AVCaptionRenderer",
+        "AVCaptionSettings",
+        "AVCaptureAudioDataOutput",
+        "AVCaptureAudioPreviewOutput",
+        "AVCaptureControl",
+        "AVCaptureDataOutputSynchronizer",
+        "AVCaptureDepthDataOutput",
+        "AVCaptureDeskViewApplication",
+        "AVCaptureDevice",
+        "AVCaptureExternalDisplayConfigurator",
+        "AVCaptureFileOutput",
+        "AVCaptureIndexPicker",
+        "AVCaptureInput",
+        "AVCaptureMetadataOutput",
+        "AVCaptureOutput",
+        "AVCaptureOutputBase",
+        "AVCapturePhotoOutput",
+        "AVCaptureReactions",
+        "AVCaptureSession",
+        "AVCaptureSessionPreset",
+        "AVCaptureSlider",
+        "AVCaptureSpatialAudioMetadataSampleGenerator",
+        "AVCaptureStillImageOutput",
+        "AVCaptureSystemExposureBiasSlider",
+        "AVCaptureSystemPressure",
+        "AVCaptureSystemZoomSlider",
+        "AVCaptureTimecodeGenerator",
+        "AVCaptureVideoDataOutput",
+        "AVCaptureVideoPreviewLayer",
+        "AVComposition",
+        "AVCompositionTrack",
+        "AVCompositionTrackSegment",
+        "AVContentKeySession",
+        "AVContinuityDevice",
+        "AVDepthData",
+        "AVError",
+        "AVExternalStorageDevice",
+        "AVExternalSyncDevice",
+        "AVFAudio",
+        "AVFCapture",
+        "AVFCore",
+        "AVGeometry",
+        "AVMIDIPlayer",
+        "AVMediaFormat",
+        "AVMediaSelection",
+        "AVMediaSelectionGroup",
+        "AVMetadataFormat",
+        "AVMetadataIdentifiers",
+        "AVMetadataItem",
+        "AVMetadataObject",
+        "AVMetrics",
+        "AVMovie",
+        "AVMovieTrack",
+        "AVOutputSettingsAssistant",
+        "AVPlaybackCoordinationMedium",
+        "AVPlaybackCoordinator",
+        "AVPlayer",
+        "AVPlayerInterstitialEventController",
+        "AVPlayerItem",
+        "AVPlayerItemIntegratedTimeline",
+        "AVPlayerItemMediaDataCollector",
+        "AVPlayerItemOutput",
+        "AVPlayerItemProtectedContentAdditions",
+        "AVPlayerItemTrack",
+        "AVPlayerLayer",
+        "AVPlayerLooper",
+        "AVPlayerMediaSelectionCriteria",
+        "AVPlayerOutput",
+        "AVPortraitEffectsMatte",
+        "AVQueuedSampleBufferRendering",
+        "AVRenderedCaptionImage",
+        "AVRouteDetector",
+        "AVSampleBufferAudioRenderer",
+        "AVSampleBufferDisplayLayer",
+        "AVSampleBufferGenerator",
+        "AVSampleBufferRenderSynchronizer",
+        "AVSampleBufferVideoRenderer",
+        "AVSampleCursor",
+        "AVSemanticSegmentationMatte",
+        "AVSpatialVideoConfiguration",
+        "AVSynchronizedLayer",
+        "AVTextStyleRule",
+        "AVTime",
+        "AVTimedMetadataGroup",
+        "AVUtilities",
+        "AVVideoCompositing",
+        "AVVideoComposition",
+        "AVVideoPerformanceMetrics",
+        "AVVideoSettings",
+        "alloc",
+        "bitflags",
+        "block2",
+        "default",
+        "dispatch2",
+        "objc2-avf-audio",
+        "objc2-core-audio-types",
+        "objc2-core-foundation",
+        "objc2-core-graphics",
+        "objc2-core-image",
+        "objc2-core-video",
+        "objc2-image-io",
+        "objc2-media-toolbox",
+        "objc2-quartz-core",
+        "std"
+      ],
+      "source_manifest": "cargo-registry/objc2-av-foundation-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-av-foundation-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "e881cf86a1b4e1e5738d3693586cd03d51a2f633036934c165be305c07ed3f55",
+          "bytes": 130
+        },
+        {
+          "path": "crates/objc2-av-foundation-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "c02a1b6342bf6aef7595de56d872dee787d488479b5c8c88e7204ef32a32123d",
+          "bytes": 24181
+        },
+        {
+          "path": "crates/objc2-av-foundation-0.3.2/src/generated/AVMetadataFormat.rs",
+          "source_relative": "src/generated/AVMetadataFormat.rs",
+          "sha256": "3fcd9107b5d23398a9a23920d3466f45cb63ff11f68697dbf84e51cbc6fd8bfc",
+          "bytes": 78137
+        },
+        {
+          "path": "crates/objc2-av-foundation-0.3.2/src/generated/AVMetadataIdentifiers.rs",
+          "source_relative": "src/generated/AVMetadataIdentifiers.rs",
+          "sha256": "6dcc1b68c8115312af032d2dd22871070b29c6c3daad19a1ec9bdd81e4065851",
+          "bytes": 85204
+        },
+        {
+          "path": "crates/objc2-av-foundation-0.3.2/src/generated/mod.rs",
+          "source_relative": "src/generated/mod.rs",
+          "sha256": "94c7858f542f8389b42e0848c02a063e75b634c2f7442356bfdddb1a93949acd",
+          "bytes": 189839
+        },
+        {
+          "path": "crates/objc2-av-foundation-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-av-foundation-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-av-foundation-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-av-foundation-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-avf-audio",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-avf-audio@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "AVAudioApplication",
+        "AVAudioBuffer",
+        "AVAudioChannelLayout",
+        "AVAudioConnectionPoint",
+        "AVAudioConverter",
+        "AVAudioEngine",
+        "AVAudioEnvironmentNode",
+        "AVAudioFile",
+        "AVAudioFormat",
+        "AVAudioIONode",
+        "AVAudioMixerNode",
+        "AVAudioMixing",
+        "AVAudioNode",
+        "AVAudioPlayer",
+        "AVAudioPlayerNode",
+        "AVAudioRecorder",
+        "AVAudioRoutingArbiter",
+        "AVAudioSequencer",
+        "AVAudioSession",
+        "AVAudioSessionDeprecated",
+        "AVAudioSessionRoute",
+        "AVAudioSessionTypes",
+        "AVAudioSettings",
+        "AVAudioSinkNode",
+        "AVAudioSourceNode",
+        "AVAudioTime",
+        "AVAudioTypes",
+        "AVAudioUnit",
+        "AVAudioUnitComponent",
+        "AVAudioUnitDelay",
+        "AVAudioUnitDistortion",
+        "AVAudioUnitEQ",
+        "AVAudioUnitEffect",
+        "AVAudioUnitGenerator",
+        "AVAudioUnitMIDIInstrument",
+        "AVAudioUnitReverb",
+        "AVAudioUnitSampler",
+        "AVAudioUnitTimeEffect",
+        "AVAudioUnitTimePitch",
+        "AVAudioUnitVarispeed",
+        "AVMIDIPlayer",
+        "AVMusicEvents",
+        "AVSpeechSynthesis",
+        "AVSpeechSynthesisProvider",
+        "alloc",
+        "bitflags",
+        "block2",
+        "default",
+        "objc2-audio-toolbox",
+        "objc2-core-audio-types",
+        "std"
+      ],
+      "source_manifest": "cargo-registry/objc2-avf-audio-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-avf-audio-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "00049351e40a4ec7027ea2fdc8e9d4d720ddb87fa64a8b582fa0604de9208303",
+          "bytes": 126
+        },
+        {
+          "path": "crates/objc2-avf-audio-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "173f18909704fb0bb1e6df210c73d750bd8cfaa3b8cf4732a8ed311b879ab399",
+          "bytes": 7369
+        },
+        {
+          "path": "crates/objc2-avf-audio-0.3.2/src/generated/AVAudioSequencer.rs",
+          "source_relative": "src/generated/AVAudioSequencer.rs",
+          "sha256": "469085b7ce146b602d578d8b7d321bedf37ea2624dc394e28ecc693b4ba0d8be",
+          "bytes": 38050
+        },
+        {
+          "path": "crates/objc2-avf-audio-0.3.2/src/generated/AVMusicEvents.rs",
+          "source_relative": "src/generated/AVMusicEvents.rs",
+          "sha256": "b0ad8ecaf5353ffae2639b39c94d6c3aebe0d74c211ede36a16c8a35722b3865",
+          "bytes": 44072
+        },
+        {
+          "path": "crates/objc2-avf-audio-0.3.2/src/generated/mod.rs",
+          "source_relative": "src/generated/mod.rs",
+          "sha256": "79b65db1de6866b3c5b692c5dea097782cc46e40313de6e6c8c60683208eb5ba",
+          "bytes": 39672
+        },
+        {
+          "path": "crates/objc2-avf-audio-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-avf-audio-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-avf-audio-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-avf-audio-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-cloud-kit",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-cloud-kit@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "CKContainer",
+        "CKRecord",
+        "CKShare",
+        "CKShareMetadata",
+        "bitflags"
+      ],
+      "source_manifest": "cargo-registry/objc2-cloud-kit-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-cloud-kit-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "62f199c0f8876bdc6d78976603201d3684c925632b1fe158f2d6816b28baf121",
+          "bytes": 126
+        },
+        {
+          "path": "crates/objc2-cloud-kit-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "f69323687923479e1e6c37b2020ffc2c5e2be5535c60007746d54e5962090d43",
+          "bytes": 9909
+        },
+        {
+          "path": "crates/objc2-cloud-kit-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-cloud-kit-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-cloud-kit-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-cloud-kit-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-core-audio",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-core-audio@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "AudioHardware",
+        "AudioHardwareDeprecated",
+        "objc2"
+      ],
+      "source_manifest": "cargo-registry/objc2-core-audio-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-core-audio-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "e43bc44a09544783b5fd07ede5253ff11cb4df651d3cfb3236968a6684f98d06",
+          "bytes": 127
+        },
+        {
+          "path": "crates/objc2-core-audio-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "be0e8c7f5c53a57f2fcfe86a833d48d10e523e54a3ae865e2d559d67209d06ae",
+          "bytes": 2084
+        },
+        {
+          "path": "crates/objc2-core-audio-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-audio-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-audio-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-audio-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-core-audio-types",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-core-audio-types@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "CoreAudioBaseTypes",
+        "bitflags",
+        "objc2"
+      ],
+      "source_manifest": "cargo-registry/objc2-core-audio-types-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-core-audio-types-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "a1214548682de7f2f59ca06fe8a25c610f3dc71255a18c25d2238c1af54d61bb",
+          "bytes": 133
+        },
+        {
+          "path": "crates/objc2-core-audio-types-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "475492b74df479e45b8c6a46f35b6cc12e05158334703cb135759ae44db94f48",
+          "bytes": 1220
+        },
+        {
+          "path": "crates/objc2-core-audio-types-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-audio-types-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-audio-types-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-audio-types-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-core-data",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-core-data@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "NSAttributeDescription",
+        "NSEntityDescription",
+        "NSFetchRequest",
+        "NSManagedObjectContext",
+        "NSManagedObjectModel",
+        "NSPersistentStoreRequest",
+        "NSPropertyDescription",
+        "bitflags"
+      ],
+      "source_manifest": "cargo-registry/objc2-core-data-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-core-data-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "7f8e9d957f5352b458a53d6e594c3f0f9033433224c6fb77823a6f0f421ef9e8",
+          "bytes": 126
+        },
+        {
+          "path": "crates/objc2-core-data-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "64ddcb77e8e099866d45311e0d6b9a40e7e93bd07f741039e6edef3d1bd86b2f",
+          "bytes": 11766
+        },
+        {
+          "path": "crates/objc2-core-data-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-data-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-data-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-data-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-core-foundation",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-core-foundation@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "CFArray",
+        "CFAttributedString",
+        "CFCGTypes",
+        "CFCalendar",
+        "CFCharacterSet",
+        "CFData",
+        "CFDate",
+        "CFDictionary",
+        "CFError",
+        "CFFileSecurity",
+        "CFLocale",
+        "CFMachPort",
+        "CFMessagePort",
+        "CFNumber",
+        "CFRunLoop",
+        "CFSet",
+        "CFStream",
+        "CFString",
+        "CFURL",
+        "bitflags",
+        "objc2"
+      ],
+      "source_manifest": "cargo-registry/objc2-core-foundation-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-core-foundation-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "1c1a87985a2bd25015f5e2413f4041379bea0172b2fce88dae3e6482b50aab26",
+          "bytes": 132
+        },
+        {
+          "path": "crates/objc2-core-foundation-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "44cd6a4440c3ea1ba85df240ab9b9e7a95da3a5873ce623ac426ac5acfbe507f",
+          "bytes": 3362
+        },
+        {
+          "path": "crates/objc2-core-foundation-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-foundation-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-foundation-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-foundation-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-core-graphics",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-core-graphics@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "CGColor",
+        "CGColorSpace",
+        "CGContext",
+        "CGDataConsumer",
+        "CGDataProvider",
+        "CGDirectDisplay",
+        "CGEventTypes",
+        "CGFont",
+        "CGImage",
+        "CGPath",
+        "bitflags",
+        "objc2"
+      ],
+      "source_manifest": "cargo-registry/objc2-core-graphics-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-core-graphics-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "264ea4e6453d508410c33c7e5c05ef71f067cac56efc06603862b36d1fe5dfc3",
+          "bytes": 130
+        },
+        {
+          "path": "crates/objc2-core-graphics-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "8156455095991b7501f4fa30bdf29c5a541a41e3c479558e757932b07d0b16d1",
+          "bytes": 6661
+        },
+        {
+          "path": "crates/objc2-core-graphics-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-graphics-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-graphics-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-graphics-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-core-image",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-core-image@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "CIBarcodeDescriptor",
+        "CIColor",
+        "CIContext",
+        "CIFilter",
+        "CIImage"
+      ],
+      "source_manifest": "cargo-registry/objc2-core-image-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-core-image-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "c894249d194f6678eab85405db96965489b93eba3863198439f1014a21421c31",
+          "bytes": 127
+        },
+        {
+          "path": "crates/objc2-core-image-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "9b80ba6d2f783dd4ae6cc1c3f6c18bcc5fe8d460dbd0f7d28c1ba802ed090241",
+          "bytes": 6479
+        },
+        {
+          "path": "crates/objc2-core-image-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-image-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-image-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-image-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-core-media",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-core-media@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "CMBase",
+        "CMFormatDescription",
+        "CMSampleBuffer",
+        "CMTime",
+        "CMTimeRange",
+        "bitflags",
+        "objc2"
+      ],
+      "source_manifest": "cargo-registry/objc2-core-media-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-core-media-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "8f11ae3dbac5e37f4561ede03bdf79fabefdb5b71b78e45bfae94cdfdc543971",
+          "bytes": 127
+        },
+        {
+          "path": "crates/objc2-core-media-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "b7e64dda43cac666b86153a513f3a4536a95012b879075c182cd04338aa0e0a5",
+          "bytes": 3535
+        },
+        {
+          "path": "crates/objc2-core-media-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-media-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-media-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-media-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-core-text",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-core-text@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "CTFont",
+        "CTFontCollection",
+        "CTFontDescriptor",
+        "CTGlyphInfo",
+        "bitflags",
+        "objc2"
+      ],
+      "source_manifest": "cargo-registry/objc2-core-text-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-core-text-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "505aa6c21bf36109e6e050055d239bcaf791b18e63cdefb7d601922b9f864545",
+          "bytes": 126
+        },
+        {
+          "path": "crates/objc2-core-text-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "03598c2d46443f2cff2d4898c72d78b8be884768ef946f42515babe773faf021",
+          "bytes": 4018
+        },
+        {
+          "path": "crates/objc2-core-text-0.3.2/src/generated/CTFont.rs",
+          "source_relative": "src/generated/CTFont.rs",
+          "sha256": "39c17e07c1fc6199e6c78e696306d8e68e2ab7f6d3d1d0fbfb2efa78245c5cea",
+          "bytes": 131811
+        },
+        {
+          "path": "crates/objc2-core-text-0.3.2/src/generated/CTGlyphInfo.rs",
+          "source_relative": "src/generated/CTGlyphInfo.rs",
+          "sha256": "721d6ef7deb706c737e2eea9eb8a02b41ed9fd848062011d02754acb57783f65",
+          "bytes": 13477
+        },
+        {
+          "path": "crates/objc2-core-text-0.3.2/src/generated/SFNTTypes.rs",
+          "source_relative": "src/generated/SFNTTypes.rs",
+          "sha256": "50c3e100518993a05769093e344119b06867d6b1179abd314d5d5a9d9091df06",
+          "bytes": 48472
+        },
+        {
+          "path": "crates/objc2-core-text-0.3.2/src/generated/mod.rs",
+          "source_relative": "src/generated/mod.rs",
+          "sha256": "1e92ec4e4e4388e97c6bfb5e79bd8ab0343336c8a65508218d01d59ac9d25d9a",
+          "bytes": 124145
+        },
+        {
+          "path": "crates/objc2-core-text-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-text-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-text-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-text-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-core-video",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-core-video@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "CVBase",
+        "CVBuffer",
+        "CVImageBuffer",
+        "CVPixelBuffer",
+        "CVPixelBufferPool",
+        "bitflags",
+        "objc2"
+      ],
+      "source_manifest": "cargo-registry/objc2-core-video-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-core-video-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "05c4588ec0cd5ff712e111b6a56224d5c9fef6b63bc11fc069ff0f2fa7f96b2a",
+          "bytes": 127
+        },
+        {
+          "path": "crates/objc2-core-video-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "c961e5eee0d41058ca7ffce667ae9afac95bf5689bbf01d9ccca3ce340ca8dbf",
+          "bytes": 3566
+        },
+        {
+          "path": "crates/objc2-core-video-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-video-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-video-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-core-video-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-encode",
+      "version": "4.1.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-encode@4.1.0",
+      "declared_spdx": "MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "alloc",
+        "std"
+      ],
+      "source_manifest": "cargo-registry/objc2-encode-4.1.0/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-encode-4.1.0/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "b23c761215887d90ac44e18b18c8b386f93139c65a4a14f110e22405830cb3f1",
+          "bytes": 113
+        },
+        {
+          "path": "crates/objc2-encode-4.1.0/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "12972b1faf213492f9e78226f23642c461284b739f7be5437d9401465a2869a6",
+          "bytes": 1137
+        },
+        {
+          "path": "crates/objc2-encode-4.1.0/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "8d214f5477365ffcbcbb7de058c86ed9a518efb7"
+          }
+        },
+        {
+          "path": "crates/objc2-encode-4.1.0/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "8d214f5477365ffcbcbb7de058c86ed9a518efb7"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-foundation",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-foundation@0.3.2",
+      "declared_spdx": "MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "FoundationErrors",
+        "FoundationLegacySwiftCompatibility",
+        "NSAffineTransform",
+        "NSAppleEventDescriptor",
+        "NSAppleEventManager",
+        "NSAppleScript",
+        "NSArchiver",
+        "NSArray",
+        "NSAttributedString",
+        "NSAutoreleasePool",
+        "NSBackgroundActivityScheduler",
+        "NSBundle",
+        "NSByteCountFormatter",
+        "NSByteOrder",
+        "NSCache",
+        "NSCalendar",
+        "NSCalendarDate",
+        "NSCharacterSet",
+        "NSClassDescription",
+        "NSCoder",
+        "NSComparisonPredicate",
+        "NSCompoundPredicate",
+        "NSConnection",
+        "NSData",
+        "NSDate",
+        "NSDateComponentsFormatter",
+        "NSDateFormatter",
+        "NSDateInterval",
+        "NSDateIntervalFormatter",
+        "NSDebug",
+        "NSDecimal",
+        "NSDecimalNumber",
+        "NSDictionary",
+        "NSDistantObject",
+        "NSDistributedLock",
+        "NSDistributedNotificationCenter",
+        "NSEnergyFormatter",
+        "NSEnumerator",
+        "NSError",
+        "NSException",
+        "NSExpression",
+        "NSExtensionContext",
+        "NSExtensionItem",
+        "NSExtensionRequestHandling",
+        "NSFileCoordinator",
+        "NSFileHandle",
+        "NSFileManager",
+        "NSFilePresenter",
+        "NSFileVersion",
+        "NSFileWrapper",
+        "NSFormatter",
+        "NSGarbageCollector",
+        "NSGeometry",
+        "NSHFSFileTypes",
+        "NSHTTPCookie",
+        "NSHTTPCookieStorage",
+        "NSHashTable",
+        "NSHost",
+        "NSISO8601DateFormatter",
+        "NSIndexPath",
+        "NSIndexSet",
+        "NSInflectionRule",
+        "NSInvocation",
+        "NSItemProvider",
+        "NSJSONSerialization",
+        "NSKeyValueCoding",
+        "NSKeyValueObserving",
+        "NSKeyValueSharedObservers",
+        "NSKeyedArchiver",
+        "NSLengthFormatter",
+        "NSLinguisticTagger",
+        "NSListFormatter",
+        "NSLocale",
+        "NSLocalizedNumberFormatRule",
+        "NSLock",
+        "NSMapTable",
+        "NSMassFormatter",
+        "NSMeasurement",
+        "NSMeasurementFormatter",
+        "NSMetadata",
+        "NSMetadataAttributes",
+        "NSMethodSignature",
+        "NSMorphology",
+        "NSNetServices",
+        "NSNotification",
+        "NSNotificationQueue",
+        "NSNull",
+        "NSNumberFormatter",
+        "NSObjCRuntime",
+        "NSObject",
+        "NSObjectScripting",
+        "NSOperation",
+        "NSOrderedCollectionChange",
+        "NSOrderedCollectionDifference",
+        "NSOrderedSet",
+        "NSOrthography",
+        "NSPathUtilities",
+        "NSPersonNameComponents",
+        "NSPersonNameComponentsFormatter",
+        "NSPointerArray",
+        "NSPointerFunctions",
+        "NSPort",
+        "NSPortCoder",
+        "NSPortMessage",
+        "NSPortNameServer",
+        "NSPredicate",
+        "NSProcessInfo",
+        "NSProgress",
+        "NSPropertyList",
+        "NSProtocolChecker",
+        "NSProxy",
+        "NSRange",
+        "NSRegularExpression",
+        "NSRelativeDateTimeFormatter",
+        "NSRunLoop",
+        "NSScanner",
+        "NSScriptClassDescription",
+        "NSScriptCoercionHandler",
+        "NSScriptCommand",
+        "NSScriptCommandDescription",
+        "NSScriptExecutionContext",
+        "NSScriptKeyValueCoding",
+        "NSScriptObjectSpecifiers",
+        "NSScriptStandardSuiteCommands",
+        "NSScriptSuiteRegistry",
+        "NSScriptWhoseTests",
+        "NSSet",
+        "NSSortDescriptor",
+        "NSSpellServer",
+        "NSStream",
+        "NSString",
+        "NSTask",
+        "NSTermOfAddress",
+        "NSTextCheckingResult",
+        "NSThread",
+        "NSTimeZone",
+        "NSTimer",
+        "NSURL",
+        "NSURLAuthenticationChallenge",
+        "NSURLCache",
+        "NSURLConnection",
+        "NSURLCredential",
+        "NSURLCredentialStorage",
+        "NSURLDownload",
+        "NSURLError",
+        "NSURLHandle",
+        "NSURLProtectionSpace",
+        "NSURLProtocol",
+        "NSURLRequest",
+        "NSURLResponse",
+        "NSURLSession",
+        "NSUUID",
+        "NSUbiquitousKeyValueStore",
+        "NSUndoManager",
+        "NSUnit",
+        "NSUserActivity",
+        "NSUserDefaults",
+        "NSUserNotification",
+        "NSUserScriptTask",
+        "NSValue",
+        "NSValueTransformer",
+        "NSXMLDTD",
+        "NSXMLDTDNode",
+        "NSXMLDocument",
+        "NSXMLElement",
+        "NSXMLNode",
+        "NSXMLNodeOptions",
+        "NSXMLParser",
+        "NSXPCConnection",
+        "NSZone",
+        "alloc",
+        "bitflags",
+        "block2",
+        "default",
+        "libc",
+        "objc2-core-foundation",
+        "std"
+      ],
+      "source_manifest": "cargo-registry/objc2-foundation-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-foundation-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "de34f3c84d7cb1cafcedb4e83b7efdd64047872566827477b954f8a853536bb1",
+          "bytes": 127
+        },
+        {
+          "path": "crates/objc2-foundation-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "71158540d55a9b5ce073c856347f0ed1e0e71f4210cfb48a82b1f0e505ba6a50",
+          "bytes": 10499
+        },
+        {
+          "path": "crates/objc2-foundation-0.3.2/src/copying.rs",
+          "source_relative": "src/copying.rs",
+          "sha256": "259b22f571b54fed25f68ec5abd8eda223e7b0547a806f13ba797a0eabecd64f",
+          "bytes": 8610
+        },
+        {
+          "path": "crates/objc2-foundation-0.3.2/src/generated/NSMetadataAttributes.rs",
+          "source_relative": "src/generated/NSMetadataAttributes.rs",
+          "sha256": "4921e087268761b48df0b728f8fdb9c428f9ec7ad089787e7c38244e764c2031",
+          "bytes": 45313
+        },
+        {
+          "path": "crates/objc2-foundation-0.3.2/src/generated/mod.rs",
+          "source_relative": "src/generated/mod.rs",
+          "sha256": "b7239ddd878de2ae07aedf8bb2c68ed0def17d42da4ddfce418ab7f814d841bb",
+          "bytes": 216243
+        },
+        {
+          "path": "crates/objc2-foundation-0.3.2/src/tests/copying.rs",
+          "source_relative": "src/tests/copying.rs",
+          "sha256": "23d608079a47693a26dfc8a5cb01894ad0136a50714d46221d9380aa4a4b4423",
+          "bytes": 618
+        },
+        {
+          "path": "crates/objc2-foundation-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-foundation-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-image-io",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-image-io@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "CGImageProperties",
+        "objc2"
+      ],
+      "source_manifest": "cargo-registry/objc2-image-io-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-image-io-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "583b666cbc15ad0671d5b1d819af352ac817f6e5293d019df09e45ad31dde6a7",
+          "bytes": 125
+        },
+        {
+          "path": "crates/objc2-image-io-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "250d26341e336c569ebefd4cc61efdde1fb3f519afec9764485ad4fc6b75bb2e",
+          "bytes": 2294
+        },
+        {
+          "path": "crates/objc2-image-io-0.3.2/src/generated/CGImageProperties.rs",
+          "source_relative": "src/generated/CGImageProperties.rs",
+          "sha256": "81bf4408389694e41484ee9661f7f000835ddda8cc9856e6b78ba7d2a4a0d8f0",
+          "bytes": 153283
+        },
+        {
+          "path": "crates/objc2-image-io-0.3.2/src/generated/mod.rs",
+          "source_relative": "src/generated/mod.rs",
+          "sha256": "fb60da415c1d94888060e0395aa0b1ef77d05f6f00b382be3efa0e6fc41e037f",
+          "bytes": 91825
+        },
+        {
+          "path": "crates/objc2-image-io-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-image-io-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-image-io-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-image-io-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-io-surface",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-io-surface@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "IOSurfaceRef",
+        "bitflags",
+        "objc2"
+      ],
+      "source_manifest": "cargo-registry/objc2-io-surface-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-io-surface-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "a68dbb39ef7cfef6062e3d2e49c59539c7a34d70d13c5bdf4a443d2475280011",
+          "bytes": 127
+        },
+        {
+          "path": "crates/objc2-io-surface-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "80c0f7bac2add855807e6abadbc220473b982041b99339bacf17e2885b3752c9",
+          "bytes": 1799
+        },
+        {
+          "path": "crates/objc2-io-surface-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-io-surface-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-io-surface-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-io-surface-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-media-toolbox",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-media-toolbox@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "MTAudioProcessingTap",
+        "objc2"
+      ],
+      "source_manifest": "cargo-registry/objc2-media-toolbox-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-media-toolbox-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "f8d1a6ac884a8342b1cb64d6eb2980882694863045a060f0772fe2f116467e56",
+          "bytes": 130
+        },
+        {
+          "path": "crates/objc2-media-toolbox-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "06b37570f6bccfe7a4b679b558d8536e53951b5a9d03febce61aed5976b44740",
+          "bytes": 1681
+        },
+        {
+          "path": "crates/objc2-media-toolbox-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-media-toolbox-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-media-toolbox-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-media-toolbox-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-quartz-core",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-quartz-core@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "CADisplayLink",
+        "CALayer",
+        "CAMediaTiming",
+        "CAMediaTimingFunction",
+        "CAOpenGLLayer",
+        "bitflags"
+      ],
+      "source_manifest": "cargo-registry/objc2-quartz-core-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-quartz-core-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "d18b21bb115491577880f7f8c491ac10dd8d9947bd27fdc3f6dafcf4cf92b2e9",
+          "bytes": 128
+        },
+        {
+          "path": "crates/objc2-quartz-core-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "ca303efdd2bcb7958d3e0a08f9b7adb327a2942d0730cda5991365c48016f4d4",
+          "bytes": 5427
+        },
+        {
+          "path": "crates/objc2-quartz-core-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-quartz-core-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-quartz-core-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-quartz-core-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "objc2-speech",
+      "version": "0.3.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#objc2-speech@0.3.2",
+      "declared_spdx": "Zlib OR Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "SFErrors",
+        "SFSpeechLanguageModel",
+        "SFSpeechRecognitionMetadata",
+        "SFSpeechRecognitionRequest",
+        "SFSpeechRecognitionResult",
+        "SFSpeechRecognitionTask",
+        "SFSpeechRecognitionTaskHint",
+        "SFSpeechRecognizer",
+        "SFTranscription",
+        "SFTranscriptionSegment",
+        "SFVoiceAnalytics",
+        "alloc",
+        "block2",
+        "default",
+        "objc2-avf-audio",
+        "objc2-core-media",
+        "std"
+      ],
+      "source_manifest": "cargo-registry/objc2-speech-0.3.2/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/objc2-speech-0.3.2/.cargo_vcs_info.json",
+          "source_relative": ".cargo_vcs_info.json",
+          "sha256": "7da6f47dc9c919539c56521e55f630cb0364bed394d6bb6218432eb9eb71f067",
+          "bytes": 123
+        },
+        {
+          "path": "crates/objc2-speech-0.3.2/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "7953aa8683d5b429738c39a4085516c301917329bbc3e57c7acef58ebe16f83c",
+          "bytes": 3079
+        },
+        {
+          "path": "crates/objc2-speech-0.3.2/supplemental/Apache-2.0.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Apache-2.0.txt",
+          "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+          "bytes": 10280,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Apache-2.0.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-speech-0.3.2/supplemental/MIT.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/MIT.txt",
+          "sha256": "6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9",
+          "bytes": 1087,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-speech-0.3.2/supplemental/Zlib.txt",
+          "source_relative": "resources/license-sources/spdx-3.26.0/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+          "bytes": 838,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/Zlib.txt",
+            "kind": "standard terms; upstream copyright placeholders are not filled or invented",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
+        },
+        {
+          "path": "crates/objc2-speech-0.3.2/supplemental/upstream-LICENSE.md",
+          "source_relative": "resources/license-sources/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "bytes": 1339,
+          "origin": {
+            "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+            "kind": "upstream licensing declaration",
+            "crate_upstream_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b"
+          }
         }
       ]
     },
@@ -3636,6 +6917,18 @@
           "bytes": 49007
         },
         {
+          "path": "crates/ring-0.17.14/src/aead.rs",
+          "source_relative": "src/aead.rs",
+          "sha256": "3ab890b8f5b1cfb0ac103af11294cbfd0937b8da3984067f5510b96807447f34",
+          "bytes": 5248
+        },
+        {
+          "path": "crates/ring-0.17.14/src/aead/aes.rs",
+          "source_relative": "src/aead/aes.rs",
+          "sha256": "e5bf1a294dd56a76c35e8abc04e2247120faba621a069f75481265c87e23e659",
+          "bytes": 8773
+        },
+        {
           "path": "crates/ring-0.17.14/src/aead/aes/bs.rs",
           "source_relative": "src/aead/aes/bs.rs",
           "sha256": "d49208534364fe2709fe93e89b61b41c24b0ef9d8608913eb9eaa5645287fc2a",
@@ -3666,10 +6959,10 @@
           "bytes": 5167
         },
         {
-          "path": "crates/ring-0.17.14/src/aead/aes.rs",
-          "source_relative": "src/aead/aes.rs",
-          "sha256": "e5bf1a294dd56a76c35e8abc04e2247120faba621a069f75481265c87e23e659",
-          "bytes": 8773
+          "path": "crates/ring-0.17.14/src/aead/aes_gcm.rs",
+          "source_relative": "src/aead/aes_gcm.rs",
+          "sha256": "c2465f43aec314e1058acde919ffe19243701c8faf5577c54642921c31238753",
+          "bytes": 17131
         },
         {
           "path": "crates/ring-0.17.14/src/aead/aes_gcm/aarch64.rs",
@@ -3690,16 +6983,16 @@
           "bytes": 3142
         },
         {
-          "path": "crates/ring-0.17.14/src/aead/aes_gcm.rs",
-          "source_relative": "src/aead/aes_gcm.rs",
-          "sha256": "c2465f43aec314e1058acde919ffe19243701c8faf5577c54642921c31238753",
-          "bytes": 17131
-        },
-        {
           "path": "crates/ring-0.17.14/src/aead/algorithm.rs",
           "source_relative": "src/aead/algorithm.rs",
           "sha256": "13c846f8a3ef11282e459fa4753d1dbdf5d4956ee7d152b71dfb8b3997c47284",
           "bytes": 7517
+        },
+        {
+          "path": "crates/ring-0.17.14/src/aead/chacha.rs",
+          "source_relative": "src/aead/chacha.rs",
+          "sha256": "bbb8f137622eda811404cd97fb6358c570c583ec21dc4b5406b2d56a23bd7aca",
+          "bytes": 11936
         },
         {
           "path": "crates/ring-0.17.14/src/aead/chacha/fallback.rs",
@@ -3712,12 +7005,6 @@
           "source_relative": "src/aead/chacha/ffi.rs",
           "sha256": "c54cbbe8ec3844354c5e72098d469936b35976afcd20a30c91c34c2851f32810",
           "bytes": 2696
-        },
-        {
-          "path": "crates/ring-0.17.14/src/aead/chacha.rs",
-          "source_relative": "src/aead/chacha.rs",
-          "sha256": "bbb8f137622eda811404cd97fb6358c570c583ec21dc4b5406b2d56a23bd7aca",
-          "bytes": 11936
         },
         {
           "path": "crates/ring-0.17.14/src/aead/chacha20_poly1305/integrated.rs",
@@ -3736,6 +7023,12 @@
           "source_relative": "src/aead/chacha20_poly1305_openssh.rs",
           "sha256": "e42352357c56b4503f4f9ca413755aab409c8fb8b2855557217022ed8073e71e",
           "bytes": 7621
+        },
+        {
+          "path": "crates/ring-0.17.14/src/aead/gcm.rs",
+          "source_relative": "src/aead/gcm.rs",
+          "sha256": "0dc7633c5c3ef3c820ab7de0f97e31807b3153edc61ddc2c3922650158635c67",
+          "bytes": 5104
         },
         {
           "path": "crates/ring-0.17.14/src/aead/gcm/clmul.rs",
@@ -3772,12 +7065,6 @@
           "source_relative": "src/aead/gcm/vclmulavx2.rs",
           "sha256": "f8c79a602e597f4e81f248144d8598a37d1fbdb7ed460451ac3a47f9837dd8bc",
           "bytes": 1543
-        },
-        {
-          "path": "crates/ring-0.17.14/src/aead/gcm.rs",
-          "source_relative": "src/aead/gcm.rs",
-          "sha256": "0dc7633c5c3ef3c820ab7de0f97e31807b3153edc61ddc2c3922650158635c67",
-          "bytes": 5104
         },
         {
           "path": "crates/ring-0.17.14/src/aead/less_safe_key.rs",
@@ -3822,6 +7109,12 @@
           "bytes": 2012
         },
         {
+          "path": "crates/ring-0.17.14/src/aead/poly1305.rs",
+          "source_relative": "src/aead/poly1305.rs",
+          "sha256": "a4384e740d49b36c568a604d56082db6476715c31154c538d4e8388032e84cc8",
+          "bytes": 3867
+        },
+        {
           "path": "crates/ring-0.17.14/src/aead/poly1305/ffi_arm_neon.rs",
           "source_relative": "src/aead/poly1305/ffi_arm_neon.rs",
           "sha256": "66b81d9ce04b938b1ca0fe53d6afb97e36afe99f0331db231f4566ed0824b7da",
@@ -3832,12 +7125,6 @@
           "source_relative": "src/aead/poly1305/ffi_fallback.rs",
           "sha256": "85d27d274e05e48fd9136f0435b9b72957514f1dd724b3640176b8f4464fd155",
           "bytes": 2958
-        },
-        {
-          "path": "crates/ring-0.17.14/src/aead/poly1305.rs",
-          "source_relative": "src/aead/poly1305.rs",
-          "sha256": "a4384e740d49b36c568a604d56082db6476715c31154c538d4e8388032e84cc8",
-          "bytes": 3867
         },
         {
           "path": "crates/ring-0.17.14/src/aead/quic.rs",
@@ -3864,16 +7151,22 @@
           "bytes": 2521
         },
         {
-          "path": "crates/ring-0.17.14/src/aead.rs",
-          "source_relative": "src/aead.rs",
-          "sha256": "3ab890b8f5b1cfb0ac103af11294cbfd0937b8da3984067f5510b96807447f34",
-          "bytes": 5248
-        },
-        {
           "path": "crates/ring-0.17.14/src/agreement.rs",
           "source_relative": "src/agreement.rs",
           "sha256": "722149657fb2a751eae72e0db7365ce2a106625a19a696e8db016ae319eafa30",
           "bytes": 9878
+        },
+        {
+          "path": "crates/ring-0.17.14/src/arithmetic.rs",
+          "source_relative": "src/arithmetic.rs",
+          "sha256": "a7b23bf9fdf3b5694801881e820355f0228c18f73ade007fe3f2b7464882e1cc",
+          "bytes": 1570
+        },
+        {
+          "path": "crates/ring-0.17.14/src/arithmetic/bigint.rs",
+          "source_relative": "src/arithmetic/bigint.rs",
+          "sha256": "93be01c470baee8d0406df36e1bb7ce70b859c9054516a55386f803c72fee316",
+          "bytes": 36545
         },
         {
           "path": "crates/ring-0.17.14/src/arithmetic/bigint/boxed_limbs.rs",
@@ -3898,12 +7191,6 @@
           "source_relative": "src/arithmetic/bigint/private_exponent.rs",
           "sha256": "c6ad25a3fe83d2413b569390ee1ceda2f354f2fce9f5ae21c2f691f6da565573",
           "bytes": 2860
-        },
-        {
-          "path": "crates/ring-0.17.14/src/arithmetic/bigint.rs",
-          "source_relative": "src/arithmetic/bigint.rs",
-          "sha256": "93be01c470baee8d0406df36e1bb7ce70b859c9054516a55386f803c72fee316",
-          "bytes": 36545
         },
         {
           "path": "crates/ring-0.17.14/src/arithmetic/ffi.rs",
@@ -3972,12 +7259,6 @@
           "bytes": 1273
         },
         {
-          "path": "crates/ring-0.17.14/src/arithmetic.rs",
-          "source_relative": "src/arithmetic.rs",
-          "sha256": "a7b23bf9fdf3b5694801881e820355f0228c18f73ade007fe3f2b7464882e1cc",
-          "bytes": 1570
-        },
-        {
           "path": "crates/ring-0.17.14/src/bb/boolmask.rs",
           "source_relative": "src/bb/boolmask.rs",
           "sha256": "5b02c78773d4c9d0a949432f6a13350863aefd8fe764c664be1d62789a93b67c",
@@ -4020,6 +7301,18 @@
           "bytes": 1459
         },
         {
+          "path": "crates/ring-0.17.14/src/cpu.rs",
+          "source_relative": "src/cpu.rs",
+          "sha256": "d1f255f89aca5261b09af2e3f94a7f808496f0b9698e3f3ef3576d36db82c880",
+          "bytes": 6935
+        },
+        {
+          "path": "crates/ring-0.17.14/src/cpu/arm.rs",
+          "source_relative": "src/cpu/arm.rs",
+          "sha256": "77749329270ea6451dee43d2c3711826e46c6d7f5b23b8f5095150af4da5e283",
+          "bytes": 8281
+        },
+        {
           "path": "crates/ring-0.17.14/src/cpu/arm/darwin.rs",
           "source_relative": "src/cpu/arm/darwin.rs",
           "sha256": "1dfb1d97999bcfd0c9b3d862078188299e1e27345393c93ddbe340919ebfc128",
@@ -4044,22 +7337,10 @@
           "bytes": 1524
         },
         {
-          "path": "crates/ring-0.17.14/src/cpu/arm.rs",
-          "source_relative": "src/cpu/arm.rs",
-          "sha256": "77749329270ea6451dee43d2c3711826e46c6d7f5b23b8f5095150af4da5e283",
-          "bytes": 8281
-        },
-        {
           "path": "crates/ring-0.17.14/src/cpu/intel.rs",
           "source_relative": "src/cpu/intel.rs",
           "sha256": "ac4d6e8e73888780f491b012d986e9f092d502b758b6ba737145d9bc326e176f",
           "bytes": 15420
-        },
-        {
-          "path": "crates/ring-0.17.14/src/cpu.rs",
-          "source_relative": "src/cpu.rs",
-          "sha256": "d1f255f89aca5261b09af2e3f94a7f808496f0b9698e3f3ef3576d36db82c880",
-          "bytes": 6935
         },
         {
           "path": "crates/ring-0.17.14/src/debug.rs",
@@ -4078,6 +7359,12 @@
           "source_relative": "src/deprecated_test.rs",
           "sha256": "fb892117eac31c8cb535f2384221049241d1071b52392eda8ee0c225140e3dc8",
           "bytes": 1826
+        },
+        {
+          "path": "crates/ring-0.17.14/src/digest.rs",
+          "source_relative": "src/digest.rs",
+          "sha256": "61c7d3e3c96acb835a95f502b025b6e338df959b59953ceb6c4e4ffe0d665ed4",
+          "bytes": 21546
         },
         {
           "path": "crates/ring-0.17.14/src/digest/dynstate.rs",
@@ -4122,10 +7409,22 @@
           "bytes": 2767
         },
         {
-          "path": "crates/ring-0.17.14/src/digest.rs",
-          "source_relative": "src/digest.rs",
-          "sha256": "61c7d3e3c96acb835a95f502b025b6e338df959b59953ceb6c4e4ffe0d665ed4",
-          "bytes": 21546
+          "path": "crates/ring-0.17.14/src/ec.rs",
+          "source_relative": "src/ec.rs",
+          "sha256": "f42524befe800fd42bdaa39db02b140862155ead1f12b8bf98a909f438064d29",
+          "bytes": 2254
+        },
+        {
+          "path": "crates/ring-0.17.14/src/ec/curve25519.rs",
+          "source_relative": "src/ec/curve25519.rs",
+          "sha256": "01b7f21eb84b2bf3e21f20f0dca2a5def2e28bf8cd13b995630fa6667c53694b",
+          "bytes": 881
+        },
+        {
+          "path": "crates/ring-0.17.14/src/ec/curve25519/ed25519.rs",
+          "source_relative": "src/ec/curve25519/ed25519.rs",
+          "sha256": "7283a6f5f6a7a69f3a3e3e862ab81b9da49a9a03c3607a167500f3f9ab698a14",
+          "bytes": 1217
         },
         {
           "path": "crates/ring-0.17.14/src/ec/curve25519/ed25519/signing.rs",
@@ -4138,12 +7437,6 @@
           "source_relative": "src/ec/curve25519/ed25519/verification.rs",
           "sha256": "bf62e085396b5ff7145e119438d6ee95156532c9fc3ad79006639dfded21c363",
           "bytes": 3020
-        },
-        {
-          "path": "crates/ring-0.17.14/src/ec/curve25519/ed25519.rs",
-          "source_relative": "src/ec/curve25519/ed25519.rs",
-          "sha256": "7283a6f5f6a7a69f3a3e3e862ab81b9da49a9a03c3607a167500f3f9ab698a14",
-          "bytes": 1217
         },
         {
           "path": "crates/ring-0.17.14/src/ec/curve25519/ops.rs",
@@ -4164,10 +7457,10 @@
           "bytes": 8582
         },
         {
-          "path": "crates/ring-0.17.14/src/ec/curve25519.rs",
-          "source_relative": "src/ec/curve25519.rs",
-          "sha256": "01b7f21eb84b2bf3e21f20f0dca2a5def2e28bf8cd13b995630fa6667c53694b",
-          "bytes": 881
+          "path": "crates/ring-0.17.14/src/ec/suite_b.rs",
+          "source_relative": "src/ec/suite_b.rs",
+          "sha256": "87f1363af0c7bf5c4bf27887c91ff5f1f0a4fe8023ecca19ca860c0df5467e9d",
+          "bytes": 8948
         },
         {
           "path": "crates/ring-0.17.14/src/ec/suite_b/curve.rs",
@@ -4200,6 +7493,12 @@
           "bytes": 12898
         },
         {
+          "path": "crates/ring-0.17.14/src/ec/suite_b/ops.rs",
+          "source_relative": "src/ec/suite_b/ops.rs",
+          "sha256": "94eea4550debdcf3d4f5e81d30c1f9611d1f6b8c95fa4a4f847238a23a19c7a0",
+          "bytes": 43423
+        },
+        {
           "path": "crates/ring-0.17.14/src/ec/suite_b/ops/elem.rs",
           "source_relative": "src/ec/suite_b/ops/elem.rs",
           "sha256": "2c3eabcb0e757365ed8a6f10609999f593d71511e2e45cb3fbaa158d210deea8",
@@ -4218,12 +7517,6 @@
           "bytes": 10548
         },
         {
-          "path": "crates/ring-0.17.14/src/ec/suite_b/ops.rs",
-          "source_relative": "src/ec/suite_b/ops.rs",
-          "sha256": "94eea4550debdcf3d4f5e81d30c1f9611d1f6b8c95fa4a4f847238a23a19c7a0",
-          "bytes": 43423
-        },
-        {
           "path": "crates/ring-0.17.14/src/ec/suite_b/private_key.rs",
           "source_relative": "src/ec/suite_b/private_key.rs",
           "sha256": "433f500061f0c84b7da8d2b3bb68e0d3e0f3b4edf816602d86004cf731024166",
@@ -4234,18 +7527,6 @@
           "source_relative": "src/ec/suite_b/public_key.rs",
           "sha256": "06cc0d9b29327a1811d4e426059da091204028e32a8555d61de5a1504daf815b",
           "bytes": 4473
-        },
-        {
-          "path": "crates/ring-0.17.14/src/ec/suite_b.rs",
-          "source_relative": "src/ec/suite_b.rs",
-          "sha256": "87f1363af0c7bf5c4bf27887c91ff5f1f0a4fe8023ecca19ca860c0df5467e9d",
-          "bytes": 8948
-        },
-        {
-          "path": "crates/ring-0.17.14/src/ec.rs",
-          "source_relative": "src/ec.rs",
-          "sha256": "f42524befe800fd42bdaa39db02b140862155ead1f12b8bf98a909f438064d29",
-          "bytes": 2254
         },
         {
           "path": "crates/ring-0.17.14/src/error/input_too_long.rs",
@@ -4290,6 +7571,12 @@
           "bytes": 15659
         },
         {
+          "path": "crates/ring-0.17.14/src/io.rs",
+          "source_relative": "src/io.rs",
+          "sha256": "b1b5060b07ca97130a752d3fb7e4a3fb7231bec3526e656c87fe8c028190ffd4",
+          "bytes": 1056
+        },
+        {
           "path": "crates/ring-0.17.14/src/io/der.rs",
           "source_relative": "src/io/der.rs",
           "sha256": "6c331a036ed26d908cef501c1c407750f931653e8cf3b16246d3181e2ea9ac05",
@@ -4314,12 +7601,6 @@
           "bytes": 2711
         },
         {
-          "path": "crates/ring-0.17.14/src/io.rs",
-          "source_relative": "src/io.rs",
-          "sha256": "b1b5060b07ca97130a752d3fb7e4a3fb7231bec3526e656c87fe8c028190ffd4",
-          "bytes": 1056
-        },
-        {
           "path": "crates/ring-0.17.14/src/lib.rs",
           "source_relative": "src/lib.rs",
           "sha256": "4ae5eb75aecf1b7b7aaa4a9f37a45c9f7fd803fc4423025eaf788902581cd1f4",
@@ -4342,6 +7623,12 @@
           "source_relative": "src/pkcs8.rs",
           "sha256": "0719fd0997971e6b8685dcf6c4d13e19ab78ea6a270f3c7ac7243c550530c561",
           "bytes": 7962
+        },
+        {
+          "path": "crates/ring-0.17.14/src/polyfill.rs",
+          "source_relative": "src/polyfill.rs",
+          "sha256": "5b997cc66f4cf98fe1e9b5cc20209cfc93bb17ac76b206e021287ee94dd7e726",
+          "bytes": 2886
         },
         {
           "path": "crates/ring-0.17.14/src/polyfill/array_split_map.rs",
@@ -4386,6 +7673,12 @@
           "bytes": 1073
         },
         {
+          "path": "crates/ring-0.17.14/src/polyfill/slice.rs",
+          "source_relative": "src/polyfill/slice.rs",
+          "sha256": "491810bd2e2e3e933db93d24bc8ae78b381a3d6931ecb783173cfb34edc14edd",
+          "bytes": 2116
+        },
+        {
           "path": "crates/ring-0.17.14/src/polyfill/slice/as_chunks.rs",
           "source_relative": "src/polyfill/slice/as_chunks.rs",
           "sha256": "1954d6ce641789745228ed1a78016e4d3aac879f09221232aa68398f280fea40",
@@ -4396,12 +7689,6 @@
           "source_relative": "src/polyfill/slice/as_chunks_mut.rs",
           "sha256": "4d07ad9b0d5ea18771435bbe20ab9c07a03c7dec9ec550eb16e4b96afd257780",
           "bytes": 2919
-        },
-        {
-          "path": "crates/ring-0.17.14/src/polyfill/slice.rs",
-          "source_relative": "src/polyfill/slice.rs",
-          "sha256": "491810bd2e2e3e933db93d24bc8ae78b381a3d6931ecb783173cfb34edc14edd",
-          "bytes": 2116
         },
         {
           "path": "crates/ring-0.17.14/src/polyfill/sliceutil.rs",
@@ -4416,22 +7703,28 @@
           "bytes": 1181
         },
         {
-          "path": "crates/ring-0.17.14/src/polyfill.rs",
-          "source_relative": "src/polyfill.rs",
-          "sha256": "5b997cc66f4cf98fe1e9b5cc20209cfc93bb17ac76b206e021287ee94dd7e726",
-          "bytes": 2886
-        },
-        {
           "path": "crates/ring-0.17.14/src/rand.rs",
           "source_relative": "src/rand.rs",
           "sha256": "fb8708fe62706fe7f7c7aad5f7df9f65ca19def5fabac9616375e9f1e532f4b8",
           "bytes": 5414
         },
         {
+          "path": "crates/ring-0.17.14/src/rsa.rs",
+          "source_relative": "src/rsa.rs",
+          "sha256": "fe62407793ae487d663404dfe5642a7d4e8bc86db4ae70538781d35ea5626cf0",
+          "bytes": 2582
+        },
+        {
           "path": "crates/ring-0.17.14/src/rsa/keypair.rs",
           "source_relative": "src/rsa/keypair.rs",
           "sha256": "b241467ef86cb3b050ea5b7f86f8fd3ac65cafcadeac09b021b8dd213636dfd5",
           "bytes": 25991
+        },
+        {
+          "path": "crates/ring-0.17.14/src/rsa/padding.rs",
+          "source_relative": "src/rsa/padding.rs",
+          "sha256": "86d79319fb7b10ef477a59faa9bb984adf9aaaa3379197f5ec2cc62c623a595c",
+          "bytes": 6487
         },
         {
           "path": "crates/ring-0.17.14/src/rsa/padding/pkcs1.rs",
@@ -4444,12 +7737,6 @@
           "source_relative": "src/rsa/padding/pss.rs",
           "sha256": "8e662863f6fc1249fcaecdb9114d9fabfb4d1604a4ee9a8783a818b11c6528af",
           "bytes": 9687
-        },
-        {
-          "path": "crates/ring-0.17.14/src/rsa/padding.rs",
-          "source_relative": "src/rsa/padding.rs",
-          "sha256": "86d79319fb7b10ef477a59faa9bb984adf9aaaa3379197f5ec2cc62c623a595c",
-          "bytes": 6487
         },
         {
           "path": "crates/ring-0.17.14/src/rsa/public_key.rs",
@@ -4468,12 +7755,6 @@
           "source_relative": "src/rsa/verification.rs",
           "sha256": "13ee4085cea16f434ef1b4e2b1bf623ef3095cef3a0edf2b3c99329bd7301b28",
           "bytes": 8904
-        },
-        {
-          "path": "crates/ring-0.17.14/src/rsa.rs",
-          "source_relative": "src/rsa.rs",
-          "sha256": "fe62407793ae487d663404dfe5642a7d4e8bc86db4ae70538781d35ea5626cf0",
-          "bytes": 2582
         },
         {
           "path": "crates/ring-0.17.14/src/signature.rs",
@@ -6020,6 +9301,94 @@
       ]
     },
     {
+      "name": "unicode-segmentation",
+      "version": "1.13.3",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#unicode-segmentation@1.13.3",
+      "declared_spdx": "MIT OR Apache-2.0",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [],
+      "source_manifest": "cargo-registry/unicode-segmentation-1.13.3/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/unicode-segmentation-1.13.3/COPYRIGHT",
+          "source_relative": "COPYRIGHT",
+          "sha256": "23860c2a7b5d96b21569afedf033469bab9fe14a1b24a35068b8641c578ce24d",
+          "bytes": 321
+        },
+        {
+          "path": "crates/unicode-segmentation-1.13.3/Cargo.toml",
+          "source_relative": "Cargo.toml",
+          "sha256": "86f0e8158aae32d3791f182cf50131f678462da65a713b18cab6c0b5638f1a50",
+          "bytes": 1926
+        },
+        {
+          "path": "crates/unicode-segmentation-1.13.3/Cargo.toml.orig",
+          "source_relative": "Cargo.toml.orig",
+          "sha256": "af7b6699725f8ae6a3f4bed18b3dafd35e5f90c1851f09362b62f6354cb1d690",
+          "bytes": 1098
+        },
+        {
+          "path": "crates/unicode-segmentation-1.13.3/LICENSE-APACHE",
+          "source_relative": "LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "crates/unicode-segmentation-1.13.3/LICENSE-MIT",
+          "source_relative": "LICENSE-MIT",
+          "sha256": "7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0",
+          "bytes": 1071
+        },
+        {
+          "path": "crates/unicode-segmentation-1.13.3/src/grapheme.rs",
+          "source_relative": "src/grapheme.rs",
+          "sha256": "730d50fb3d2858840e61ed3805a67336fd0b02c0e6bb9192306511ae6adfdbb3",
+          "bytes": 38454
+        },
+        {
+          "path": "crates/unicode-segmentation-1.13.3/src/lib.rs",
+          "source_relative": "src/lib.rs",
+          "sha256": "3f5ddecddefa2caea4182b51bb5075a856ae542277a50c10a1a2216c54d86aac",
+          "bytes": 11357
+        },
+        {
+          "path": "crates/unicode-segmentation-1.13.3/src/sentence.rs",
+          "source_relative": "src/sentence.rs",
+          "sha256": "7fe9496fbd694f335359be8ccd12980680e880cbf40b61141bbfb9f95e8b589d",
+          "bytes": 14243
+        },
+        {
+          "path": "crates/unicode-segmentation-1.13.3/src/tables.rs",
+          "source_relative": "src/tables.rs",
+          "sha256": "089c221918a60e8672ed8eda73d27f195dcc404f91b9e71b57c0b5e348e7aeef",
+          "bytes": 293206
+        },
+        {
+          "path": "crates/unicode-segmentation-1.13.3/src/word.rs",
+          "source_relative": "src/word.rs",
+          "sha256": "27d8f79071f57e314053d0c9dda0d39eb10c66343d2069e9ba22a8629e1ddef4",
+          "bytes": 42119
+        },
+        {
+          "path": "crates/unicode-segmentation-1.13.3/tests/test.rs",
+          "source_relative": "tests/test.rs",
+          "sha256": "5d21ec5b729a0f0554f247c28cf8636e0929468bbcb8c0540ee0cf96b7bdb3ef",
+          "bytes": 8623
+        },
+        {
+          "path": "crates/unicode-segmentation-1.13.3/tests/testdata/mod.rs",
+          "source_relative": "tests/testdata/mod.rs",
+          "sha256": "52b9609d96660413c21f51e8f9d15667213f628c05b7c228e54585865bd4c373",
+          "bytes": 213398
+        }
+      ]
+    },
+    {
       "name": "untrusted",
       "version": "0.9.0",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -6305,6 +9674,81 @@
           "source_relative": "src/utf8.rs",
           "sha256": "1beed1d7bb3e8f75125db543894a57c1773484001e8c82637a6cb3a8e6c02e2e",
           "bytes": 59402
+        }
+      ]
+    },
+    {
+      "name": "uuid",
+      "version": "1.29.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "package_id": "registry+https://github.com/rust-lang/crates.io-index#uuid@1.29.0",
+      "declared_spdx": "Apache-2.0 OR MIT",
+      "selection": "MIT",
+      "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
+      "scope": [
+        "runtime"
+      ],
+      "enabled_features": [
+        "default",
+        "rng",
+        "std",
+        "v4"
+      ],
+      "source_manifest": "cargo-registry/uuid-1.29.0/Cargo.toml",
+      "materials": [
+        {
+          "path": "crates/uuid-1.29.0/LICENSE-APACHE",
+          "source_relative": "LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "bytes": 10847
+        },
+        {
+          "path": "crates/uuid-1.29.0/LICENSE-MIT",
+          "source_relative": "LICENSE-MIT",
+          "sha256": "436bc5a105d8e57dcd8778730f3754f7bf39c14d2f530e4cde4bd2d17a83ec3d",
+          "bytes": 1157
+        },
+        {
+          "path": "crates/uuid-1.29.0/src/builder.rs",
+          "source_relative": "src/builder.rs",
+          "sha256": "d332dbf9380bd6275f8c416758a8971db875ce2a661440c8e476cc6f827736c9",
+          "bytes": 24818
+        },
+        {
+          "path": "crates/uuid-1.29.0/src/external/serde_support.rs",
+          "source_relative": "src/external/serde_support.rs",
+          "sha256": "f5bf58b1ff7d5ed6a5b067c218b8d9e69d05e559a27de93b2dac4f7f1b25ca4b",
+          "bytes": 47834
+        },
+        {
+          "path": "crates/uuid-1.29.0/src/external/slog_support.rs",
+          "source_relative": "src/external/slog_support.rs",
+          "sha256": "8ba03d4b6c8b37dd8e3d08f47b254ca68ffa6f4a29a2c98dd277dbafdcb810dc",
+          "bytes": 1355
+        },
+        {
+          "path": "crates/uuid-1.29.0/src/fmt.rs",
+          "source_relative": "src/fmt.rs",
+          "sha256": "59160088a7ef7df7fd6d622d888db2a73d5a93940121ef14daf957f0d2cef68f",
+          "bytes": 43258
+        },
+        {
+          "path": "crates/uuid-1.29.0/src/lib.rs",
+          "source_relative": "src/lib.rs",
+          "sha256": "d865dc56af193a410f6cebaed38da838af1fb818c896f24baa05b3861db58b8a",
+          "bytes": 52282
+        },
+        {
+          "path": "crates/uuid-1.29.0/src/parser.rs",
+          "source_relative": "src/parser.rs",
+          "sha256": "e38573547b03d88764270ee5bd5347af380c4a331d7eb9175dcd0037a51af922",
+          "bytes": 21013
+        },
+        {
+          "path": "crates/uuid-1.29.0/src/rng.rs",
+          "source_relative": "src/rng.rs",
+          "sha256": "0025abde1ac4171b96fff8d137bb4cdc56b41387d426ab23797c30c97eb10444",
+          "bytes": 9850
         }
       ]
     },

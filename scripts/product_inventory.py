@@ -1,8 +1,8 @@
 """Schema 2 product manifest: lstat-validated inputs and directory modes."""
 import hashlib,json,stat
 from pathlib import Path
-FILES=['.gitignore','Package.swift','Cargo.toml','Cargo.lock','README.md','THIRD_PARTY_NOTICES.md']
-FOLDERS=['Sources','Tests','crates','scripts','resources','automation','docs']
+FILES=['.gitignore','Cargo.toml','Cargo.lock','README.md','THIRD_PARTY_NOTICES.md']
+FOLDERS=['legacy','Tests','crates','scripts','resources','automation','docs']
 def inventory(root):
  root=Path(root);paths=[];directories={}
  def visit(p,directory=False):

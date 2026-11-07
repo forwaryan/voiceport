@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/voiceport-core", "crates/voiceport-cli", "crates/voiceport-windows"]
+members = ["crates/voiceport-core", "crates/voiceport-cli", "crates/voiceport-windows", "crates/voiceport-macos"]
 resolver = "2"
 
 [workspace.package]

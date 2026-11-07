@@ -1,5 +1,44 @@
 # VoicePort 实施计划
 
+## 2026-11-06 当前任务：完成 Rust macOS 迁移
+
+用户明确要求“你继续吧，把rust迁移完啊”。基线为 main `80e5ada`，工作分支 `feat/rust-macos-native`。本轮目标是用 Rust 实现并打包 macOS 应用，运行链路不再依赖 Swift。保留已有 Windows 工作和历史证据，不将编译通过等同于真实语音/Orca 验收；不自动录音、读真实登录、上传录音或向用户真实输入框写测试内容。当前正在运行的已授权应用不退出、不替换；新包先使用独立输出目录验证。
+
+### R1：迁移设计和行为对照
+Status: complete
+- 核对 Swift/macOS 各功能与 Rust 接口，确定原生 API、模块归属、资源和验证边界。
+- 使用 Rust 调用 macOS 系统框架；保留同等录音、本机识别、权限和输入所有权保护。
+
+### R2：Rust macOS 功能实现
+Status: complete
+- 录音与本机识别、私有录音存储、普通输入框与 Orca 投递。
+- 菜单栏/设置/快捷键、会话控制、转写与手动重试、非阻塞取消/退出。
+
+### R3：构建、打包与迁移收尾
+Status: complete
+- Cargo macOS 应用入口与独立 Rust 打包/验证；更新依赖许可材料。
+- 移除默认构建运行对 Swift 的依赖，保留可追溯行为对照及必要历史记录。
+
+### R4：验证与交付
+Status: complete
+- 最终完整17步、160顶层Rust/4 loop/16 packaging、签名和实际空闲退出均通过。最终包已启动且0秒，麦克风/Speech已允许；辅助功能仍待下述本机系统授权，不等于真实语音/自动输入验收完成。
+- 有针对性的 Rust 回归、fmt/Clippy、release 构建、签名和无录音启动验证。
+- 实际打开新包检查界面与设置交互，不触发真实录音或投递。
+- 独立检查关键生命周期、输入所有权与打包边界；记录实测范围和未执行事项。
+
+迁移发现和运行结果持续写入 findings.md / progress.md。以下旧任务与失败记录仅作历史背景，不继续旧 Windows 冻结任务或轮换流程。
+
+### 试用外部条件：最终包辅助功能授权
+Status: blocked
+- 最终包已启动 `dist/rust-native-20261106-final/VoicePort.app`（PID28046），麦克风与语音识别均允许。
+- 系统中同名条目开启且已选择最终包，但本应用回调仍显示辅助功能未允许；已触发系统“辅助功能访问”安全窗口，自动化对该窗口返回permission_denied，需要用户在本机系统界面完成。未移除旧条目、未重置TCC或读取/代填密码。
+- 不自动开始录音，真实录音/云端/目标输入不纳入本次自动检查。详细报告见`.voiceport/evidence/rust-native-final-20261106/report.json`。
+
+本轮最终验证发现/处理：
+- 首轮完整17步通过（160顶层Rust/4 loop/16 packaging，另9个storage子进程不相加）；1950包实际窗口和不录音授权回调通过，但空闲TerminateLater退出未完成。已修正同步空闲退出和modal/common poll timer，须以修复后新包重验；1950包保留作中间产物。
+- 系统认证由本机系统处理，不代填密码。权限picker的后台导航失败已改用核对前台的原生事件；不把工具返回成功当作UI成功。原设置automaticPaste=1已恢复，language为空，alternativeShortcut未设置。
+- 输出新目录，不覆盖dist旧包或交接中间包；旧授权应用PID75191保持运行。
+
 ## 目标与授权
 
 依据用户指定的历史会话 0004ca7f-8d0e-4201-82c5-42ad7e7fce20 还原产品目标，借鉴 x-insight-hub 的 loop 策略，先给出完整可迭代方案，再持续实现、验证并修订方案。2026-11-04 用户进一步明确希望同时支持 macOS 和 Windows、目前主要做 macOS，并询问 Rust 方案；现有 Swift/macOS 作为可运行基线，Rust 共享核心与平台适配路线见 docs/CROSS_PLATFORM.md。用户随后明确要求“执行一个新版本rust的loop开发开始”，现已恢复工作区访问，按 Phase 5 启动实际迁移。

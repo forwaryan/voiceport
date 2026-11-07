@@ -1,6 +1,20 @@
 # 验证记录
 
-更新：2026-11-05。本文件记录实际执行范围；任务执行状态以本机 .voiceport/loop-state.json 为准。
+更新：2026-11-06。本文件记录实际执行范围；历史 loop 任务执行状态以本机 .voiceport/loop-state.json 为准。
+
+## Rust 原生 macOS 最终本地验证（2026-11-06）
+
+当前交付为 Rust AppKit 主程序，版本0.3.0/build6；默认构建、打包及运行不依赖Swift或JSONL helper。Swift历史实现保存在legacy/swift。本节描述当前迁移；下文各freeze历史接受结论仍仅绑定原快照。
+
+最终命令 `python3 -I scripts/verify.py --app-smoke` 的17步全部符合预期，报告 `.voiceport/evidence/vp012-revision-01/verify-b8a8e86215b44f80a7ffaffb1c8fac62/report.json`。workspace全部160个顶层Rust测试、4个loop、16个packaging检查通过，fmt、严格Clippy、workspace release、CLI正反用例、host协议、签名/产物对应和无录音smoke通过。storage另外启动9个隔离子进程，其结果嵌套在父测试输出内，不重复相加；并发stdout有两条summary交错，不能只按行正则计算测试总数。验证入口起止全产品输入SHA均为 `5100c27b285fef85e916466eec2f96672d7a11f6fcfe691ee34971f284f937fd`。本节及后续状态文档在验证后更新，不冒充原输入指纹。
+
+最终包：`dist/rust-native-20261106-final/VoicePort.app`。主程序SHA256 `3650421da32a625bf552f939388edbf565c008d500d6b1792b0b60db4148b33a`；签名前Cargo release产物SHA256 `3dbf5bdb91ed1b5cc10852465a9757ab7df52328b425bd68d37dbc9e415b0ce2`。打包checker确认主程序由本轮Cargo产物重签得到，153包许可材料检查通过。1950包保留为中间产物，不是当前最终包，旧运行应用未替换。
+
+实际Launch Services启动、结果设置窗口AX/截图、自动输入设置1→0→1恢复均已执行。首轮真实空闲退出暴露一律TerminateLater配合仅默认模式timer的退出停滞；修复为空闲同步取消并TerminateNow，重入/活跃worker仍等待，poll timer加入common/modal模式。随后完整入口重跑通过，最终包PID26217真实正常退出，再启动PID28046供试用；不把活跃真实录音退出称作已验。
+
+新增独立“准备麦克风与语音权限（不录音）”按钮，用专用回调通道请求权限，不进入录音控制器开始路径；等待期间禁开始按钮和录音快捷键。最终应用内回调确认麦克风、Speech均允许，仍为0秒/本机预览未启动。实际应用返回辅助功能未允许；终端直接执行diagnostic曾返回true，不能据此宣称应用已授权。已在系统设置选定最终包并请求本应用辅助功能，现有同名开启条目未使最终包授权生效；系统安全授权窗口需要本机确认，自动化对该窗口返回permission_denied。辅助功能/自动输入保持待完成；不绕过系统权限、不读取或代填密码、不重置TCC数据库。
+
+未执行真实录音、真实登录内容读取、云端上传、目标输入或一般剪贴板复制；真实端到端接收、活跃录音/上传退出、Windows运行、公证仍未验。若用户先试手动结果模式，可在应用中自行关闭自动输入；自动输入模式须先确认最终包辅助功能授权生效。
 
 ## 当前验证状态
 

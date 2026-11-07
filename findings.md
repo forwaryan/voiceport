@@ -1,5 +1,38 @@
 # 调研与发现
 
+## 2026-11-06 — 最终交付接续
+
+- 当前 `verify.py --app-smoke` 使用合成 CODEX_HOME、离线 Cargo、全新临时 app 输出，覆盖 workspace tests/fmt/严格 Clippy/release、loop/packaging 回归、CLI/host/签名与安全 smoke。其权限 JSON 仅为直接执行上下文，不能证明 Launch Services 启动应用的权限。
+- 打包脚本拒绝覆盖任何现有输出；最终试用包须选新路径。旧授权应用和中间 Rust 应用按完整可执行路径区分，不能按 bundle ID 批量退出。
+- 交接最后 delta 为 AX_UNSUPPORTED/AX_NO_VALUE→Ok(false)，通信失败/异常 bool 仍拒绝；新增纯函数回归已通过。中间 Rust 窗口和截图正常，实际应用提示辅助功能未授权。
+- 为满足用户“权限准备但不录音”，新增独立麦克风/Speech 授权按钮：使用专用回调通道，不进入 Controller::toggle 或 Recorder::start；请求期间禁开始按钮/热键。诊断 JSON 补充只读 microphone/speech 状态。完整17步验证通过（160顶层Rust、4 loop、16 packaging；storage嵌套子进程不重复相加，输入指纹前后一致）。
+- 最终包实际窗口正常，独立权限准备回调确认麦克风和 Speech 均已允许、辅助功能未允许，0秒且未开始录音。直接终端运行 diagnostic 却给 accessibilityTrusted=true，实证该上下文不能代替实际 app 的 TCC 身份判断。
+- 已在辅助功能页面点击添加当前包，系统出现 Touch ID/密码认证表单；后续观察进入文件选择器（未读取或代填密码）。已按最终1950包确切路径添加，并通过原生设置开关1→0→1刷新；未移除或重置任何TCC数据库。
+- 最终包修复后完整17步通过；真实空闲PID26217正常退出且再启动PID28046，深层严格签名和whitespace检查通过。最终截图已实际读取，0秒/本机预览未启动/结果为空。麦克风与Speech授权已允许，辅助功能仍未允许；系统同名旧条目刷新和最终路径添加未改变本应用回调。已请求本应用原生辅助功能安全窗口，自动化操作该窗口返回permission_denied，需要用户本机确认；不移除旧条目或重置TCC。
+- 原生 GUI 暴露真实退出缺陷：NSRunningApplication.terminate 返回true后 Rust 进程仍存活，退出标记使独立权限按钮不能再次执行。原实现一律 TerminateLater、NSTimer只在默认runloop模式；修复为空闲取消后同步 TerminateNow，借用重入/活跃worker仍Later，并把poll timer加入common与modal modes。完整验证须重新执行，不能沿用首轮通过作为修复后结论。
+- 系统 picker 的 Orca background hotkey未改变UI、restore仍window_not_focused、AXOpen报错；改为原生激活系统设置、核对frontmost bundle后发送限定导航键，AX set-value确切路径已读回。一次AppleScript条件缺括号类型错误已修正；未访问凭据。
+
+## 2026-11-06 — 集成与首次检查
+
+- `cargo check -p voiceport-macos --all-targets` 已通过；首次 AppKit constructor unsafe 调用缺失已修正。严格 Clippy 首轮为局部风格告警，分别回所属模块修复。
+- 音频/存储代理已实际验证原生合成 PCM→AAC、180 秒上限、迟到帧和损坏 writer；存储 12 项隔离测试通过。投递 2 unit + 20 合成目标测试通过；不等同于麦克风/Speech/Orca 实机接收。
+- 独立检查发现 worker channel 断开恢复缺失，及同步长终端分块使主线程 monitor 回调延迟；正在补恢复与逐 tick 分块投递。
+- 原 Swift 源码和行为测试无内容改动迁入 `legacy/swift/` 作为对照；根测试兼容入口已切 Rust，产品清单继续覆盖归档。历史冻结报告路径保持原义。
+- 许可生成发现 objc2/block2 上游 crate 缺完整许可文本，代理正在按上游固定 commit 与标准 SPDX 文本补充来源，尚未宣布整包通过。
+
+## 2026-11-06 — 原生迁移接口
+
+- 新增 Rust 原生录音/存储、AX/CGEvent 投递模块；默认包将只包含 Rust 主程序，不再携带 JSONL helper。模块验证正在进行，尚未完成应用验收。
+- AVAudio 原生类型来自 objc2-avf-audio，已添加直接依赖。共享转写核心新增显式 proxy 构造入口，避免在多线程应用里修改进程环境。
+- UI 使用 AppKit 主线程；后台任务持有录音 Arc，释放后才回报完成。取消先使会话身份失效，等待文件使用结束再清理。
+
+## 2026-11-06 — Rust macOS 迁移基线
+
+- 用户新要求为完成 Rust 迁移；当前主应用仍是 Swift/AppKit/SwiftUI，Rust 仅负责共享转写/宿主及 Windows 适配。不能把现有 Rust 后端说成全应用迁移完成。
+- 当前主分支 `80e5ada`，独立工作分支 `feat/rust-macos-native`。Sources/VoicePortApp 中录音、设备端 Speech、AX 输入目标、终端字符追加、菜单与热键均需对应 Rust 实现。
+- 本机缓存包含 objc2 0.6.4、objc2-app-kit/foundation/core-foundation/core-graphics 0.3.2、block2 0.6.2、dispatch2 0.3.1，可优先采用原生 Rust bindings，避免新增 WebView/JS 或继续调用 Swift helper。
+- 旧 Windows 冻结/多会话轮换状态是历史任务，不冒用旧角色或将其验收改为本次迁移结果。当前已授权应用需保留，新构建采用独立输出路径。
+
 ## 2026-11-05 — 策略要求不能写成未经接受的当前保证
 
 策略独立P02-01确认五上下文及角色交接规则一致，但协调文档把未知schema/缺transcript失败和checkpoint身份校验写为当前无条件保证，与初次操作FAILED的确定反例冲突。应明确目标要求与实现返修/新pin验收待完成，加载证明不代替行为接受。P02-02发现README继承的Rust CLI段仍称存储未实现/旧同步join未验收，须与后来freeze05/06有限阶段接受和capture候选一致；历史拒绝继续保留。完成负向评审的runtime succeeded仅表示审查任务交付，policy verdict仍RETURNED。

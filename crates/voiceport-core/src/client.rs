@@ -24,12 +24,18 @@ pub struct TranscriptionClient {
 impl TranscriptionClient {
     pub fn new(auth_file: PathBuf) -> Result<Self> {
         let proxy = std::env::var("VOICEPORT_HTTPS_PROXY").ok();
+        Self::new_with_proxy(auth_file, proxy.as_deref())
+    }
+
+    /// Uses an explicit validated HTTPS proxy without changing process environment.
+    /// The production endpoint and request limits remain fixed.
+    pub fn new_with_proxy(auth_file: PathBuf, proxy: Option<&str>) -> Result<Self> {
         Self::configured_with_proxy(
             auth_file,
             ENDPOINT,
             Duration::from_secs(110),
             Duration::from_secs(90),
-            proxy.as_deref(),
+            proxy,
         )
     }
 

@@ -42,7 +42,22 @@ The Rust workspace has the following direct dependencies, with versions resolved
 | base64 | 0.22.1 | JWT payload decoding | MIT OR Apache-2.0 |
 | dirs | 6.0.0 | Platform user directory | MIT OR Apache-2.0 |
 | tempfile | 3.27.0 | Isolated test fixtures only | MIT OR Apache-2.0 |
+| objc2 | 0.6.5 | Native Objective-C runtime bindings | MIT |
+| objc2-foundation | 0.3.2 | Foundation types and native paths | MIT |
+| objc2-app-kit | 0.3.2 | Native menu, window and input integration | Zlib OR Apache-2.0 OR MIT |
+| objc2-av-foundation / objc2-avf-audio | 0.3.2 | Microphone permissions, capture and AAC conversion | Zlib OR Apache-2.0 OR MIT |
+| objc2-speech | 0.3.2 | On-device speech recognition | Zlib OR Apache-2.0 OR MIT |
+| block2 | 0.6.2 | Native framework callback blocks | MIT |
+| core-foundation | 0.10.1 | Core Foundation ownership and values | MIT OR Apache-2.0 |
+| core-graphics | 0.25.0 | Native input delivery | MIT OR Apache-2.0 |
+| libc | 0.2.191 | Descriptor-relative storage and native interfaces | MIT OR Apache-2.0 |
+| unicode-segmentation | 1.13.3 | Text delivery boundaries | MIT OR Apache-2.0 |
+| uuid | 1.29.0 | Owned recording-session identifiers | Apache-2.0 OR MIT |
 
 Full pinned native-target dependency, feature/scope and license-material inventory is now included in [resources/third-party/manifest.json](resources/third-party/manifest.json). Full applicable license/NOTICE files and supplementary attribution-bearing source files (including ring embedded BoringSSL/fiat/once_cell components) are bundled under Contents/Resources/third-party; MPL source is retained there. Dev/build materials are conservatively included and labelled; excluded-platform lock entries are not labelled actual linked dependencies. See [packaging rules](docs/PACKAGING.md) for choices, source provenance, checks and limitations. No project license or external distribution approval is asserted.
 
-VP-013 adds a target-specific `windows-sys`0.61.2 Win32 binding dependency (MIT OR Apache-2.0) already resolved in Cargo.lock; the adapter selects MIT and leaves macOS bindings cfg-excluded. The native macOS license generator was rerun unchanged because workspace membership/build-input hashes changed; all687 accepted material files are retained byte-for-byte. This regeneration is a macOS graph check, not Windows binary/license delivery acceptance. Native Windows runtime packaging and its complete applicable materials remain outstanding; see docs/WINDOWS.md.
+VP-013 adds a target-specific `windows-sys` 0.61.2 Win32 binding dependency (MIT OR Apache-2.0) resolved in Cargo.lock; the adapter selects MIT and leaves macOS bindings cfg-excluded. Native Windows runtime packaging and its complete applicable materials remain outstanding; see docs/WINDOWS.md.
+
+The Rust-native macOS regeneration inventories 153 native-target packages and 954 material files. The objc2 family selects MIT only where its published declarations permit that choice. Its crate archives omit the repository licensing declaration and full standard terms, so reviewed supplemental sources are retained under `resources/license-sources/`: the unchanged upstream `LICENSE.md` from each crate's exact `.cargo_vcs_info.json` commit, and full MIT/Apache-2.0/Zlib standard texts from SPDX license-list-data v3.26.0 as applicable. The generated materials retain each crate's original Cargo metadata and commit evidence alongside these texts. Manifest origin fields identify upstream URLs and commits; the checker independently pins the supplemental SHA-256 values and requires the expected complete set. Verification uses no network.
+
+The upstream declaration identifies MIT for objc2, block2, objc2-foundation and objc2-encode, and Zlib/Apache-2.0/MIT alternatives for the other framework crates. It also records the upstream Apple SDK derivation caveat; that declaration is preserved in full. Standard licence templates retain their upstream placeholders unchanged, without inventing copyright holders. This is source/material provenance for a local macOS development package, not Windows delivery acceptance, legal approval or authorization for external distribution.

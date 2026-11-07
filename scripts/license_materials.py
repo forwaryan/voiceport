@@ -1,9 +1,66 @@
 #!/usr/bin/env python3
 """Collect pinned Cargo source materials; check without regenerating product inputs."""
-import argparse,hashlib,json,pathlib,platform,re,subprocess,shutil,tomllib
+import argparse,hashlib,json,pathlib,platform,re,stat,subprocess,shutil,tomllib
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 DEST=ROOT/'resources/third-party'
+LICENSE_SOURCES=ROOT/'resources/license-sources'
+# These published archives omit the repository's licensing declaration and full
+# standard terms. Pin both their exact upstream commits and the reviewed texts;
+# the generated manifest is never the authority for supplemental materials.
+OBJC2_REPOSITORY='https://github.com/madsmtm/objc2'
+OBJC2_FRAMEWORK_COMMIT='7b1abfd750a2cacaea71d6a56ecfb83cb7de560b'
+OBJC2_PINNED={
+ 'block2':('0.6.2','b4167b582b2f75f9a1be75495c41b765344fd03c'),
+ 'dispatch2':('0.3.1','8852b424193ca41602281b3d7540d7c8ed51e49a'),
+ 'objc2':('0.6.5','d7d2fa23ceaa5e6096c923b081040e5d81b3b9df'),
+ 'objc2-encode':('4.1.0','8d214f5477365ffcbcbb7de058c86ed9a518efb7'),
+ **{name:('0.3.2',OBJC2_FRAMEWORK_COMMIT) for name in [
+  'objc2-app-kit','objc2-audio-toolbox','objc2-av-foundation','objc2-avf-audio',
+  'objc2-cloud-kit','objc2-core-audio','objc2-core-audio-types','objc2-core-data',
+  'objc2-core-foundation','objc2-core-graphics','objc2-core-image','objc2-core-media',
+  'objc2-core-text','objc2-core-video','objc2-foundation','objc2-image-io',
+  'objc2-io-surface','objc2-media-toolbox','objc2-quartz-core','objc2-speech']},
+}
+OBJC2_DECLARATION_SHA256='7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54'
+SPDX_TERMS={
+ 'MIT':'6d7c9e9d7d12c8d3753bdb24417b84819ba4d6c2f025c37948113d86dc81eef9',
+ 'Apache-2.0':'074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff',
+ 'Zlib':'bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d',
+}
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
+def supplemental_materials(package,source,relative,write):
+ if package['repository']!=OBJC2_REPOSITORY:return []
+ version,commit=OBJC2_PINNED[package['name']]
+ assert package['version']==version,'unreviewed objc2 version'
+ assert json.loads((source/'.cargo_vcs_info.json').read_text())['git']['sha1']==commit,'unexpected objc2 upstream commit'
+ declared=package['license']
+ assert declared in ['MIT','Zlib OR Apache-2.0 OR MIT'],'unreviewed objc2 terms'
+ inputs=[(LICENSE_SOURCES/'objc2'/commit/'LICENSE.md','supplemental/upstream-LICENSE.md',OBJC2_DECLARATION_SHA256,
+          'https://raw.githubusercontent.com/madsmtm/objc2/'+commit+'/LICENSE.md','upstream licensing declaration')]
+ for license in (['MIT'] if declared=='MIT' else ['MIT','Apache-2.0','Zlib']):
+  inputs.append((LICENSE_SOURCES/'spdx-3.26.0'/(license+'.txt'),'supplemental/'+license+'.txt',SPDX_TERMS[license],
+                 'https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/'+license+'.txt','standard terms; upstream copyright placeholders are not filled or invented'))
+ rows=[]
+ for file,name,digest,url,kind in inputs:
+  assert stat.S_ISREG(file.lstat().st_mode),'supplemental license must be a regular file'
+  parent=file.parent
+  while True:
+   assert stat.S_ISDIR(parent.lstat().st_mode),'supplemental license has linked/non-directory ancestor'
+   if parent==LICENSE_SOURCES.parent:break
+   assert parent!=parent.parent,'supplemental license escaped source root'
+   parent=parent.parent
+  assert sha(file)==digest,'supplemental license differs from reviewed pinned text'
+  out=DEST/relative/name
+  if write:out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(file.read_bytes())
+  rows.append({'path':str(out.relative_to(DEST)),'source_relative':'resources/license-sources/'+str(file.relative_to(LICENSE_SOURCES)),
+               'sha256':digest,'bytes':file.stat().st_size,'origin':{'url':url,'kind':kind,'crate_upstream_commit':commit}})
+ # Retain the archive's own authors/declaration and commit evidence, including
+ # for packages that supplied no attribution-bearing source files at all.
+ for name in ['Cargo.toml.orig','.cargo_vcs_info.json']:
+  file=source/name;out=DEST/relative/name
+  if write:out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(file.read_bytes())
+  rows.append({'path':str(out.relative_to(DEST)),'source_relative':name,'sha256':sha(file),'bytes':file.stat().st_size})
+ return rows
 def metadata():
  host=subprocess.check_output(['rustc','-vV'],text=True).split('host: ')[1].splitlines()[0]
  return host,json.loads(subprocess.check_output(['cargo','metadata','--offline','--locked','--filter-platform',host,'--format-version','1'],cwd=ROOT))
@@ -38,6 +95,7 @@ def generate(write=True):
    out=DEST/relative/file.relative_to(source)
    if write:out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(file.read_bytes())
    files.append({'path':str(out.relative_to(DEST)),'source_relative':str(file.relative_to(source)),'sha256':sha(file),'bytes':file.stat().st_size})
+  files=sorted({f['path']:f for f in [*files,*supplemental_materials(p,source,relative,write)]}.values(),key=lambda f:f['path'])
   assert files,(p['name'],'missing materials')
   license=p['license'];assert license,(p['name'],'unknown SPDX declaration')
   if license == '(MIT OR Apache-2.0) AND Unicode-3.0': selected='MIT AND Unicode-3.0'

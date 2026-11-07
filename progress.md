@@ -1,5 +1,38 @@
 # 进度记录
 
+## 2026-11-07 — Rust 迁移提交与主分支交付准备
+
+用户明确要求“继续啊，执行合并一下”，授权提交、推送、创建 PR 并正常合并远端 main。提交前逐项比较最终验证输入：仅 docs/VALIDATION.md 在验证后变更，产品代码、测试、脚本和许可材料均与通过验证的输入一致；36 个 Swift 文件与原 HEAD 逐字节相同，Git 识别为 R100 归档迁移。暂存范围共350文件，不含 .voiceport、dist、target、凭据或录音。
+
+完整暂存 whitespace 检查返回2：上游 SPDX MIT 文本及随附第三方源码保留原始空白；首次窄断言仅预期 MIT 文本，发现 unicode-segmentation 元数据与 uuid 随附源码亦有原始告警后纠正分类。所有告警均限于 resources/license-sources 与 resources/third-party，已由完整输入指纹确认与最终验证版本一致；排除这两处原样上游材料后，项目文件 git diff --cached --check 通过。不改上游字节或重生许可清单，不把此类告警误报为全范围 whitespace 检查通过。接下来正常提交并经 PR 合并，实际远端结果以 GitHub 与合并回执为准；真实录音和最终包辅助功能授权边界保持不变。
+
+## 2026-11-06 — 最终验证与试用环境准备
+
+最终状态：本次Rust验证/打包/实际启动及空闲退出检查完成。最终包`dist/rust-native-20261106-final/VoicePort.app`（PID28046）已保留运行，0秒、无录音；旧授权PID75191保留。最终应用回调确认麦克风/Speech已允许，辅助功能未允许。已选择最终包并触发原生安全授权窗口；对安全窗口的自动化操作返回permission_denied，本机系统确认仍为外部待完成条件。未移除旧授权条目、重置TCC、读取凭据、录音、上传或投递。完整结论`.voiceport/evidence/rust-native-final-20261106/report.json`，实际已读截图同目录`window.png`；最终deep strict签名、主程序SHA和git diff --check通过。验证后仅补充状态文档，不重跑未变化产品代码。
+
+- 按用户指定交接文件接续；新 session `558c1ea5-57c0-40a7-a69b-991eac9ee4c9`、terminal `term_e65701f2-caf1-436c-9d59-5941e46f21d1` 的实际 PreToolUse 状态为 active、boundaries 空、transcript_session_verified=true，helper SHA `014eeb1e43729675ab5a97ae42fde3aaac1f0f460230e449683c85a0f9c7daaa`。未观察到 SessionStart，不伪造绑定/注册或修改 hook 配置。
+- 已读取交接及现有计划，catchup 正常退出且无额外输出；确认旧授权包 PID75191 和中间 Rust 包 PID93838 仍在运行。最终包使用新目录，保留旧包。
+- AX capability helper 新增纯函数回归通过。完整 `verify.py --app-smoke` 17 步退出0，169 Rust/4 loop/16 packaging 通过；fmt/严格 Clippy/release/签名、CLI/host/smoke及输入指纹前后一致，报告 `.voiceport/evidence/vp012-revision-01/verify-1a4adc7cd79a4a5aa7c284ec92e430a7/report.json`。
+- 1950中间包保留原样。退出修复后再次完整17步通过，报告 `.voiceport/evidence/vp012-revision-01/verify-b8a8e86215b44f80a7ffaffb1c8fac62/report.json`，输入SHA `5100c27b285fef85e916466eec2f96672d7a11f6fcfe691ee34971f284f937fd` 前后一致。
+- 当前最终包 `dist/rust-native-20261106-final/VoicePort.app` 已通过主 Cargo 产物对应、153包许可；Main SHA `3650421da32a625bf552f939388edbf565c008d500d6b1792b0b60db4148b33a`，Cargo SHA `3dbf5bdb91ed1b5cc10852465a9757ab7df52328b425bd68d37dbc9e415b0ce2`。真实Launch Services PID26217正常退出确认，再启动PID28046；旧授权PID75191保持运行。
+- 首轮169个Rust summary统计含9个storage子进程嵌套结果；正确为160个顶层测试、子进程不相加。第二轮并发子进程stdout两条summary交错导致简单正则167，更正统计口径，未有测试失败或删除。
+- Launch Services 启动 PID99188，已读取窗口 AX 和截图，界面正常、0秒、无录音。点击独立权限准备后显示等待系统授权，开始按钮禁用；尚未完成授权回调。
+- 自动输入设置交互已读回1→0→1，原值恢复。原生退出检查发现真实缺陷：1950包和中间包收到terminate后未退出，后续权限操作受quitting标记拒绝。已修正空闲同步退出及延迟退出modal/common timer，重新执行完整17步入口。未开始真实录音；确认精确路径后仅向两个自有无录音Rust PID93838/99188发送SIGTERM，旧授权PID75191保留。
+- 操作小错误：读取未设置 alternativeShortcut 的 defaults 返回1（原值为缺失/default false）；JXA `.terminate` 返回true，误加括号产生TypeError。系统picker后台热键未生效、restore焦点失败、AXOpen失败，原生激活+核对frontmost+限定导航键替代；一次AppleScript条件缺括号类型错误已纠正，系统认证未代填。
+
+## 2026-11-06 — Rust 原生模块集成
+
+- Rust AppKit 菜单/结果设置窗口、Carbon 快捷键、显式系统代理、直接共享核心转写 worker 和会话控制已集成；`cargo check -p voiceport-macos --all-targets` 和 workspace release 构建已退出 0。
+- 原生合成录音与隔离存储、模拟投递检查由模块开发实际运行通过（5 audio、12 storage、2 delivery unit、20 delivery integration）；没有真实录音、登录、上传或目标输入。
+- 独立模块互审发现并返修 worker channel 断开恢复、reentrant 退出及终端同步长分块 monitor 延迟；最终完整验证需等这些改动稳定后执行。
+- Swift 根入口、源码和测试已保留内容迁至 legacy/swift；当前构建及兼容测试脚本全部切 Rust，清单覆盖归档。版本资源更新 0.3.0/build6，运行中的旧包未触碰。
+- 许可生成因 upstream crate 不含完整条款首次失败，已按固定上游 commit 与 SPDX 标准文本补来源，代理报告153包/954材料检查通过。整包测试与无录音 GUI 验证待执行。
+
+
+## 2026-11-06 — 开始完成 Rust macOS 迁移
+
+用户明确要求继续完成 Rust 迁移。已核对并从 main `80e5ada` 建立 `feat/rust-macos-native`；恢复旧计划并新增本轮 R1–R4，保留全部历史记录。核对 Cargo/Swift 入口与缓存依赖，确认 macOS 外壳、录音、本机识别和光标投递仍待迁移。调用 planning-with-files catchup 正常退出、无额外待恢复输出。当前无新源码或验证完成结论；新包将单独打包，不替换当前运行中的授权应用，不自动录音/上传/操作用户真实输入。
+
 ## 2026-11-05 — 后台采集owner01交付已核对，待完整冻结独立复核
 
 原开发msg_dc9ee6e2ccb9 succeeded，task_9b4a5d143b12/ctx_6aa95cc7a52f已实际exited/released。开发17组owner/99Rust、byte-exact16/13/2、fmt/strict host-nativeclippy及完整locked DEFAULTWindows通过，16COFF及两有效metadata，4native仅编译；真实新session01a1abda/current helper/精确terminal/SessionStart与PreToolUse/初始最终0协调直接核对。协调124封存普通/22目录/521外部产物、789公共/278目录/784原公共保护+6操作、77222历史SHA/25134历史目录mode/104676初始证据身份通过，未重跑开发测试。初次协调checker1误将PR6/main正常同步前的字节相同live测试inode/mtime当当前身份；原脚本/输出保存在handoffs/vp013-owner01-checker-failure-01，按12条精确live源引用分类并严格核对当前post-integration身份后纠正0。旧报告/index/快照/失败不改，例外不覆盖证据或build/dist。
