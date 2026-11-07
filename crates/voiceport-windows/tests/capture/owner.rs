@@ -142,6 +142,10 @@ impl Backend for Driver {
         f.bytes = n * 2;
         f.done = true;
         f.samples[..n].fill(23);
+        // Synthetic packets are already available. Acknowledge actual data with
+        // a wake token so bounded owner polls need not each wait for a timer.
+        // Idle, End and errors provide no wake or evidence of release/join.
+        thread::current().unpark();
         Ok(Read::Data)
     }
 }
@@ -279,18 +283,78 @@ impl Drop for Harness {
         }
     }
 }
-fn wait(mut f: impl FnMut() -> bool) {
+fn wait(f: impl FnMut() -> bool) {
+    wait_diagnostic(f, || "owner transition".into());
+}
+fn wait_diagnostic(mut f: impl FnMut() -> bool, diagnostic: impl Fn() -> String) {
     let start = Instant::now();
     while !f() {
         assert!(
             start.elapsed() < LIMIT,
-            "acknowledged owner transition did not finish"
+            "acknowledged owner transition did not finish after {:?}: {}",
+            start.elapsed(),
+            diagnostic()
         );
         thread::park_timeout(Duration::from_millis(1));
     }
 }
 fn ready(h: &CaptureOwner) {
-    wait(|| h.poll() == Status::Ready);
+    wait_diagnostic(
+        || h.poll() == Status::Ready,
+        || {
+            format!(
+                "waiting=Ready generation={:?} status={:?}",
+                h.generation(),
+                h.poll()
+            )
+        },
+    );
+}
+fn wait_case(harness: &Harness, h: &CaptureOwner, t: &Trace, n: usize, expected: Status) {
+    let start = Instant::now();
+    let diagnostic = || {
+        let shared = h.active.as_ref().unwrap();
+        let calls = t.calls.try_lock().ok();
+        let count = |name| {
+            calls
+                .as_ref()
+                .map(|calls| calls.iter().filter(|call| call.0 == name).count())
+        };
+        format!(
+            "n={n} waiting={expected:?} generation={} status={:?} busy={} release={} claimed={} invalid={} commands={} drain={:?} append={:?} close={:?} finish={:?} drops={} tail={:?}",
+            shared.generation,
+            h.poll(),
+            harness.0.busy.load(Ordering::Acquire),
+            shared.release.load(Ordering::Acquire),
+            shared.claimed.load(Ordering::Acquire),
+            shared.invalid.load(Ordering::Acquire),
+            shared.commands.load(Ordering::Acquire),
+            count("drain"),
+            count("append"),
+            count("close"),
+            count("finish"),
+            t.drops.load(Ordering::SeqCst),
+            calls.as_ref().map(|calls| calls
+                .iter()
+                .rev()
+                .take(6)
+                .map(|call| call.0)
+                .collect::<Vec<_>>()),
+        )
+    };
+    eprintln!("owner case begin: {}", diagnostic());
+    wait_diagnostic(
+        || {
+            h.poll() == expected
+                && (expected != Status::Stopped || !harness.0.busy.load(Ordering::Acquire))
+        },
+        diagnostic,
+    );
+    eprintln!(
+        "owner case complete after {:?}: {}",
+        start.elapsed(),
+        diagnostic()
+    );
 }
 fn take(h: &mut CaptureOwner, id: u64) -> Result<Recording> {
     ready(h);
@@ -338,7 +402,7 @@ fn exact_success_stop_empty_error_max_and_single_generation_result() {
         let t = Trace::new();
         let id = harness.start(&mut h, make(&t, n));
         h.stop();
-        ready(&h);
+        wait_case(&harness, &h, &t, n, Status::Ready);
         assert!(h.take_result(id + 1).is_none());
         let answer = h.take_result(id).unwrap();
         assert!(h.take_result(id).is_none());
@@ -356,7 +420,7 @@ fn exact_success_stop_empty_error_max_and_single_generation_result() {
             assert_eq!(t.drops.load(Ordering::SeqCst), 0);
             drop(r);
         }
-        harness.released();
+        wait_case(&harness, &h, &t, n, Status::Stopped);
         assert_eq!(t.drops.load(Ordering::SeqCst), 1);
         assert_affinity(&t);
     }
