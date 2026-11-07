@@ -4,7 +4,7 @@
 
 ## Rust 原生 macOS 最终本地验证（2026-11-06）
 
-当前交付为 Rust AppKit 主程序，版本0.3.0/build6；默认构建、打包及运行不依赖Swift或JSONL helper。Swift历史实现保存在legacy/swift。本节描述当前迁移；下文各freeze历史接受结论仍仅绑定原快照。
+当前交付为 Rust AppKit 主程序，版本0.3.0/build6；默认构建、打包及运行不依赖Swift或JSONL helper。旧 Swift 实现已于2026-11-07从当前文件树移除，可通过 Git 历史查看。本节描述迁移时的验证；下文各freeze历史接受结论仍仅绑定原快照。
 
 最终命令 `python3 -I scripts/verify.py --app-smoke` 的17步全部符合预期，报告 `.voiceport/evidence/vp012-revision-01/verify-b8a8e86215b44f80a7ffaffb1c8fac62/report.json`。workspace全部160个顶层Rust测试、4个loop、16个packaging检查通过，fmt、严格Clippy、workspace release、CLI正反用例、host协议、签名/产物对应和无录音smoke通过。storage另外启动9个隔离子进程，其结果嵌套在父测试输出内，不重复相加；并发stdout有两条summary交错，不能只按行正则计算测试总数。验证入口起止全产品输入SHA均为 `5100c27b285fef85e916466eec2f96672d7a11f6fcfe691ee34971f284f937fd`。本节及后续状态文档在验证后更新，不冒充原输入指纹。
 
@@ -16,7 +16,7 @@
 
 未执行真实录音、真实登录内容读取、云端上传、目标输入或一般剪贴板复制；真实端到端接收、活跃录音/上传退出、Windows运行、公证仍未验。若用户先试手动结果模式，可在应用中自行关闭自动输入；自动输入模式须先确认最终包辅助功能授权生效。
 
-## 当前验证状态
+## 历史 Swift 阶段验证记录
 
 环境：macOS 26.2（25C56）、Apple Silicon、Swift 6.3.2、Command Line Tools。
 
