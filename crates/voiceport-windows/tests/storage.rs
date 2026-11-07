@@ -133,8 +133,14 @@ fn lifetime_guard_remains_through_actual_worker_tls_and_abnormal_owner_drop() {
     assert_eq!(count.load(Ordering::SeqCst), 0);
     release.send(()).unwrap();
     let end = Instant::now() + Duration::from_secs(5);
-    while weak.upgrade().is_some() {
-        assert!(Instant::now() < end);
+    // Arc's strong count reaches zero before Guard::drop finishes. A failed
+    // upgrade alone is not the destructor-completion witness checked below.
+    while weak.upgrade().is_some() || count.load(Ordering::SeqCst) == 0 {
+        assert!(
+            Instant::now() < end,
+            "guard disposal after worker TLS release did not complete; drops={}",
+            count.load(Ordering::SeqCst)
+        );
         std::thread::yield_now();
     }
     assert_eq!(count.load(Ordering::SeqCst), 1);
