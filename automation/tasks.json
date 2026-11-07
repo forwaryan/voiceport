@@ -14,6 +14,8 @@
     {"id":"VP-011","title":"macOS 原生应用接入 Rust 后端","depends_on":["VP-010"],"acceptance":"原生 UI/录音/投递通过受控子进程接入 Rust；无 shell 拼接或参数凭据；身份/超时/取消/退出/重试与打包路径正确，保留原受保护投递规则；离线应用反例与独立验收通过"},
     {"id":"VP-012","title":"Rust macOS 开发包与完整离线交付","depends_on":["VP-011"],"acceptance":"release 包含实际 Rust 后端，Rust 与 Swift 完整离线检查、CLI、签名、启动和使用文档通过，完整输入冻结由独立会话验收；真实录音/云端/目标接收另列"},
     {"id":"VP-013","title":"Windows 平台适配与本机运行验收","depends_on":["VP-010"],"acceptance":"按共享接口实现 Windows 录音/托盘/快捷键/受保护投递与文件生命周期；分别留存 Windows 构建和实际运行证据；无 Windows 环境时保留外部阻塞，不把 Mac 构建或交叉检查当作 Windows 验收"},
-    {"id":"VP-014","title":"Rust macOS 真实录音云端和目标接收","depends_on":["VP-012"],"acceptance":"用户参与录音/权限/账号调用，实际 Rust 后端返回文字，Orca/目标真实收到且未自动发送；缺少输入或授权事件则记录阻塞；不沿用 Swift 的真实环境状态宣称 Rust 通过"}
+    {"id":"VP-014","title":"Rust macOS 真实录音云端和目标接收","depends_on":["VP-012"],"acceptance":"用户参与录音/权限/账号调用，实际 Rust 后端返回文字，Orca/目标真实收到且未自动发送；缺少输入或授权事件则记录阻塞；不沿用 Swift 的真实环境状态宣称 Rust 通过"},
+    {"id":"VP-015","title":"本轮最小 macOS GitHub Actions CI","depends_on":[],"acceptance":"新增 PR 与 main push 的 macOS workflow，contents: read、固定符合 Cargo rust-version 的 Rust 1.95.0 及 rustfmt/clippy、按 OS/工具链/Cargo.lock 缓存；明确准备冷缓存依赖后运行 bash scripts/test_rust.sh、cargo build --workspace --release --locked、python3 -I -m unittest discover -s Tests/LoopTests -v 与 Tests/PackagingTests -v，不依赖真实登录/麦克风/云端。先记录本轮相关基线，开发自检后停止全部写者，冻结完整输入及新增 workflow，由不同真实 Orca verifier 检查配置、命令顺序和必要本地检查；本地验收与未触发的远端 Actions 分别报告，不改生产协议或旧任务语义"},
+    {"id":"VP-016","title":"本轮首跑离线诊断与能力说明","depends_on":[],"acceptance":"修正 voiceport-rs help/doctor 对 CLI 文件转写与现有 macOS app 录音/投递/权限按钮的能力说明；doctor 仅检查登录路径元数据，区分普通文件、未找到、非普通文件与检查失败，不读取/验证凭据、不联网、不申请权限、不输出路径或秘密；保留 doctor 正常诊断退出 0、参数错误 2、运行错误 1 与取消 130，JSONL host 协议保持不变。README 给出可执行离线诊断与已有权限入口说明；合成隔离环境验证缺失/畸形文件、目录、元数据失败与路径优先级等实际行为，旧实现须在目标断言处失败，不能以编译/依赖失败算复现。相关 Rust/fmt/clippy 与既有 Python 回归通过后停止写者、完整冻结并由不同真实 Orca verifier 验收；真实账号/权限/录音/云端/接收仍列未测"}
   ]
 }
