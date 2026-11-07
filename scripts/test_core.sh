@@ -2,8 +2,5 @@
 set -euo pipefail
 project_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_directory"
-mkdir -p .build
-swiftc -swift-version 6 -parse-as-library -module-name VoicePortChecks \
-    Sources/VoicePortCore/*.swift Tests/VoicePortCoreTests/*.swift \
-    -o .build/voiceport-core-checks
-.build/voiceport-core-checks
+# Compatibility entry point; the active shared core is Rust.
+cargo test -p voiceport-core --all-targets --locked

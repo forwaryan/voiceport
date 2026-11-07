@@ -10,7 +10,7 @@ VoicePort 的产品目标是提供一个统一的桌面语音输入入口：**Ch
   <img src="docs/images/voiceport-hero.png" alt="VoicePort 产品方向图：ChatGPT、微信语音与更多识别引擎汇入同一个语音输入入口，再将文字送到当前光标。ChatGPT 标为已接入，微信语音、其他引擎和切换能力标为规划中。" width="880">
 </p>
 
-<p align="center">macOS 13+ · Swift 6 + Rust · 当前开发版 0.2.3</p>
+<p align="center">macOS 13+ · Rust 原生应用 · 当前开发版 0.3.0</p>
 
 > **当前状态：** macOS 应用已实现录音、转写和受保护的自动输入路径；Orca 中的完整语音输入流程仍待真实试用确认。Windows 正在开发，尚不能用于桌面听写。上图及下方分镜均为通过 `image-use` 生成的概念示意，非应用截图或验收证据。
 
@@ -53,7 +53,7 @@ VoicePort 的产品目标是提供一个统一的桌面语音输入入口：**Ch
 当前提供源码构建的 macOS 开发包，需要：
 
 - **macOS 13 或更新版本**。目前验证的是 Apple Silicon / arm64 构建。
-- **Swift 6** 工具链，以及 **Rust / Cargo 1.95+**。
+- **Rust / Cargo 1.95+**，以及 macOS Command Line Tools（链接系统框架与签名）。无需 Swift 工具链。
 - **Python 3**，用于打包和许可材料检查。
 - 已安装 **Codex CLI**，并能通过自己的 ChatGPT 账号进行文件登录。
 
@@ -68,14 +68,14 @@ cd voiceport
 # 使用你自己的 ChatGPT 账号登录
 codex login
 
-# 构建 Swift 应用与 Rust 转写子进程，生成本机开发包
+# 构建 Rust 原生应用；输出目录必须尚不存在
 bash scripts/package_app.sh
 
 # 打开结果与设置窗口
 open dist/VoicePort.app --args --show-window
 ```
 
-应用生成在 `dist/VoicePort.app`。运行打包后的应用无需安装 Rust 工具链；构建细节见 [打包说明](docs/PACKAGING.md)。
+应用默认生成在 `dist/VoicePort.app`。如果该路径已有旧包，使用 `VOICEPORT_APP_DIRECTORY="$PWD/dist/VoicePort-Rust.app" bash scripts/package_app.sh` 选择新的输出路径，再打开对应的新包。打包不会覆盖已有应用。运行打包后的应用无需安装 Rust 工具链；构建细节见 [打包说明](docs/PACKAGING.md)。
 
 登录默认读取 `~/.codex/auth.json`，也支持 `CODEX_HOME/auth.json`。目前只支持 ChatGPT 文件登录，尚不支持 API key、仅保存在 Keychain 中的登录或应用内刷新登录。
 
@@ -145,14 +145,14 @@ Windows 的目标编译检查不等于实机运行通过；设备、NTFS 权限�
 
 ### 无法连接 ChatGPT 转写服务？
 
-确认 Codex 的 ChatGPT 登录可用，并检查网络。macOS 应用会将系统中显式配置的 HTTPS 代理传给 Rust 子进程；Rust CLI 也支持通过 `VOICEPORT_HTTPS_PROXY` 指定 HTTP / HTTPS 代理。代理 URL 不接受用户名或密码。
+确认 Codex 的 ChatGPT 登录可用，并检查网络。Rust 原生 macOS 应用直接使用系统中显式配置的 HTTPS 代理；应用与 CLI 均支持通过 `VOICEPORT_HTTPS_PROXY` 指定 HTTP / HTTPS 代理。代理 URL 不接受用户名或密码。
 
 应用不会自动重传失败的录音；网络恢复后，可在结果面板选择 **重试这段录音**。
 
 ### 语音会发到哪里，是否保存历史？
 
 - **实时预览在本机识别。** 停录后的最终转写会上传录音到 `chatgpt.com/backend-api/transcribe`，使用你自己的 ChatGPT 登录。
-- 默认不保存转写历史或遥测，结果保留在内存中。录音位于 `~/Library/Caches/io.voiceport.recordings-v1`，使用受限的目录与文件权限。
+- 默认不保存转写历史或遥测，结果保留在内存中。录音位于 `~/Library/Caches/io.voiceport.rust-recordings-v1`，使用受限的目录与文件权限。
 - 成功、取消或正常退出时会尝试删除本次录音；转写失败时可保留录音供手动重试。启动清理只处理严格超过 24 小时、归属确认且未占用的残留，并非到时必删。
 - 该听写接口未公开承诺稳定性或用量规则，也不能仅凭端点相同就断言与 Codex App 的模型、识别质量或扣量方式相同。
 
@@ -173,7 +173,7 @@ cargo build --workspace --release --locked
 ./target/release/voiceport-rs transcribe /path/to/audio.m4a --language zh
 ```
 
-支持 m4a/mp4、wav、mp3、webm、ogg、flac，文件上限 **20 MB**。可使用 `--auth PATH` 指定登录文件。Swift 对照 CLI 的入口为 `swift run voiceport-cli --help`。
+支持 m4a/mp4、wav、mp3、webm、ogg、flac，文件上限 **20 MB**。可使用 `--auth PATH` 指定登录文件。macOS 应用直接链接 Rust 核心；CLI 与其 JSONL 宿主协议是单独的集成入口。
 
 集成子进程可使用 `voiceport-rs host`。协议、消息大小、超时和会话边界见 [宿主协议](docs/HOST_PROTOCOL.md)。
 
@@ -183,19 +183,19 @@ cargo build --workspace --release --locked
 # Rust 工作区测试、格式和严格 Clippy
 bash scripts/test_rust.sh
 
-# Swift 核心与应用行为检查
+# 也可分别检查 Rust 共享核心与 macOS 应用
 bash scripts/test_core.sh
 bash scripts/test_app.sh
 ```
 
-在 [`83e4978`](https://github.com/forwaryan/voiceport/commit/83e4978337b1684f9528ebdbea6fbe6cfa59a036) 合并基线上，最近一轮本地检查通过：**101 项 Rust 测试、31 项 Swift 核心检查、109 项应用检查**，以及配置已有 Zig 工具链后的完整 Windows 默认目标编译检查。应用行为检查使用模拟音频、权限与输入边界，不会自动启动真实录音或向你的输入框写字。
+macOS 原生模块位于 `crates/voiceport-macos`：AppKit 界面、AVAudio 录音与设备端 Speech、Accessibility 与终端字符投递均由 Rust 实现。应用行为检查使用合成 PCM、隔离存储和模拟输入目标，不会自动启动真实录音或向你的输入框写字。旧 Swift 实现和测试仅保存在 [迁移对照目录](legacy/swift/README.md)，不进入当前构建、运行或默认验证。历史 Swift 检查结果不作为 Rust 新实现的验收。
 
 完整离线打包检查可运行 `python3 -I scripts/verify.py --app-smoke`。它会构建并重新签名开发包；源码依赖需已缓存。该流程不替代真实麦克风、账号转写或 Orca 接收验收，详见 [验证边界](docs/VALIDATION.md) 与 [打包说明](docs/PACKAGING.md)。
 
 | 继续阅读 | 内容 |
 | --- | --- |
 | [方案说明](docs/SOLUTION.md) | 产品目标、技术方案与实现背景。 |
-| [跨平台路线](docs/CROSS_PLATFORM.md) | Swift / Rust 分工及 Windows 迁移范围。 |
+| [跨平台路线](docs/CROSS_PLATFORM.md) | Rust 共享核心、原生 macOS 与 Windows 迁移范围。 |
 | [Windows 状态](docs/WINDOWS.md) | 已实现的基础能力与未完成的原生验证。 |
 | [宿主协议](docs/HOST_PROTOCOL.md) | Rust JSONL 子进程接口。 |
 | [进度记录](progress.md) / [任务计划](task_plan.md) | 历史开发、返修与阶段验收记录。 |

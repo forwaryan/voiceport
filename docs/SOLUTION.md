@@ -1,5 +1,21 @@
 # VoicePort 完整方案
 
+## 当前实现（2026-11-06）
+
+VoicePort 的目标仍是可替换识别引擎、统一光标输入。目前最终转写只接 ChatGPT，微信语音和用户引擎切换仍未实现。
+
+macOS 应用的运行链路现为 `voiceport-macos → voiceport-core → 固定 ChatGPT 转写端点`。UI、菜单、Carbon 快捷键、AVAudioEngine 同 tap 录音/设备端 Speech、24kHz 单声道 AAC 编码、私有存储与 flock、AX 普通字段拥有范围编辑及 Orca 稳定前缀字符追加均在 Rust 中实现。应用不启动 Swift 或 Rust helper 子进程；旧 Swift 源码和测试仅存于 `legacy/swift` 供历史行为对照。
+
+会话通过递增 generation 拒绝迟到权限与识别回调；录音仅在主动操作后打开。云端任务在后台线程执行，录音 Arc 租约保持到工作资源释放后才回报完成。取消先使会话失效，界面继续轮询停止确认；手动重试清除旧输入目标，不把旧音频的结果写入新焦点。设备端 Speech 不可用时继续录音并等停录后转写，不回退 Apple 云端识别。
+
+普通字段每次更新检查焦点、选区和前后文，只改本次拥有的文字；终端只追加、不删除、不回车，用户活动使未发送部分停止。最终结果无法安全改写时保留面板。录音存储使用独立 `io.voiceport.rust-recordings-v1` 缓存域，避免迁移时触碰运行中的旧版；失败录音只允许显式重试，启动清理仅针对严格超过 24 小时且可确认归属/未占用的已知残留。
+
+默认打包和验证全部使用 Cargo，旧测试兼容脚本也转向 Rust。构建细节见 [PACKAGING.md](PACKAGING.md)，实际测试和仍未执行的真实语音/账号/Orca 验收见 [VALIDATION.md](VALIDATION.md)。Windows 的既有阶段及未验边界独立保留。
+
+## 历史方案与验收背景
+
+以下章节保存最初 Swift 方案及后续 Rust 核心/JSONL/Windows 阶段的历史记录。其旧目录、双语言打包和 Swift 命令不是当前构建要求；当时的检查结果只绑定原快照。
+
 版本：0.1（2026-11-04，实施中）。执行进度见 ../task_plan.md；调研证据见 ../findings.md；循环执行契约见 LOOP_METHODS.md。此文件随代码和验证结果修订，拟议能力不视为已实现。
 
 ## 1. 产品目标
