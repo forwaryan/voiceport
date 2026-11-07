@@ -1,5 +1,9 @@
 # 进度记录
 
+## 2026-11-07 — 移除旧版 Swift
+
+用户要求清理旧版并更新主分支。从 main `def833a` 创建 `chore/remove-swift-legacy`，已移除37个旧Swift源码/测试/SwiftPM/夹具/说明文件，修正产品清单必需根与当前文档引用；保留实际运行Rust检查的脚本。历史源代码由Git保留，历史验收结论不改写。清理提交已推送并创建PR11。随后完整离线17步通过（Rust工作区测试/fmt/严格Clippy/release、4 loop/16 packaging、CLI/host/签名/安全smoke），报告`.voiceport/evidence/vp012-revision-01/verify-f9cbfb6dabe94eb7aff8eaa510900d66/report.json`，起止SHA `e9b3d5c353b32835045f08f56586fa513e376ba1844fbba8531d5ca1d137de7f`一致。Git archive干净文件树无Swift/legacy且产品清单与工作区相同；当前文档链接、完整差异whitespace和提交范围检查通过。验证后仅补充验证文档与根状态记录，随后正常合并并核对main。不触发真实录音或云端调用，不替换运行中的应用。
+
 ## 2026-11-07 — Rust 迁移提交与主分支交付准备
 
 用户明确要求“继续啊，执行合并一下”，授权提交、推送、创建 PR 并正常合并远端 main。提交前逐项比较最终验证输入：仅 docs/VALIDATION.md 在验证后变更，产品代码、测试、脚本和许可材料均与通过验证的输入一致；36 个 Swift 文件与原 HEAD 逐字节相同，Git 识别为 R100 归档迁移。暂存范围共350文件，不含 .voiceport、dist、target、凭据或录音。

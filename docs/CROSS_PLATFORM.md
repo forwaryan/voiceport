@@ -10,7 +10,6 @@ macOS 主应用已迁到 `crates/voiceport-macos`，直接链接 `voiceport-core
 | `voiceport-macos` | AppKit 菜单与设置、设备端预览和 AAC 录音、私有文件租约、原目标输入所有权、终端逐段追加、后台转写与非阻塞取消。 |
 | `voiceport-cli` | 文件转写、诊断、离线演示和有界 JSONL 宿主。 |
 | `voiceport-windows` | 既有 Windows 适配与所有权基础；仍保留原有实机、设备、NTFS、链接与打包门槛，桌面听写未接通。 |
-| `legacy/swift` | 原 Swift 实现和测试的历史对照，不参与当前默认构建/验证。 |
 
 原生 Rust 测试使用合成 PCM、隔离目录与模拟目标。历史 Swift 通过项不转算成 Rust 通过项；实际录音、账号转写与 Orca 接收仍需分别验证。当前操作见 [README](../README.md)、[打包](PACKAGING.md) 和 [验证记录](VALIDATION.md)。
 

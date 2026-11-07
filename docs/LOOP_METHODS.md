@@ -45,7 +45,7 @@ worker 严格采用本次 preamble 的 from/task/dispatch；问题用 `ask` 后�
 7. 通过、退回或阻塞都绑定产品 attempt、实际 verifier Task/Dispatch、冻结版本、检查和限制。协调者拒绝已结束 attempt、旧冻结版本、非指定验证者或重复回执的状态迁移；历史证据保留但不能覆盖当前结果。
 8. 退回给原开发修正，协调者用 `retry --reason` 结束当前 running attempt，再 `start` 新 attempt，重新关联角色回执与冻结包。通过后协调者核对验收所需评估，才以 `finish --attempt <当前ID> --evidence <现存验收报告>` 完成产品任务；报告明确本地完成范围，不隐含提交、PR 或部署。
 
-现有 [verify.py](../scripts/verify.py) 的 `source_sha256` 覆盖 Package.swift、THIRD_PARTY_NOTICES.md、Sources/Tests/resources/scripts/automation（排除 __pycache__），含其下未跟踪文件；不覆盖 docs、README 和根 planning。它只比较这些路径的运行前后摘要，不能证明独立会话或完整冻结。本协议要求另列交接涉及的文档与其他输入，并检查最终快照；不改写现有工具的能力说明。
+现有 [verify.py](../scripts/verify.py) 使用 [product_inventory.py](../scripts/product_inventory.py) 的 schema 2 产品清单，覆盖 `.gitignore`、Cargo.toml、Cargo.lock、README.md、THIRD_PARTY_NOTICES.md 及 Tests/crates/scripts/resources/automation/docs 下所有普通输入（含未跟踪文件，排除 __pycache__ 与 .pyc）；根 planning、构建产物及私有证据不在清单中。运行前后比较文件内容、模式及目录集合与模式，不能证明独立会话或完整冻结。本协议要求另列交接涉及的其他输入，并检查最终快照。
 
 ## 4. 独立验证与效果评估
 

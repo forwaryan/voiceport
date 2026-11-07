@@ -188,7 +188,7 @@ bash scripts/test_core.sh
 bash scripts/test_app.sh
 ```
 
-macOS 原生模块位于 `crates/voiceport-macos`：AppKit 界面、AVAudio 录音与设备端 Speech、Accessibility 与终端字符投递均由 Rust 实现。应用行为检查使用合成 PCM、隔离存储和模拟输入目标，不会自动启动真实录音或向你的输入框写字。旧 Swift 实现和测试仅保存在 [迁移对照目录](legacy/swift/README.md)，不进入当前构建、运行或默认验证。历史 Swift 检查结果不作为 Rust 新实现的验收。
+macOS 原生模块位于 `crates/voiceport-macos`：AppKit 界面、AVAudio 录音与设备端 Speech、Accessibility 与终端字符投递均由 Rust 实现。应用行为检查使用合成 PCM、隔离存储和模拟输入目标，不会自动启动真实录音或向你的输入框写字。旧 Swift 源码、测试及 SwiftPM 清单已从当前文件树移除，历史实现可通过 Git 历史查看。历史 Swift 检查结果不作为 Rust 新实现的验收。
 
 完整离线打包检查可运行 `python3 -I scripts/verify.py --app-smoke`。它会构建并重新签名开发包；源码依赖需已缓存。该流程不替代真实麦克风、账号转写或 Orca 接收验收，详见 [验证边界](docs/VALIDATION.md) 与 [打包说明](docs/PACKAGING.md)。
 

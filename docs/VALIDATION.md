@@ -1,10 +1,18 @@
 # 验证记录
 
-更新：2026-11-06。本文件记录实际执行范围；历史 loop 任务执行状态以本机 .voiceport/loop-state.json 为准。
+更新：2026-11-07。本文件记录实际执行范围；历史 loop 任务执行状态以本机 .voiceport/loop-state.json 为准。
+
+## 删除旧 Swift 后的离线验证（2026-11-07）
+
+当前文件树已移除37个旧实现文件，跟踪的 `.swift` 文件为0。产品输入清单不再要求 legacy 目录；当前文档的旧归档链接已清理。通过 Git archive 创建的干净文件树也无 Swift 或 legacy 目录，产品清单与本地工作区一致，确认验证不依赖本机遗留文件。
+
+清理后亲自运行 `python3 -I scripts/verify.py --app-smoke`，完整17步全部符合预期：Rust工作区测试、fmt、严格Clippy、release打包、4项loop与16项packaging、CLI正反用例、host协议、签名/产物对应与安全启动均通过。报告 `.voiceport/evidence/vp012-revision-01/verify-f9cbfb6dabe94eb7aff8eaa510900d66/report.json`，起止产品输入SHA均为 `e9b3d5c353b32835045f08f56586fa513e376ba1844fbba8531d5ca1d137de7f`。Rust运行代码、Cargo依赖和许可材料未改动；验证后仅补充本节和根状态记录。
+
+验证使用合成登录目录和全新临时应用路径；未启动真实录音、云端转写或目标输入，未替换运行中的应用。本次未复测应用实际辅助功能授权或真实使用，前次记录的未验项目保持未验。
 
 ## Rust 原生 macOS 最终本地验证（2026-11-06）
 
-当前交付为 Rust AppKit 主程序，版本0.3.0/build6；默认构建、打包及运行不依赖Swift或JSONL helper。Swift历史实现保存在legacy/swift。本节描述当前迁移；下文各freeze历史接受结论仍仅绑定原快照。
+当前交付为 Rust AppKit 主程序，版本0.3.0/build6；默认构建、打包及运行不依赖Swift或JSONL helper。旧 Swift 实现已于2026-11-07从当前文件树移除，可通过 Git 历史查看。本节描述迁移时的验证；下文各freeze历史接受结论仍仅绑定原快照。
 
 最终命令 `python3 -I scripts/verify.py --app-smoke` 的17步全部符合预期，报告 `.voiceport/evidence/vp012-revision-01/verify-b8a8e86215b44f80a7ffaffb1c8fac62/report.json`。workspace全部160个顶层Rust测试、4个loop、16个packaging检查通过，fmt、严格Clippy、workspace release、CLI正反用例、host协议、签名/产物对应和无录音smoke通过。storage另外启动9个隔离子进程，其结果嵌套在父测试输出内，不重复相加；并发stdout有两条summary交错，不能只按行正则计算测试总数。验证入口起止全产品输入SHA均为 `5100c27b285fef85e916466eec2f96672d7a11f6fcfe691ee34971f284f937fd`。本节及后续状态文档在验证后更新，不冒充原输入指纹。
 
@@ -16,7 +24,7 @@
 
 未执行真实录音、真实登录内容读取、云端上传、目标输入或一般剪贴板复制；真实端到端接收、活跃录音/上传退出、Windows运行、公证仍未验。若用户先试手动结果模式，可在应用中自行关闭自动输入；自动输入模式须先确认最终包辅助功能授权生效。
 
-## 当前验证状态
+## 历史 Swift 阶段验证记录
 
 环境：macOS 26.2（25C56）、Apple Silicon、Swift 6.3.2、Command Line Tools。
 

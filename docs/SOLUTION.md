@@ -4,7 +4,7 @@
 
 VoicePort 的目标仍是可替换识别引擎、统一光标输入。目前最终转写只接 ChatGPT，微信语音和用户引擎切换仍未实现。
 
-macOS 应用的运行链路现为 `voiceport-macos → voiceport-core → 固定 ChatGPT 转写端点`。UI、菜单、Carbon 快捷键、AVAudioEngine 同 tap 录音/设备端 Speech、24kHz 单声道 AAC 编码、私有存储与 flock、AX 普通字段拥有范围编辑及 Orca 稳定前缀字符追加均在 Rust 中实现。应用不启动 Swift 或 Rust helper 子进程；旧 Swift 源码和测试仅存于 `legacy/swift` 供历史行为对照。
+macOS 应用的运行链路现为 `voiceport-macos → voiceport-core → 固定 ChatGPT 转写端点`。UI、菜单、Carbon 快捷键、AVAudioEngine 同 tap 录音/设备端 Speech、24kHz 单声道 AAC 编码、私有存储与 flock、AX 普通字段拥有范围编辑及 Orca 稳定前缀字符追加均在 Rust 中实现。应用不启动 Swift 或 Rust helper 子进程；旧 Swift 源码、测试和 SwiftPM 清单已从当前文件树移除，历史对照可从 Git 历史查看。
 
 会话通过递增 generation 拒绝迟到权限与识别回调；录音仅在主动操作后打开。云端任务在后台线程执行，录音 Arc 租约保持到工作资源释放后才回报完成。取消先使会话失效，界面继续轮询停止确认；手动重试清除旧输入目标，不把旧音频的结果写入新焦点。设备端 Speech 不可用时继续录音并等停录后转写，不回退 Apple 云端识别。
 

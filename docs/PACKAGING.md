@@ -6,7 +6,7 @@ Run the complete offline path from any working directory:
 python3 -I /absolute/path/to/voiceport/scripts/verify.py --app-smoke
 ```
 
-Requires Rust/Cargo 1.95, rustfmt, clippy, Python 3.11+ and macOS codesign/lipo/plutil. Dependencies must already be cached: verification sets `CARGO_NET_OFFLINE=true` and uses the committed lockfile. The default package and verification paths contain no Swift build or test commands. Historical Swift sources, manifest and tests are archived under `legacy/swift/`; compatibility test scripts now run Rust checks.
+Requires Rust/Cargo 1.95, rustfmt, clippy, Python 3.11+ and macOS codesign/lipo/plutil. Dependencies must already be cached: verification sets `CARGO_NET_OFFLINE=true` and uses the committed lockfile. The default package and verification paths contain no Swift build or test commands. The obsolete Swift sources, manifest and tests have been removed from the current tree and remain available in Git history; compatibility test scripts run Rust checks.
 
 No credentials are needed. Each verifier run creates a fresh synthetic `CODEX_HOME`, canonical `TMPDIR` and unused `VOICEPORT_APP_DIRECTORY` inside an owned temporary scope, then removes that scope afterward. It saves per-command stdout/stderr, argv/cwd/environment differences, expected/actual exits, timeouts, input inventories and artifact hashes under `.voiceport/evidence/` (the exact report path is printed). CLI negative cases deliberately return 1/2 and are distinguished from failed verification. The CLI invalid-auth case reads only the deliberately invalid synthetic fixture.
 
@@ -44,7 +44,7 @@ Negative cases cover unknown arguments, missing release products without implici
 
 ## Product inputs and licence materials
 
-Complete product manifests include `.gitignore`, Cargo manifests and lockfile, README/THIRD_PARTY_NOTICES, and all regular inputs under legacy/Tests/crates/scripts/resources/automation/docs, including the `legacy/swift/` archive and new/untracked files. Entries have path/bytes/SHA256/mode and a directory set. New/deleted/content/mode changes fail start/end equality; symlink/special inputs fail closed. target/.build/dist, private evidence/coordination, root planning and generated pycache are excluded. This is a run-integrity check, not the coordinator's independent acceptance freeze.
+Complete product manifests include `.gitignore`, Cargo manifests and lockfile, README/THIRD_PARTY_NOTICES, and all regular inputs under Tests/crates/scripts/resources/automation/docs, including new/untracked files. Entries have path/bytes/SHA256/mode and a directory set. New/deleted/content/mode changes fail start/end equality; symlink/special inputs fail closed. target/.build/dist, private evidence/coordination, root planning and generated pycache are excluded. This is a run-integrity check, not the coordinator's independent acceptance freeze.
 
 `resources/third-party/manifest.json` records the locked native target/feature graph, crate public source/version/SPDX, scope and choice, source-relative material paths, byte counts/hashes and Cargo input hashes. The installed copy is `Contents/Resources/third-party/`. Runtime reachability does not mean every object is linked. Build tools/proc macros, dev overlap and excluded-platform lock records are separately labelled. Dev/build materials are included conservatively; lock-only excluded platforms are recorded without pretending they ship in this native executable.
 
