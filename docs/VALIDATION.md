@@ -1,6 +1,14 @@
 # 验证记录
 
-更新：2026-11-06。本文件记录实际执行范围；历史 loop 任务执行状态以本机 .voiceport/loop-state.json 为准。
+更新：2026-11-07。本文件记录实际执行范围；历史 loop 任务执行状态以本机 .voiceport/loop-state.json 为准。
+
+## 删除旧 Swift 后的离线验证（2026-11-07）
+
+当前文件树已移除37个旧实现文件，跟踪的 `.swift` 文件为0。产品输入清单不再要求 legacy 目录；当前文档的旧归档链接已清理。通过 Git archive 创建的干净文件树也无 Swift 或 legacy 目录，产品清单与本地工作区一致，确认验证不依赖本机遗留文件。
+
+清理后亲自运行 `python3 -I scripts/verify.py --app-smoke`，完整17步全部符合预期：Rust工作区测试、fmt、严格Clippy、release打包、4项loop与16项packaging、CLI正反用例、host协议、签名/产物对应与安全启动均通过。报告 `.voiceport/evidence/vp012-revision-01/verify-f9cbfb6dabe94eb7aff8eaa510900d66/report.json`，起止产品输入SHA均为 `e9b3d5c353b32835045f08f56586fa513e376ba1844fbba8531d5ca1d137de7f`。Rust运行代码、Cargo依赖和许可材料未改动；验证后仅补充本节和根状态记录。
+
+验证使用合成登录目录和全新临时应用路径；未启动真实录音、云端转写或目标输入，未替换运行中的应用。本次未复测应用实际辅助功能授权或真实使用，前次记录的未验项目保持未验。
 
 ## Rust 原生 macOS 最终本地验证（2026-11-06）
 

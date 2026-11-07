@@ -1,5 +1,11 @@
 # 调研与发现
 
+## 2026-11-07 — 旧 Swift 清理
+
+- 原归档共37文件，其中35个 `.swift`、1个Python宿主夹具、1个README；都不参与当前构建。当前核心/App兼容测试脚本实际调用Cargo，仍有用途，应保留。
+- `scripts/product_inventory.py` 曾把 `legacy` 列为必需产品根；已同步移除该根并更新打包文档。删除后完整离线17步通过，Git archive干净检出清单与工作区一致，验证不依赖本机遗留目录。
+- 当前README、方案、跨平台与验证首节曾指向归档，须改为Git历史；旧验收记录中的Swift命令属于历史快照，不伪改旧结果。LOOP_METHODS的清单说明仍指旧Swift路径且声称不覆盖README/docs，已按当前schema 2实现纠正。
+
 ## 2026-11-06 — 最终交付接续
 
 - 当前 `verify.py --app-smoke` 使用合成 CODEX_HOME、离线 Cargo、全新临时 app 输出，覆盖 workspace tests/fmt/严格 Clippy/release、loop/packaging 回归、CLI/host/签名与安全 smoke。其权限 JSON 仅为直接执行上下文，不能证明 Launch Services 启动应用的权限。
