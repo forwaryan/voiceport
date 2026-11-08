@@ -1,5 +1,13 @@
 # 进度记录
 
+## 2026-11-09 — freeze04独立完成、远端CI与规则并行闭环
+
+用户明确要求远端CI也loop修复、支持多个agent协作并参考Magpie完善规则。沿原Run新增隔离CI开发task_81587872fb63/ctx_a9bb43af05f5（ci-process-cleanup-04）和仅私有规则草稿task_a94ba83876a4/ctx_7dd1da129b80，不改当时公共冻结；原CLI保留。已建当前会话CronCreate f0ad2ff1每20分钟兜底，session-only/7日到期；真实轮换helper只识别ScheduleWakeup stop，CronDelete兼容缺口已明确交规则任务，退休需停止所有精确owned scheduler并留回执，未声称自动迁移。
+
+独立04正式msg_00835240f08a/task_697606cd12c4/ctx_de57eda16eae完成：真实新026fe411/current helper/精确terminal/初始最终0/transcript prefix核对，SessionStart未观察；runtime succeeded仅表示完成审查。78helper与20独立R1控制通过，R1和原D1父路径逃逸FIXED；proposal f984caf7在替换前staging leaf被换symlink后，先安装到helper目标再ELOOP拒绝，新D1-stage RETURNED。原目标断言exit1与全部证据保留。协调核对201证据hash/bytes/mode、六snapshot和原17raw继承，未重跑委派测试；最终freeze04 matches:true后写closure显式关闭live评审。原rotation02实际exited/released，拟沿原角色真新仅私有部署方案返修。
+
+CI42502439010 exact68e2e6b为failure：macOS64pass/1fail/1ignored，plugin_process回收测试errno1vs3；独立一次精确本地测试及12owned process观测未复现EPERM，原因UNRESOLVED，不能凭本地pass重跑远端或称完成。CI开发继续独立修复，规则任务继续Magpie固定版本调研/candidate，阶段完成后新集成/冻结/独立复核/精确HEAD远端检查。无生产App/真实录音/账号/目标输入变化，无产品PASS或merge。
+
 ## 2026-11-09 — R1/D1返修02开发交付
 
 msg_8d9cc0338bcb正式task_d5b81b668d18/ctx_a927dfa546bc succeeded/停写。实际新session0e0d0ab1、精确term_ee760730、真实PreToolUse/helper初始5eb93703→最终02b0dbcb、transcript起始及prefix SHA、初始最终0核对；SessionStart未观察。只改helper/tests/rotation契约三公共文件，新六文件manifest b7120867…/proposal f984caf7…放新私有证据，旧提案和历史lease不变。协调核对97归档项bytes/mode/SHA及六原始ce676e8 before/当前after快照，未重跑委派测试。

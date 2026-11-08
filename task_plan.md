@@ -6,10 +6,11 @@
 
 - R1（complete）：新协调会话真实 PreToolUse、terminal、transcript 初始零计数已核对；当前两次自然压缩，真实 PostCompact/SessionStart 已观察。不是已完成自动轮换的证明。
 - R2（complete，评审收尾）：freeze02 最终检查 matches:true；独立02正式 failed/BLOCKED、exited/released。现场评审已显式关闭，历史快照和报告保持。HTTP GUI 来源新增/编辑/选择/重启/合成样例/删除及已知 Keychain 修订清理有实测；GUI 导入确认归属与后续外部来源/错误/空结果/取消路径未完成。
-- R3（开发返修complete，独立复核pending）：freeze03独立RETURNED R1安装回执嵌套错误、D1备份父级symlink逃逸保持。真实新开发0e0d0ab1/task_d5b81b668d18/ctx_a927dfa546bc正式交付并停写：修正result.prompt解析，保持未知锁存/迟到回执/精确关闭；新部署提案使用无链接目录descriptor锚定、六原文件完整备份/模式和部分失败停查。78helper/29部署控制及安装schema/竞争控制开发自检通过；修前目标断言与首次测试预期错误保留。协调核对97证据及六原始before/当前after快照、真实initial0/final0，历史lease保持。新manifest b7120867…/proposal f984caf7…尚待新完整冻结独立复核；未真实register、CLI部署或自动生命周期。
-- R4（complete，独立合成离线范围ACCEPTED）：CI夹具exact1MB/多1字节、timeout/cancel不变与背压清理经freeze03独立审查接受；独立节流9项通过，禁用真实streaming guard的负向对照在目标断言101失败。精确HEAD81c9341的远端CI42499019278 success；当前版本完整17步独立通过、输入未变，65macOS passed/1原有ignored。原stale binary排除、旧CI失败与报告保持；GUI/CLI/真实ASR不在本接受范围。
+- R3（R1独立FIXED，部署D1-stage返修pending）：freeze04独立msg_00835240f08a完整评审，78helper/20独立R1控制通过，安装信封修复R1与原D1父路径逃逸FIXED；新proposal f984caf7…在os.replace边界会先安装被替换的staging symlink再拒绝，故部署整体RETURNED。39观察控制不抵消目标安全断言exit1。协调核对201hash/模式/字节及真实initial0/final0，最终freeze matches:true后显式关闭live评审，历史报告/快照保持。沿原已exited/released开发角色派仅私有新proposal返修，不重复改已通过helper；未真实register、CLI部署或自动生命周期。
+- R4（in_progress，保留已接受离线范围，修复新远端失败）：HTTP夹具经freeze03独立接受，节流9项/禁用guard负向101保留；checkpoint81c9341的17步独立通过与CI42499019278 success仅对应原提交。新68e2e6b的CI42502439010失败plugin_process进程回收errno1vs3（64pass/1fail/1ignored）；独立一次本地exact及12owned process观测未复现，原因未定。隔离CI开发task_81587872fb63/ctx_a9bb43af05f5继续诊断/修复/独立复核/精确HEAD新CI闭环，禁止盲重跑；原stale binary/历史失败保持，GUI/CLI/真实ASR不在离线接受范围。
 - R5（blocked，原任务保留）：CLI/Skill 开发位于独立工作区，尚未开始产品实现。helper 在无全局 lease 时提前返回，导致真实启动证明缺失。待经复核 helper 部署后补实际 hook 证明，沿原任务继续；不手造状态或改信任。
 - R6（pending）：集成 CLI/Skill 与修复，完整新冻结、不同真实会话独立验收、全量离线检查及新远端 CI；按持续授权完成正常 Git/PR/main 同步，再交付已验证 App。PR15 仍 draft，无产品 PASS。
+- R7（in_progress，用户新增CI loop/多agent方法改进）：规则task_a94ba83876a4/ctx_7dd1da129b80只写私有candidate，核对Magpie实际固定commit机制并完善精确HEAD远端CI修复、证据/停止条件、单writer隔离、逻辑任务多agent子分工及独立验证；整合前审查base/链接/与现有接口一致。CronCreate f0ad2ff1每20分钟兜底已启用（session-only/7天），其退休stop-proof与helper现有ScheduleWakeup语义的兼容缺口须明确修正/约束，不能称真实自动轮换通过。
 
 本轮工具差错：仓库根 CLAUDE.md 不存在，已转读现有角色/loop 契约；未创建替代规则。保留所有旧包，不自动录音、读真实凭据、上传真实音频或向真实目标输入。
 

@@ -1,5 +1,11 @@
 # 调研与发现
 
+## 2026-11-09 — freeze04新发现与CI闭环规则需求
+
+R1安装result.prompt解析经独立78helper+20邻近控制FIXED；原D1父目录链接逃逸也已FIXED，但新proposal只重新检查target leaf与父目录，未绑定staging leaf。独立在os.replace前替换stage为symlink，脚本把链接安装到执行目标后才通过O_NOFOLLOW发现错误，因此proposal整体RETURNED；39绿色行为观测不能替代失败的目标安全断言。新方案须解决实际替换边界并明确同UID并发假设，不能仅在更早位置补lstat后声称消除了竞态。
+
+CI42502439010原始errno1vs3失败缺少case/PID或group的归属输出；独立一次exact本地test与12个owned process观测均ESRCH，未确定远端原因。用户新增CI loop/多agent规则要求：一个逻辑问题拆分独立Task/Dispatch，单文件单writer，冻结期间修复走隔离worktree/私有草稿，整合后重新冻结，精确提交CI结果才可计完成。新CronCreate定时器与原helper ScheduleWakeup stop-proof不兼容须显式处理；定时器session-only、不会随继任自动迁移。
+
 ## 2026-11-09 — R1/D1候选修复与复核重点
 
 新launch解析仅认result.prompt、成功外壳、delivery=submit及journaled/handed-to-terminal；缺失/畸形/明确错误/未知均保存分类并保持单次副作用锁存，迟到回执继续更新同transfer的request/history。安装纯fixture相等与纯contract控制属于schema观察，不证明structured chat具备PTY身份或真实轮换可完成。helper02b0dbcb…和契约修订待独立复核。
