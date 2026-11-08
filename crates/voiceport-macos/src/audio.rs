@@ -106,9 +106,13 @@ impl Recorder {
     /// arbitrary queues. Exactly one Permissions value is sent, never UI calls.
     /// A denied Speech permission still permits ordinary microphone recording.
     pub fn request_permissions(generation: u64, sender: EventSender) {
+        Self::request_permissions_for_source(generation, sender, true);
+    }
+    pub fn request_permissions_for_source(generation: u64, sender: EventSender, use_speech: bool) {
         let reply = Arc::new(PermissionReply {
             generation,
             sender,
+            use_speech,
             sent: AtomicBool::new(false),
         });
         let Some(media_type) = (unsafe { AVMediaTypeAudio }) else {
@@ -140,6 +144,7 @@ impl Recorder {
         language: &str,
         generation: u64,
         sender: EventSender,
+        local: Option<crate::local_audio::Input>,
     ) -> Result<bool, String> {
         main_thread()?;
         self.cancel();
@@ -168,7 +173,10 @@ impl Recorder {
             validate_format(&format)?;
             let writer = AacWriter::new(recording.path(), &format)?;
             recording.secure_audio_file().map_err(|e| e.to_string())?;
-            let speech = if speech_authorized {
+            let local_mode = local.is_some();
+            let speech = if local_mode {
+                None
+            } else if speech_authorized {
                 match Speech::prepare(language) {
                     Ok(speech) => Some(speech),
                     Err(error) => {
@@ -197,6 +205,8 @@ impl Recorder {
                     valid: true,
                     writer: Some(writer),
                     request,
+                    local,
+                    local_error: None,
                 }),
                 events: events.clone(),
                 speech_active: speech_active.clone(),
@@ -238,6 +248,10 @@ impl Recorder {
     /// Revoke callback delivery, stop/remove the tap, drain conversion, close the
     /// AAC writer, and validate the finalized file before publishing its Arc.
     /// A failed writer can never produce an uploadable recording.
+    pub(crate) fn lease(&self) -> Option<Arc<Recording>> {
+        self.recording.clone()
+    }
+
     pub fn stop(&mut self) -> Result<Arc<Recording>, String> {
         main_thread()?;
         self.stop_native();
@@ -322,6 +336,7 @@ struct PermissionReply {
     generation: u64,
     sender: EventSender,
     sent: AtomicBool,
+    use_speech: bool,
 }
 impl PermissionReply {
     fn send(&self, microphone: bool, speech: bool) {
@@ -334,6 +349,10 @@ impl PermissionReply {
     }
 }
 fn request_speech_permission(reply: Arc<PermissionReply>) {
+    if !reply.use_speech {
+        reply.send(true, false);
+        return;
+    }
     let status = unsafe { SFSpeechRecognizer::authorizationStatus() };
     if status == SFSpeechRecognizerAuthorizationStatus::NotDetermined {
         let callback = RcBlock::new(move |status| {
@@ -497,6 +516,8 @@ struct SinkState {
     valid: bool,
     writer: Option<AacWriter>,
     request: Option<Retained<SFSpeechAudioBufferRecognitionRequest>>,
+    local: Option<crate::local_audio::Input>,
+    local_error: Option<String>,
 }
 // SAFETY: The immutable format and the writer/request are created before tap
 // publication. Every subsequent access, including append, endAudio, conversion,
@@ -517,7 +538,7 @@ impl Sink {
             }
             match state.consume(buffer, self.speech_active.load(Ordering::Acquire)) {
                 Ok(true) => Some(AudioEvent::LimitReached),
-                Ok(false) => None,
+                Ok(false) => state.local_error.take().map(AudioEvent::Failed),
                 Err(error) => {
                     state.valid = false;
                     state.accepting = false;
@@ -539,6 +560,9 @@ impl Sink {
             .map_err(|_| "录音写入锁失效。".to_owned())?;
         state.accepting = false;
         state.end_speech();
+        if let Some(local) = state.local.take() {
+            local.finish();
+        }
         let result = state
             .writer
             .take()
@@ -573,10 +597,18 @@ impl SinkState {
             } else {
                 buffer
             };
+            let packet = self.local.as_ref().map(|_| copy_pcm(input)).transpose()?;
             self.writer
                 .as_mut()
                 .ok_or("录音写入器已关闭。")?
                 .write(input)?;
+            if let (Some(local), Some(packet)) = (&self.local, packet)
+                && let Err(error) = local.send(packet)
+            {
+                self.local_error = Some(error);
+                // Keep the valid AAC writer available for an explicit local retry.
+                self.local.take();
+            }
             if !speech_active {
                 self.end_speech();
             }
@@ -808,6 +840,127 @@ fn file_url(path: &Path) -> Result<Retained<NSURL>, String> {
     let path = path.to_str().ok_or("录音路径无效。")?;
     Ok(NSURL::fileURLWithPath(&NSString::from_str(path)))
 }
+/// Copy native PCM while its framework-owned pointers are valid. Mixing and
+/// resampling happen later on the inference worker.
+fn copy_pcm(buffer: &AVAudioPCMBuffer) -> Result<crate::local_audio::Packet, String> {
+    use crate::local_audio::{MAX_PACKET_FRAMES, Packet};
+    unsafe {
+        let format = buffer.format();
+        validate_format(&format)?;
+        let frames = buffer.frameLength() as usize;
+        let channels = format.channelCount() as usize;
+        if frames == 0
+            || frames > MAX_PACKET_FRAMES
+            || buffer.frameLength() > buffer.frameCapacity()
+        {
+            return Err("本地 PCM 缓冲区大小无效。".into());
+        }
+        let common = format.commonFormat();
+        let width = match common {
+            AVAudioCommonFormat::PCMFormatFloat32 | AVAudioCommonFormat::PCMFormatInt32 => 4,
+            AVAudioCommonFormat::PCMFormatFloat64 => 8,
+            AVAudioCommonFormat::PCMFormatInt16 => 2,
+            _ => return Err("本地转写不支持麦克风的 PCM 格式。".into()),
+        };
+        let interleaved = format.isInterleaved();
+        let list = buffer.audioBufferList().as_ref();
+        let count = if interleaved { 1 } else { channels };
+        if list.mNumberBuffers as usize != count {
+            return Err("本地 PCM 通道布局无效。".into());
+        }
+        let buffers = std::slice::from_raw_parts(list.mBuffers.as_ptr(), count);
+        for native in buffers {
+            let native_channels = if interleaved { channels } else { 1 };
+            if native.mNumberChannels as usize != native_channels
+                || native.mData.is_null()
+                || (native.mDataByteSize as usize) < frames * native_channels * width
+            {
+                return Err("本地 PCM 缓冲区不完整。".into());
+            }
+        }
+        let mut samples = Vec::with_capacity(frames * channels);
+        for frame in 0..frames {
+            for channel in 0..channels {
+                let (native, index) = if interleaved {
+                    (&buffers[0], frame * channels + channel)
+                } else {
+                    (&buffers[channel], frame)
+                };
+                let pointer = native.mData.cast::<u8>().add(index * width);
+                let sample = match common {
+                    AVAudioCommonFormat::PCMFormatFloat32 => pointer.cast::<f32>().read_unaligned(),
+                    AVAudioCommonFormat::PCMFormatFloat64 => {
+                        pointer.cast::<f64>().read_unaligned() as f32
+                    }
+                    AVAudioCommonFormat::PCMFormatInt16 => {
+                        pointer.cast::<i16>().read_unaligned() as f32 / 32768.0
+                    }
+                    AVAudioCommonFormat::PCMFormatInt32 => {
+                        pointer.cast::<i32>().read_unaligned() as f32 / 2147483648.0
+                    }
+                    _ => unreachable!(),
+                };
+                samples.push(sample);
+            }
+        }
+        let packet = Packet {
+            rate: format.sampleRate(),
+            channels,
+            samples,
+        };
+        packet.validate()?;
+        Ok(packet)
+    }
+}
+
+/// Used only by worker-owned local retries and explicit public-fixture tests.
+/// Reads at most one small native buffer at a time, under the caller's lease.
+pub(crate) fn read_pcm(
+    path: &Path,
+    mut consume: impl FnMut(crate::local_audio::Packet) -> Result<(), String>,
+) -> Result<(), String> {
+    autoreleasepool(|_| unsafe {
+        let url = file_url(path)?;
+        let file = AVAudioFile::initForReading_commonFormat_interleaved_error(
+            AVAudioFile::alloc(),
+            &url,
+            AVAudioCommonFormat::PCMFormatFloat32,
+            false,
+        )
+        .map_err(native_error)?;
+        let format = file.processingFormat();
+        validate_format(&format)?;
+        let length = file.length();
+        if length <= 0 || length as f64 > format.sampleRate() * MAXIMUM_SECONDS as f64 {
+            return Err("本地转写录音为空或超过 180 秒。".into());
+        }
+        let buffer = AVAudioPCMBuffer::initWithPCMFormat_frameCapacity(
+            AVAudioPCMBuffer::alloc(),
+            &format,
+            4096,
+        )
+        .ok_or("无法分配本地转写音频缓冲区。")?;
+        let mut read = 0;
+        while read < length {
+            let frames = (length - read).min(4096) as u32;
+            file.readIntoBuffer_frameCount_error(&buffer, frames)
+                .map_err(|e| format!("无法读取本地录音：{}", native_error(e)))?;
+            if buffer.frameLength() == 0 {
+                break;
+            }
+            read += buffer.frameLength() as i64;
+            if read > length {
+                return Err("本地录音长度发生变化。".into());
+            }
+            consume(copy_pcm(&buffer)?)?;
+        }
+        if read != length {
+            return Err("本地录音未能完整读取。".into());
+        }
+        Ok(())
+    })
+}
+
 fn validate_aac(path: &Path) -> Result<(), String> {
     let url = file_url(path)?;
     unsafe {
@@ -848,6 +1001,77 @@ fn validate_aac(path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn local_pcm_copy_checks_native_layout_and_nonfinite_samples_without_devices() {
+        for interleaved in [false, true] {
+            let format = unsafe {
+                AVAudioFormat::initWithCommonFormat_sampleRate_channels_interleaved(
+                    AVAudioFormat::alloc(),
+                    AVAudioCommonFormat::PCMFormatInt16,
+                    44_100.5,
+                    2,
+                    interleaved,
+                )
+                .unwrap()
+            };
+            let buffer = unsafe {
+                AVAudioPCMBuffer::initWithPCMFormat_frameCapacity(
+                    AVAudioPCMBuffer::alloc(),
+                    &format,
+                    3,
+                )
+                .unwrap()
+            };
+            unsafe {
+                buffer.setFrameLength(3);
+                let mut list = buffer.mutableAudioBufferList();
+                let list = list.as_mut();
+                let buffers = std::slice::from_raw_parts_mut(
+                    list.mBuffers.as_mut_ptr(),
+                    list.mNumberBuffers as usize,
+                );
+                for native in buffers {
+                    let samples = std::slice::from_raw_parts_mut(
+                        native.mData.cast::<i16>(),
+                        3 * native.mNumberChannels as usize,
+                    );
+                    samples.fill(16384);
+                }
+            }
+            let packet = copy_pcm(&buffer).unwrap();
+            assert_eq!(packet.rate, 44_100.5);
+            assert_eq!(packet.channels, 2);
+            assert_eq!(packet.samples, vec![0.5; 6]);
+        }
+        let (_, buffer) = synthetic_buffer(48000., 1, 8);
+        unsafe {
+            (*buffer.floatChannelData()).as_ptr().write(f32::NAN);
+        }
+        assert!(copy_pcm(&buffer).is_err());
+        let (_, large) =
+            synthetic_buffer(48000., 1, crate::local_audio::MAX_PACKET_FRAMES as u32 + 1);
+        assert!(copy_pcm(&large).is_err());
+    }
+    #[test]
+    fn local_permission_policy_replies_without_querying_system_speech() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        request_speech_permission(Arc::new(PermissionReply {
+            generation: 78,
+            sender,
+            use_speech: false,
+            sent: AtomicBool::new(false),
+        }));
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            (
+                78,
+                AudioEvent::Permissions {
+                    microphone: true,
+                    speech: false
+                }
+            )
+        );
+    }
     #[test]
     fn locale_resolution_never_substitutes_explicit_region() {
         let supported = ["en_GB", "en_US", "zh_CN", "zh_TW"].map(str::to_owned);
@@ -911,6 +1135,7 @@ mod tests {
         let writer = AacWriter::new(recording.path(), &format).unwrap();
         recording.secure_audio_file().unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
+        let (local, incoming) = crate::local_audio::channel();
         let sink = Sink {
             state: Mutex::new(SinkState {
                 format,
@@ -920,6 +1145,8 @@ mod tests {
                 valid: true,
                 writer: Some(writer),
                 request: None,
+                local: Some(local),
+                local_error: None,
             }),
             events: Arc::new(Events {
                 generation: 42,
@@ -937,6 +1164,15 @@ mod tests {
             [(42, AudioEvent::LimitReached)]
         );
         sink.finish().unwrap();
+        let packets: Vec<_> = incoming.receiver.try_iter().collect();
+        assert_eq!(
+            packets
+                .iter()
+                .map(|p| p.samples.len() / p.channels)
+                .collect::<Vec<_>>(),
+            [4800, 201]
+        );
+        incoming.completed().unwrap();
         recording.validate_finalized().unwrap();
         validate_aac(recording.path()).unwrap();
         let bytes = std::fs::read(recording.path()).unwrap();
@@ -945,6 +1181,63 @@ mod tests {
         assert!(receiver.try_recv().is_err());
     }
 
+    #[test]
+    fn local_overflow_fails_explicitly_but_preserves_valid_aac_for_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let recording =
+            storage::Storage::at(temp.path().canonicalize().unwrap().join(storage::NAMESPACE))
+                .create_recording()
+                .unwrap();
+        let (format, buffer) = synthetic_buffer(48000., 1, 4800);
+        let writer = AacWriter::new(recording.path(), &format).unwrap();
+        recording.secure_audio_file().unwrap();
+        let (local, incoming) = crate::local_audio::channel();
+        for _ in 0..128 {
+            local
+                .send(crate::local_audio::Packet {
+                    rate: 48000.,
+                    channels: 1,
+                    samples: vec![0.; 1],
+                })
+                .unwrap();
+        }
+        let (sender, events) = std::sync::mpsc::channel();
+        let sink = Sink {
+            state: Mutex::new(SinkState {
+                format,
+                maximum_frames: 48000,
+                frames: 0,
+                accepting: true,
+                valid: true,
+                writer: Some(writer),
+                request: None,
+                local: Some(local),
+                local_error: None,
+            }),
+            events: Arc::new(Events {
+                generation: 123,
+                sender,
+                active: AtomicBool::new(true),
+            }),
+            speech_active: Arc::new(AtomicBool::new(false)),
+        };
+        sink.consume(&buffer);
+        assert!(
+            matches!(events.try_recv(), Ok((123, AudioEvent::Failed(text))) if text.contains("队列"))
+        );
+        assert!(incoming.check().is_err());
+        assert!(sink.state.lock().unwrap().valid);
+        sink.finish().unwrap();
+        recording.validate_finalized().unwrap();
+        validate_aac(recording.path()).unwrap();
+        let mut frames = 0;
+        read_pcm(recording.path(), |packet| {
+            frames += packet.samples.len();
+            Ok(())
+        })
+        .unwrap();
+        assert!(frames > 0);
+    }
     #[test]
     fn damaged_writer_emits_generation_tagged_failure_and_cannot_finalize() {
         let temp = tempfile::tempdir().unwrap();
@@ -966,6 +1259,8 @@ mod tests {
                 valid: true,
                 writer: Some(writer),
                 request: None,
+                local: None,
+                local_error: None,
             }),
             events: Arc::new(Events {
                 generation: 99,

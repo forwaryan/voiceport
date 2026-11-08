@@ -1,23 +1,46 @@
 # VoicePort 实施计划
 
+## 2026-11-08 当前任务：复用 Orca 本地语音模型与来源选择
+
+用户明确要求复用 Orca 已下载的本地语音模型，在原生设置中下拉选择单一转写来源；Paraformer 提供实时预览及本地最终结果，Whisper Tiny 停录后本地识别，保留 ChatGPT 选项，不做多源对比或词典。
+
+- L1（complete）：已只读发现 Orca 的 paraformer-bilingual-zh-en、whisper-tiny 和 sherpa-onnx 1.12.37 原生运行库，核对实时/离线能力。当前会话真实 hook、session/terminal 及一次压缩已核对；为新用户目标创建独立 Run run_6f1edc8ca1f3，不接管旧 VP013 attempt/lease 或改写历史。新任务产品关联为 unbound。
+- L2（complete，开发交付）：真实 Orca task_c891fc8528e0/ctx_d32d69cd0690完成来源选择、只读发现、C ABI本地推理、PCM/异步生命周期与测试并停写。开发完整17项自检与公开夹具实际推理通过，产品SHA5e501840…起止一致，报告`.voiceport/evidence/local-models-development-20261108/report.md`；不是独立验收。已保留8个继承UI dirty文件与图标窄补丁。图标会话随后收到熊+语音设计新要求，仅在独立候选中修订，待交付后由协调者集成再冻结。
+- L3 首轮审查（历史退回）：1078文件freeze01经真实独立session9c6eb66b/ctx_38dc2665e9da审查，整合版17步、公开夹具、额外运行时/控件检查及隔离GUI来源/重启记忆通过；确认LM-01 P2麦克风权限文案无条件声称ChatGPT上传。独立报告`.voiceport/evidence/local-models-independent-20261108/report.md`，产品尚未接受。旧freeze01显式关闭返修且快照/报告不变；原开发恢复发生terminal drift并经guarded stop/退出/释放后，真正新session6fa25592在同一Task完成仅Info.plist修正及17个packaging自检。原验证终端已实际exited/released，不能在新terminal恢复而违反身份保护；由新真实独立会话接续freeze02的聚焦复核并重建最终包，保留原审查链。熊+话筒模块SHA a1ada958…已集成，A为peer建议。
+- L3 最终结果（complete）：freeze02（完整e5ff82d5…/产品3a64a677…）由新真实独立session111f5cbd/ctx_d168251845c2聚焦复核PASS，LM-01 FIXED。原17步/实际本地推理/隔离GUI证据及实现逐文件不变已核对；新包从最终源码正常release/package，17个packaging/严格签名/源产物对应/全部17个Mach-O sections通过。旧失败及报告不变，未做真实麦克风/中文质量/目标接收验收。
+- L4（交付执行记录）：用户随后明确要求替换、合并main并在本机启动最新版。最终包`dist/local-models-20261108-final-02/VoicePort.app`已独立验收；源码冻结评审结束后仅补行政记录再正常commit/push/PR/CI/merge与本地main同步，实际Git回执和启动结果持续保存`.voiceport/handoffs/local-models-coordination-20261108.json`并向用户交付。图标A已由另一会话转来用户后续明确选择「就左边第一个吧」，与已验收模块一致。可正常退出经核对路径且空闲的旧实例，但不自动录音、上传、读真实账号或操作真实目标输入，不覆盖历史包或修改Orca模型与偏好。
+
+
+## 2026-11-08 当前任务：按GitHub原生UI skill重做紧凑界面
+
+用户认为0.3.2界面一般，要求在GitHub寻找UI skill并实际优化。已检索UI UX Pro Max与ceorkm/macos-design-skill，选择后者原生工具布局参考，固定commit 8f528a2364f996cd42f02a10b1b27198a74ca2a3的SKILL及三篇引用已读取，原文仅保存在.voiceport/research/macos-ui-20261108，未安装远端脚本。
+
+- V1（complete）：完成skill调研与当前布局评估；方向为紧凑窗口、听写/设置页签、简短可操作权限提示、按状态展示次要动作、系统语义配色与SF Symbols。
+- V2（complete）：0.3.3/build9紧凑620×520内容窗口实现，听写/设置原生页签、条件动作、短提示与完整详情sheet、NSSwitch与语言/快捷键下拉；实际发现100ms重复selectItemAtIndex会打断菜单，已改为值变化才更新，图标亦缓存。右上角常驻/无Dock与录音投递边界保留。
+- V3（complete）：完整离线17步通过（verify-2482a31db1ec48638525b7b628cfc9f9），起止SHA e466950c745d76cbb2ce8de0f1a5e561f39298dda7b215c8bcfbf10dc7619fab一致。新包dist/native-ui-20261108-9eaa1fc4-final/VoicePort.app签名/Cargo对应通过，PID82829实测中/英语言、替代快捷键、开关与保存值，恢复原偏好；页签/详情sheet0秒/窗口关闭同PID菜单重开、顶部(973,4)/Dock空均通过，实际读两页及菜单截图。当前AX仍未授权，未自动录音或重绑。仅正常退出本轮新建且已核对0秒的预览PID66378，未向原应用发送退出。report.json同目录，未提交/推送。
+
+本轮GUI错误记录：后台popup点击background_unavailable、直接set-value为value_not_settable；前台辅助动作有未获验证的非零回执，均不算成功。跨工具菜单引用失效和同脚本连续菜单未ready出现-1719，改为每个原生菜单前台单次打开、有界等待目标item再点，并用应用UI与defaults读回独立核对。get-app-state不支持--full-tree，按有效参数纠正；首轮大段Edit旧片段font误写导致不匹配无修改，受控替换后fmt/严格Clippy通过。
+
+调研错误：首次gh tree路径未加引号触发zsh no matches found，改为整体单引号URL后读取成功，未运行第三方安装器。
+
 ## 2026-11-08 当前任务：同步主分支并提交合并本地修改
 
 用户明确授权获取远程 main、更新本地、提交全部当前源码修改、创建 PR，并修复实际 CI 问题后合并。
 
-- G1（complete）：本地 main 和工作分支基线已快进到 origin/main `0d9e643`，原修改完整恢复，README 唯一冲突已合并。另建隔离 worktree 提交请求开始时已有的完整修改；另一会话进行中的 UI 美化保留在原工作区。
-- G2（in_progress）：隔离候选正在全新 Cargo target 中运行完整离线 verify --app-smoke；原工作区中间 UI 状态的 Clippy 失败不作为该候选结论。
-- G3（pending）：提交并推送，创建 PR，观察并修复实际 CI 失败，通过后正常合并。
-- G4（pending）：同步本地 main 到合并结果，核对远端、本地与干净工作区并回报 PR 链接。
+- G1（complete）：已安全同步 origin/main `0d9e643` 并恢复原修改；README 唯一冲突保留双方说明。为保护并行 UI 开发，原有完整修改在独立 worktree 提交。
+- G2（complete）：全新独立 Cargo target 的完整离线 verify --app-smoke 17 步通过，含 4 loop/17 packaging、fmt/严格 Clippy/release/签名/安全 smoke，起止产品指纹一致；证据 `.voiceport/evidence/git-pr-13-verify-4265b885/`。
+- G3（complete）：提交 `89ee01c` 已推送，PR13 的 GitHub macOS CI 通过后正常合并为 `980a5ee06757915a386ffe72d18a3c748cdf5286`；无须修改 CI 配置。
+- G4（complete）：HEAD、本地 main、origin/main 与 GitHub main 均为 `980a5ee`。只移动引用并重建 index，未改工作文件；剩余未提交修改为另一会话的新 UI 开发及根状态记录，完整保留。PR：https://github.com/forwaryan/voiceport/pull/13 。
 
 保留已有历史记录、本机证据和运行中应用。验证不自动录音、读取真实账号或向真实输入框投递。
 
 ## 2026-11-08 当前任务：菜单栏与原生界面美化
 
-用户接受停止后整段最终转写，希望界面更美观，特别是macOS顶部菜单栏有清楚的小图标。沿用所有已有修改与保护约束，不退出已授权应用、不自动录音、不覆盖旧包。
+用户接受停止后整段最终转写，希望界面更美观；进一步明确只需macOS右上角菜单栏小图标，底部Dock图标不需要。改为0.3.2/build8、LSUIElement=true、Accessory策略，保留可打开的设置窗口。沿用已有修改与保护约束，不退出原已授权应用、不自动录音、不覆盖旧包。
 
-- U1（in_progress）：菜单栏改为紧凑语音图标，图形与菜单文字表达就绪/听写/处理/异常状态，保留原生深浅模式适配和VoicePort可访问名称。
-- U2（pending）：整理设置窗口的字号、留白、结果区域和设置分组，减少按钮式说明文字，保持所有功能入口。
-- U3（pending）：编译/格式/严格lint及必要测试，打包到全新dist目录；实际打开新UI、检查菜单与截图，旧已授权进程保持运行。
+- U1（complete）：菜单栏改为28pt模板语音图标，图形/菜单文字表达就绪、听写、处理和待处理状态。最终PID45517实际坐标(965,4)，已读取menu-open.png确认右上角显示；系统将VoicePort归入隐藏的Orca宿主组，正常系统UI开启该组后可见，Orca自身图标也可能随之显示。保留VoicePort可访问名称；深浅适配使用系统语义色，未实际切换外观验收。
+- U2（complete）：原生标题层次、圆角结果卡片、空状态、主操作与设置分区已实现并读取实际截图；保留全部功能入口，重复投递错误行不再显示两遍。
+- U3（complete）：最终完整离线17步全通过（verify-d063b3b372364ea9883fc0adf87ebf97），4 loop/17 packaging，起止产品SHA f4be731c83b7f03d61391601843a6f17d92f83a24e26bd883f4f3cb6c99e6d25一致。新包dist/menubar-only-20261108-9eaa1fc4-final/VoicePort.app为0.3.2/build8，签名/Cargo对应通过；实际PID45517为Accessory policy1、Dock无VoicePort，关闭后窗口数0，经右上角菜单在同PID恢复为1，0秒/未录音。report.json与已读截图同目录。新包自身AX仍未授权，未重绑；真实语音/长期耐用性尚未验收。原先屏幕外菜单及旧进程消失记录保留；旧PID68143/42195未由本会话退出，原因未确认。
 
 
 ## 2026-11-08 当前任务：光标输入与 macOS 图标入口接续

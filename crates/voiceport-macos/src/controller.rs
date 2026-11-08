@@ -3,8 +3,11 @@ use crate::{
     audio::{AudioEvent, Recorder},
     delivery::Delivery,
     lifecycle::{Lifecycle, Phase},
+    local_audio::Incoming,
+    local_models::{CHATGPT, Catalog, SessionSource},
     storage::Recording,
 };
+use std::sync::Mutex;
 use std::{
     sync::{
         Arc,
@@ -12,6 +15,7 @@ use std::{
     },
     time::Instant,
 };
+type PartialSlot = Arc<Mutex<Option<(u64, String)>>>;
 use voiceport_core::{CancellationToken, TranscriptionClient};
 
 struct Job {
@@ -20,6 +24,9 @@ struct Job {
     language: String,
     proxy: Option<String>,
     cancel: CancellationToken,
+    source: SessionSource,
+    incoming: Option<Incoming>,
+    partial: PartialSlot,
 }
 struct Completion {
     generation: u64,
@@ -40,11 +47,34 @@ impl Worker {
         std::thread::Builder::new()
             .name("voiceport-transcription".into())
             .spawn(move || {
-                while let Ok(job) = incoming.recv() {
+                while let Ok(mut job) = incoming.recv() {
                     let generation = job.generation;
                     // Unwind on the worker only. Resources, runtime and file clone are all
                     // gone before completion is published; the UI never joins this thread.
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        if let SessionSource::Local(model) = &job.source {
+                            let partial = |text| {
+                                if let Ok(mut slot) = job.partial.lock() {
+                                    *slot = Some((generation, text));
+                                }
+                            };
+                            return match job.incoming.take() {
+                                Some(incoming) => crate::local_runtime::transcribe_live(
+                                    model,
+                                    &job.language,
+                                    incoming,
+                                    &job.cancel,
+                                    partial,
+                                ),
+                                None => crate::local_runtime::transcribe_file(
+                                    model,
+                                    &job.language,
+                                    job.recording.path(),
+                                    &job.cancel,
+                                    partial,
+                                ),
+                            };
+                        }
                         let runtime = tokio::runtime::Builder::new_current_thread()
                             .enable_all()
                             .build()
@@ -89,6 +119,11 @@ pub struct Controller {
     pub delivery_status: String,
     pub automatic: bool,
     pub language: String,
+    pub source_id: String,
+    pub catalog: Catalog,
+    discovery: Option<Receiver<Catalog>>,
+    recorded_source: SessionSource,
+    partial: PartialSlot,
     recorder: Recorder,
     delivery: Delivery,
     events_tx: Sender<(u64, AudioEvent)>,
@@ -100,6 +135,7 @@ pub struct Controller {
     started: Option<Instant>,
     allow_delivery: bool,
     delivery_settle: Option<Phase>,
+    stop_failure: Option<String>,
 }
 impl Default for Controller {
     fn default() -> Self {
@@ -117,6 +153,11 @@ impl Controller {
             delivery_status: String::new(),
             automatic: true,
             language: String::new(),
+            source_id: CHATGPT.into(),
+            catalog: Catalog::pending(CHATGPT),
+            discovery: None,
+            recorded_source: SessionSource::ChatGpt,
+            partial: Arc::new(Mutex::new(None)),
             recorder: Recorder::new(),
             delivery: Delivery::new(),
             events_tx,
@@ -128,7 +169,29 @@ impl Controller {
             started: None,
             allow_delivery: false,
             delivery_settle: None,
+            stop_failure: None,
         }
+    }
+    pub fn refresh_catalog(&mut self) {
+        if self.busy() || self.discovery.is_some() {
+            return;
+        }
+        let saved = self.source_id.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        match std::thread::Builder::new()
+            .name("voiceport-model-discovery".into())
+            .spawn(move || {
+                let _ = sender.send(Catalog::system(&saved));
+            }) {
+            Ok(_) => self.discovery = Some(receiver),
+            Err(_) => self.message = "无法检查本地模型，请再次刷新。".into(),
+        }
+    }
+    pub fn uses_system_speech(&self) -> bool {
+        self.source_id == CHATGPT
+    }
+    pub fn discovering(&self) -> bool {
+        self.discovery.is_some()
     }
     pub fn seconds(&self) -> u64 {
         self.started.map(|s| s.elapsed().as_secs()).unwrap_or(0)
@@ -147,6 +210,15 @@ impl Controller {
         if !self.state.can_start() {
             return;
         }
+        let source = match self.catalog.snapshot(&self.source_id) {
+            Ok(source) => source,
+            Err(error) => {
+                self.message = error;
+                self.state.phase = Phase::Failed;
+                self.state.retry_available = false;
+                return;
+            }
+        };
         self.delivery.clear();
         if self.automatic
             && let Err(message) = self.delivery.begin()
@@ -164,9 +236,16 @@ impl Controller {
         };
         self.transcript.clear();
         self.recorded_language = self.language.clone();
+        self.recorded_source = source;
         self.allow_delivery = self.automatic;
-        self.message = "正在检查麦克风和本机语音识别权限…".into();
-        Recorder::request_permissions(generation, self.events_tx.clone());
+        let use_speech = !self.recorded_source.is_local();
+        self.message = if use_speech {
+            "正在检查麦克风和本机语音识别权限…"
+        } else {
+            "正在检查麦克风权限；本地模型无需系统语音识别权限…"
+        }
+        .into();
+        Recorder::request_permissions_for_source(generation, self.events_tx.clone(), use_speech);
     }
     pub fn stop(&mut self) {
         if self.state.phase != Phase::Recording {
@@ -178,10 +257,19 @@ impl Controller {
             Ok(recording) => {
                 self.recording = Some(recording);
                 self.state.transcribe();
-                self.submit();
+                if self.recorded_source.is_local() && self.active.is_some() {
+                    self.message = "正在本地处理剩余音频并完成最终转写…".into();
+                } else {
+                    self.submit();
+                }
             }
             Err(message) => {
                 self.state.phase = Phase::Failed;
+                if let Some(active) = &self.active {
+                    active.cancel.cancel();
+                    self.stop_failure = Some(message.clone());
+                    self.state.phase = Phase::Stopping;
+                }
                 self.state.retry_available = false;
                 self.message = message;
                 self.delivery.retain_preview();
@@ -198,6 +286,9 @@ impl Controller {
         self.submit();
     }
     fn submit(&mut self) {
+        self.submit_input(None);
+    }
+    fn submit_input(&mut self, incoming: Option<Incoming>) {
         let result = (|| {
             if self.worker.is_none() {
                 self.worker = Some(Worker::new()?);
@@ -212,8 +303,15 @@ impl Controller {
                 generation: self.state.generation(),
                 recording,
                 language: self.recorded_language.clone(),
-                proxy: crate::proxy::https_proxy(),
+                proxy: if self.recorded_source.is_local() {
+                    None
+                } else {
+                    crate::proxy::https_proxy()
+                },
                 cancel: cancel.clone(),
+                source: self.recorded_source.clone(),
+                incoming,
+                partial: self.partial.clone(),
             };
             match self.worker.as_ref().unwrap().jobs.try_send(job) {
                 Ok(()) => {}
@@ -232,8 +330,16 @@ impl Controller {
             Ok::<(), String>(())
         })();
         match result {
-            Ok(()) => self.message = "正在使用 ChatGPT 完成最终转写…".into(),
+            Ok(()) => {
+                self.message = if self.recorded_source.is_local() {
+                    "正在载入本地模型并处理音频…"
+                } else {
+                    "正在使用 ChatGPT 完成最终转写…"
+                }
+                .into()
+            }
             Err(message) => {
+                self.recorder.stop().ok();
                 self.state.phase = Phase::Failed;
                 self.state.retry_available = self.recording.is_some();
                 self.message = message;
@@ -249,11 +355,13 @@ impl Controller {
         }
     }
     pub fn cancel(&mut self) {
+        self.stop_failure = None;
         self.delivery_settle = None;
         let worker_active = self.active.is_some();
         self.state.cancel(worker_active);
         self.delivery.clear();
         self.started = None;
+        self.recorder.cancel();
         if let Some(active) = &self.active {
             active.cancel.cancel();
             self.message = "正在取消并释放录音…".into();
@@ -264,6 +372,27 @@ impl Controller {
         }
     }
     pub fn poll(&mut self) {
+        if let Some(discovery) = &self.discovery {
+            match discovery.try_recv() {
+                Ok(catalog) => {
+                    self.catalog = catalog;
+                    self.discovery = None;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.discovery = None;
+                    self.message = "本地模型发现线程已退出，请刷新模型。".into();
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        let partial = self.partial.lock().ok().and_then(|mut slot| slot.take());
+        if let Some((generation, text)) = partial
+            && self.state.accepts(generation)
+            && self.state.phase == Phase::Recording
+        {
+            self.transcript = text;
+            self.delivery_status = self.delivery.preview(&self.transcript);
+        }
         while let Ok((generation, event)) = self.events.try_recv() {
             if !self.state.accepts(generation) {
                 continue;
@@ -282,16 +411,33 @@ impl Controller {
                         }
                         continue;
                     }
+                    let (local, incoming) = if self.recorded_source.is_local() {
+                        let (input, incoming) = crate::local_audio::channel();
+                        (Some(input), Some(incoming))
+                    } else {
+                        (None, None)
+                    };
                     match self.recorder.start(
                         speech,
                         &self.recorded_language,
                         generation,
                         self.events_tx.clone(),
+                        local,
                     ) {
                         Ok(preview) => {
                             self.started = Some(Instant::now());
-                            self.message = "正在录音；再次按快捷键停止。".into();
-                            self.preview_status = if preview {
+                            if let Some(incoming) = incoming {
+                                self.recording = self.recorder.lease();
+                                self.submit_input(Some(incoming));
+                            }
+                            if self.state.phase == Phase::Recording {
+                                self.message = "正在录音；再次按快捷键停止。".into();
+                            }
+                            self.preview_status = if self.recorded_source.streaming() {
+                                "Paraformer 本地流式识别（模型在后台载入）"
+                            } else if self.recorded_source.is_local() {
+                                "Whisper Tiny 本地离线识别；停止后出字"
+                            } else if preview {
                                 "设备端语音预览已启用"
                             } else {
                                 "本机预览不可用，停止后批量转写"
@@ -311,6 +457,12 @@ impl Controller {
                     self.delivery_status = self.delivery.preview(&self.transcript);
                 }
                 AudioEvent::Status(text) => self.preview_status = text,
+                AudioEvent::Failed(message)
+                    if self.state.phase == Phase::Recording && self.recorded_source.is_local() =>
+                {
+                    self.stop();
+                    self.message = message;
+                }
                 AudioEvent::Failed(message) if self.state.phase == Phase::Recording => {
                     self.message = message;
                     self.state.phase = Phase::Failed;
@@ -330,6 +482,9 @@ impl Controller {
             Some(Ok(completion)) => Some(completion),
             Some(Err(TryRecvError::Disconnected)) => {
                 self.worker = None;
+                if self.state.phase == Phase::Recording {
+                    self.stop();
+                }
                 if let Some(active) = self.active.take() {
                     active.cancel.cancel();
                     self.allow_delivery = false;
@@ -340,7 +495,12 @@ impl Controller {
                         if stopping {
                             self.recorder.cancel();
                             self.recording = None;
-                            self.message = "听写已取消。".into();
+                            if let Some(error) = self.stop_failure.take() {
+                                self.state.phase = Phase::Failed;
+                                self.message = error;
+                            } else {
+                                self.message = "听写已取消。".into();
+                            }
                         } else {
                             self.message = "转写工作线程已退出，录音保留供手动重试。".into();
                         }
@@ -360,12 +520,22 @@ impl Controller {
             {
                 return;
             }
+            if self.state.phase == Phase::Recording {
+                // A local worker can fail while loading or consuming live audio.
+                // Finalize the valid AAC lease before offering the same-source retry.
+                self.stop();
+            }
             self.active = None;
             if self.state.phase == Phase::Stopping {
                 self.recorder.cancel();
                 self.recording = None;
-                self.state.phase = Phase::Idle;
-                self.message = "听写已取消。".into();
+                if let Some(error) = self.stop_failure.take() {
+                    self.state.phase = Phase::Failed;
+                    self.message = error;
+                } else {
+                    self.state.phase = Phase::Idle;
+                    self.message = "听写已取消。".into();
+                }
             } else if self.state.complete(
                 completion.generation,
                 completion.result.is_ok(),
@@ -402,8 +572,8 @@ impl Controller {
 mod tests {
     use super::*;
 
-    // Recorder/Delivery constructors are inert. No test calls start, requests
-    // permissions, creates a recording, starts a worker, or contacts a service.
+    // Tests use inert device/delivery constructors and synthetic leased storage.
+    // None requests permissions, starts capture/inference, or contacts a service.
     fn transcribing() -> Controller {
         let mut c = Controller::new();
         let generation = c.state.begin().unwrap();
@@ -425,6 +595,120 @@ mod tests {
         Worker { jobs, results }
     }
 
+    fn local_source() -> SessionSource {
+        SessionSource::Local(crate::local_models::Model {
+            kind: crate::local_models::ModelKind::Paraformer,
+            directory: "/synthetic/model".into(),
+            runtime: "/synthetic/runtime".into(),
+            encoder: "/synthetic/encoder".into(),
+            decoder: "/synthetic/decoder".into(),
+            tokens: "/synthetic/tokens".into(),
+        })
+    }
+    #[test]
+    fn retry_snapshots_original_local_source_and_language_without_cloud_dispatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let recording = Arc::new(
+            crate::storage::Storage::at(
+                temp.path()
+                    .canonicalize()
+                    .unwrap()
+                    .join(crate::storage::NAMESPACE),
+            )
+            .create_recording()
+            .unwrap(),
+        );
+        let mut c = transcribing();
+        let old = c.state.generation();
+        c.active = None;
+        c.state.complete(old, false, true);
+        c.recording = Some(recording.clone());
+        c.recorded_source = local_source();
+        c.recorded_language = "zh".into();
+        c.source_id = CHATGPT.into();
+        c.language = "en".into();
+        let (jobs, incoming) = mpsc::sync_channel(1);
+        let (_outgoing, results) = mpsc::channel();
+        c.worker = Some(Worker { jobs, results });
+        c.retry();
+        let job = incoming.try_recv().unwrap();
+        assert_eq!(job.source, local_source());
+        assert_eq!(job.language, "zh");
+        assert!(job.proxy.is_none() && job.incoming.is_none());
+        assert_ne!(job.generation, old);
+        assert!(!c.allow_delivery);
+        c.cancel();
+        assert!(job.cancel.is_cancelled());
+        assert_eq!(c.state.phase, Phase::Stopping);
+        assert!(!c.state.can_start());
+        drop(job);
+        drop(c);
+        drop(recording);
+    }
+    #[test]
+    fn missing_saved_source_fails_before_permissions_delivery_or_cloud_worker() {
+        let mut c = Controller::new();
+        c.source_id = crate::local_models::PARAFORMER.into();
+        c.catalog = Catalog::pending(&c.source_id);
+        c.start();
+        assert_eq!(c.state.phase, Phase::Failed);
+        assert_eq!(c.state.generation(), 0);
+        assert!(c.worker.is_none() && c.active.is_none());
+        assert!(c.events.try_recv().is_err());
+        assert_eq!(c.source_id, crate::local_models::PARAFORMER);
+        assert!(c.message.contains("不可用"));
+    }
+    #[test]
+    fn local_partials_are_coalesced_and_never_cross_generations_or_stop() {
+        let mut c = Controller::new();
+        c.automatic = false;
+        let old = c.state.begin().unwrap();
+        c.state.permissions(old, true);
+        c.state.cancel(false);
+        let current = c.state.begin().unwrap();
+        c.state.permissions(current, true);
+        *c.partial.lock().unwrap() = Some((old, "stale".into()));
+        c.poll();
+        assert!(c.transcript.is_empty());
+        *c.partial.lock().unwrap() = Some((current, "current".into()));
+        c.poll();
+        assert_eq!(c.transcript, "current");
+        c.state.transcribe();
+        *c.partial.lock().unwrap() = Some((current, "late".into()));
+        c.poll();
+        assert_eq!(c.transcript, "current");
+        assert!(c.partial.lock().unwrap().is_none());
+    }
+    #[test]
+    fn local_cancel_during_loading_waits_for_matching_release_and_allows_restart() {
+        let mut c = Controller::new();
+        let generation = c.state.begin().unwrap();
+        c.state.permissions(generation, true);
+        c.recorded_source = local_source();
+        let cancel = CancellationToken::new();
+        c.active = Some(ActiveJob {
+            generation,
+            cancel: cancel.clone(),
+        });
+        let (jobs, _incoming) = mpsc::sync_channel(1);
+        let (outgoing, results) = mpsc::channel();
+        c.worker = Some(Worker { jobs, results });
+        c.cancel();
+        assert!(cancel.is_cancelled());
+        assert_eq!(c.state.phase, Phase::Stopping);
+        assert!(c.state.begin().is_none());
+        outgoing
+            .send(Completion {
+                generation,
+                result: Err("cancelled".into()),
+            })
+            .unwrap();
+        c.poll();
+        assert_eq!(c.state.phase, Phase::Idle);
+        assert!(c.active.is_none());
+        let next = c.state.begin().unwrap();
+        assert_ne!(next, generation);
+    }
     #[test]
     fn disconnected_worker_exits_transcribing_and_is_recreated_on_next_submission() {
         let mut c = transcribing();

@@ -28,6 +28,12 @@ SOFTWARE.
 
 Other research references: [codex-asr](https://github.com/Wangnov/codex-asr/tree/479f6a7a3db81fe2a23d4755b0ccbeb4400317d4) and the local x-insight-hub loop documentation. Their executables and private data are not included. VoicePort is an independent tool; no affiliation with OpenAI or Codex is implied.
 
+## sherpa-onnx C interface
+
+The unmodified `sherpa-onnx/c-api/c-api.h` from [sherpa-onnx v1.12.37](https://github.com/k2-fsa/sherpa-onnx/blob/v1.12.37/sherpa-onnx/c-api/c-api.h) is retained under `crates/voiceport-macos/src/local_runtime/` with its full Apache-2.0 LICENSE and source provenance. Copyright (c) 2023 Xiaomi Corporation. VoicePort's own `bridge.cc` uses this interface to load the user's separately installed Orca runtime; no sherpa-onnx implementation, ONNX Runtime binary, or speech model is copied into the app.
+
+The full Apache License 2.0 terms are also present in the shipped bundle at `Contents/Resources/third-party/crates/cfg-if-1.0.5/LICENSE-APACHE`. The external Orca runtime and models retain their own licensing and installation requirements. See [local model dependencies](docs/LOCAL_MODELS.md).
+
 ## Rust dependencies
 
 The Rust workspace has the following direct dependencies, with versions resolved by the committed Cargo.lock. This table describes their use and declared license metadata; it is not a complete inventory of transitive license notices.
