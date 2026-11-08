@@ -1,5 +1,15 @@
 # 调研与发现
 
+## 2026-11-09 — CLI/App 实际边界、组终态与 Magpie 规则采用
+
+默认大小写不敏感卷会把旧 GUI 文件 VoicePort 与公共 CLI voiceport 视作同一路径，严格 exact-file-set checker 的失败是有效缺陷。当前候选使用 voiceport-app 与 voiceport，并分别绑定对应 Cargo 产物；不能用签名通过代替这两份内容对应，也不能从 bundle 名未变推断 TCC/Launch Services 身份已接受。
+
+真实隔离 App 的 CLI/Store/Keychain/受控 HTTP 和 JSONL 检查能独立于 AX 观察完成，但不能补足被拒绝的 GUI 证据。最终73次 CLI 退出匹配、合成控件通过与 ui_verified:false/整体exit1同时成立；协调只读核对归档和原始日志，不重试 AX 或修改权限。--check-input-permission 实际只调用 AV/Speech 状态、AXIsProcessTrusted 和安全输入查询，在 NSApplication 初始化前返回；请求授权的 prompt=true 路径只供显式按钮，不能混称两者。
+
+成功发送 SIGKILL 并 reap 直接 leader 不足以证明整个 owned group 已终止。CI08 有本机 state2 到 SZOMB 的原生证据；新远端 CI 的 state2 仍是实际失败。错误字符串无法承载未确认终止的 owner，且现有 worker drop(Job)/Stopping→Idle 会丢失录音引用和准入约束。CI09 授权在 process/runtime/controller 间携带 typed owner 与录音 lease，保持 Stopping/警告/正常quit和新操作阻塞；仅显式 Cancel 可发一次有界、后台、只观察的恢复，不额外发信号或续初始100ms预算。最终实现和组合 CLI 行为仍待独立验证。
+
+Magpie 固定版本可借鉴的是已评审提交绑定、完整失败日志、工作区归属、资源预算和文档/实现分层；已检查范围未证明等价的 Orca 自动 CI 返修 DAG。当前三文件规则候选实际采用这些取舍及本项目的精确 head/base/merge/run/attempt、独立 Task 归属和一次基础设施重试预算。它是协议改进，不是新增共享 Task 多 owner、全局 suite lock 或可执行 CI 验收 gate。helper 不识别 CronDelete 的停止证明和最终 gate 缺口仍公开保留，当前动态调度不能据此声称原生 cron 自动迁移已实现。
+
 ## 2026-11-09 — 原生来源身份、组存活 oracle 与真实 helper 激活
 
 NSPopUpButton 的 addItemWithTitle 会删除相同标题的旧项，不能把可重复的显示文本与完整 ID 数组按 index 并列作为身份。旧原生菜单四个反例均在目标身份断言101失败；新共享 picker 使用显式 NSMenuItem/represented NSString ID，主来源、管理来源、插件选择均按稳定 ID 解析。开发实测 native target/action、重排/重命名、内置名称碰撞及缺失/空 ID，不等于生产 GUI 全流程或真实请求验收。

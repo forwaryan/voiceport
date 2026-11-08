@@ -1,5 +1,19 @@
 # 进度记录
 
+## 2026-11-09 — CLI 封存核对、组合候选与 CI09 资源接续
+
+freeze06 独立评审已完成， scoped P1/CI07R1/夹具及当前基线代码接受，94封存文件、22命令与12产物核对后显式关闭现场评审；其归档保持不变。9bf5514 已推送且精确远端 CI42512271396 实际失败，原生 oracle 读到活跃组成员 state=2。CI08 受控诊断证明 group SIGKILL 成功和 leader wait 可早于另一成员终态；该本机机制不证明历史远端成员的存活时长。
+
+原 CLI 正式回执 msg_93b9e48429d5 为 failed/BLOCKED，原因是实际 AX permission_denied，交付实现和开发结果不被抹去。最终 verify02 的21检查/232 Rust passes/4 LoopTests/18 PackagingTests及73次实际合成 CLI 调用均与原始日志和退出码一致；集成总结果仍 passed:false/exit1，未改权限或补做被拒绝的 GUI 操作。协调完整核对5514证据、1096源码/377目录模式、34变更、完整与差异源码归档、964文件 App 归档和5个实际产物，当前11个记录PID以及全部私有socket/父目录均不存在。原工作区和所有封存字节不改，工作任务 settled/failed，最后观察仍 live/retained，未冒称已退出或释放终端。
+
+在旧评审关闭和原写者停写后，将34文件从相同 tracked tree 的 sealed delivery 精确集成到主工作区：20 tracked 补丁与14新增文件，集成瞬间1096输入及377目录模式逐项一致；不复制基础设施 deployment lock。README/SOLUTION 同步公开 voiceport、同一 App IPC、显式听写无自动投递、根 Skill 和实际双可执行文件路径。
+
+Magpie 固定 b1e8eb15 调研的61封存项及三目标原字节/模式核对后，规则补丁实际应用到 .claude/loop.md、automation/loops/coordinator.md、docs/LOOP_METHODS.md。协调修正历史固定cron不代表当前计时器、产品清单新增skills和一次真实继任已有回执的描述。保持来源归属及原生cron/helper兼容缺口，不改可执行hook。组合规则尚待新冻结独立审查。
+
+CLI/使用文档本地提交 febe25d，规则本地提交250ef14；69项本地链接、whitespace和未变helper哈希检查通过，CI09合入前的产品摘要为5697a98a34467a29c4a41ca98ac5f37066b0e9bf681cf616545108d5657027a7。提交未推送，准备在CI09组合修复和新冻结核对后统一推送；远端已发布版本仍为9bf5514，不重跑已知未修后端。
+
+CLI 归还重型时段后，msg_e64bba4807ab 将唯一时段授给同一 CI09 四文件返修。msg_42f2c46e8648 报告最终16 process/17 controller/library83+1ignored/六Stop/严格clippy通过并归还时段；最终原生负向控制、scope核对及封存仍进行中，不能读半成品或当独立接受。CI09 两次、协调者两次、CLI 一次真实已完成压缩已核对；五轮上限及原 Run/未绑定产品关联不变。待收齐 CI09 再合并 Controller、重冻和独立审查，不原样重跑失败远端CI，不把本轮候选提交或规则集成当产品完成。
+
 ## 2026-11-09 — 继任接管、P1/CI07 交付及真实 CLI helper 激活
 
 继任使用真实新 session/PreToolUse/initial0 绑定同一 Run 并成功 claim，验证 launch 的 handed-to-terminal 后只关闭精确退任 terminal，收到 ptyKilled=true。全局暂停 false，沿用五轮限制；原计时器不迁移，动态 loop 以 Orca 事件为主、20 分钟兜底。PR16 已正常合并且精确 main CI 成功；本地 main ff-only 同步，b588b02 合入功能分支，唯一许可清单冲突按锁定依赖重新生成并验证。
