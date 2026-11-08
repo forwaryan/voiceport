@@ -2,7 +2,7 @@
 
 优先处理真实 worker 完成/升级/轮换交接、返修和待验证项。派发后结束当前轮，靠 Orca 事件唤醒；动态 loop 只作至少1200秒恢复兜底，不重复派发、不安装 worker 邮箱轮询脚本。用户已明确要求继续多会话 loop，不能因修轮换长期退化成主协调者独自开发验收。
 
-所有角色统一最多5轮上下文=初始轮+最多4次已完成压缩；进入最后一轮即直接保存交接，禁止第5次压缩，不额外压测或强制压缩。按 .claude/COORDINATOR_ROTATION.md 执行双宿主计数/veto 和加载证明。协调者停loop/退任/单次启动/claim；worker写精简checkpoint并升级、结束turn，由协调者确认旧dispatch退出后新开上下文。保留原Run/attempt/角色沿革/冻结/证据，实际新session ID且首次0才算换窗，不能用新terminal handle或旧dispatch follow-up冒充。缺hook信任/加载证据先阻塞该前端，不手改信任库或宣称已生效。
+所有角色统一最多5轮上下文=初始轮+最多4次已完成压缩；进入最后一轮即直接保存交接，禁止第5次压缩，不额外压测或强制压缩。用户已明确授权未来正常轮换自动完成，不要求用户手动开窗口或粘贴继任提示词；该授权不绕过实际权限/信任拒绝，其他工具或会话也不得代为绕过。按 .claude/COORDINATOR_ROTATION.md 执行双宿主计数/veto 和真实加载证明：不同Run使用显式register和各自lease，不改写历史Run。协调者停loop/退任，先持久记录再单次launch，继任用自己的真实新session initial0和transcript起始时间证明、同Run接管及claim，再由继任核对并关闭精确退任terminal；关闭结果未证实前不恢复产品工作或loop。未知启动/发送/关闭保留原始回执并检查，不盲目重复。worker写精简checkpoint并升级、结束turn，由协调者确认旧dispatch退出后新开上下文。保留原Run/attempt/角色沿革/冻结/证据，不能用新terminal handle或旧dispatch follow-up冒充新上下文。缺hook信任/加载证据先阻塞该前端，不手改信任库或宣称已生效。合成自检不是实际生命周期通过；新实现须经独立冻结复核。
 
 每个有源码、测试或文档产出的阶段完成 Git 交付：检查归属、分逻辑commit、push功能分支、创建/更新PR，满足正常仓库条件后自主合并；在无活动writer/冻结冲突的安全点fetch、切main、pull --ff-only并核对origin/main。新开发从最新main建分支。用户已授权，不每轮重复询问，不force/admin或丢弃改动，不跨多轮积压。交接携带未完Git步骤，提交合并不等于产品验收。
 

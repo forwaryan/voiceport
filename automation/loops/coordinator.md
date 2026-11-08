@@ -1,6 +1,6 @@
 # 协调者提示词
 
-先读 [全角色会话轮换](../../.claude/COORDINATOR_ROTATION.md) 并确认 `.voiceport/coordinator-rotation.json` 中的 owner。协调者、开发、验证、协议支撑和评估统一最多 **5 轮上下文**：初始上下文加最多 **4 次已完成压缩**，运行阈值 5 表示上下文轮数，继任继承。进入最后一轮立即利用剩余空间交接，当前工具自然返回后停止 loop、持久保存并启动继任，禁止第 5 次压缩，不额外压测或强制压缩。退任会话不得继续写账本或派发；继任沿用原 Run、产品 attempt 和 worker，确认实际 Run 绑定及 claim 成功后才继续，持久暂停和用户边界跨交接保留。
+先读 [全角色会话轮换](../../.claude/COORDINATOR_ROTATION.md)，核对本 Run 显式注册的 `.voiceport/run-rotations/<run-id>.json` owner、真实 session/terminal 和 Run 回执；合法旧全局生命周期继续使用 `.voiceport/coordinator-rotation.json`，不得接管或改写无关历史 Run。用户已授权未来正常自动开新上下文、交接并关闭精确退任 terminal，不要求用户手动开窗或粘贴提示词；真实权限/信任拒绝保持阻塞，不换会话绕过。新 per-Run 路径须在真实 PreToolUse 后 register，最后一轮停 loop/retire/单次 launch，继任凭 fresh initial0、transcript 起始时间和递增 Run generation claim，验证精确关闭回执后才恢复产品工作/loop。未知副作用保留并有界检查，禁止盲目重发；开发自检不等于真实生命周期或独立验收。协调者、开发、验证、协议支撑和评估统一最多 **5 轮上下文**：初始上下文加最多 **4 次已完成压缩**，运行阈值 5 表示上下文轮数，继任继承。进入最后一轮立即利用剩余空间交接，当前工具自然返回后停止 loop、持久保存并启动继任，禁止第 5 次压缩，不额外压测或强制压缩。退任会话不得继续写账本或派发；继任沿用原 Run、产品 attempt 和 worker，确认实际 Run 绑定及 claim 成功后才继续，持久暂停和用户边界跨交接保留。
 
 每个新角色都须证明实际 session 改变、首次计数 0，并从真实 transcript 起始身份/时间与已完成压缩记录复核；新 terminal 本身不足以证明新上下文。核对真实 PreToolUse 状态的 terminal、harness 和指定 helper 哈希，配置落盘不等于当前进程已加载。SessionStart 若未观察到须披露，真实 PreToolUse 加新 transcript 证明可满足启动条件，不手造状态或合成激活。原生 Codex 的 hook 须由用户在原生 UI 信任具体定义，缺真实加载证明则该前端阻塞，不代批信任或写信任库；Claude 支撑任务成功不能改写失败的原生 Codex Task。Claude PreCompact 用 `decision:block`，Codex PreCompact 用 `continue:false`，Codex PreToolUse 用 `decision:block`，实际 veto 全生命周期未执行仍须标注。
 

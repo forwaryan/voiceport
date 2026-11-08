@@ -1300,9 +1300,444 @@ class RotationTests(unittest.TestCase):
         self.assertEqual(r.hook(self.root, self.payload()), {})
         self.path.write_text('{bad')
         result = subprocess.run([sys.executable, '-I', str(Path(r.__file__)), '--root', str(self.root), 'hook'],
-                                input=json.dumps(self.payload()), capture_output=True, text=True)
+                                input=json.dumps(self.payload()), capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 2)
         self.assertIn('hook failed', result.stderr)
+
+
+class RunRotationTests(unittest.TestCase):
+    # Reuse fixture helpers only; all original tests above remain intact.
+    setUp_base = RotationTests.setUp
+
+    def transcript_for(self, session):
+        if session not in self.transcripts:
+            path = self.root / (session + '.jsonl')
+            path.write_text(json.dumps({'type': 'user', 'sessionId': session, 'timestamp': r.now()}) + '\n')
+            self.transcripts[session] = path
+        return self.transcripts[session]
+
+    append = RotationTests.append
+    boundary = RotationTests.boundary
+    payload = RotationTests.payload
+
+    def setUp(self):
+        self.setUp_base()
+        self.run = 'run_new'
+        self.current_terminal = 'coord-terminal'
+        self.navigation = '.voiceport/handoffs/current.json'
+        nav = self.root / self.navigation
+        nav.parent.mkdir()
+        r.atomic(nav, {'run_id': self.run, 'product_task_id': 'unbound', 'product_attempt_id': 'unbound',
+                       'role_predecessor': 'retained', 'freeze': {'id': 'frozen', 'sha256': 'unchanged'}})
+        self.calls = []
+        self.orca = patch.object(r, 'invoke', side_effect=self.receipt)
+        self.orca.start()
+        self.addCleanup(self.orca.stop)
+
+    def receipt(self, root, argv):
+        self.calls.append(argv)
+        if argv[:2] in (['orchestration', 'run-current'], ['orchestration', 'run-show']):
+            return {'ok': True, 'result': {'run': {'id': self.run,
+                    'coordinator_handle': self.current_terminal,
+                    'consumer_generation': 2 if self.current_terminal == 'coord-terminal' else 3}}}
+        if argv[:2] == ['terminal', 'show']:
+            terminal = argv[3]
+            return {'ok': True, 'result': {'terminal': {'handle': terminal, 'connected': True,
+                    'orphaned': False, 'worktreePath': str(root.resolve()), 'incarnationId': terminal + '-incarnation'}}}
+        if argv[:2] == ['agent', 'launch']:
+            state = r.load(r.coordinator_path(root, self.run))
+            self.assertEqual(state['phase'], 'launching')
+            self.assertIn('launch_started_at', state['request'])
+            self.assertIn('launch_argv', state['request'])
+            return {'ok': True, 'result': {'launch': {'prompt': {'outcome': 'journaled'}}}}
+        if argv[:2] == ['terminal', 'close']:
+            self.assertIn('close_started_at', r.load(r.coordinator_path(root, self.run))['request'])
+            return {'ok': True, 'result': {'close': {'handle': argv[3], 'ptyKilled': True}}}
+        self.fail('unexpected mock Orca operation: ' + repr(argv))
+
+    def boot(self, session='coord', terminal='coord-terminal'):
+        os.environ['ORCA_TERMINAL_HANDLE'] = terminal
+        r.hook(self.root, self.payload(session=session, name='Read'))
+        return r.load(r.session_path(self.root, session))
+
+    def register(self):
+        self.boot()
+        return r.register(self.root, 'coord', self.run, str(self.transcript_for('coord')),
+                          'deliver current goal', 'continue authorized work', self.navigation)
+
+    def retire(self):
+        self.register()
+        for i in range(4):
+            self.boundary(str(i), 'coord')
+        r.hook(self.root, self.payload(session='coord'))
+        self.append({'sessionId': 'coord', 'message': {'content': [
+            {'type': 'tool_use', 'name': 'ScheduleWakeup', 'id': 'stop', 'input': {'stop': True}}]}}, 'coord')
+        self.append({'sessionId': 'coord', 'message': {'content': [
+            {'type': 'tool_result', 'tool_use_id': 'stop', 'content': 'Loop stopped'}]}}, 'coord')
+        return r.retire(self.root, 'coord', str(self.transcript_for('coord')), self.run)
+
+    def launch(self):
+        self.retire()
+        r.launch(self.root, 'coord', self.run)
+        return self.saved()['request']['token']
+
+    def saved(self):
+        return r.load(r.coordinator_path(self.root, self.run))
+
+    def successor(self):
+        token = self.launch()
+        self.boot('next', 'next-terminal')
+        self.current_terminal = 'next-terminal'  # Mock explicit same-Run run-use receipt.
+        return r.claim(self.root, 'next', token, self.run)
+
+    def test_absent_global_lease_dispatches_real_worker_accounting(self):
+        self.path.unlink()
+        os.environ['ORCA_TERMINAL_HANDLE'] = 'worker-terminal'
+        r.hook(self.root, self.payload(session='new-worker', name='Read'))
+        self.assertTrue(r.session_path(self.root, 'new-worker').exists(), 'hook must account without a global lease')
+        proof = r.load(r.session_path(self.root, 'new-worker'))
+        self.assertFalse(self.path.exists())
+        self.assertEqual(proof['boundaries'], [])
+        self.assertEqual(proof['hook_events'], ['PreToolUse'])
+        self.assertTrue(proof['transcript_session_verified'])
+        for i in range(4):
+            self.boundary(str(i), 'new-worker')
+        blocked = r.hook(self.root, self.payload(session='new-worker'))
+        self.assertEqual(blocked['hookSpecificOutput']['permissionDecision'], 'deny')
+        self.assertFalse(self.calls)
+
+    def test_new_run_registration_preserves_unrelated_lease_and_counts(self):
+        before = self.path.read_bytes(), self.path.stat().st_mtime_ns
+        self.boot()
+        self.boundary('prior', 'coord')
+        r.hook(self.root, self.payload(session='coord', name='Read'))
+        state = r.register(self.root, 'coord', self.run, str(self.transcript_for('coord')),
+                           'goal', 'loop', self.navigation)
+        self.assertEqual(state['boundaries'], ['prior'])
+        count = len(self.calls)
+        self.assertEqual(r.hook(self.root, self.payload(session='coord')), {})
+        self.assertEqual(len(self.calls), count)  # No Orca lookups on hooks.
+        self.assertEqual((self.path.read_bytes(), self.path.stat().st_mtime_ns), before)
+        self.assertEqual(r.load(r.session_path(self.root, 'coord'))['coordinator_run'], self.run)
+
+    def test_spoofed_wrong_terminal_run_and_unverified_registration_fail(self):
+        self.boot()
+        sp = r.session_path(self.root, 'coord')
+        original = sp.read_bytes()
+        for mutation in ({'terminal': 'wrong'}, {'hook_events': []}, {'hook_implementation_sha256': 'stale'},
+                         {'terminal_drift': {'stored_terminal': 'coord-terminal', 'actual_terminal': 'other',
+                           'event': 'PreToolUse', 'detected_at': r.now()}}):
+            with self.subTest(mutation=mutation):
+                r.atomic(sp, {**json.loads(original), **mutation})
+                with self.assertRaises(ValueError):
+                    r.register(self.root, 'coord', self.run, str(self.transcript_for('coord')), 'g', 'l', self.navigation)
+                self.assertFalse(r.coordinator_path(self.root, self.run).exists())
+        sp.write_bytes(original)
+        self.current_terminal = 'actual-other-coordinator'
+        with self.assertRaisesRegex(ValueError, 'current Run coordinator'):
+            r.register(self.root, 'coord', self.run, str(self.transcript_for('coord')), 'g', 'l', self.navigation)
+        self.current_terminal = 'coord-terminal'
+        with self.assertRaisesRegex(ValueError, 'lineage mismatch'):
+            r.register(self.root, 'coord', 'run_wrong', str(self.transcript_for('coord')), 'g', 'l', self.navigation)
+        with self.assertRaises(OSError):
+            r.register(self.root, 'spoofed-session', self.run, str(self.transcript_for('coord')), 'g', 'l', self.navigation)
+
+    def test_registration_checks_actual_bound_run_and_terminal_receipt(self):
+        self.boot()
+        def wrong(root, argv):
+            result = self.receipt(root, argv)
+            if argv[:2] == ['orchestration', 'run-current']:
+                result['result']['run']['id'] = 'run_other'
+            return result
+        with patch.object(r, 'invoke', side_effect=wrong):
+            with self.assertRaisesRegex(ValueError, 'bound'):
+                r.register(self.root, 'coord', self.run, str(self.transcript_for('coord')), 'g', 'l', self.navigation)
+        def wrong_terminal(root, argv):
+            result = self.receipt(root, argv)
+            if argv[:2] == ['terminal', 'show']:
+                result['result']['terminal']['worktreePath'] = '/wrong'
+            return result
+        with patch.object(r, 'invoke', side_effect=wrong_terminal):
+            with self.assertRaisesRegex(ValueError, 'worktree'):
+                r.register(self.root, 'coord', self.run, str(self.transcript_for('coord')), 'g', 'l', self.navigation)
+
+    def test_last_round_can_register_then_retire_launch_but_cannot_work(self):
+        self.boot()
+        for i in range(4):
+            self.boundary(str(i), 'coord')
+        command = (f'python3 -I {r.SCRIPT} register --session coord --run {self.run} '
+                   f'--transcript {self.transcript_for("coord")} --goal goal --loop-prompt loop '
+                   f'--navigation {self.navigation}')
+        self.assertEqual(r.hook(self.root, self.payload(session='coord', name='Bash', data={'command': command})), {})
+        file_command = command.replace('--loop-prompt loop', '--loop-prompt-file .claude/loop.md')
+        self.assertEqual(r.hook(self.root, self.payload(session='coord', name='Bash', data={'command': file_command})), {})
+        (self.root / '.claude').mkdir()
+        (self.root / '.claude/loop.md').write_text('original authorized prompt\nsecond line\n')
+        argv = ['rotation', '--root', str(self.root), *r.shlex.split(file_command)[3:]]
+        with patch.object(sys, 'argv', argv), patch.object(r, 'register', return_value={}) as registered, patch('builtins.print'):
+            r.main()
+        self.assertEqual(registered.call_args.args[5], 'original authorized prompt\nsecond line\n')
+        r.register(self.root, 'coord', self.run, str(self.transcript_for('coord')), 'g', 'l', self.navigation)
+        for name, data in [('Edit', {}), ('ScheduleWakeup', {'delaySeconds': 1200}),
+                           ('Bash', {'command': 'orca orchestration check'}), ('Bash', {'command': 'python3 test.py'})]:
+            self.assertEqual(r.hook(self.root, self.payload(session='coord', name=name, data=data))
+                             ['hookSpecificOutput']['permissionDecision'], 'deny')
+        for name, data in [('Read', {}), ('ScheduleWakeup', {'stop': True}),
+                           ('Bash', {'command': f'python3 -I {r.SCRIPT} retire --session coord --run {self.run} --transcript x'}),
+                           ('exec_command', {'cmd': f'python3 -I {r.SCRIPT} status --run {self.run}'})]:
+            self.assertEqual(r.hook(self.root, self.payload(session='coord', name=name, data=data)), {})
+        result = r.hook(self.root, self.payload('PreCompact', session='coord'))
+        self.assertEqual(r.codex_output({'hook_event_name': 'PreCompact'}, result)['continue'], False)
+        self.assertEqual(result['decision'], 'block')
+        self.assertEqual(self.saved()['boundaries'], ['0', '1', '2', '3'])
+
+    def test_unknown_launch_is_persisted_before_call_and_never_duplicated(self):
+        self.retire()
+        calls = []
+        def timeout(root, argv):
+            if argv[:2] == ['agent', 'launch']:
+                calls.append(argv)
+                self.assertEqual(self.saved()['phase'], 'launching')
+                self.assertIn('launch_argv', self.saved()['request'])
+                raise subprocess.TimeoutExpired('orca', 45)
+            return self.receipt(root, argv)
+        with patch.object(r, 'invoke', side_effect=timeout):
+            with self.assertRaisesRegex(ValueError, 'unknown'):
+                r.launch(self.root, 'coord', self.run)
+            with self.assertRaisesRegex(ValueError, 'already attempted'):
+                r.launch(self.root, 'coord', self.run)
+        self.assertEqual(len(calls), 1)
+        self.assertIn('launch_error', self.saved()['request'])
+
+    def test_successor_requires_initial0_current_proof_after_launch(self):
+        token = self.launch()
+        self.boot('next', 'next-terminal')
+        self.current_terminal = 'next-terminal'
+        sp = r.session_path(self.root, 'next')
+        original = sp.read_bytes()
+        for mutation in ({'boundaries': ['prior']}, {'created_at': '2020-01-01T00:00:00+00:00'},
+                         {'hook_events': []}, {'hook_implementation_sha256': 'old'}, {'terminal': 'coord-terminal'}):
+            r.atomic(sp, {**json.loads(original), **mutation})
+            with self.assertRaises(ValueError):
+                r.claim(self.root, 'next', token, self.run)
+            self.assertEqual(self.saved()['owner'], 'coord')
+        sp.write_bytes(original)
+        transcript_bytes = self.transcript_for('next').read_bytes()
+        self.transcript_for('next').write_text(json.dumps({'sessionId': 'unrelated'}) + '\n')
+        with self.assertRaisesRegex(ValueError, 'another session'):
+            r.claim(self.root, 'next', token, self.run)
+        self.transcript_for('next').write_bytes(transcript_bytes)
+        claim = r.claim(self.root, 'next', token, self.run)
+        self.assertTrue(claim['paused'])
+        self.assertEqual(claim['owner'], 'next')
+        self.assertEqual(self.saved()['successor_verified']['proof']['boundaries'], [])
+        self.assertNotEqual(self.saved()['terminal'], 'coord-terminal')
+
+    def test_successor_wrong_run_owner_and_old_session_cannot_claim(self):
+        token = self.launch()
+        with self.assertRaisesRegex(ValueError, 'stale'):
+            r.claim(self.root, 'coord', token, self.run)
+        self.boot('next', 'next-terminal')
+        with self.assertRaisesRegex(ValueError, 'current Run coordinator'):
+            r.claim(self.root, 'next', token, self.run)
+        self.assertEqual(self.saved()['owner'], 'coord')
+
+    def test_claim_preserves_navigation_pause_fencing_and_exact_close(self):
+        legacy = self.path.read_bytes()
+        nav = (self.root / self.navigation).read_bytes()
+        self.successor()
+        packet = r.load(self.root / self.saved()['request']['packet'])
+        self.assertEqual(packet['run_id'], self.run)
+        self.assertEqual(packet['product_attempt_id'], 'unbound')
+        self.assertEqual(packet['tasks'], {})
+        self.assertEqual(packet['coordination']['freeze']['sha256'], 'unchanged')
+        self.assertTrue(packet['paused'])
+        self.assertEqual(r.hook(self.root, self.payload(session='next'))['hookSpecificOutput']['permissionDecision'], 'deny')
+        with self.assertRaisesRegex(ValueError, 'exact retiring'):
+            r.close_retired(self.root, 'next', self.run, 'unrelated-terminal')
+        self.assertFalse(any(c[:2] == ['terminal', 'close'] for c in self.calls))
+        r.close_retired(self.root, 'next', self.run, 'coord-terminal')
+        self.assertEqual(r.hook(self.root, self.payload(session='next')), {})
+        os.environ['ORCA_TERMINAL_HANDLE'] = 'coord-terminal'
+        self.assertEqual(r.hook(self.root, self.payload(session='coord'))['hookSpecificOutput']['permissionDecision'], 'deny')
+        self.assertEqual(self.path.read_bytes(), legacy)
+        self.assertEqual((self.root / self.navigation).read_bytes(), nav)
+
+    def test_unknown_close_latches_no_duplicate_and_denies_product(self):
+        self.successor()
+        calls = []
+        def timeout(root, argv):
+            if argv[:2] == ['terminal', 'close']:
+                calls.append(argv)
+                self.assertIn('close_started_at', self.saved()['request'])
+                raise subprocess.TimeoutExpired('orca', 45)
+            return self.receipt(root, argv)
+        with patch.object(r, 'invoke', side_effect=timeout):
+            with self.assertRaisesRegex(ValueError, 'unknown'):
+                r.close_retired(self.root, 'next', self.run, 'coord-terminal')
+            with self.assertRaisesRegex(ValueError, 'never retry'):
+                r.close_retired(self.root, 'next', self.run, 'coord-terminal')
+        self.assertEqual(len(calls), 1)
+        self.assertIn('close_error', self.saved()['request'])
+        self.assertEqual(r.hook(self.root, self.payload(session='next'))['hookSpecificOutput']['permissionDecision'], 'deny')
+
+    def test_success_envelope_without_exact_stop_proof_remains_unknown(self):
+        self.successor()
+        def unknown(root, argv):
+            if argv[:2] == ['terminal', 'close']:
+                return {'ok': True, 'result': {'close': {'handle': argv[3], 'ptyKilled': False}}}
+            return self.receipt(root, argv)
+        with patch.object(r, 'invoke', side_effect=unknown):
+            with self.assertRaisesRegex(ValueError, 'unknown'):
+                r.close_retired(self.root, 'next', self.run, 'coord-terminal')
+        self.assertFalse(self.saved()['request']['close_confirmed'])
+        self.assertIn('close_receipt', self.saved()['request'])
+        self.assertEqual(r.hook(self.root, self.payload(session='next'))['hookSpecificOutput']['permissionDecision'], 'deny')
+
+    def test_changed_retiring_incarnation_prevents_close(self):
+        self.successor()
+        def changed(root, argv):
+            receipt = self.receipt(root, argv)
+            if argv[:2] == ['terminal', 'show'] and argv[3] == 'coord-terminal':
+                receipt['result']['terminal']['incarnationId'] = 'replacement'
+            return receipt
+        with patch.object(r, 'invoke', side_effect=changed):
+            with self.assertRaisesRegex(ValueError, 'identity changed'):
+                r.close_retired(self.root, 'next', self.run, 'coord-terminal')
+        self.assertFalse(any(c[:2] == ['terminal', 'close'] for c in self.calls))
+
+    def test_scoped_drift_remains_latched_and_does_not_rebind(self):
+        self.register()
+        os.environ['ORCA_TERMINAL_HANDLE'] = 'wrong-terminal'
+        result = r.hook(self.root, self.payload(session='coord'))
+        self.assertEqual(result['hookSpecificOutput']['permissionDecision'], 'deny')
+        os.environ['ORCA_TERMINAL_HANDLE'] = 'coord-terminal'
+        self.assertEqual(r.hook(self.root, self.payload(session='coord'))['hookSpecificOutput']['permissionDecision'], 'deny')
+        self.assertEqual(self.saved()['terminal'], 'coord-terminal')
+        with self.assertRaisesRegex(ValueError, 'drift'):
+            r.configure(self.root, 'coord', 5, run_id=self.run)
+
+    def test_old_initial0_transcript_cannot_be_resumed_as_fresh_successor(self):
+        token = self.launch()
+        path = self.transcript_for('next')
+        path.write_text(json.dumps({'sessionId': 'next', 'timestamp': '2020-01-01T00:00:00+00:00'}) + '\n')
+        self.boot('next', 'next-terminal')
+        self.current_terminal = 'next-terminal'
+        with self.assertRaisesRegex(ValueError, 'fresh initial0'):
+            r.claim(self.root, 'next', token, self.run)
+        self.assertEqual(self.saved()['owner'], 'coord')
+        # A missing transcript timestamp cannot stand in for fresh session proof.
+        r.session_path(self.root, 'next').unlink()
+        path.write_text(json.dumps({'sessionId': 'next'}) + '\n')
+        self.boot('next', 'next-terminal')
+        with self.assertRaisesRegex(ValueError, 'fresh initial0'):
+            r.claim(self.root, 'next', token, self.run)
+
+    def test_absent_global_cli_hook_creates_independent_state_in_both_harnesses(self):
+        self.path.unlink()
+        for harness in ('claude', 'codex'):
+            sid = 'cli-' + harness
+            transcript = self.transcript_for(sid)
+            if harness == 'codex':
+                transcript.write_text(json.dumps({'type': 'session_meta', 'timestamp': r.now(), 'payload': {'id': sid}}) + '\n')
+            cmd = [sys.executable, '-B', '-I', str(Path(r.__file__)), '--root', str(self.root), 'hook', '--harness', harness]
+            result = subprocess.run(cmd, input=json.dumps(self.payload(session=sid, name='Read')),
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            proof = r.load(r.session_path(self.root, sid))
+            self.assertEqual(proof['boundaries'], [])
+            self.assertEqual(proof['harness'], harness)
+            self.assertEqual(proof['hook_events'], ['PreToolUse'])
+        self.assertFalse(self.path.exists())
+
+    def test_native_scoped_final_round_keeps_codex_veto_and_admin_gate(self):
+        os.environ['ORCA_TERMINAL_HANDLE'] = 'coord-terminal'
+        sid = 'native-coord'
+        transcript = self.transcript_for(sid)
+        transcript.write_text(json.dumps({'type': 'session_meta', 'timestamp': r.now(), 'payload': {'id': sid}}) + '\n')
+        payload = {**self.payload(session=sid), 'rotation_harness': 'codex'}
+        r.hook(self.root, payload)
+        r.register(self.root, sid, self.run, str(transcript), 'g', 'l', self.navigation)
+        for i in range(4):
+            self.append({'type': 'compacted', 'payload': {'window_id': str(i)}}, sid)
+        result = r.hook(self.root, {**payload, 'hook_event_name': 'PreCompact'})
+        self.assertEqual(r.codex_output({'hook_event_name': 'PreCompact'}, result)['continue'], False)
+        command = f'python3 -I {r.SCRIPT} status --run {self.run}'
+        self.assertEqual(r.hook(self.root, {**payload, 'tool_name': 'exec_command', 'tool_input': {'cmd': command}}), {})
+        self.assertEqual(self.saved()['boundaries'], ['codex:0', 'codex:1', 'codex:2', 'codex:3'])
+
+    def test_corrupt_scoped_authority_fails_closed_without_touching_legacy(self):
+        self.register()
+        path = r.coordinator_path(self.root, self.run)
+        before = path.read_bytes()
+        legacy = self.path.read_bytes()
+        for mutation in ({'identity_receipt': None}, {'retired_sessions': [{}]}, {'threshold': True},
+                         {'run_id': 'run_other'}, {'terminal': 'wrong'}, {'phase': 'invalid'}):
+            r.atomic(path, {**json.loads(before), **mutation})
+            with self.assertRaises(ValueError):
+                r.hook(self.root, self.payload(session='coord'))
+            self.assertEqual(self.path.read_bytes(), legacy)
+        path.write_bytes(before)
+        transcript = self.transcript_for('coord')
+        transcript.write_text('{bad\n')
+        with self.assertRaises(ValueError):
+            r.hook(self.root, self.payload(session='coord'))
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_unknown_launch_retains_raw_receipt_and_allows_only_bounded_inspection(self):
+        self.retire()
+        observation = {'argv': ['agent', 'launch'], 'exit': 1, 'stdout': 'request_id=fixture-only', 'stderr': 'unknown'}
+        def refused(root, argv):
+            if argv[:2] == ['agent', 'launch']:
+                raise r.InvocationError('unknown delivery', observation)
+            return self.receipt(root, argv)
+        with patch.object(r, 'invoke', side_effect=refused):
+            with self.assertRaisesRegex(ValueError, 'unknown'):
+                r.launch(self.root, 'coord', self.run)
+        self.assertEqual(self.saved()['request']['launch_failure'], observation)
+        for command in (f'python3 -I {r.SCRIPT} status --run {self.run}',
+                        f'orca orchestration run-show --id {self.run} --full --json',
+                        'orca terminal show --terminal term_fixture --json',
+                        f'orca terminal list --worktree path:{self.root.resolve()} --limit 20 --json'):
+            self.assertEqual(r.hook(self.root, self.payload(session='coord', name='Bash', data={'command': command})), {})
+        for command in ('orca agent launch --agent claude', 'orca terminal close --terminal term_fixture',
+                        'orca orchestration run-use --id run_other', 'orca terminal list --json'):
+            result = r.hook(self.root, self.payload(session='coord', name='Bash', data={'command': command}))
+            self.assertEqual(result['hookSpecificOutput']['permissionDecision'], 'deny')
+
+    def test_navigation_changed_run_oversized_and_wrong_stop_transcript_refuse_retirement(self):
+        self.retire()
+        state = self.saved()
+        state['phase'] = 'requested'
+        state['retired_sessions'] = []
+        r.atomic(r.coordinator_path(self.root, self.run), state)
+        wrong = self.transcript_for('coord').with_suffix('.copied')
+        wrong.write_bytes(self.transcript_for('coord').read_bytes())
+        with self.assertRaisesRegex(ValueError, 'differs'):
+            r.retire(self.root, 'coord', str(wrong), self.run)
+        nav = self.root / self.navigation
+        r.atomic(nav, {'run_id': 'run_unrelated', 'product_task_id': 'unbound', 'product_attempt_id': 'unbound'})
+        with self.assertRaisesRegex(ValueError, 'mismatch'):
+            r.retire(self.root, 'coord', str(self.transcript_for('coord')), self.run)
+        nav.write_text(' ' * 48001)
+        with self.assertRaisesRegex(ValueError, '48KB'):
+            r.retire(self.root, 'coord', str(self.transcript_for('coord')), self.run)
+        self.assertEqual(self.saved()['phase'], 'requested')
+
+    def test_second_rotation_does_not_reuse_old_closure_or_verification(self):
+        self.successor()
+        r.close_retired(self.root, 'next', self.run, 'coord-terminal')
+        for i in range(4):
+            self.boundary('next-' + str(i), 'next')
+        blocked = r.hook(self.root, self.payload(session='next'))
+        self.assertEqual(blocked['hookSpecificOutput']['permissionDecision'], 'deny')
+        self.assertEqual(self.saved()['phase'], 'requested')
+        self.assertNotIn('launch_started_at', self.saved()['request'])
+        self.assertTrue(self.saved()['history'][-1]['delivery_confirmed'])
+        self.assertTrue(self.saved()['history'][-1]['close_confirmed'])
+        self.assertEqual(self.saved()['history'][-1]['close_receipt']['result']['close']['handle'], 'coord-terminal')
+        command = f'python3 -I {r.SCRIPT} retire --session next --run {self.run} --transcript x'
+        self.assertEqual(r.hook(self.root, self.payload(session='next', name='Bash', data={'command': command})), {})
 
 
 if __name__ == '__main__':

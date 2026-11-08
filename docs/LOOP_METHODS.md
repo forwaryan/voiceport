@@ -82,7 +82,8 @@ worker 严格采用本次 preamble 的 from/task/dispatch；问题用 `ask` 后�
 3. 合并后 fetch，确认没有活动 writer/冻结验证依赖当前 HEAD 或分支、工作区无未处理改动，再切换 main 并 `git pull --ff-only origin main`；核对本地 main 和 origin/main 相同。继续开发从最新 main 创建新的功能分支；冲突或保护条件按真实原因处理，不 force push、不 admin 绕过、不清空未提交内容。
 4. 协调者在私有运行记录保存 commit SHA、远端分支、PR URL、merge 回执和 main 同步状态；后续交接包携带未完成的 Git 操作，不能在换窗口后丢失交付步骤。
 5. 所有角色统一最多 **5 轮上下文 = 初始轮 + 最多 4 次已完成压缩**；进入最后一轮即保存交接并换窗口，禁止第 5 次压缩。不额外压测或强制压缩。Claude 与原生 Codex 分别使用正确的 PreCompact veto，独立计数并核对真实 hook 加载/信任；原生 Codex 定义未获信任时先报告阻塞，不能冒称生效。协调者停 loop/退任/单次启动/claim；worker 保存精简 checkpoint、升级并结束 turn，由协调者确认旧 dispatch 已退出后创建真正的新上下文。实际 session ID 必须变化且首次计数为 0，新 terminal handle 或旧 dispatch follow-up 不等于新会话。原 Run、产品 attempt、逻辑角色及 Task/Dispatch 沿革、冻结和证据保持；行政轮换不伪造验收或重开产品 attempt。详见 [全角色会话轮换](../.claude/COORDINATOR_ROTATION.md)。
-6. 主协调者持续维护方案/账本，多个真实 Orca 开发、独立验证及按需支撑会话并行处理无冲突的工作；各 worker 不自行开 loop。配置和角色文档也是冻结输入，若轮换修正改变它们，先明确中断旧评审、保留快照/半成品原始证据，再建立新冻结继续；不能静默改变旧评审对象。
+6. 用户已明确授权未来正常自动轮换，无须用户手动开窗口或粘贴提示词；实际权限/信任拒绝仍阻塞，不能由其他会话或工具绕过。显式 per-Run register 核对真实 PreToolUse、actual terminal 和当前 Run coordinator_handle/generation，保留无关历史 lease；没有全局 lease 的 worker 仍独立计数。最后一轮保留必要行政操作，先持久记录再单次 launch；继任凭不同实际 session、initial0、晚于 launch 的真实 transcript 起始时间和递增 Run generation 接管/claim，验证后只关闭精确退任 terminal，确认其 PTY 停止才恢复产品/loop。未知启动、发送和关闭保存回执并有界检查，禁止盲目重复。该路径目前只经临时根/mock Orca 开发自检，仍须新冻结独立复核；真实自动生命周期未执行。旧全局 lease 的合法原接口保持兼容，不自动迁移。
+7. 主协调者持续维护方案/账本，多个真实 Orca 开发、独立验证及按需支撑会话并行处理无冲突的工作；各 worker 不自行开 loop。配置和角色文档也是冻结输入，若轮换修正改变它们，先明确中断旧评审、保留快照/半成品原始证据，再建立新冻结继续；不能静默改变旧评审对象。
 
 ## 7. 授权、采用取舍与后续能力
 

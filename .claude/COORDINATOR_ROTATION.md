@@ -13,7 +13,7 @@
 - Claude Code 使用 `.claude/settings.json` 的 PreCompact、PostCompact、SessionStart、PreToolUse、Stop。按当前会话 `compact_boundary` 的实际 UUID 去重。
 - 原生 Codex 使用 `.codex/hooks.json` 的相同事件。要求按 `session_meta.payload.id` 验证所属会话，按真实 `compacted.payload.window_id` 去重。不能拿 Claude parser 猜 Codex 次数；要求未知 schema/缺失 transcript 明确失败并拦住后续工具或压缩，不能把该要求当成已验证的当前保证。
 - 完整 JSONL 行、延迟记录、inode 替换与截断会补查；保留完成身份集合，不因恢复或新终端清零。初始状态不吞掉已存在的压缩。
-- 协调者 lease/epoch 在 `.voiceport/coordinator-rotation.json`；其他会话独立计数在 `.voiceport/session-rotations/<actual-session>.json`。worker 的计数不能写协调者 lease 或产品账本。运行阈值字段 `threshold=5` 现在表示上下文轮数；配置不可超过 5，继任沿用。
+- 旧协调者 lease/epoch 保留在 `.voiceport/coordinator-rotation.json`；显式注册的新 Run 在 `.voiceport/run-rotations/<run-id>.json`，通过实际 session 记录的 `coordinator_run` 路由；不迁移或改写无关历史 lease。所有非旧全局 owner 会话独立计数在 `.voiceport/session-rotations/<actual-session>.json`，没有全局 lease 也经过真实 hook 分派并计数。worker 的计数不能写协调者 lease 或产品账本。运行阈值字段 `threshold=5` 表示上下文轮数；配置不可超过 5，继任沿用。
 - 最后一轮拦住新开发、测试、派发、收件箱消费与 loop 续订，只允许必要只读和明确交接操作。当前工具自然返回；不以静默或超时推断它退出。
 
 两个宿主的压缩 veto 输出不同：Claude PreCompact 返回 `decision: block` / `reason`（或 exit2）；原生 Codex PreCompact 返回 `continue: false` / `stopReason`。Claude 的 PreCompact `continue:false` 不能当 veto；Codex 不接受此事件的 `decision:block`。Codex PreToolUse 使用 `decision:block`，不是 `continue:false`。共享 helper 显式选择 `hook --harness codex` 适配输出。
@@ -48,6 +48,32 @@ python3 -I .claude/hooks/coordinator_rotation.py adopt --session ACTUAL_SESSION_
 
 Stop 提示只在非递归停止时给出，不无限阻止结束。旧 owner 被 fence，即便重新打开也不能消费邮箱或恢复调度。
 
+### 按 Run 注册与自动正常轮换（待独立复核）
+
+用户已授权未来正常轮换自动创建真实新会话、发送有界交接并关闭精确退任窗口，不要求用户手工开窗口或粘贴提示词。实际权限/信任拒绝仍为阻塞，禁止换工具、会话或改信任库绕过。此处是新实现接口及临时 fixture 自检契约，未执行真实压缩、启动、接管或关闭全流程，不代表已独立接受。
+
+全局 lease 属于其他 Run 时，当前协调者先从**自己的实际终端**确认已绑定原 Run，再注册；worker 不得 run-use。注册读取现有真实 PreToolUse 状态、当前 helper 哈希、terminal 与 transcript 身份/单调计数，查询 `run-current`、`run-show` 的当前 `coordinator_handle`/generation 和 `terminal show` 的工作区/incarnation。只给 Run ID 不授予协调者身份；缺证明则失败，不手造 SessionStart 或 accounting 文件。注册保留已有计数，包括已经进入最后一轮的 requested 状态；该轮只开放精确 register 命令以恢复行政交接。
+
+```sh
+python3 -I .claude/hooks/coordinator_rotation.py register --session ACTUAL_SESSION --run ACTUAL_RUN --transcript /absolute/session.jsonl --goal '当前目标' --loop-prompt-file .claude/loop.md --navigation .voiceport/handoffs/CURRENT-RUN.json
+python3 -I .claude/hooks/coordinator_rotation.py status --run ACTUAL_RUN
+```
+
+`--loop-prompt-file .claude/loop.md` 保存项目已授权 loop 提示词的完整文本（最多 48KB），使最后一轮无需 shell 多行代码或用户粘贴；已有其他单行原始提示词也可显式用 `--loop-prompt '原文'`。navigation 必须是 `.voiceport/handoffs/` 内无符号链接的普通 JSON，最多 48KB，包含准确 `run_id`、`product_task_id` 和 `product_attempt_id`（未绑定填 `unbound`），由协调者继续维护。退任时保存该 Run 当前 navigation 的完整有界快照及哈希、全局暂停和准确产品关联；不会把其他 Run 的私有注册表或其 attempt 当成本 Run。已有全局 lease 仍使用前节不带 `--run` 的原接口，禁止借注册重置同 Run 的旧 lease；新 per-Run 证明和精确关闭保护适用于带 `--run` 的路径。
+
+hook 使用已验证的注册缓存，不逐次查询 Orca、不执行 run-use；仍逐次检查实际 terminal 并锁存 drift、重新核对 transcript。行政命令重新查询真实 Run owner、consumer generation 与 terminal incarnation；外部接管不能凭旧缓存完成退任或启动。
+
+进入最后一轮只允许 Read、停止 loop、精确 retire/launch/status 和有界只读 Orca 身份查询，禁止产品修改、测试、派发、邮箱消费、续订 loop 和继续压缩。正常顺序如下，每条命令单独调用：
+
+1. 取得真实 `ScheduleWakeup({stop:true})` 成功回执；此处沿用 Claude transcript 的 ScheduleWakeup schema，不宣称已实现原生 Codex 协调者 loop-stop 适配。
+2. `python3 -I .claude/hooks/coordinator_rotation.py retire --run ACTUAL_RUN --session OLD_SESSION --transcript /absolute/actual-old-session.jsonl`。必须是实际 hook 绑定 transcript；保存有界 packet/哈希并 fence 旧 session。
+3. `python3 -I .claude/hooks/coordinator_rotation.py launch --run ACTUAL_RUN --session OLD_SESSION`。调用 Orca 前持久记录 token、完整 argv 和 attempt 时间；只有一次 fresh launch。收到已 journaled/handed-to-terminal 的投递回执后结束旧 turn。该实现沿用既有 Claude successor 启动入口，不改模型/用户偏好。
+4. 继任先取得真实当前 PreToolUse 状态，再自行 `orca orchestration run-use --id ACTUAL_RUN --json`（普通 Run 不加 legacy 参数），然后 `python3 -I .claude/hooks/coordinator_rotation.py claim --run ACTUAL_RUN --session NEW_SESSION --token TRANSFER_TOKEN`。必须是不同 session/terminal、当前 helper、零次完成压缩，hook 创建时间和 transcript 最早已观察身份时间都晚于 launch；Run coordinator_handle 必须准确等于实际 caller，generation 必须递增。缺时间/外来 transcript/旧上下文恢复均拒绝；不把新 accounting 文件当成新上下文。
+5. claim 后先读 `status --run ACTUAL_RUN` 核对投递与继任证明，然后 `python3 -I .claude/hooks/coordinator_rotation.py close-retired --run ACTUAL_RUN --session NEW_SESSION --terminal EXACT_OLD_TERMINAL`。helper 核对已保存的旧 handle/incarnation/工作区，先持久记录 attempt，再只关闭该 terminal，不关闭整个 tab/工作区。只有精确 handle 的 `result.close.ptyKilled=true` 回执才解除继任产品/loop fence；成功 RPC 外壳本身不足。
+6. 确认关闭、原暂停条件和工作边界后，才按 packet 原始 loop_prompt 恢复原授权 loop；不清理旧证据、不改 Run、产品 attempt 或 worker lineage。
+
+未知 launch/send/close 一律锁存，保留收到的原始 stdout/stderr/退出码或 timeout 信息。可用 `status --run ACTUAL_RUN` 检查保存状态，以及精确 `orca orchestration run-show --id ACTUAL_RUN --full --json`、`orca orchestration run-current --full --json`、`orca terminal show --terminal ACTUAL_HANDLE --json`，或 `orca terminal list --worktree path:/absolute/worktree --limit 20 --json` 作有界检查。不得直接再次 fresh launch/send/close；没有可靠证明时升级阻塞，不手改 accounting 解锁。当前没有自动 reconcile/重发接口；未知结果须由协调者核实并安排受审恢复，不能以超时或静默判断退出。
+
 ## Worker 交接
 
 worker 不启动继任、不停协调者 loop、不改 ledger/角色注册或结算自己的未完成产品任务。
@@ -68,7 +94,7 @@ worker 不启动继任、不停协调者 loop、不改 ledger/角色注册或结
 4. 协调者依 Orca recovery 对精确 mismatched assignment guarded stop，取得实际 exited/资源释放后再开 genuinely fresh session。spec/freeze 不变走同一 Task 的 retry/new-start；改变则建显式 successor，保留原角色/Task/Dispatch 沿革、Run 和产品 attempt。只发 send 恢复旧对话、只改 registry、收到 stop 请求、静默或超时均不算退出或新会话。
 5. 新 session ID 必须不同，实际 terminal 与新 hook 状态完全相等，真实 PreToolUse 加载当前指定 helper hash，bounded transcript 初始身份/时间与首次完成压缩数 0 一致。SessionStart 未观察到用上述 startup addendum 如实补证，不伪造。旧 session 永久保留 fence 与旧证据；正常 fresh session 仍按初始加最多四次压缩、最后一轮直接 checkpoint/handoff 执行。
 
-这里没有 terminal/token migration、自动 stop/launch 或信任绕过子系统。临时根目录/mock Orca 的 gate 与恢复模型是开发控制；实际 stop/release/launch、PreCompact veto 及完整生命周期未因这些控制获得接受。独立 operational03 的 FAILED 和 policy03 对旧九文档精确快照的结论均保留；本次改动须重新固定相关 operational/docs 输入并独立复核。原生 Codex 信任 Task 仍失败/未执行，Full VP-013/capture 仍 false。
+worker drift 路径没有 terminal/token migration 或自行 stop/launch/信任绕过；正常协调者的显式 per-Run 自动轮换接口见上节。临时根目录/mock Orca 的 gate 与恢复模型是开发控制；实际 stop/release/launch、PreCompact veto 及完整生命周期未因这些控制获得接受。独立 operational03 的 FAILED 和 policy03 对旧九文档精确快照的结论均保留；本次改动须重新固定相关 operational/docs 输入并独立复核。原生 Codex 信任 Task 仍失败/未执行，Full VP-013/capture 仍 false。
 
 ## 失败恢复和 Git
 
@@ -86,4 +112,4 @@ python3 -I .claude/hooks/test_coordinator_rotation.py
 
 2026-11-05 核对 Claude Code 2.1.318、原生 Codex 0.166.0 的已安装实现/schema，并只读查阅 [Claude PreCompact](https://code.claude.com/docs/en/hooks#precompact) 与 [Codex hooks](https://learn.chatgpt.com/docs/hooks)。本机原生 Codex rollout 确认 `session_meta` 和带 window_id 的 `compacted` 结构。上述是来源和 schema 证据，不能代替真实 compaction veto/跨窗口全流程执行。
 
-原 16 项协调者测试保留沿革，新隔离测试覆盖全部角色、四次后交接、双宿主 veto、超过上限不清零、checkpoint 单次通知、错误身份/schema 和旧 lease/token/epoch/暂停规则。只在临时项目/mock Orca 中执行，不运行真实压缩/启动压测。原 [planning-with-files](https://github.com/OthmanAdi/planning-with-files/blob/8eef6dc6540dde5eef3fdc0ac487ad9c48ef3ba5/hooks/claude-hook.sh#L304-L345)、[HumanLayer handoff](https://github.com/humanlayer/humanlayer/blob/f9bd73534a9fb7099a274f951b698b1297122fd9/apps/riptide-api/src/orpc/api/sessions/handoff.ts#L40-L114)、[Ralph](https://github.com/snarktank/ralph/blob/6c53cb0b831ebe8739c6a003e22af14902d8b0b5/ralph.sh#L84-L108) 的持久状态/事务/新进程思路仍适用，不继承权限绕过或文本完成哨兵。
+原 16 项协调者测试保留沿革；本次修正保留既有全部 55 项，新增 20 项，合计 75 项开发自检通过。隔离测试覆盖无全局 lease 的真实 hook 分派、per-Run 注册与冒用拒绝、最后一轮行政 gate、未知启动/关闭去重、initial0/transcript 起始时间/Run generation、精确关闭与下一轮回执保存，以及全部角色、四次后交接、双宿主 veto、超过上限不清零、checkpoint 单次通知、错误身份/schema 和旧 lease/token/epoch/暂停规则。只在临时项目/mock Orca 中执行，不运行真实压缩/启动压测。原 [planning-with-files](https://github.com/OthmanAdi/planning-with-files/blob/8eef6dc6540dde5eef3fdc0ac487ad9c48ef3ba5/hooks/claude-hook.sh#L304-L345)、[HumanLayer handoff](https://github.com/humanlayer/humanlayer/blob/f9bd73534a9fb7099a274f951b698b1297122fd9/apps/riptide-api/src/orpc/api/sessions/handoff.ts#L40-L114)、[Ralph](https://github.com/snarktank/ralph/blob/6c53cb0b831ebe8739c6a003e22af14902d8b0b5/ralph.sh#L84-L108) 的持久状态/事务/新进程思路仍适用，不继承权限绕过或文本完成哨兵。
