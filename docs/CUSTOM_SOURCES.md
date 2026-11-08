@@ -54,6 +54,26 @@
 
 非兼容服务通过 [JSONL v1 本地适配器](TRANSCRIPTION_PLUGINS.md) 接入：显式本地可执行路径和参数数组，无 shell eval、自动安装或下载器。导入页展示来源与将执行的程序，导入本身不执行。插件有当前用户权限，用户需信任程序；程序不得派生后台进程或逃离 VoicePort 为其创建的进程组。
 
+## 隔离 GUI 验证
+
+来源配置默认写入 `~/Library/Application Support/VoicePort/transcription-sources-v1.json`。仅为测试 App 子进程设置 `VOICEPORT_SOURCES_PATH` 可将它改为专用绝对文件路径；override 优先于 HOME 派生的默认路径。空值、相对路径、目录、符号链接或无法检查的路径明确失败，不回落默认配置。指定文件仍经过同一 Store 的普通文件、大小、版本、0600 权限和原子保存规则。已有默认路径及来源 ID 保持兼容。
+
+此变量只隔离来源配置，不改变 Orca 模型位置、Codex auth、系统 Keychain 或 NSUserDefaults。保留正常系统 HOME；另使用独立测试 bundle ID 和合成 CODEX_HOME。先复制本轮新包到一个不存在的测试包路径，修改副本 bundle ID 并重新 ad-hoc 签名；不要修改生产包。以下命令假设独立验收者已经准备好该副本，并将 `test_scope`、`test_app` 和 `test_domain` 换为自身唯一实际路径/域：
+
+```sh
+test_scope=/absolute/private-test-directory
+test_app=/absolute/isolated-test/VoicePort.app
+test_domain=dev.voiceport.gui.unique-test-id
+mkdir -p "$test_scope/codex-synthetic"
+defaults write "$test_domain" automaticPaste -bool false
+defaults write "$test_domain" alternativeShortcut -bool true
+VOICEPORT_SOURCES_PATH="$test_scope/sources.json" \
+  CODEX_HOME="$test_scope/codex-synthetic" \
+  "$test_app/Contents/MacOS/VoicePort"
+```
+
+直接启动可执行程序使上述环境仅传给测试实例。启动前核对副本 Info.plist 的 `CFBundleIdentifier` 与 `test_domain` 一致；启动后核对实际路径/PID及自动输入为关闭，再进行管理来源和显式合成样例测试。不要按录音键，不读真实凭据或真实配置；仅使用合成 key 和受控 loopback。该来源路径机制不提供 Keychain 授权豁免；如出现系统认证等待，停止并报告，不处理认证、改变默认 Keychain 或枚举/猜删既有条目。清理凭据时仅精确删除本轮成功返回并记录的自建引用。
+
 ## 开发自检范围
 
 受控测试覆盖实际 multipart WAV bytes、model、language、独立 Bearer、无 ChatGPT headers、单请求、失败、超时、取消、重定向、畸形和过大响应；JSONL 测试使用合成音频及受控程序验证 schema/version、加载不执行、错误输出、边界和进程回收。多实例配置、原子保存、缺失来源和凭据替换使用隔离数据与内存凭据替身，不读取真实用户 Keychain。

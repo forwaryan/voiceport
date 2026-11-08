@@ -1,5 +1,17 @@
 # 进度记录
 
+## 2026-11-08 — 返修02正式交付与协调证据核对
+
+真实worker_done msg_c86b86cba37c：task_03ef6325c033/ctx_a3aa8344a7e6 succeeded并停写；session555e44ba初始最终0，真实PreToolUse/helper/terminal核对，SessionStart未观察。6项源码/测试/文档窄改，原服务背压同步join死锁、取消与请求到达竞争、Python尚未写PID被杀竞争均有修前反例与cleanup证据；未放宽生产timeout。VOICEPORT_SOURCES_PATH只改变来源配置，可保持正常系统HOME/Keychain，GUI仍待新独立实测。
+
+协调check-repair02.py首次0核对6当前源码/6快照、160封存证据、完整17检查/34原始日志、4次23项最终串并行及3产物的hash/字节/模式；完整inventory前后当前f8bc5108…一致，未重跑开发测试。完整入口64个macOS passed/1原有ignored、4 Loop/17 Packaging/fmt/strict clippy通过仅自检。新包dist/transcription-plugins-repair02-20261108-1f929c5bf8/VoicePort.app，native06ae9bdf…/包maincbd9b700…；旧CI cancelled和freeze01 BLOCKED保持。开发完成后曾观察live/reclaimable，并不因此宣称退出。现按授权保存Git修复、更新draftPR15、新完整freeze02和不同真实会话续验；生产App未替换，未真实录音/认证/目标输入。
+
+## 2026-11-08 — freeze01 BLOCKED收尾与返修02准备
+
+独立msg_bfb3a15a65aa为failed/BLOCKED，评审未完成。实际session5da9b40b、真实PreToolUse/helper/精确terminal/初始最终0已核对，SessionStart未观察；独立62 lib通过/1忽略、真实自建Keychain探针清理通过和实际GUI保存授权等待分别记录。协调对精确测试PID45269/bundle/path核对后正常退出请求返回true，随后ps无行/exit1确认PID已无；未操作系统认证/生产App，GUI未返回引用条目状态仍unknown。原开发/独立均实际exited/released，不send恢复旧session到新terminal。
+
+PR15 CI42483256463/job128739553580结论cancelled，完整日志保存ci-cancelled-42483256463.log；两插件超时/取消测试FAILED，响应边界测试超过60秒至取消仍未结束。不能称CI通过或直接重跑。当前源码freeze01再次check matches true/bdb85208…产品50557942…，随后明确关闭live评审边界，closure见私有协调证据，原归档报告不改。新successor spec transcription-plugins-repair-02-20261108.md聚焦诊断/修复CI及安全配置路径隔离。协调真实session状态3边界、active、helper014eeb1e/terminal匹配；一次查找旧glob无匹配错误无写入，改专用session-status核对。待返修交付再集成/提交/新冻结/独立续验，PR15保持draft、旧生产App保持。
+
 ## 2026-11-08 — 插件开发正式交付与完整冻结准备
 
 明确唤醒check收到worker_done msg_dce1e74219cf，真实task_38af9f83182c/ctx_3f257aa3b76f succeeded且声明停写；实际开发sessiondf6fa345，初始/最终0，PreToolUse证明及SessionStart未观察保持。报告`.voiceport/evidence/transcription-plugins-development-20261108/report.md`已读，开发实现HTTP与JSONL插件/参考清单、AppKit管理和可取消静音样例。61个macOS lib测试通过、1个原有真实模型测试忽略，完整verify --app-smoke 17/17通过，首轮编译/量化断言/Clippy失败保留；仍仅开发自检。

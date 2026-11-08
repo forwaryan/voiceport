@@ -6,7 +6,7 @@
 
 - P1（complete）：新Run run_a9b3754f7871已注册；插件/来源实例/能力/凭据边界和自包含交接已完成。当前协调者实际 session637eb70f、terminal term_dbb1ea5d、真实 hook helper014eeb1e及2次已完成压缩已核对；旧VP013 requested lease/attempt保留不接管。新目标产品关联unbound，基线main d3af863，分支feat/transcription-plugins，保留三项方案文档修改。
 - P2（complete，开发自检）：真实开发sessiondf6fa345/task_38af9f83182c/ctx_3f257aa3b76f正式worker_done msg_dce1e74219cf并停写。20项源码/文档/许可输入、61个macOS测试通过与1个原有真实模型测试忽略、完整17步通过；协调核对20项实际/快照字节、34份原始日志、3个产物与产品摘要1793d204…，未重跑开发测试。真实PreToolUse/helper/精确terminal/首次和最终0已核对，SessionStart未观察。只有开发自检，GUI及原生Keychain未验。
-- P3（in_progress，冻结准备）：协调已集成README/SOLUTION与根记录，先保存开发checkpoint再完整冻结，由不同真实会话独立审查、运行反例并验证实际App界面和合成专用Keychain。覆盖新增插件加载、配置持久化、HTTP请求/错误/取消、认证隔离及已有来源；需返修时保留失败和原版本证据。
+- P3（in_progress，首轮BLOCKED后的返修）：checkpoint0277551已push，PR15 draft；完整freeze01由真实独立session5da9b40b审查，62个lib测试通过/1原有测试忽略、原生Keychain探针通过，但隔离HOME下GUI保存合成key进入系统授权等待，GUI评审未完成。真实failed/BLOCKED回执msg_bfb3a15a65aa，不能算PASS或完整RETURNED。测试PID45269经正常退出请求后ps确认已无；未操作系统认证、未猜删未知条目。CI42483256463为cancelled：两个取消/超时测试FAILED，响应边界测试挂起至取消，根因待诊断。两原worker均实际exited/released，freeze01当前matches true后显式关闭live评审，原快照/报告不改。新changed-spec开发successor session555e44ba/task_03ef6325c033/ctx_a3aa8344a7e6已msg_c86b86cba37c正式交付6项窄改并停写：受控服务有界I/O和异步收尾、取消/实际spawn PID同步、VOICEPORT_SOURCES_PATH。修前背压/提前取消挂起及Python PID竞争已复现，4次23项串并行与完整17步通过（64 macOS passed/1原有ignored），仅自检；协调首次核对6源码/快照、160封存文件、34完整入口日志和3产物hash/模式/字节、前后当前f8bc5108…一致，未重跑委派测试。先提交推送修复并触发新远端CI，再新完整冻结、真实独立GUI和反例验收。协调实际已3次完成压缩，未达最后一轮；旧生产App保持。
 - P4（pending）：验收后按持续授权正常commit/push/PR/CI/merge与main同步，交付验证过的新包并停止loop。不得用方案文档、编译或固定文本测试替代实际已实现能力/真实识别效果；未测真实录音及云端列明。
 
 边界：不自动录音、不读取真实账号/无关输入、不上传真实音频、不操作真实输入目标；合成音频与受控本机服务可用于验证。保留当前运行App和所有旧构建/快照/报告，不修改Orca模型、偏好或系统信任。

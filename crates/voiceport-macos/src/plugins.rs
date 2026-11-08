@@ -413,7 +413,35 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 pub fn default_path() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME")
+    sources_path(std::env::var_os("VOICEPORT_SOURCES_PATH"), || {
+        std::env::var_os("HOME")
+    })
+}
+fn sources_path(
+    override_path: Option<std::ffi::OsString>,
+    home: impl FnOnce() -> Option<std::ffi::OsString>,
+) -> Result<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    if let Some(value) = override_path {
+        let path = PathBuf::from(&value);
+        if !path.is_absolute()
+            || path.file_name().is_none()
+            || value.as_bytes().contains(&0)
+            || value.as_bytes().ends_with(b"/")
+        {
+            return Err("VOICEPORT_SOURCES_PATH 必须为非空的绝对配置文件路径。".into());
+        }
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if !metadata.is_file() => {
+                return Err("VOICEPORT_SOURCES_PATH 不接受符号链接或非普通文件。".into());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("无法检查 VOICEPORT_SOURCES_PATH；未回落默认配置。".into()),
+        }
+        return Ok(path);
+    }
+    let home = home()
         .filter(|s| !s.is_empty())
         .ok_or("无法定位来源配置目录。")?;
     Ok(PathBuf::from(home)
@@ -457,6 +485,116 @@ mod tests {
                 ("model".into(), "local".into()),
             ]),
             credential_refs: BTreeMap::new(),
+        }
+    }
+    #[test]
+    fn sources_path_override_is_prioritized_and_invalid_values_fail_closed() {
+        use std::ffi::OsString;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("private/sources.json");
+        let no_home = || panic!("override must not consult HOME");
+        assert_eq!(
+            sources_path(Some(path.clone().into_os_string()), no_home).unwrap(),
+            path
+        );
+        let store = Store {
+            sources: vec![source("stable-id")],
+            ..Store::default()
+        };
+        store.save(&path).unwrap();
+        assert_eq!(Store::load(&path).unwrap(), store);
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        for invalid in [
+            OsString::from(""),
+            "relative.json".into(),
+            "/".into(),
+            "/tmp/".into(),
+            "/tmp/a\0.json".into(),
+        ] {
+            assert!(sources_path(Some(invalid), no_home).is_err());
+        }
+        assert!(sources_path(Some(dir.path().into()), no_home).is_err());
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(sources_path(Some(link.into_os_string()), no_home).is_err());
+        let fifo = dir.path().join("fifo");
+        use std::os::unix::ffi::OsStrExt;
+        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(sources_path(Some(fifo.into_os_string()), no_home).is_err());
+        let not_directory = path.join("child.json");
+        assert!(sources_path(Some(not_directory.into_os_string()), no_home).is_err());
+        fs::write(&path, br#"{"schema_version":2,"plugins":[],"sources":[]}"#).unwrap();
+        let resolved = sources_path(Some(path.into_os_string()), no_home).unwrap();
+        assert!(Store::load(&resolved).is_err()); // No alternate/default Store on invalid data.
+        let fake_home = dir.path().join("synthetic-home");
+        assert_eq!(
+            sources_path(None, || Some(fake_home.clone().into_os_string())).unwrap(),
+            fake_home.join("Library/Application Support/VoicePort/transcription-sources-v1.json")
+        );
+        assert!(sources_path(None, || None).is_err());
+    }
+    #[test]
+    fn sources_path_environment_wiring_uses_only_synthetic_files() {
+        const CHILD: &str = "VOICEPORT_PATH_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let expected = std::env::var_os("VOICEPORT_PATH_TEST_EXPECTED").unwrap();
+            match default_path() {
+                Ok(path) => assert_eq!(path.as_os_str(), expected),
+                Err(_) => assert_eq!(expected, "ERROR"),
+            }
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let fake_home = dir.path().join("synthetic-home");
+        let path = dir.path().join("override.json");
+        for value in [
+            None,
+            Some(path.as_os_str()),
+            Some(std::ffi::OsStr::new("")),
+            Some(std::ffi::OsStr::new("relative")),
+        ] {
+            let expected = match value {
+                None => fake_home
+                    .join("Library/Application Support/VoicePort/transcription-sources-v1.json")
+                    .into_os_string(),
+                Some(v) if v == path.as_os_str() => path.clone().into_os_string(),
+                Some(_) => "ERROR".into(),
+            };
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .env_clear()
+                .env("HOME", &fake_home)
+                .env(CHILD, "1")
+                .env("VOICEPORT_PATH_TEST_EXPECTED", expected)
+                .args([
+                    "--exact",
+                    "plugins::tests::sources_path_environment_wiring_uses_only_synthetic_files",
+                    "--nocapture",
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            if let Some(v) = value {
+                command.env("VOICEPORT_SOURCES_PATH", v);
+            }
+            let mut child = command.spawn().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break status;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("path wiring child exceeded deadline");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
+            assert!(status.success(), "path wiring child failed for {value:?}");
         }
     }
     #[test]

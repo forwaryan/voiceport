@@ -71,48 +71,49 @@ fn errors_and_output_limits_do_not_leak_stderr() {
 }
 #[test]
 fn cancellation_and_timeout_reap_owned_process_group() {
+    // Initialization deliberately exceeds both deadlines. Reaping must not
+    // depend on the interpreter having written a readiness/PID file.
     for cancel_case in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let pidfile = dir.path().join("pid");
-        let mut m = manifest(
-            "import os,sys,time,pathlib;pathlib.Path(sys.argv[1]).write_text(str(os.getpid()));sys.stdin.read();time.sleep(10)",
-        );
-        m.program
-            .as_mut()
-            .unwrap()
-            .args
-            .push(pidfile.to_str().unwrap().into());
+        let m = manifest("import sys,time;time.sleep(0.7);sys.stdin.read();time.sleep(10)");
         let cancel = CancellationToken::new();
         let token = cancel.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
         let watcher = std::thread::spawn(move || {
+            rx.recv_timeout(Duration::from_secs(2)).unwrap();
             if cancel_case {
                 std::thread::sleep(Duration::from_millis(300));
                 token.cancel();
             }
         });
+        let mut pid = None;
         let now = Instant::now();
-        assert!(
-            execute(
-                &m,
-                &BTreeMap::new(),
-                &crate::plugin_runtime::sample(),
-                "",
-                &cancel,
-                Duration::from_millis(500)
-            )
-            .is_err()
+        let result = execute_observed(
+            &m,
+            &BTreeMap::new(),
+            &crate::plugin_runtime::sample(),
+            "",
+            &cancel,
+            Duration::from_millis(500),
+            |spawned| {
+                pid = Some(spawned as i32);
+                tx.send(()).unwrap();
+            },
         );
         watcher.join().unwrap();
-        assert!(now.elapsed() < Duration::from_secs(2));
-        let pid = std::fs::read_to_string(&pidfile)
-            .unwrap()
-            .parse::<i32>()
-            .unwrap();
-        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::ESRCH)
+        let error = result.unwrap_err();
+        assert!(
+            error.contains(if cancel_case { "取消" } else { "超时" }),
+            "{error}"
         );
+        assert!(now.elapsed() < Duration::from_secs(2));
+        let pid = pid.expect("adapter was actually spawned");
+        for target in [pid, -pid] {
+            assert_eq!(unsafe { libc::kill(target, 0) }, -1, "PID/group {target}");
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+        }
     }
 }
 #[test]

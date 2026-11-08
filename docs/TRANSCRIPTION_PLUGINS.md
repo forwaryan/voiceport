@@ -93,6 +93,10 @@ python3 -I crates/voiceport-macos/examples/plugins/prepare_manifest.py \
 
 来源配置位于 `~/Library/Application Support/VoicePort/transcription-sources-v1.json`，版本为 1，以 0600 临时文件写入、fsync、同目录原子替换。配置文件上限 262,144 字节，清单上限 32,768 字节；最多 64 个外部插件、128 个配置实例。损坏或未来版本配置会显示不可用错误并阻止管理保存，不覆盖为默认配置。来源选择继续通过现有 `transcriptionSource` 偏好保存，缺失选择保留不可用。
 
+可为单个 App 进程显式设置 `VOICEPORT_SOURCES_PATH=/absolute/test-directory/sources.json`，优先于上述默认来源配置路径。未设置时保留原默认路径和来源 ID；设置为空、相对路径、目录、符号链接或无法检查的路径会报错，不回落到用户默认配置。指定文件损坏、版本不支持、非普通文件或超限时仍使用原 Store 的拒绝规则；保存仍为 0600、fsync 和原子替换。路径可以尚不存在，由保存创建父目录。
+
+此变量只改变来源配置位置，不改变 Orca 模型、Codex auth、系统 HOME/Keychain 定位或 NSUserDefaults。GUI 验证应保留正常系统 HOME，使用独立 bundle ID 隔离偏好、专用绝对配置路径和合成 CODEX_HOME，并关闭自动输入；不要通过改变 HOME 隔离来源配置。具体启动示例见 [自定义来源的隔离验证](CUSTOM_SOURCES.md#隔离-gui-验证)。
+
 每次更新密钥创建独立 Keychain revision 引用；普通配置只含引用。录音开始固定插件版本、完整来源配置、语言、凭据引用及其值。执行和重试前确认原引用仍存在且值未替换，否则明确失败。busy 期间管理、来源切换和语言变更禁止；手动重试仍绑定原快照，且不自动投递到新焦点。
 
 HTTP 强制远程 HTTPS，HTTP 只允许明确 loopback；拒绝 user/password、fragment，不跟随重定向、不重试、不使用系统代理、不关闭证书验证。连接 timeout 10 秒，总 timeout 110 秒，read timeout 30 秒，响应上限 1,000,000 字节。非 2xx 不显示服务正文。自定义来源不读取 Codex 登录，不带 ChatGPT 账号头，不调用系统 Speech 做第二来源预览。

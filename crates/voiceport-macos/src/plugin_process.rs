@@ -46,6 +46,19 @@ pub fn execute(
     cancel: &CancellationToken,
     timeout: Duration,
 ) -> Result<String, String> {
+    execute_observed(manifest, config, wav, language, cancel, timeout, |_| {})
+}
+// Observe the OS-assigned PID before adapter initialization. Tests can verify
+// reaping even when the adapter never gets far enough to publish readiness.
+fn execute_observed(
+    manifest: &Manifest,
+    config: &BTreeMap<String, String>,
+    wav: &[u8],
+    language: &str,
+    cancel: &CancellationToken,
+    timeout: Duration,
+    spawned: impl FnOnce(u32),
+) -> Result<String, String> {
     check(cancel)?;
     manifest.validate_external()?;
     manifest.validate_program()?;
@@ -73,6 +86,7 @@ pub fn execute(
             .spawn()
             .map_err(|_| "无法执行插件本地程序。")?,
     );
+    spawned(child.0.id());
     let mut stdin = child.0.stdin.take();
     let mut stdout = child.0.stdout.take().ok_or("插件 stdout 不可用。")?;
     let mut stderr = child.0.stderr.take().ok_or("插件 stderr 不可用。")?;

@@ -2,61 +2,201 @@ use super::*;
 use std::{
     io::{Read, Write},
     net::TcpListener,
-    sync::mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
+    time::Instant,
 };
-fn serve(
-    response: Vec<u8>,
-    delay: Duration,
-) -> (String, mpsc::Receiver<Vec<u8>>, thread::JoinHandle<()>) {
+const FIXTURE_LIMIT: Duration = Duration::from_secs(5);
+struct Server {
+    endpoint: String,
+    requests: mpsc::Receiver<Vec<u8>>,
+    received: Arc<AtomicBool>,
+    disconnected: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+impl Server {
+    fn request(&self) -> Vec<u8> {
+        self.requests
+            .recv_timeout(FIXTURE_LIMIT)
+            .expect("complete fixture request")
+    }
+    async fn finish(self) {
+        // Keep the current-thread runtime driving connection shutdown while the
+        // server completes writes and the no-extra-request observation window.
+        while !self.handle.as_ref().unwrap().is_finished() {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        self.finish_blocking();
+    }
+    fn finish_blocking(mut self) {
+        self.handle.take().unwrap().join().unwrap();
+    }
+    async fn assert_disconnected(&self) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !self.disconnected.load(Ordering::SeqCst) && Instant::now() < deadline {
+            // Let hyper's connection task observe the dropped request future.
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(
+            self.disconnected.load(Ordering::SeqCst),
+            "HTTP future left its socket open"
+        );
+    }
+}
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            // Every socket operation is nonblocking and every loop polls stop.
+            let result = handle.join();
+            if !thread::panicking() {
+                result.unwrap();
+            }
+        }
+    }
+}
+fn serve(response: Vec<u8>, delay: Duration) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
     let endpoint = format!(
         "http://{}/full/transcriptions",
         listener.local_addr().unwrap()
     );
-    let (tx, rx) = mpsc::channel();
+    let (tx, requests) = mpsc::channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let received = Arc::new(AtomicBool::new(false));
+    let disconnected = Arc::new(AtomicBool::new(false));
+    let (stop_thread, received_thread, disconnected_thread) =
+        (stop.clone(), received.clone(), disconnected.clone());
     let handle = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let mut bytes = vec![];
-        let mut chunk = [0; 8192];
-        let header_end = loop {
-            let n = stream.read(&mut chunk).unwrap();
-            assert_ne!(n, 0);
-            bytes.extend_from_slice(&chunk[..n]);
-            if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
-                break i + 4;
+        let deadline = Instant::now() + FIXTURE_LIMIT;
+        let active = || !stop_thread.load(Ordering::SeqCst) && Instant::now() < deadline;
+        let mut stream = loop {
+            if !active() {
+                return;
+            }
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(2))
+                }
+                Err(e) => panic!("fixture accept: {e}"),
             }
         };
-        let headers = String::from_utf8_lossy(&bytes[..header_end]).to_lowercase();
-        let length = headers
-            .lines()
-            .find_map(|l| l.strip_prefix("content-length: "))
-            .unwrap()
-            .parse::<usize>()
-            .unwrap();
-        while bytes.len() < header_end + length {
-            let n = stream.read(&mut chunk).unwrap();
-            assert_ne!(n, 0);
-            bytes.extend_from_slice(&chunk[..n]);
+        stream.set_nonblocking(true).unwrap();
+        // Force backpressure even on hosts with large default TCP buffers.
+        let send_buffer: libc::c_int = 4096;
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    std::os::fd::AsRawFd::as_raw_fd(&stream),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&send_buffer as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&send_buffer) as libc::socklen_t,
+                )
+            },
+            0
+        );
+        let mut bytes = vec![];
+        let mut chunk = [0; 8192];
+        let mut expected = None;
+        loop {
+            if !active() {
+                return;
+            }
+            match stream.read(&mut chunk) {
+                Ok(0) => return,
+                Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(2));
+                    continue;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => return,
+                Err(e) => panic!("fixture request: {e}"),
+            }
+            assert!(bytes.len() <= 8_000_000, "fixture request too large");
+            if expected.is_none()
+                && let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n")
+            {
+                let end = i + 4;
+                let headers = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                let length = headers
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length: "))
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap();
+                assert!(length <= 8_000_000 - end);
+                expected = Some(end + length);
+            }
+            if expected.is_some_and(|len| bytes.len() >= len) {
+                break;
+            }
         }
-        tx.send(bytes).unwrap();
-        thread::sleep(delay);
-        let _ = stream.write_all(&response);
+        received_thread.store(true, Ordering::SeqCst);
+        if tx.send(bytes).is_err() {
+            return;
+        }
+        let respond_at = Instant::now() + delay;
+        while active() && Instant::now() < respond_at {
+            match stream.read(&mut chunk) {
+                Ok(0) => {
+                    disconnected_thread.store(true, Ordering::SeqCst);
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
+                    disconnected_thread.store(true, Ordering::SeqCst);
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(2))
+                }
+                other => panic!("unexpected fixture data while awaiting response: {other:?}"),
+            }
+        }
+        let mut written = 0;
+        while active() && !disconnected_thread.load(Ordering::SeqCst) && written < response.len() {
+            match stream.write(&response[written..]) {
+                Ok(0) => break,
+                Ok(n) => written += n,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(2))
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                    ) =>
+                {
+                    break;
+                }
+                Err(e) => panic!("fixture response: {e}"),
+            }
+        }
         drop(stream);
-        listener.set_nonblocking(true).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_millis(100);
-        while std::time::Instant::now() < deadline {
+        let observation_end = Instant::now() + Duration::from_millis(100);
+        while active() && Instant::now() < observation_end {
             assert!(
-                listener.accept().is_err(),
+                matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
                 "implicit extra request attempted"
             );
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(Duration::from_millis(2));
         }
     });
-    (endpoint, rx, handle)
+    Server {
+        endpoint,
+        requests,
+        received,
+        disconnected,
+        stop,
+        handle: Some(handle),
+    }
 }
 fn config(endpoint: String) -> BTreeMap<String, String> {
     BTreeMap::from([
@@ -76,13 +216,13 @@ fn response(status: &str, body: &[u8]) -> Vec<u8> {
 }
 #[tokio::test]
 async fn multipart_bytes_language_bearer_and_no_chatgpt_auth() {
-    let (endpoint, rx, handle) = serve(
+    let server = serve(
         response("200 OK", br#"{"text":" fixture "}"#),
         Duration::ZERO,
     );
     let sample = sample();
     let result = http(
-        &config(endpoint),
+        &config(server.endpoint.clone()),
         sample.clone(),
         "zh",
         &CancellationToken::new(),
@@ -92,7 +232,7 @@ async fn multipart_bytes_language_bearer_and_no_chatgpt_auth() {
     .await
     .unwrap();
     assert_eq!(result, "fixture");
-    let request = rx.recv().unwrap();
+    let request = server.request();
     let as_text = String::from_utf8_lossy(&request);
     assert!(as_text.starts_with("POST /full/transcriptions HTTP/1.1"));
     assert!(as_text.contains("authorization: Bearer synthetic-independent-key"));
@@ -117,12 +257,12 @@ async fn multipart_bytes_language_bearer_and_no_chatgpt_auth() {
     assert_eq!(&sample[24..28], &16000u32.to_le_bytes());
     assert_eq!(&sample[22..24], &1u16.to_le_bytes());
     assert_eq!(&sample[34..36], &16u16.to_le_bytes());
-    handle.join().unwrap();
+    server.finish().await;
 }
 #[tokio::test]
 async fn no_key_and_auto_language_are_omitted_and_empty_text_is_valid() {
-    let (endpoint, rx, handle) = serve(response("200 OK", br#"{"text":""}"#), Duration::ZERO);
-    let mut cfg = config(endpoint);
+    let server = serve(response("200 OK", br#"{"text":""}"#), Duration::ZERO);
+    let mut cfg = config(server.endpoint.clone());
     cfg.remove("api_key");
     assert_eq!(
         http(
@@ -137,14 +277,28 @@ async fn no_key_and_auto_language_are_omitted_and_empty_text_is_valid() {
         .unwrap(),
         ""
     );
-    let request = String::from_utf8_lossy(&rx.recv().unwrap()).to_string();
+    let request = String::from_utf8_lossy(&server.request()).to_string();
     assert!(!request.contains("authorization:"));
     assert!(!request.contains("name=\"language\""));
-    handle.join().unwrap();
+    server.finish().await;
 }
 #[tokio::test]
 async fn malformed_oversize_failure_and_redirect_are_bounded() {
-    for bytes in [response("200 OK",b"[]"),response("200 OK",br#"{"text":7}"#),response("200 OK",b"bad-json"),response("401 Unauthorized",b"synthetic-independent-key"),b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/never\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",MAX_RESPONSE+1).into_bytes(),response("200 OK",&vec![b'x';MAX_RESPONSE+1])]{let (endpoint,rx,handle)=serve(bytes,Duration::ZERO);let error=http(&config(endpoint),sample(),"",&CancellationToken::new(),Duration::from_secs(2),Duration::from_secs(1)).await.unwrap_err();assert!(!error.contains("synthetic-independent-key"));rx.recv().unwrap();handle.join().unwrap();}
+    for bytes in [
+        response("200 OK", b"[]"),
+        response("200 OK", br#"{"text":7}"#),
+        response("200 OK", b"bad-json"),
+        response("401 Unauthorized", b"synthetic-independent-key"),
+        b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/never\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", MAX_RESPONSE + 1).into_bytes(),
+        response("200 OK", &vec![b'x'; MAX_RESPONSE + 1]),
+    ] {
+        let server = serve(bytes, Duration::ZERO);
+        let error = http(&config(server.endpoint.clone()), sample(), "", &CancellationToken::new(), Duration::from_secs(2), Duration::from_secs(1)).await.unwrap_err();
+        assert!(!error.contains("synthetic-independent-key"));
+        server.request();
+        server.finish().await;
+    }
 }
 #[tokio::test]
 async fn redirect_status_is_not_followed_and_undeclared_response_size_is_bounded() {
@@ -156,9 +310,9 @@ async fn redirect_status_is_not_followed_and_undeclared_response_size_is_bounded
             body.extend(vec![b'x'; MAX_RESPONSE + 1]);
             body
         };
-        let (endpoint, rx, handle) = serve(bytes, Duration::ZERO);
+        let server = serve(bytes, Duration::ZERO);
         let error = http(
-            &config(endpoint),
+            &config(server.endpoint.clone()),
             sample(),
             "",
             &CancellationToken::new(),
@@ -175,44 +329,104 @@ async fn redirect_status_is_not_followed_and_undeclared_response_size_is_bounded
             }),
             "{error}"
         );
-        rx.recv().unwrap();
-        handle.join().unwrap();
+        server.request();
+        server.finish().await;
     }
 }
 #[tokio::test]
 async fn timeout_and_cancel_drop_network_operation() {
     for cancel_case in [false, true] {
-        let (endpoint, rx, handle) = serve(
+        let server = serve(
             response("200 OK", br#"{"text":"late"}"#),
-            Duration::from_millis(150),
+            Duration::from_secs(3),
         );
         let cancel = CancellationToken::new();
-        let token = cancel.clone();
-        let canceler = thread::spawn(move || {
+        let cfg = config(server.endpoint.clone());
+        let now = Instant::now();
+        let cancellation = async {
             if cancel_case {
-                thread::sleep(Duration::from_millis(30));
-                token.cancel();
+                // Exercise an in-flight request, regardless of client setup speed.
+                while !server.received.load(Ordering::SeqCst) {
+                    assert!(
+                        now.elapsed() < Duration::from_secs(1),
+                        "request never reached fixture"
+                    );
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                cancel.cancel();
             }
-        });
-        let now = std::time::Instant::now();
-        let error = http(
-            &config(endpoint),
+        };
+        let (result, ()) = tokio::join!(
+            http(
+                &cfg,
+                sample(),
+                "",
+                &cancel,
+                Duration::from_millis(500),
+                Duration::from_millis(200)
+            ),
+            cancellation,
+        );
+        let error = result.unwrap_err();
+        assert!(now.elapsed() < Duration::from_secs(1));
+        assert!(
+            error.contains(if cancel_case { "取消" } else { "超时" }),
+            "{error}"
+        );
+        server.request();
+        server.assert_disconnected().await;
+        server.finish().await;
+    }
+}
+#[tokio::test]
+async fn fixture_cleanup_handles_no_request_partial_upload_and_assertion_failure() {
+    let now = Instant::now();
+    let server = serve(response("200 OK", br#"{"text":"late"}"#), Duration::ZERO);
+    let stopped = server.stop.clone();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    assert!(
+        http(
+            &config(server.endpoint.clone()),
             sample(),
             "",
             &cancel,
             Duration::from_millis(80),
-            Duration::from_millis(60),
+            Duration::from_millis(60)
         )
         .await
-        .unwrap_err();
-        assert!(now.elapsed() < Duration::from_secs(1));
-        if cancel_case {
-            assert!(error.contains("取消"));
-        }
-        rx.recv().unwrap();
-        canceler.join().unwrap();
-        handle.join().unwrap();
-    }
+        .unwrap_err()
+        .contains("取消")
+    );
+    drop(server);
+    // The joined worker has released all owned resources. Ephemeral ports may
+    // already belong to another parallel fixture, so do not reconnect to them.
+    assert_eq!(Arc::strong_count(&stopped), 1);
+    assert!(now.elapsed() < Duration::from_secs(1));
+
+    let server = serve(vec![], Duration::ZERO);
+    let endpoint = reqwest::Url::parse(&server.endpoint).unwrap();
+    let address = ("127.0.0.1", endpoint.port().unwrap());
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    stream
+        .write_all(b"POST / HTTP/1.1\r\nContent-Length: 32000\r\n\r\nx")
+        .unwrap();
+    drop(stream);
+    let stopped = server.stop.clone();
+    server.finish().await; // Early EOF is a legitimate cancellation, not a fixture panic.
+    assert_eq!(Arc::strong_count(&stopped), 1);
+
+    let server = serve(vec![], Duration::ZERO);
+    let stopped = server.stop.clone();
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _owned = server;
+        panic!("deliberate test assertion failure to exercise RAII cleanup");
+    }));
+    assert!(failure.is_err());
+    assert_eq!(Arc::strong_count(&stopped), 1);
 }
 #[test]
 fn documented_reference_manifest_generates_loads_and_transcribes_controlled_http() {
@@ -235,13 +449,13 @@ fn documented_reference_manifest_generates_loads_and_transcribes_controlled_http
     let manifest = crate::plugins::read_manifest(&generated).unwrap();
     let mut store = Store::default();
     store.import(manifest.clone()).unwrap();
-    let (endpoint, rx, handle) = serve(
+    let server = serve(
         response("200 OK", br#"{"text":"reference transport fixture"}"#),
         Duration::ZERO,
     );
     let text = crate::plugin_process::execute(
         &manifest,
-        &config(endpoint),
+        &config(server.endpoint.clone()),
         &sample(),
         "en",
         &CancellationToken::new(),
@@ -249,14 +463,14 @@ fn documented_reference_manifest_generates_loads_and_transcribes_controlled_http
     )
     .unwrap();
     assert_eq!(text, "reference transport fixture");
-    let request = rx.recv().unwrap();
+    let request = server.request();
     let text = String::from_utf8_lossy(&request);
     assert!(text.contains("Bearer synthetic-independent-key"));
     assert!(text.contains("fixture-model"));
     assert!(!text.to_lowercase().contains("chatgpt-account-id"));
     assert!(!text.to_lowercase().contains("originator:"));
     assert!(request.windows(sample().len()).any(|w| w == sample()));
-    handle.join().unwrap();
+    server.finish_blocking();
 }
 #[test]
 fn wav_conversion_is_bounded_and_preserves_pcm() {

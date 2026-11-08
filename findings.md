@@ -1,5 +1,17 @@
 # 调研与发现
 
+## 2026-11-08 — 返修02证据与独立验收接续
+
+开发在旧源码副本用4096发送缓冲复现超大响应fixture写入与测试线程同步join等待环，真实sample显示join/sendto；提前取消无请求也会让旧accept/rx/join无限等待。原Python PID文件在初始化完成前不可作spawn/回收证据，700ms受控延迟触发原断言失败。修复将测试服务I/O和收尾设限，异步finish允许runtime推进、取消先同步完整请求，并从OS spawn观察实际PID且校验PID/组ESRCH。生产HTTP/插件110秒限制未变，原1秒取消返回断言保留。4次23项串并行和完整17步通过，仍待远端CI和独立反例。
+
+显式VOICEPORT_SOURCES_PATH将来源配置隔离到专用绝对文件；无效值和非普通文件拒绝且不回落。它不隔离NSUserDefaults/Keychain，也不改变Orca模型或Codex路径；新GUI验证应独立bundle domain和合成CODEX_HOME，保持正常HOME，精准操作自建测试密钥。该路径能力本身不证明GUI Keychain保存可用。
+
+## 2026-11-08 — 首轮GUI阻塞与CI真实失败
+
+freeze01独立review未完成：精确冻结副本62 lib passed/1 ignored和真实Security framework合成Keychain探针通过，但GUI在私有HOME下SecItemAdd等待defaultKeychainUI/AuthorizationCopyRights；未建立具体提示原因，不能断言生产必然失败。该CLI探针不替代GUI。独立已停止且exited/released；协调仅正常退出确切测试PID45269，随后ps无行/exit1，未处理系统认证。GUI未返回引用且未存配置，未知测试条目不能声称已清理或猜删。
+
+CI42483256463完整日志确认plugin_process cancellation_and_timeout_reap_owned_process_group及plugin_runtime timeout_and_cancel_drop_network_operation FAILED，malformed_oversize_failure_and_redirect_are_bounded持续超过60秒直至约30分钟任务被取消。根因仍待开发诊断，不能通过提高CI timeout或本机原通过抵消。需有界复现/服务和进程清理，并考虑显式来源配置路径隔离替换修改HOME的测试方法。freeze01在协调最终matches true后明确关闭当前评审；历史字节和BLOCKED报告永久保留，返修后新完整冻结。
+
 ## 2026-11-08 — 插件开发交付与独立验收缺口
 
 开发采用内置HTTP和外部JSONL v1 batch适配器；一个descriptor定义插件，Source稳定ID保存配置，多实例与独立Keychain revision引用并存。外部适配器env_clear、根工作目录、JSONL stdin音频与选定配置、有界非阻塞stdout/stderr、自建进程组和后台kill/wait；不是恶意代码沙箱，协议明确禁止派生/逃离进程组。样例是显式确认的一秒静音，不能证明真实ASR识别准确率。
