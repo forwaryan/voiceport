@@ -69,6 +69,169 @@ fn errors_and_output_limits_do_not_leak_stderr() {
         assert!(!error.contains("synthetic-secret"));
     }
 }
+fn group_members(pgid: i32) -> Result<Vec<i32>, String> {
+    if pgid <= 1 {
+        return Err("expected an owned process group".into());
+    }
+    let mut members = [0i32; 64];
+    let count = unsafe {
+        // libproc maps list errors to zero, also the valid empty-list result.
+        *libc::__error() = 0;
+        libc::proc_listpgrppids(
+            pgid,
+            members.as_mut_ptr().cast(),
+            std::mem::size_of_val(&members) as i32,
+        )
+    };
+    let errno = std::io::Error::last_os_error().raw_os_error();
+    if count < 0 || (count == 0 && errno != Some(0)) {
+        return Err(format!("group {pgid}: list failed: {errno:?}"));
+    }
+    if count as usize >= members.len() {
+        return Err(format!("group {pgid}: member list may be truncated"));
+    }
+    Ok(members[..count as usize].to_vec())
+}
+
+fn group_has_no_live_members(pgid: i32) -> Result<(), String> {
+    // kill(-pgid, 0) reports EPERM for a macOS group containing only zombies.
+    // Reaping our direct child cannot reap descendants owned by another parent.
+    let members = group_members(pgid)?;
+    let mut verified_members = Vec::new();
+    for &pid in &members {
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+        let size = std::mem::size_of_val(&info) as i32;
+        let count = unsafe {
+            // Nonzero arg explicitly includes zombies in PROC_PIDTBSDINFO.
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                1,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        let errno = std::io::Error::last_os_error().raw_os_error();
+        if count == 0 && errno == Some(libc::ESRCH) {
+            continue; // A listed member was reaped before its state query.
+        }
+        if count != size {
+            return Err(format!(
+                "group {pgid}: member {pid} state failed: {errno:?}"
+            ));
+        }
+        let info = unsafe { info.assume_init() };
+        if info.pbi_pid != pid as u32 || info.pbi_pgid != pgid as u32 {
+            return Err(format!("group {pgid}: member {pid} identity changed"));
+        }
+        if info.pbi_status != libc::SZOMB {
+            return Err(format!(
+                "group {pgid}: live member {pid}, state={}",
+                info.pbi_status
+            ));
+        }
+        verified_members.push(pid);
+        eprintln!(
+            "group {pgid}: terminated member {pid}, state={}",
+            info.pbi_status
+        );
+    }
+    // Every remaining member needs zombie-state evidence, including a PID
+    // listed again after its state query returned ESRCH.
+    if group_members(pgid)?
+        .iter()
+        .any(|pid| !verified_members.contains(pid))
+    {
+        return Err(format!(
+            "group {pgid}: membership changed during observation"
+        ));
+    }
+    Ok(())
+}
+
+struct ReapFixture(Child);
+impl ReapFixture {
+    fn spawn(pgid: i32) -> Self {
+        Self(
+            Command::new("/bin/sleep")
+                .arg("10")
+                .env_clear()
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(pgid)
+                .spawn()
+                .unwrap(),
+        )
+    }
+}
+impl Drop for ReapFixture {
+    fn drop(&mut self) {
+        let pid = self.0.id();
+        let _ = self.0.kill();
+        let status = self.0.wait();
+        eprintln!("owned group fixture cleanup: pid={pid} wait={status:?}");
+    }
+}
+
+#[test]
+fn group_fixture_reaps_children_during_assertion_unwind() {
+    let mut pids = vec![];
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let leader = ReapFixture::spawn(0);
+        pids.push(leader.0.id() as i32);
+        let member = ReapFixture::spawn(pids[0]);
+        pids.push(member.0.id() as i32);
+        panic!("deliberate assertion unwind with owned group members");
+    }));
+    assert!(failure.is_err());
+    assert_eq!(pids.len(), 2);
+    for &pid in &pids {
+        let result = unsafe { libc::kill(pid, 0) };
+        let errno = std::io::Error::last_os_error().raw_os_error();
+        assert_eq!((result, errno), (-1, Some(libc::ESRCH)));
+    }
+    group_has_no_live_members(pids[0]).unwrap();
+}
+
+#[test]
+fn group_liveness_distinguishes_live_members_from_unreaped_zombies() {
+    let mut leader = ReapFixture::spawn(0);
+    let pgid = leader.0.id() as i32;
+    let mut member = ReapFixture::spawn(pgid);
+    let member_pid = member.0.id() as i32;
+    assert!(group_has_no_live_members(pgid).is_err());
+    leader.0.kill().unwrap();
+    leader.0.wait().unwrap();
+    assert!(group_has_no_live_members(pgid).is_err());
+    member.0.kill().unwrap();
+    let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+    assert_eq!(
+        unsafe {
+            libc::waitid(
+                libc::P_PID,
+                member_pid as u32,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        },
+        0
+    );
+    assert_eq!(unsafe { info.si_pid() }, member_pid);
+    let positive = unsafe { libc::kill(pgid, 0) };
+    let positive_errno = std::io::Error::last_os_error().raw_os_error();
+    let group = unsafe { libc::kill(-pgid, 0) };
+    let group_errno = std::io::Error::last_os_error().raw_os_error();
+    eprintln!(
+        "owned zombie control: leader={pgid} member={member_pid} positive=({positive},{positive_errno:?}) group=({group},{group_errno:?})"
+    );
+    assert_eq!((positive, positive_errno), (-1, Some(libc::ESRCH)));
+    assert_eq!(group_members(pgid).unwrap(), vec![member_pid]);
+    group_has_no_live_members(pgid).expect("a zombie-only owned group has no live members");
+    member.0.wait().unwrap();
+    group_has_no_live_members(pgid).unwrap();
+}
+
 #[test]
 fn cancellation_and_timeout_reap_owned_process_group() {
     // Initialization deliberately exceeds both deadlines. Reaping must not
@@ -107,20 +270,15 @@ fn cancellation_and_timeout_reap_owned_process_group() {
         );
         assert!(now.elapsed() < Duration::from_secs(2));
         let pid = pid.expect("adapter was actually spawned");
-        for target in [pid, -pid] {
-            let result = unsafe { libc::kill(target, 0) };
-            // Capture errno at the syscall, before assertions or diagnostics.
-            let errno = std::io::Error::last_os_error().raw_os_error();
-            assert_eq!(
-                result, -1,
-                "cancel={cancel_case} pid={pid} target={target} errno={errno:?}"
-            );
-            assert_eq!(
-                errno,
-                Some(libc::ESRCH),
-                "cancel={cancel_case} pid={pid} target={target} kill_result={result}"
-            );
-        }
+        let result = unsafe { libc::kill(pid, 0) };
+        let errno = std::io::Error::last_os_error().raw_os_error();
+        assert_eq!(
+            (result, errno),
+            (-1, Some(libc::ESRCH)),
+            "cancel={cancel_case} direct child {pid} was not reaped"
+        );
+        group_has_no_live_members(pid)
+            .unwrap_or_else(|error| panic!("cancel={cancel_case} pid={pid}: {error}"));
     }
 }
 #[test]
