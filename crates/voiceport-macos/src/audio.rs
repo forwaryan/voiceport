@@ -427,9 +427,10 @@ impl Speech {
                 if let Some(error) = unsafe { error.as_ref() }
                     && active.swap(false, Ordering::AcqRel)
                 {
-                    events.send(AudioEvent::Status(format!(
-                        "本机语音识别失败（错误码 {}），将继续录音并在结束后转写。",
-                        error.code()
+                    events.send(AudioEvent::Status(speech_failure(
+                        &error.domain().to_string(),
+                        error.code(),
+                        &error.localizedDescription().to_string(),
                     )));
                 }
             },
@@ -444,6 +445,14 @@ impl Speech {
             unsafe { task.cancel() };
         }
     }
+}
+
+fn speech_failure(domain: &str, code: isize, description: &str) -> String {
+    if domain == "kLSRErrorDomain" && code == 201 {
+        return "本机实时预览不可用：系统 Siri 或听写未启用（kLSRErrorDomain/201）。请检查系统设置中的 Siri/键盘听写；继续录音，停止后完成最终转写。".into();
+    }
+    let description: String = description.chars().take(160).collect();
+    format!("本机实时预览失败（{domain}/{code}）：{description}。继续录音，停止后完成最终转写。")
 }
 
 fn locale_key(value: &str) -> String {

@@ -1,5 +1,39 @@
 # VoicePort 实施计划
 
+## 2026-11-08 当前任务：同步主分支并提交合并本地修改
+
+用户明确授权获取远程 main、更新本地、提交全部当前源码修改、创建 PR，并修复实际 CI 问题后合并。
+
+- G1（complete）：本地 main 和工作分支基线已快进到 origin/main `0d9e643`，原修改完整恢复，README 唯一冲突已合并。另建隔离 worktree 提交请求开始时已有的完整修改；另一会话进行中的 UI 美化保留在原工作区。
+- G2（in_progress）：隔离候选正在全新 Cargo target 中运行完整离线 verify --app-smoke；原工作区中间 UI 状态的 Clippy 失败不作为该候选结论。
+- G3（pending）：提交并推送，创建 PR，观察并修复实际 CI 失败，通过后正常合并。
+- G4（pending）：同步本地 main 到合并结果，核对远端、本地与干净工作区并回报 PR 链接。
+
+保留已有历史记录、本机证据和运行中应用。验证不自动录音、读取真实账号或向真实输入框投递。
+
+## 2026-11-08 当前任务：菜单栏与原生界面美化
+
+用户接受停止后整段最终转写，希望界面更美观，特别是macOS顶部菜单栏有清楚的小图标。沿用所有已有修改与保护约束，不退出已授权应用、不自动录音、不覆盖旧包。
+
+- U1（in_progress）：菜单栏改为紧凑语音图标，图形与菜单文字表达就绪/听写/处理/异常状态，保留原生深浅模式适配和VoicePort可访问名称。
+- U2（pending）：整理设置窗口的字号、留白、结果区域和设置分组，减少按钮式说明文字，保持所有功能入口。
+- U3（pending）：编译/格式/严格lint及必要测试，打包到全新dist目录；实际打开新UI、检查菜单与截图，旧已授权进程保持运行。
+
+
+## 2026-11-08 当前任务：光标输入与 macOS 图标入口接续
+
+保留分支 fix/macos-app-entry-and-status 的全部未提交修改。旧 session fe46d843-d296-4499-9a98-3a90c077057a 的 terminal drift fence 永久保留，不恢复、不重绑、不清零。不自动录音，不覆盖旧包，不退出任何已有应用。
+
+- N1（complete）：新 session 9eaa1fc4-9e2b-470c-a2a0-ef0f1de7fde6、实际 Orca terminal term_6ed39ed6-8f1f-49a4-bb8c-e5a1791bff0b 与真实 PreToolUse 状态一致；初始 boundaries=[]，helper SHA 014eeb1e43729675ab5a97ae42fde3aaac1f0f460230e449683c85a0f9c7daaa。SessionStart 未观察。
+- N2（complete）：独立 Orca 终端夹具精确接收固定22字节 UTF-8 文字，无Return；原发送实现通过。新证据 dist/cursor-entry-20261108-9eaa1fc4/orca-terminal-receiver-02.json，旧 NSTextView 证据保留。
+- N3（complete）：图标、Dock/菜单栏、正常启动与窗口关闭后重开均完成；完整离线17步、4 loop/17 packaging、fmt/严格Clippy/release/safe smoke全通过，起止产品SHA e5a7b98ae485405abb12b7bca755101ad3612aa37916f2c4a0f1da569140fb32。
+- N5（complete）：用户授权后通过系统UI移除仅VoicePort旧条目，明确选择cursor-entry-20261108-9eaa1fc4/VoicePort.app重新添加。PID68143同进程实时按钮已为「辅助功能：已授权（检查）」、0秒/未录音；新证据permission-repair-20261108-161159.json。原report.json保留历史未授权事实。当前真实压缩1，绑定不变、无drift。
+- N4（complete）：新包 dist/cursor-entry-20261108-9eaa1fc4/VoicePort.app（0.3.1/build7）签名与Cargo产物对应通过。实际PID68143同进程关闭后经Launch Services、Dock点击及VP菜单恢复窗口，最终截图0秒/无录音；新包辅助功能未授权，留给本机手动处理。report.json、MANUAL_TEST.md、截图同目录。未提交或推送。
+
+本轮错误与处理：早期探针前台/活动tab漂移、指定receiver timeout不计成功；新有界create/switch/probe并核对receiver后通过。首次GUI close返回permission_denied，但原生窗口数0/同PID仍存活证明已关闭，后续重开确认，不修改系统权限；System Events可选AXSubrole缺失查询报-1728，改为容错枚举后定位close。全部旧错误回执保留。
+
+
+
 ## 2026-11-07 当前任务：移除旧版 Swift 残留并更新 main
 
 用户明确要求“旧版没用的都删掉吧，然后更新一下主分支”。从已合并 Rust 迁移的 main `def833a` 建立清理分支；移除 `legacy/swift` 的旧源码、SwiftPM 清单、测试、夹具和说明，修正当前文档与产品输入清单。现有 Rust 测试入口仍有实际用途；历史验收记录不改写，运行中的应用、本地包、凭据、录音和私有证据不动，不自动录音。

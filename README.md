@@ -10,7 +10,7 @@ VoicePort 的产品目标是提供一个统一的桌面语音输入入口：**Ch
   <img src="docs/images/voiceport-hero.png" alt="VoicePort 产品方向图：ChatGPT、微信语音与更多识别引擎汇入同一个语音输入入口，再将文字送到当前光标。ChatGPT 标为已接入，微信语音、其他引擎和切换能力标为规划中。" width="880">
 </p>
 
-<p align="center">macOS 13+ · Rust 原生应用 · 当前开发版 0.3.0</p>
+<p align="center">macOS 13+ · Rust 原生应用 · 当前开发版 0.3.1</p>
 
 > **当前状态：** macOS 应用已实现录音、转写和受保护的自动输入路径；Orca 中的完整语音输入流程仍待真实试用确认。Windows 正在开发，尚不能用于桌面听写。上图及下方分镜均为通过 `image-use` 生成的概念示意，非应用截图或验收证据。
 
@@ -74,11 +74,13 @@ cargo fetch --locked
 # 离线构建 Rust 原生应用；输出目录必须尚不存在
 CARGO_NET_OFFLINE=true bash scripts/package_app.sh
 
-# 打开结果与设置窗口
-open dist/VoicePort.app --args --show-window
+# 正常启动即显示结果与设置窗口
+open dist/VoicePort.app
 ```
 
 应用默认生成在 `dist/VoicePort.app`。如果该路径已有旧包，使用 `VOICEPORT_APP_DIRECTORY="$PWD/dist/VoicePort-Rust.app" bash scripts/package_app.sh` 选择新的输出路径，再打开对应的新包。打包不会覆盖已有应用。运行打包后的应用无需安装 Rust 工具链；构建细节见 [打包说明](docs/PACKAGING.md)。
+
+应用提供蓝色麦克风图标和 Dock 入口，菜单栏显示麦克风及 `VP`。关闭设置窗口后应用继续运行，可点击 Dock 图标，或在菜单栏选择「打开结果与设置…」重新打开；重新打开应用也会恢复窗口。启动和重开窗口不会自动录音。快捷键注册冲突会显示在设置按钮上，可点击换一组。
 
 应用与 CLI 优先使用非空 `CODEX_HOME` 下的 `auth.json`，否则使用 `~/.codex/auth.json`；CLI 还支持优先级更高的 `--auth PATH`。目前只支持 ChatGPT 文件登录，尚不支持 API key、仅保存在 Keychain 中的登录或应用内刷新登录。
 

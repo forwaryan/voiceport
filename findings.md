@@ -1,5 +1,15 @@
 # 调研与发现
 
+## 2026-11-08 — AX权限同名旧条目重建后生效
+
+系统VoicePort switch=1与当前app AXIsProcessTrusted=false可同时存在；仅关开同名条目未修复。通过系统UI移除仅VoicePort条目、精确选择新包cursor-entry-20261108-9eaa1fc4/VoicePort.app重新添加后，原PID68143按钮实时变为「辅助功能：已授权（检查）」，无需退出进程，0秒/未录音。支持旧授权关联不匹配的判断，但未直接读取旧TCC条目的内部requirement；不能把推断写成已读取系统根因。面板旧失败文字仍保留，不等同当前权限状态。
+
+
+## 2026-11-08 — Orca 真实终端接收
+
+独立夹具 receiver-02 准确接收固定 `终端输入验证🙂` 共22个UTF-8字节，无Return；生产 Delivery::begin/deliver/poll 与原 CGEventPostToPid 分块发送路径通过。证据 dist/cursor-entry-20261108-9eaa1fc4。早期分散工具切焦尝试存在前台/活动tab漂移：两次拒写，另两次仅事件提交成功但指定receiver未收到，原报告保留不计通过。临时逐scalar实验也未获得独立receiver确认，已撤回，不能据此归因Chromium多字符事件问题。最终用单次有界脚本新建非执行夹具、确认ready、切换精确terminal、激活、立即探针并断言实际接收，原实现通过。GUI辅助输入尝试返回synthetic/unverified且活动工作区已变化，不作产品证据；无Return或命令发送。
+
+
 ## 2026-11-07 — 旧 Swift 清理
 
 - 原归档共37文件，其中35个 `.swift`、1个Python宿主夹具、1个README；都不参与当前构建。当前核心/App兼容测试脚本实际调用Cargo，仍有用途，应保留。
