@@ -1,5 +1,17 @@
 # 进度记录
 
+## 2026-11-09 — 用户要求全部远端PR独立审查后合并/同步/继续loop
+
+当前远端OPEN两项：PR16 3247fbbe980cd71afb8dd0e8ffddcbfa5f24c106（录音Stop失败lease释放，CI42501207977 success）；PR15 346aa61 draft（插件）。新读PR15 CI42504149552/job128803044901为failure：lib65pass/1ignored，但audio_storage unknown_session_content_prevents_drop_and_launch_deletion在tests/audio_storage.rs139 expected1 got0，新增未知根因；保留日志，不能只跟旧errno问题。计划提交strict诊断后freeze05，为两个PR各派独立实际agent；无阻断且精确版本CI通过再正常合并，base变化须重核，安全边界拉最新main继续loop。当前真实已完成压缩3次，第4轮；进入最后轮前要保存交接并处理cron停止证明缺口。
+
+Magpie msg_1f2761041272正式交付/停止私有写入，actual dabc00e9初始0、exited/released；报告/三文件patch已读，yetone/magpie固定b1e8eb15实际贡献是reviewed-head/完整日志/工作区归属，不声称有已证明的Orca CI DAG。候选尚未集成/独立审查，待本轮PR评审安全边界采纳，scheduler执行适配仍未交付。
+
+## 2026-11-09 — CI04未解决回执与诊断提交
+
+msg_fada07b8baca：隔离CI task_81587872fb63/ctx_a9bb43af05f5正式failed/unresolved，不能改为PASS。真实新1ccd3be3/term_80679010/初始最终0/当前helper/PreToolUse已核对，SessionStart未观察。75封存证据hash/bytes/mode、primary原始与isolated after快照及生产模块不变核对通过。原target本地pass、macOS65pass/1ignored、65owned group控制和workspace/fmt/strict clippy均通过，但未复现回收后EPERM，根因未定。只整合一处strict诊断：系统调用后立即取errno并记录cancel/PID/signed target，仍严格要求-1/ESRCH，无重试/放宽。准备新提交/冻结/独立复核及精确HEAD远端观察，以补日志缺失信息，不算原样盲重试或已修复。
+
+部署stage研究msg_f2724281be4d证明同UID恶意写者可绕过最终检查与保留fd；协调msg_404c9c9c878f显式选择本地协作部署范围：已知写者/消费者静止、独占锁、完整备份和stage身份校验，保留恶意syscall边界反例为未覆盖限制，不称通用D1-stage FIXED。该更强恶意同UID保证是我们额外引入，非用户原始要求；不扩展特权broker/系统认证。真实目标无法建立静止窗口则仍不apply，候选须按新契约独立验收。
+
 ## 2026-11-09 — freeze04独立完成、远端CI与规则并行闭环
 
 用户明确要求远端CI也loop修复、支持多个agent协作并参考Magpie完善规则。沿原Run新增隔离CI开发task_81587872fb63/ctx_a9bb43af05f5（ci-process-cleanup-04）和仅私有规则草稿task_a94ba83876a4/ctx_7dd1da129b80，不改当时公共冻结；原CLI保留。已建当前会话CronCreate f0ad2ff1每20分钟兜底，session-only/7日到期；真实轮换helper只识别ScheduleWakeup stop，CronDelete兼容缺口已明确交规则任务，退休需停止所有精确owned scheduler并留回执，未声称自动迁移。

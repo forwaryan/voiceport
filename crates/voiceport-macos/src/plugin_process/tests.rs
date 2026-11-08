@@ -108,10 +108,17 @@ fn cancellation_and_timeout_reap_owned_process_group() {
         assert!(now.elapsed() < Duration::from_secs(2));
         let pid = pid.expect("adapter was actually spawned");
         for target in [pid, -pid] {
-            assert_eq!(unsafe { libc::kill(target, 0) }, -1, "PID/group {target}");
+            let result = unsafe { libc::kill(target, 0) };
+            // Capture errno at the syscall, before assertions or diagnostics.
+            let errno = std::io::Error::last_os_error().raw_os_error();
             assert_eq!(
-                std::io::Error::last_os_error().raw_os_error(),
-                Some(libc::ESRCH)
+                result, -1,
+                "cancel={cancel_case} pid={pid} target={target} errno={errno:?}"
+            );
+            assert_eq!(
+                errno,
+                Some(libc::ESRCH),
+                "cancel={cancel_case} pid={pid} target={target} kill_result={result}"
             );
         }
     }

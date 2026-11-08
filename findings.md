@@ -1,5 +1,11 @@
 # 调研与发现
 
+## 2026-11-09 — errno诊断与部署并发范围澄清
+
+CI04两个独立诊断均未复现远端回收后EPERM。开发65owned process组控制只在退出过程的未同步观察者见到EPERM，wait后主线程全部ESRCH；公开XNU源码说明组存在但无可signal成员时可能EPERM，不能据此断定原远端走该路径。新诊断立即保存kill返回errno并输出cancel/正PID或负group，严格语义保持；用于下一次不同HEAD远端观测，不称修复或允许EPERM。
+
+保留stage fd/最后hash仍不能让macOS按名称rename绑定同一inode，同UID恶意写者可在syscall前替换；增加特权安装broker超出本机协作部署需要。协调显式采用已知写者和消费者静止的协作契约，独占锁与原字节/模式/descriptor校验/备份保持；恶意同UID反例保留为未覆盖限制，独立验收应明确契约变化而非悄悄改变失败oracle。实际目标静止无法证明则继续阻塞apply。
+
 ## 2026-11-09 — freeze04新发现与CI闭环规则需求
 
 R1安装result.prompt解析经独立78helper+20邻近控制FIXED；原D1父目录链接逃逸也已FIXED，但新proposal只重新检查target leaf与父目录，未绑定staging leaf。独立在os.replace前替换stage为symlink，脚本把链接安装到执行目标后才通过O_NOFOLLOW发现错误，因此proposal整体RETURNED；39绿色行为观测不能替代失败的目标安全断言。新方案须解决实际替换边界并明确同UID并发假设，不能仅在更早位置补lstat后声称消除了竞态。
