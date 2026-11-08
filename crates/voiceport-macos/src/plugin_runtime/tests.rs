@@ -4,7 +4,7 @@ use std::{
     net::TcpListener,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -16,6 +16,7 @@ struct Server {
     requests: mpsc::Receiver<Vec<u8>>,
     received: Arc<AtomicBool>,
     disconnected: Arc<AtomicBool>,
+    written: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
 }
@@ -61,6 +62,10 @@ impl Drop for Server {
     }
 }
 fn serve(response: Vec<u8>, delay: Duration) -> Server {
+    // Small buffers deliberately exercise backpressure and stop-aware cleanup.
+    serve_with_send_buffer(response, delay, 4096)
+}
+fn serve_with_send_buffer(response: Vec<u8>, delay: Duration, send_buffer: libc::c_int) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!(
@@ -71,6 +76,8 @@ fn serve(response: Vec<u8>, delay: Duration) -> Server {
     let stop = Arc::new(AtomicBool::new(false));
     let received = Arc::new(AtomicBool::new(false));
     let disconnected = Arc::new(AtomicBool::new(false));
+    let written = Arc::new(AtomicUsize::new(0));
+    let written_thread = written.clone();
     let (stop_thread, received_thread, disconnected_thread) =
         (stop.clone(), received.clone(), disconnected.clone());
     let handle = thread::spawn(move || {
@@ -89,8 +96,6 @@ fn serve(response: Vec<u8>, delay: Duration) -> Server {
             }
         };
         stream.set_nonblocking(true).unwrap();
-        // Force backpressure even on hosts with large default TCP buffers.
-        let send_buffer: libc::c_int = 4096;
         assert_eq!(
             unsafe {
                 libc::setsockopt(
@@ -164,7 +169,10 @@ fn serve(response: Vec<u8>, delay: Duration) -> Server {
         while active() && !disconnected_thread.load(Ordering::SeqCst) && written < response.len() {
             match stream.write(&response[written..]) {
                 Ok(0) => break,
-                Ok(n) => written += n,
+                Ok(n) => {
+                    written += n;
+                    written_thread.store(written, Ordering::SeqCst);
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(2))
                 }
@@ -194,6 +202,7 @@ fn serve(response: Vec<u8>, delay: Duration) -> Server {
         requests,
         received,
         disconnected,
+        written,
         stop,
         handle: Some(handle),
     }
@@ -301,36 +310,66 @@ async fn malformed_oversize_failure_and_redirect_are_bounded() {
     }
 }
 #[tokio::test]
-async fn redirect_status_is_not_followed_and_undeclared_response_size_is_bounded() {
-    for redirect in [true, false] {
-        let bytes = if redirect {
-            b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/never\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
-        } else {
-            let mut body = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
-            body.extend(vec![b'x'; MAX_RESPONSE + 1]);
-            body
-        };
-        let server = serve(bytes, Duration::ZERO);
-        let error = http(
+async fn redirect_status_is_not_followed() {
+    let server = serve(
+        b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/never\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+        Duration::ZERO,
+    );
+    let error = http(
+        &config(server.endpoint.clone()),
+        sample(),
+        "",
+        &CancellationToken::new(),
+        Duration::from_secs(2),
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("HTTP 302"), "{error}");
+    server.request();
+    server.finish().await;
+}
+#[tokio::test]
+async fn undeclared_response_size_accepts_exact_limit_and_rejects_one_more_byte() {
+    assert_eq!(MAX_RESPONSE, 1_000_000);
+    for size in [MAX_RESPONSE, MAX_RESPONSE + 1] {
+        // Both bodies are valid JSON, so success, parse failure, or timeout
+        // cannot stand in for the streaming size-limit branch.
+        let prefix = br#"{"text":""#;
+        let suffix = br#""}"#;
+        let text = "x".repeat(size - prefix.len() - suffix.len());
+        let mut bytes = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+        let headers = bytes.len();
+        bytes.extend(prefix);
+        bytes.extend(text.as_bytes());
+        bytes.extend(suffix);
+        assert_eq!(bytes.len() - headers, size);
+        // This test measures the response-size contract. Give its writer room
+        // for the full response instead of forcing 4KiB TCP backpressure to
+        // race the client's short timeout. Other fixtures retain that pressure.
+        let server = serve_with_send_buffer(bytes, Duration::ZERO, 2_000_000);
+        let written = server.written.clone();
+        let result = http(
             &config(server.endpoint.clone()),
             sample(),
             "",
             &CancellationToken::new(),
-            Duration::from_secs(2),
-            Duration::from_secs(1),
+            // Test-only safety deadlines exceed the server's bounded 5s life.
+            // Timeout/cancellation expectations have their own test below.
+            Duration::from_secs(30),
+            Duration::from_secs(10),
         )
-        .await
-        .unwrap_err();
-        assert!(
-            error.contains(if redirect {
-                "HTTP 302"
-            } else {
-                "超过大小限制"
-            }),
-            "{error}"
-        );
+        .await;
         server.request();
         server.finish().await;
+        let sent = written.load(Ordering::SeqCst);
+        assert_eq!(sent, headers + size, "fixture did not send the boundary");
+        if size == MAX_RESPONSE {
+            assert_eq!(result.unwrap(), text);
+        } else {
+            assert_eq!(result.unwrap_err(), "转写响应超过大小限制。");
+        }
+        eprintln!("undeclared response: {size} body bytes, {sent} wire bytes, joined fixture");
     }
 }
 #[tokio::test]
@@ -427,6 +466,48 @@ async fn fixture_cleanup_handles_no_request_partial_upload_and_assertion_failure
     }));
     assert!(failure.is_err());
     assert_eq!(Arc::strong_count(&stopped), 1);
+
+    // Fail an assertion while the small-buffer writer has a non-reading peer.
+    // Drop must stop and join it even though the response cannot be completed.
+    let server = serve(vec![b'x'; 8_000_000], Duration::ZERO);
+    let endpoint = reqwest::Url::parse(&server.endpoint).unwrap();
+    let address = format!("127.0.0.1:{}", endpoint.port().unwrap())
+        .parse()
+        .unwrap();
+    let mut peer = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1)).unwrap();
+    peer.set_write_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    peer.write_all(b"POST / HTTP/1.1\r\nContent-Length: 0\r\n\r\n")
+        .unwrap();
+    server.request();
+    let started = Instant::now();
+    while server.written.load(Ordering::SeqCst) == 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "writer never started"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert!(server.written.load(Ordering::SeqCst) < 8_000_000);
+    assert!(!server.handle.as_ref().unwrap().is_finished());
+    let stopped = server.stop.clone();
+    let written = server.written.clone();
+    let started = Instant::now();
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _owned = server;
+        panic!("deliberate assertion failure during a backpressured response");
+    }));
+    assert!(failure.is_err());
+    assert!(stopped.load(Ordering::SeqCst));
+    assert_eq!(Arc::strong_count(&stopped), 1);
+    assert!(written.load(Ordering::SeqCst) < 8_000_000);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    eprintln!(
+        "backpressured assertion cleanup: {} wire bytes, joined in {:?}",
+        written.load(Ordering::SeqCst),
+        started.elapsed()
+    );
+    drop(peer);
 }
 #[test]
 fn documented_reference_manifest_generates_loads_and_transcribes_controlled_http() {
