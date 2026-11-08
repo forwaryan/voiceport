@@ -264,6 +264,10 @@ impl Controller {
                 }
             }
             Err(message) => {
+                // This recording cannot be retried. Release capture/controller
+                // references; an active local Job keeps its lease until completion.
+                self.recorder.cancel();
+                self.recording = None;
                 self.state.phase = Phase::Failed;
                 if let Some(active) = &self.active {
                     active.cancel.cancel();
@@ -568,12 +572,400 @@ impl Controller {
     }
 }
 
+// Compiled into tests/stop_failure.rs, whose custom harness runs on the OS
+// main thread. Ordinary libtest threads cannot exercise native Recorder.stop.
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) mod stop_failure_regression {
+    use super::*;
+    use crate::audio::stop_failure_fixture::{self, Input};
+    use crate::storage::{NAMESPACE, Storage};
+    use objc2::MainThreadMarker;
+    use std::{
+        fs::File, os::fd::AsRawFd, path::PathBuf, sync::Weak, thread::JoinHandle, time::Duration,
+    };
+
+    const STOP_ERROR: &str = "无法写入完整录音，请重新录音。";
+    const WRITE_ERROR: &str = "录音写入失败，请重新录音：录音文件已关闭。";
+    const PREVIEW: &str = "synthetic local preview";
+
+    struct Fixture {
+        controller: Controller,
+        recording: Weak<Recording>,
+        audio: PathBuf,
+        lease: File,
+        _temp: tempfile::TempDir,
+    }
+
+    impl Fixture {
+        fn new(input: Input) -> Self {
+            assert!(MainThreadMarker::new().is_some());
+            let temp = tempfile::tempdir().unwrap();
+            let store = Storage::at(temp.path().canonicalize().unwrap().join(NAMESPACE));
+            let mut controller = Controller::new();
+            controller.automatic = false;
+            let generation = controller.state.begin().unwrap();
+            assert!(controller.state.permissions(generation, true));
+            let (recorder, recording, audio) = stop_failure_fixture::recorder(
+                &store,
+                generation,
+                controller.events_tx.clone(),
+                input,
+            );
+            controller.recorder = recorder;
+            controller.transcript = PREVIEW.into();
+            controller.preview_status = "synthetic preview status".into();
+            controller.started = Some(Instant::now());
+            let lease = File::open(audio.parent().unwrap().join("lease")).unwrap();
+            let fixture = Self {
+                controller,
+                recording,
+                audio,
+                lease,
+                _temp: temp,
+            };
+            assert!(fixture.lease_active());
+            assert!(fixture.recording.upgrade().is_some());
+            fixture
+        }
+
+        // An independent descriptor probes the actual kernel flock, including
+        // after the lease pathname has been unlinked. No cleanup clock or delete
+        // operation can make the resource assertions pass.
+        fn lease_active(&self) -> bool {
+            let fd = self.lease.as_raw_fd();
+            if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                assert_eq!(unsafe { libc::flock(fd, libc::LOCK_UN) }, 0);
+                false
+            } else {
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::EWOULDBLOCK)
+                );
+                true
+            }
+        }
+
+        fn released(&self, case: &str, stage: &str) -> bool {
+            let c = &self.controller;
+            let recorder_audio = stop_failure_fixture::owns_recording(&c.recorder);
+            let controller_audio = c.recording.is_some();
+            let live_audio = self.recording.upgrade().is_some();
+            let audio_exists = self.audio.exists();
+            let session_exists = self.audio.parent().unwrap().exists();
+            let lease_active = self.lease_active();
+            println!(
+                "{}",
+                serde_json::json!({
+                    "case": case, "stage": stage, "os_main_thread": MainThreadMarker::new().is_some(),
+                    "phase": format!("{:?}", c.state.phase), "retry": c.state.retry_available,
+                    "active_job": c.active.is_some(), "recorder_audio": recorder_audio,
+                    "controller_audio": controller_audio, "live_audio": live_audio,
+                    "audio_exists": audio_exists, "session_exists": session_exists,
+                    "lease_active": lease_active, "message": c.message,
+                })
+            );
+            !recorder_audio
+                && !controller_audio
+                && !live_audio
+                && !audio_exists
+                && !session_exists
+                && !lease_active
+        }
+    }
+
+    fn local_failure(case: &str) {
+        let mut fixture = Fixture::new(if case == "zero" {
+            Input::Empty
+        } else {
+            Input::Damaged
+        });
+        if case != "zero" {
+            // Inspect and restore the single real Sink event, without fabricating
+            // a failure or changing its generation or its order relative to Stop.
+            let event = fixture.controller.events.try_recv().unwrap();
+            assert_eq!(
+                event,
+                (
+                    fixture.controller.state.generation(),
+                    AudioEvent::Failed(WRITE_ERROR.into())
+                )
+            );
+            println!("{case}: real Sink.consume event={event:?}");
+            assert!(fixture.controller.events.try_recv().is_err());
+            fixture.controller.events_tx.send(event).unwrap();
+        }
+        if case == "poll-first" {
+            fixture.controller.poll();
+            assert_eq!(fixture.controller.message, WRITE_ERROR);
+        }
+        fixture.controller.stop();
+        let immediate = fixture.released(case, "immediate");
+        fixture.controller.poll();
+        let after_poll = fixture.released(case, "after-poll");
+        let c = &fixture.controller;
+        assert_eq!(c.state.phase, Phase::Failed);
+        assert!(!c.state.retry_available);
+        assert!(c.active.is_none() && c.worker.is_none());
+        assert!(c.started.is_none());
+        assert_eq!(c.transcript, PREVIEW);
+        assert_eq!(c.preview_status, "synthetic preview status");
+        assert_eq!(
+            c.message,
+            if case == "poll-first" {
+                WRITE_ERROR
+            } else {
+                STOP_ERROR
+            }
+        );
+        assert!(
+            immediate && after_poll,
+            "a non-retryable local Stop failure must release recording references, session files and the real flock before returning and after poll"
+        );
+    }
+
+    struct WorkerControl {
+        started: Receiver<u64>,
+        reply: Sender<Result<String, String>>,
+        published: Receiver<()>,
+        outgoing: Sender<Completion>,
+        thread: JoinHandle<()>,
+    }
+
+    // A controlled service substitute receives actual production Job values
+    // from submit(). A real thread owns each Arc and publishes completion only
+    // after dropping that Job, matching Worker's resource ordering. No auth or
+    // network client is constructed and no join is used to claim UI completion.
+    fn controlled_worker(c: &mut Controller, count: usize) -> WorkerControl {
+        let (jobs, incoming) = mpsc::sync_channel::<Job>(1);
+        let (outgoing, results) = mpsc::channel();
+        let (started_tx, started) = mpsc::channel();
+        let (reply, responses) = mpsc::channel();
+        let (published_tx, published) = mpsc::channel();
+        let completion = outgoing.clone();
+        let thread = std::thread::spawn(move || {
+            for _ in 0..count {
+                let job = incoming.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert!(job.recording.path().exists());
+                let generation = job.generation;
+                started_tx.send(generation).unwrap();
+                let result = responses.recv_timeout(Duration::from_secs(5)).unwrap();
+                drop(job);
+                completion.send(Completion { generation, result }).unwrap();
+                published_tx.send(()).unwrap();
+            }
+        });
+        c.worker = Some(Worker { jobs, results });
+        WorkerControl {
+            started,
+            reply,
+            published,
+            outgoing,
+            thread,
+        }
+    }
+
+    fn retry_preserves_recording() {
+        let mut fixture = Fixture::new(Input::Valid);
+        let control = controlled_worker(&mut fixture.controller, 2);
+        fixture.controller.stop();
+        let first = control
+            .started
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(fixture.controller.state.phase, Phase::Transcribing);
+        control
+            .reply
+            .send(Err("synthetic transcription failure".into()))
+            .unwrap();
+        control
+            .published
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        fixture.controller.poll();
+        assert_eq!(fixture.controller.state.phase, Phase::Failed);
+        assert!(fixture.controller.state.retry_available);
+        assert_eq!(
+            fixture.controller.message,
+            "synthetic transcription failure"
+        );
+        assert!(
+            fixture.recording.upgrade().is_some()
+                && fixture.audio.exists()
+                && fixture.lease_active()
+        );
+        assert!(stop_failure_fixture::owns_recording(
+            &fixture.controller.recorder
+        ));
+        assert!(fixture.controller.recording.is_some());
+        fixture.controller.retry();
+        let current = control
+            .started
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert_ne!(current, first);
+        for _ in 0..2 {
+            control
+                .outgoing
+                .send(Completion {
+                    generation: first,
+                    result: Ok("stale result".into()),
+                })
+                .unwrap();
+            fixture.controller.poll();
+            assert_eq!(
+                fixture.controller.active.as_ref().unwrap().generation,
+                current
+            );
+            assert_eq!(fixture.controller.state.phase, Phase::Transcribing);
+            assert_eq!(fixture.controller.transcript, PREVIEW);
+            assert!(fixture.recording.upgrade().is_some() && fixture.lease_active());
+        }
+        control
+            .reply
+            .send(Ok("synthetic final transcription".into()))
+            .unwrap();
+        control
+            .published
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        fixture.controller.poll();
+        assert_eq!(fixture.controller.state.phase, Phase::Ready);
+        assert!(!fixture.controller.state.retry_available);
+        assert_eq!(
+            fixture.controller.transcript,
+            "synthetic final transcription"
+        );
+        assert!(fixture.released("retry", "matching-success"));
+        control.thread.join().unwrap();
+    }
+
+    fn cancellation_waits_for_recording_release() {
+        let mut fixture = Fixture::new(Input::Valid);
+        let control = controlled_worker(&mut fixture.controller, 1);
+        fixture.controller.stop();
+        let generation = control
+            .started
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let token = fixture.controller.active.as_ref().unwrap().cancel.clone();
+        fixture.controller.cancel();
+        fixture.controller.cancel();
+        fixture.controller.poll();
+        assert!(token.is_cancelled());
+        assert_eq!(fixture.controller.state.phase, Phase::Stopping);
+        assert!(
+            fixture.recording.upgrade().is_some()
+                && fixture.audio.exists()
+                && fixture.lease_active()
+        );
+        control
+            .outgoing
+            .send(Completion {
+                generation: generation - 1,
+                result: Ok("stale".into()),
+            })
+            .unwrap();
+        fixture.controller.poll();
+        assert_eq!(fixture.controller.state.phase, Phase::Stopping);
+        assert!(fixture.controller.active.is_some() && fixture.lease_active());
+        control.reply.send(Ok("cancelled result".into())).unwrap();
+        control
+            .published
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        fixture.controller.poll();
+        assert_eq!(fixture.controller.state.phase, Phase::Idle);
+        assert!(!fixture.controller.state.retry_available);
+        assert_eq!(fixture.controller.transcript, PREVIEW);
+        assert!(fixture.released("cancel", "matching-completion"));
+        control.thread.join().unwrap();
+    }
+
+    fn local_stop_failure_waits_for_worker() {
+        let mut fixture = Fixture::new(Input::Damaged);
+        let c = &mut fixture.controller;
+        c.recorded_source = SessionSource::Local(crate::local_models::Model {
+            kind: crate::local_models::ModelKind::Paraformer,
+            directory: "/synthetic/model".into(),
+            runtime: "/synthetic/runtime".into(),
+            encoder: "/synthetic/encoder".into(),
+            decoder: "/synthetic/decoder".into(),
+            tokens: "/synthetic/tokens".into(),
+        });
+        c.recording = c.recorder.lease();
+        let control = controlled_worker(c, 1);
+        let (_input, incoming) = crate::local_audio::channel();
+        c.submit_input(Some(incoming));
+        let generation = control
+            .started
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let token = c.active.as_ref().unwrap().cancel.clone();
+        assert_eq!(c.state.phase, Phase::Recording);
+        c.stop();
+        assert_eq!(c.message, STOP_ERROR);
+        assert!(token.is_cancelled());
+        assert_eq!(c.state.phase, Phase::Stopping);
+        assert!(!c.state.retry_available && !c.state.can_start());
+        assert!(
+            fixture.recording.upgrade().is_some()
+                && fixture.audio.exists()
+                && fixture.lease_active()
+        );
+        // Drain the real queued Sink failure and a stale completion. Neither
+        // may settle this active local Job or release its file/lock early.
+        control
+            .outgoing
+            .send(Completion {
+                generation: generation - 1,
+                result: Ok("stale local result".into()),
+            })
+            .unwrap();
+        fixture.controller.poll();
+        assert_eq!(fixture.controller.state.phase, Phase::Stopping);
+        assert!(fixture.controller.active.is_some() && fixture.lease_active());
+        assert_eq!(fixture.controller.message, STOP_ERROR);
+        control
+            .reply
+            .send(Ok("cancelled local result".into()))
+            .unwrap();
+        control
+            .published
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        fixture.controller.poll();
+        let c = &fixture.controller;
+        assert_eq!(c.state.phase, Phase::Failed);
+        assert!(!c.state.retry_available && c.active.is_none());
+        assert_eq!(c.message, STOP_ERROR);
+        assert_eq!(c.transcript, PREVIEW);
+        assert_eq!(c.preview_status, "synthetic preview status");
+        assert!(fixture.released("local-stop-failure", "matching-completion"));
+        control.thread.join().unwrap();
+    }
+
+    pub(crate) fn run(case: &str, _main_thread: MainThreadMarker) {
+        assert!(MainThreadMarker::new().is_some());
+        match case {
+            "zero" | "stop-first" | "poll-first" => local_failure(case),
+            "retry" => retry_preserves_recording(),
+            "cancel" => cancellation_waits_for_recording_release(),
+            "local-stop-failure" => local_stop_failure_waits_for_worker(),
+            _ => panic!("unknown stop_failure case: {case}"),
+        }
+        println!("stop_failure: {case} passed");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // Tests use inert device/delivery constructors and synthetic leased storage.
     // None requests permissions, starts capture/inference, or contacts a service.
+    // The separate OS-main-thread stop_failure target exercises real isolated
+    // recordings and Job Arcs with a controlled transcription worker.
     fn transcribing() -> Controller {
         let mut c = Controller::new();
         let generation = c.state.begin().unwrap();

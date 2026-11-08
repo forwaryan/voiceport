@@ -997,6 +997,82 @@ fn validate_aac(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Private native fixture used only by the OS-main-thread regression target.
+/// It installs no engine/tap/Speech object and never queries permissions.
+#[cfg(test)]
+#[allow(dead_code)] // Called by the separately compiled main-thread test target.
+pub(crate) mod stop_failure_fixture {
+    use super::*;
+    use std::{path::PathBuf, sync::Weak};
+
+    pub(crate) enum Input {
+        Empty,
+        Damaged,
+        Valid,
+    }
+
+    pub(crate) fn recorder(
+        store: &storage::Storage,
+        generation: u64,
+        sender: EventSender,
+        input: Input,
+    ) -> (Recorder, Weak<Recording>, PathBuf) {
+        main_thread().unwrap();
+        let recording = Arc::new(store.create_recording().unwrap());
+        let path = recording.path().to_path_buf();
+        let weak = Arc::downgrade(&recording);
+        let (format, buffer) = tests::synthetic_buffer(48_000.0, 1, 4800);
+        let writer = AacWriter::new(recording.path(), &format).unwrap();
+        recording.secure_audio_file().unwrap();
+        let events = Arc::new(Events {
+            generation,
+            sender,
+            active: AtomicBool::new(true),
+        });
+        let sink = Arc::new(Sink {
+            state: Mutex::new(SinkState {
+                format,
+                maximum_frames: 48_000 * MAXIMUM_SECONDS,
+                frames: 0,
+                accepting: true,
+                valid: true,
+                writer: Some(writer),
+                request: None,
+                local: None,
+                local_error: None,
+            }),
+            events: events.clone(),
+            speech_active: Arc::new(AtomicBool::new(false)),
+        });
+        if !matches!(input, Input::Empty) {
+            for _ in 0..3 {
+                sink.consume(&buffer);
+            }
+            let state = sink.state.lock().unwrap();
+            assert!(state.valid);
+            assert_eq!(state.frames, 14_400);
+        }
+        if matches!(input, Input::Damaged) {
+            // Same unavailable-AVAudioFile injection as the native writer unit
+            // test. The actual consume method emits the generation-tagged event.
+            sink.state.lock().unwrap().writer.as_mut().unwrap().file = None;
+            sink.consume(&buffer);
+            let state = sink.state.lock().unwrap();
+            assert!(!state.valid && !state.accepting);
+            assert_eq!(state.frames, 14_400);
+        }
+        let mut recorder = Recorder::new();
+        recorder.recording = Some(recording);
+        recorder.sink = Some(sink);
+        recorder.events = Some(events);
+        (recorder, weak, path)
+    }
+
+    pub(crate) fn owns_recording(recorder: &Recorder) -> bool {
+        recorder.recording.is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1088,7 +1164,7 @@ mod tests {
         assert_eq!(resolve_locale("ja", &supported, &[]), None);
     }
 
-    fn synthetic_buffer(
+    pub(super) fn synthetic_buffer(
         rate: f64,
         channels: u32,
         frames: u32,
