@@ -12,6 +12,7 @@ use objc2_foundation::{
     NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSUserDefaults, ns_string,
 };
 use std::cell::{Cell, OnceCell, RefCell};
+mod picker;
 mod source_manager;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -181,8 +182,8 @@ define_class!(
             if self.ivars().permission_rx.borrow().is_some() { return; }
             self.with_controller(|c| {
                 if c.busy() { return; }
-                let index = self.ivars().source.get().map(|control| control.indexOfSelectedItem()).unwrap_or(-1);
-                if let Some((id, _)) = usize::try_from(index).ok().and_then(|i| self.ivars().source_rows.borrow().get(i).cloned()) {
+                if let Some(id) = self.ivars().source.get().and_then(|control| picker::selected_id(control))
+                    && c.catalog.entries.iter().any(|entry| entry.id == id) {
                     c.source_id = id;
                     unsafe { NSUserDefaults::standardUserDefaults().setObject_forKey(Some(&NSString::from_str(&c.source_id)), ns_string!("transcriptionSource")); }
                 }
@@ -920,24 +921,10 @@ impl Delegate {
                 .map(|entry| (entry.id.clone(), entry.title.clone()))
                 .collect();
             if *self.ivars().source_rows.borrow() != rows {
-                control.removeAllItems();
-                for (_, title) in &rows {
-                    control.addItemWithTitle(&NSString::from_str(title));
-                }
+                picker::set_rows(control, &rows);
                 *self.ivars().source_rows.borrow_mut() = rows;
             }
-            let selected = self
-                .ivars()
-                .source_rows
-                .borrow()
-                .iter()
-                .position(|(id, _)| id == &c.source_id)
-                .map(|i| i as isize);
-            if let Some(selected) = selected
-                && control.indexOfSelectedItem() != selected
-            {
-                control.selectItemAtIndex(selected);
-            }
+            picker::select_id(control, &c.source_id);
             if control.isEnabled() != idle {
                 control.setEnabled(idle);
             }

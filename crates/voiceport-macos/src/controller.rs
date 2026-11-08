@@ -813,7 +813,13 @@ pub(crate) mod stop_failure_regression {
         let thread = std::thread::spawn(move || {
             for _ in 0..count {
                 let job = incoming.recv_timeout(Duration::from_secs(5)).unwrap();
-                assert!(job.recording.path().exists());
+                assert!(
+                    job.recording
+                        .as_ref()
+                        .expect("synthetic job must own a recording")
+                        .path()
+                        .exists()
+                );
                 let generation = job.generation;
                 started_tx.send(generation).unwrap();
                 let result = responses.recv_timeout(Duration::from_secs(5)).unwrap();

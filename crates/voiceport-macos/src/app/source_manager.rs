@@ -17,15 +17,13 @@ fn alert(d: &Delegate, title: &str, detail: &str, buttons: &[&str]) -> Retained<
 fn error(d: &Delegate, message: &str) {
     alert(d, "来源配置未完成", message, &["好"]).runModal();
 }
-fn popup(d: &Delegate, labels: &[String]) -> Retained<NSPopUpButton> {
+fn popup(d: &Delegate, rows: &[(String, String)]) -> Retained<NSPopUpButton> {
     let p = NSPopUpButton::initWithFrame_pullsDown(
         NSPopUpButton::alloc(d.mtm()),
         rect(0., 0., 480., 30.),
         false,
     );
-    for label in labels {
-        p.addItemWithTitle(&NSString::from_str(label));
-    }
+    picker::set_rows(&p, rows);
     p
 }
 fn save(d: &Delegate, store: &Store, path: &Path) -> Result<(), String> {
@@ -56,30 +54,42 @@ fn manage_result(d: &Delegate) -> Result<(), String> {
             "关闭",
         ],
     );
-    let labels: Vec<_> = store
+    let rows: Vec<_> = store
         .sources
         .iter()
         .map(|s| {
-            format!(
-                "{} · {}{}",
-                s.name,
-                s.plugin_id,
-                if s.enabled { "" } else { "（未启用）" }
+            (
+                s.id.clone(),
+                format!(
+                    "{} · {}{}",
+                    s.name,
+                    s.plugin_id,
+                    if s.enabled { "" } else { "（未启用）" }
+                ),
             )
         })
         .collect();
-    let choice = popup(d, &labels);
+    let choice = popup(d, &rows);
     choice.setAccessibilityLabel(Some(ns_string!("要管理的自定义来源")));
     a.setAccessoryView(Some(&choice));
     match a.runModal() {
         1000 => edit(d, &mut store, &path, None)?,
         1001 => {
-            let i = usize::try_from(choice.indexOfSelectedItem())
-                .map_err(|_| "请先添加或选择来源。")?;
+            let id = picker::selected_id(&choice).ok_or("请先添加或选择来源。")?;
+            let i = store
+                .sources
+                .iter()
+                .position(|s| s.id == id)
+                .ok_or("来源不存在。")?;
             edit(d, &mut store, &path, Some(i))?;
         }
         1002 => {
-            let i = usize::try_from(choice.indexOfSelectedItem()).map_err(|_| "请先选择来源。")?;
+            let id = picker::selected_id(&choice).ok_or("请先选择来源。")?;
+            let i = store
+                .sources
+                .iter()
+                .position(|s| s.id == id)
+                .ok_or("来源不存在。")?;
             let source = store.sources.get(i).ok_or("来源不存在。")?.clone();
             if alert(
                 d,
@@ -183,13 +193,18 @@ fn choose_plugin(d: &Delegate, store: &Store, old: Option<&Source>) -> Option<Ma
         .into_iter()
         .filter(|p| matches!(p.adapter, Adapter::Http | Adapter::Jsonl))
         .collect();
-    let labels: Vec<_> = plugins
+    let rows: Vec<_> = plugins
         .iter()
-        .map(|p| format!("{} · {} · 停止后转写", p.name, p.version))
+        .map(|p| {
+            (
+                p.id.clone(),
+                format!("{} · {} · 停止后转写", p.name, p.version),
+            )
+        })
         .collect();
-    let choice = popup(d, &labels);
-    if let Some(i) = old.and_then(|s| plugins.iter().position(|p| p.id == s.plugin_id)) {
-        choice.selectItemAtIndex(i as isize);
+    let choice = popup(d, &rows);
+    if let Some(plugin) = old.and_then(|s| plugins.iter().find(|p| p.id == s.plugin_id)) {
+        picker::select_id(&choice, &plugin.id);
     }
     let a = alert(
         d,
@@ -201,9 +216,8 @@ fn choose_plugin(d: &Delegate, store: &Store, old: Option<&Source>) -> Option<Ma
     if a.runModal() != 1000 {
         return None;
     }
-    usize::try_from(choice.indexOfSelectedItem())
-        .ok()
-        .and_then(|i| plugins.get(i).cloned())
+    let id = picker::selected_id(&choice)?;
+    plugins.into_iter().find(|p| p.id == id)
 }
 fn edit(d: &Delegate, store: &mut Store, path: &Path, index: Option<usize>) -> Result<(), String> {
     let old = index.and_then(|i| store.sources.get(i)).cloned();

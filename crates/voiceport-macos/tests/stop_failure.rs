@@ -21,6 +21,18 @@ mod local_models;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/local_runtime.rs"]
 mod local_runtime;
+// Use the source directory as the module root so each plugin module's nested
+// test file resolves normally, rather than resolving both as src/tests.rs.
+#[cfg(target_os = "macos")]
+#[allow(dead_code, unused_imports)]
+#[path = "../src"]
+mod plugin_dependencies {
+    pub(crate) mod plugin_credentials;
+    pub(crate) mod plugin_process;
+    pub(crate) mod plugin_runtime;
+}
+#[cfg(target_os = "macos")]
+use plugin_dependencies::{plugin_credentials, plugin_process, plugin_runtime};
 #[cfg(target_os = "macos")]
 #[allow(dead_code, unused_imports)] // Its libtest-only imports are inert in this harness.
 #[path = "../src/proxy.rs"]
@@ -30,7 +42,7 @@ mod proxy;
 #[path = "../src/storage.rs"]
 mod storage;
 #[cfg(target_os = "macos")]
-use voiceport_macos::{delivery, lifecycle};
+use voiceport_macos::{delivery, lifecycle, plugins};
 
 #[cfg(target_os = "macos")]
 fn main() {
