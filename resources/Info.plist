@@ -12,7 +12,7 @@
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>VoicePort 仅使用麦克风录制你主动开始的语音；选择本地模型时，音频在本机处理；仅在你选择 ChatGPT 时，音频才会上传至 ChatGPT 听写服务生成文字。</string>
+    <key>NSMicrophoneUsageDescription</key><string>VoicePort 仅使用麦克风录制你主动开始的语音；选择内置本地模型时，音频在本机处理；选择 ChatGPT 或自定义服务时，音频仅发送至你选定的服务；选择外部插件时，音频交给你显式启用的本地适配器，适配器可能联网。</string>
     <key>NSSpeechRecognitionUsageDescription</key><string>VoicePort 在你主动录音时使用本机语音识别，让文字实时出现在原输入框；本机识别不可用时仅在停录后转写。</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>

@@ -1,5 +1,19 @@
 # 调研与发现
 
+## 2026-11-08 — 插件开发交付与独立验收缺口
+
+开发采用内置HTTP和外部JSONL v1 batch适配器；一个descriptor定义插件，Source稳定ID保存配置，多实例与独立Keychain revision引用并存。外部适配器env_clear、根工作目录、JSONL stdin音频与选定配置、有界非阻塞stdout/stderr、自建进程组和后台kill/wait；不是恶意代码沙箱，协议明确禁止派生/逃离进程组。样例是显式确认的一秒静音，不能证明真实ASR识别准确率。
+
+开发61项macOS通过/1个原有真实模型测试显式忽略、完整17步与输入一致已交付；协调独立核对交付20项、34原始日志hash及3个实际产物，未重跑委派测试。报告明确未做完整GUI和原生Security framework Keychain存取，必须补不同真实会话的隔离App/临时HOME配置和唯一测试条目实测；不得读取用户既有来源、认证或改真实偏好。整合README/SOLUTION后应产生新的最终冻结摘要，不继续把开发1793d204…当整合版本。
+
+## 2026-11-08 — 自定义来源与插件边界
+
+当前Catalog仅有ChatGPT与两种已知Orca模型，SessionSource只有ChatGpt/Local；并无自定义客户端或管理UI。voiceport-core的ChatGPT客户端故意固定端点且加载Codex认证，不能通过开放endpoint参数实现通用服务，否则会破坏凭据边界。控制器中以is_local反推系统Speech/云端路径的分支需要改为明确能力与适配器派发。
+
+本轮用户明确提出一个插件代表一种接入方式。同一插件应允许多个来源实例，插件描述协议/配置/实时能力，来源保存独立端点/模型/认证；来源在开始录音及重试时固定。第一版必须有实际可加载新增插件的扩展路径，不能只有新名称或硬编码枚举。通用HTTP只能承诺停录后转写，任意ONNX或WebSocket需对应适配器。
+
+新增实现从当前main d3af863开始；README/SOLUTION/CUSTOM_SOURCES三项方案文档已存在但未实现。新Run独立于已完成本地模型Run与旧VP013。真实协调session状态已记录2次已完成压缩、terminal/helper匹配；旧协调lease的requested状态不重置、不冒领。
+
 ## 2026-11-08 — 本地原生运行时实现与实测边界
 
 开发已采用准确sherpa-onnx v1.12.37 C头文件与C++小桥，经系统clang++/ar编译后Rust动态加载Orca外部C API及相邻ONNX Runtime，无Node/PATH依赖、额外模型下载或模型复制。仅当前arm64固定安装/版本可用；常规C++异常变错误，底层原生abort不可恢复，取消等单个native调用返回后释放，不阻塞UI等待join。

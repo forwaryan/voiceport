@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "protocol_version": 1,
+  "id": "example.compatible-http",
+  "version": "1.0.0",
+  "name": "参考 HTTP 适配器（Python）",
+  "origin": "VoicePort source example; inspect reference_adapter.py before enabling",
+  "adapter": "jsonl",
+  "capabilities": {"batch": true, "streaming": false, "system_preview": false},
+  "fields": [
+    {"id": "endpoint", "label": "完整转写地址", "kind": "url", "required": true},
+    {"id": "model", "label": "模型标识", "kind": "string", "required": true},
+    {"id": "api_key", "label": "独立 Bearer API key", "kind": "secret", "required": false}
+  ],
+  "program": {
+    "executable": "/usr/bin/python3",
+    "args": ["-I", "/absolute/path/to/reference_adapter.py"]
+  }
+}

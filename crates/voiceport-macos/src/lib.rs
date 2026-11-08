@@ -11,6 +11,14 @@ pub mod local_models;
 #[cfg(target_os = "macos")]
 mod local_runtime;
 #[cfg(target_os = "macos")]
+mod plugin_credentials;
+#[cfg(target_os = "macos")]
+mod plugin_process;
+#[cfg(target_os = "macos")]
+mod plugin_runtime;
+#[cfg(target_os = "macos")]
+pub mod plugins;
+#[cfg(target_os = "macos")]
 mod proxy;
 #[cfg(target_os = "macos")]
 mod status_icon;

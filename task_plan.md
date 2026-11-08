@@ -1,5 +1,16 @@
 # VoicePort 实施计划
 
+## 2026-11-08 当前任务：插件式转写来源与真实验证
+
+用户在自定义来源方案后明确要求实际实现并测试，随后要求类似 harness 的插件机制：一个插件代表一种接入方式，并 loop 持续完成。每次听写只使用一个来源；同一插件可配置多个独立来源。不要求安装 Orca，不扩展为多服务对比或词典。
+
+- P1（complete）：新Run run_a9b3754f7871已注册；插件/来源实例/能力/凭据边界和自包含交接已完成。当前协调者实际 session637eb70f、terminal term_dbb1ea5d、真实 hook helper014eeb1e及2次已完成压缩已核对；旧VP013 requested lease/attempt保留不接管。新目标产品关联unbound，基线main d3af863，分支feat/transcription-plugins，保留三项方案文档修改。
+- P2（complete，开发自检）：真实开发sessiondf6fa345/task_38af9f83182c/ctx_3f257aa3b76f正式worker_done msg_dce1e74219cf并停写。20项源码/文档/许可输入、61个macOS测试通过与1个原有真实模型测试忽略、完整17步通过；协调核对20项实际/快照字节、34份原始日志、3个产物与产品摘要1793d204…，未重跑开发测试。真实PreToolUse/helper/精确terminal/首次和最终0已核对，SessionStart未观察。只有开发自检，GUI及原生Keychain未验。
+- P3（in_progress，冻结准备）：协调已集成README/SOLUTION与根记录，先保存开发checkpoint再完整冻结，由不同真实会话独立审查、运行反例并验证实际App界面和合成专用Keychain。覆盖新增插件加载、配置持久化、HTTP请求/错误/取消、认证隔离及已有来源；需返修时保留失败和原版本证据。
+- P4（pending）：验收后按持续授权正常commit/push/PR/CI/merge与main同步，交付验证过的新包并停止loop。不得用方案文档、编译或固定文本测试替代实际已实现能力/真实识别效果；未测真实录音及云端列明。
+
+边界：不自动录音、不读取真实账号/无关输入、不上传真实音频、不操作真实输入目标；合成音频与受控本机服务可用于验证。保留当前运行App和所有旧构建/快照/报告，不修改Orca模型、偏好或系统信任。
+
 ## 2026-11-08 当前任务：复用 Orca 本地语音模型与来源选择
 
 用户明确要求复用 Orca 已下载的本地语音模型，在原生设置中下拉选择单一转写来源；Paraformer 提供实时预览及本地最终结果，Whisper Tiny 停录后本地识别，保留 ChatGPT 选项，不做多源对比或词典。

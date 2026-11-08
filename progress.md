@@ -1,5 +1,23 @@
 # 进度记录
 
+## 2026-11-08 — 插件开发正式交付与完整冻结准备
+
+明确唤醒check收到worker_done msg_dce1e74219cf，真实task_38af9f83182c/ctx_3f257aa3b76f succeeded且声明停写；实际开发sessiondf6fa345，初始/最终0，PreToolUse证明及SessionStart未观察保持。报告`.voiceport/evidence/transcription-plugins-development-20261108/report.md`已读，开发实现HTTP与JSONL插件/参考清单、AppKit管理和可取消静音样例。61个macOS lib测试通过、1个原有真实模型测试忽略，完整verify --app-smoke 17/17通过，首轮编译/量化断言/Clippy失败保留；仍仅开发自检。
+
+协调check-development.py首次退出0：20项交付实际字节/模式与封存快照一致，17检查/34原始日志hash、before/after产品1793d204…和3实际产物全部核对；没有重跑开发测试。全新包dist/transcription-plugins-dev-20261108-dad546badf/VoicePort.app（包main b50cb7c1…）与native0265dfb9…来源对应开发报告，GUI/原生Keychain待不同会话实测。协调仅更新自己归属的README/SOLUTION与根记录，不修改20项开发输入；整合后将新冻结，不把开发摘要冒称整合摘要。准备保存开发Git checkpoint并以完整输入交独立验收，未接受产品或合并main。
+
+## 2026-11-08 — 插件开发身份核对及许可清单范围扩展
+
+明确宿主唤醒后check消费question msg_d27675d6f1d8。开发请求仅增加resources/third-party/manifest.json写权限；协调实际读取license-delta原始日志和当前Cargo依赖，确认reqwest/base64/tempfile直接运行依赖需要现有生成器更新构建摘要及fastrand/rustix/tempfile运行范围，未缺许可证材料。已通过reply msg_f1836c139e61授权此单文件，不改变校验标准，要求保存失败并纳入冻结。完整clippy/verify/新包结果仍待正式交付，不因请求而声称通过。
+
+协调读取开发真实startup-proof及hook生成state：实际session df6fa345-8cf7-44c7-b926-e5af03f1f39f，terminal精确匹配term_f605fd6c，epoch1/active/真实transcript身份验证/current helper014eeb1e/首次0次完成压缩成立；PreToolUse与Stop已观察，SessionStart未观察、完整PreCompact生命周期未测。主协调当前仍2次压缩。没有改动开发源码或运行其已委派测试，继续等待正式完成事件。
+
+## 2026-11-08 — 插件式来源开发接单
+
+用户指出上一轮仅有设计，要求实际实现并测试；进一步要求每个插件代表一种接入方式并loop完成。已明确将来源实例与插件分开，保留已有本地功能，新增兼容服务与可加载适配路径，真实开发与独立验证分会话。
+
+已加载orchestration/loop与planning-with-files，核对项目多会话/冻结/身份规则。当前session637eb70f实际PreToolUse/helper014eeb1e、terminal term_dbb1ea5d与2次已完成压缩匹配，未达到交接轮；原本地模型Run工作已结算，最近独立终端仍live/retained但已succeeded且不写产品。新Run run_a9b3754f7871已实际创建，产品任务/attempt为unbound，旧VP013/rotation requested不接管。分支已从docs/custom-transcription-sources更名feat/transcription-plugins，HEAD仍d3af863且匹配origin/main，三个既有方案改动完整保留；尚未开始产品源码修改或声称验收通过。
+
 ## 2026-11-08 — 最终独立PASS与用户要求合并、启动
 
 正式回执msg_d07d84160313，实际独立接续session111f5cbd/task_87edbf3c5345/ctx_d168251845c2完成PASS，LM-01 FIXED；起止0次压缩与真实PreToolUse/helper证明，原SessionStart未观察如实披露。已读report.md/summary.json并由协调者重查完整freeze02 e5ff82d5…与产品3a64a677…一致。评审现在结束，冻结/报告保持不可变，后续只补本段行政记录并进入Git交付，不宣称行政记录是验证时旧字节。
