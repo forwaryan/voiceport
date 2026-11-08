@@ -74,13 +74,14 @@ impl Delegate {
             && let Some(c) = self.ivars().controller.borrow().as_ref()
             && !c.busy()
         {
-            operation.result = Some(if operation.cancelled {
+            // A cleanup observation preserves the Controller's original failure.
+            operation.result = Some(if c.state.generation() != operation.generation {
+                err("not_found", "Operation was superseded by another session.")
+            } else if operation.cancelled && c.state.phase == Phase::Idle {
                 err(
                     "cancelled",
                     "Operation cancelled; Controller released its active job.",
                 )
-            } else if c.state.generation() != operation.generation {
-                err("not_found", "Operation was superseded by another session.")
             } else if c.state.phase == Phase::Ready {
                 Response::ok(
                     json!({"operation":operation.id,"state":"ready","text":c.transcript,"empty":c.transcript.is_empty(),"delivery":"none"}),

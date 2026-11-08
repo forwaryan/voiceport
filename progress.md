@@ -1,5 +1,13 @@
 # 进度记录
 
+## 2026-11-09 — 真实协调者轮换与组合调用链返修
+
+新协调者从自己的 terminal 绑定既有 Run，核对实际 PreToolUse、当前 helper、晚于启动的真实新 transcript 与 initial0 后成功 claim；consumer generation4、lease epoch3、阈值5、paused=false。核对 handed-to-terminal 后 close-retired 收到精确旧 terminal 的 ptyKilled=true；保留 Run、产品未绑定关联、原 CLI/CI 工作任务及所有证据，不把新 terminal 当新上下文证明。SessionStart 在启动时未观察到，如实保留。
+
+最新 freeze07-closure 覆盖旧导航：独立09已完整交付 RETURNED F1/F2，21项组合完整检查通过。协调前轮已核对140封存证据/1299包条目/5产物/17生产控制输入/21依赖和最终 matches:true 后关闭现场审查；本轮 worker-list 确认实际 exited/released。
+
+继承两处未提交修复并验证，CLI settlement 先拒绝旧 generation，再只将最终 Idle 视为取消，保留普通错误的录音重试语义；GUI 保存/删除无论凭据清理结果均请求目录刷新，仍传播原错误。新的定向开发控制通过普通错误、原始取消、重复观察、旧 generation 和保存/删除的注入凭据清理失败，两个 fresh 子进程各自 reap/ESRCH；未调用真实 Keychain、GUI、麦克风、账号或目标输入。首次控制准备脚本在重复字串断言处 exit1，尚未运行控制；修正脚手架后通过。初次 fmt 检查暴露继承补丁格式问题，调整 settlement 顺序后最终 fmt/whitespace 与全部定向控制通过，旧结果不覆盖。最终原始日志和精确命令在私有 caller-repair10-development-20261109/final-01；这些是开发验证，未冒称独立接受或远端绿色。接续提交、freeze08、独立复核与精确 HEAD CI/Git 交付。
+
 ## 2026-11-09 — CI09 封存核对与 CLI 组合集成
 
 已消费正式交付 msg_7f3980583f3a；181份证据逐项 hash/bytes/mode、1092项隔离输入和四份源码前后快照均核对一致，34组命令回执与stdout/stderr封存相符。六个预期失败及中间错误保留，final-checks 的33组计数早于最后检查命令自身。原始日志确证开发版本16 process、17 controller、macOS library83/1ignored、六 Stop及严格clippy通过，未视为组合版本或独立接受。

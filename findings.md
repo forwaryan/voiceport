@@ -1,5 +1,11 @@
 # 调研与发现
 
+## 2026-11-09 — 组合独立审查的调用链反例
+
+freeze07 的21项完整离线检查通过，但独立09用真实 Controller/录音租约/受控子进程和精确 App 表达式复现：普通转写错误的未确认清理经显式 Cancel 观察恢复后，Controller 为 Failed/录音保留，CLI 却按 caller.cancelled 返回 cancelled。取消请求本身不足以标识最终结果；修复先核对 generation，再结合 Controller 最终 Idle 判断取消，普通失败仍按 plugin_error/transcription_error 结算。新的开发控制保留原始取消、重复观察和旧 generation 反例，尚待新冻结独立复核。
+
+共享 source_service 先提交 Store、再删除旧独立凭据。GUI 若对该事务直接使用 ?，提交后的清理错误会跳过目录刷新，使已删除/禁用来源暂时仍可选。修复在传播结果前保守刷新目录，并只在成功时设置保存成功文案。故障注入控制分别证实保存/删除已持久提交、返回原清理错误并刷新至 unavailable；未运行真实 Keychain 或 GUI。完整测试的绿色不能替代未覆盖故障分支，旧 RETURNED 与封存证据保持。
+
 ## 2026-11-09 — 清理状态与 CLI 组合的边界
 
 CI09 使用 waitid(WNOWAIT) 保留直接 leader 至首次组信号决策，并由共享 typed custody 在派发前保留 owner 和录音lease；单次100ms初始确认后仍未知就保持 Stopping。显式Cancel只发起后台单次观察，不能由状态轮询续预算或再次发信号。三方集成保留CLI固定来源/语言、禁自动投递及operation/generation归属；CLI的busy、结果结算和quit继续读取同一Controller状态。调用链核对与无冲突合并尚不足以证明组合行为，需新冻结的构建、反例与独立复核。181份证据的协调核对也不等于独立接受；实际34命令包含final-checks时点之后的最后检查，原有33计数不改写。

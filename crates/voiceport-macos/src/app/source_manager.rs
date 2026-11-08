@@ -100,8 +100,9 @@ fn manage_result(d: &Delegate) -> Result<(), String> {
             .runModal()
                 == 1001
             {
-                crate::source_service::remove(&mut store, &path, &source.id)?;
+                let result = crate::source_service::remove(&mut store, &path, &source.id);
                 d.with_controller(|c| c.refresh_catalog());
+                result?;
             }
         }
         1003 => import(d, &mut store, &path)?,
@@ -324,12 +325,14 @@ fn edit(d: &Delegate, store: &mut Store, path: &Path, index: Option<usize>) -> R
             source.config.insert(f.id.clone(), value.trim().into());
         }
     }
-    crate::source_service::save_source(store, path, index, source, pending)?;
+    let result = crate::source_service::save_source(store, path, index, source, pending);
     d.with_controller(|c| {
-        c.message = "来源配置已保存；保存未发送网络请求或执行插件。".into();
+        if result.is_ok() {
+            c.message = "来源配置已保存；保存未发送网络请求或执行插件。".into();
+        }
         c.refresh_catalog();
     });
-    Ok(())
+    result
 }
 pub(super) fn confirm_test(d: &Delegate) -> bool {
     let target = d
