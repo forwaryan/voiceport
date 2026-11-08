@@ -21,6 +21,8 @@ pub mod plugins;
 #[cfg(target_os = "macos")]
 mod proxy;
 #[cfg(target_os = "macos")]
+mod source_service;
+#[cfg(target_os = "macos")]
 mod status_icon;
 #[cfg(target_os = "macos")]
 pub use app::run;

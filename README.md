@@ -87,7 +87,7 @@ open dist/VoicePort.app
 
 如果右上角没有图标，请检查「系统设置 → 菜单栏」的显示开关。macOS 26 可能把终端启动的 VoicePort 归入启动应用（例如 Orca）的菜单栏组；此时 VoicePort 和该启动应用的显示开关都需要允许。菜单栏显示与「辅助功能」授权是两个独立设置。
 
-ChatGPT 来源与现有 CLI 优先使用非空 `CODEX_HOME` 下的 `auth.json`，否则使用 `~/.codex/auth.json`；CLI 还支持优先级更高的 `--auth PATH`。此路径只支持 ChatGPT 文件登录，不支持用 API key 替代该登录或应用内刷新。macOS 自定义服务使用独立的可选 Bearer key，按来源保存于 Keychain；外部插件的 secret 字段同样独立保存，不使用或转发 Codex 登录。现有 CLI 不提供自定义插件配置入口。
+ChatGPT 来源与 CLI 文件转写优先使用非空 `CODEX_HOME` 下的 `auth.json`，否则使用 `~/.codex/auth.json`；文件转写还支持优先级更高的 `--auth PATH`。此路径只支持 ChatGPT 文件登录，不支持用 API key 替代该登录或应用内刷新。macOS 自定义服务使用独立的可选 Bearer key，按来源保存于 Keychain；外部插件的 secret 字段同样独立保存，不使用或转发 Codex 登录。`voiceport sources` 与 `voiceport plugins` 通过本机 IPC 管理同一个 App 的来源、凭据事务和插件；完整命令见 [CLI 与 Skill](docs/CLI.md)。
 
 ### 3. 授予权限
 
@@ -136,7 +136,7 @@ ChatGPT 来源与现有 CLI 优先使用非空 `CODEX_HOME` 下的 `auth.json`�
 | --- | --- |
 | macOS 菜单栏应用 | 已提供源码构建；包括录音、本机预览、云端转写、结果面板和输入权限检查。 |
 | macOS 自动输入 | 已实现普通字段与 Orca 终端路径；具体应用兼容性和 Orca 完整语音输入仍需实测。 |
-| Rust 转写 CLI / 子进程 | 已实现文件转写、取消、手动重试和有界 JSONL 宿主协议。 |
+| Rust CLI / 子进程 | 提供文件转写和有界 JSONL 宿主协议；macOS 还可经本机 IPC 控制同一个 App、管理来源与插件，并取得版本匹配的 Skill。 |
 | Windows 桌面听写 | 开发中。采集所有权、后台执行和存储基础已合入；桌面 Start/Stop 尚未接通，不能作为可用的听写应用。 |
 
 Windows 的目标编译检查不等于实机运行通过；设备、NTFS 权限、完整链接与打包仍有未完成的验证。详见 [Windows 状态](docs/WINDOWS.md) 和 [跨平台路线](docs/CROSS_PLATFORM.md)。
@@ -168,7 +168,20 @@ Windows 的目标编译检查不等于实机运行通过；设备、NTFS 权限�
 
 ## 命令行使用
 
-Rust CLI 处理已有音频文件，不录音、不自动投递文字。macOS app 已实现录音、实时预览和受保护输入；具体应用兼容性与真实用户流程仍需验证。
+公开入口为 `voiceport`，原有 `voiceport-rs` 保持兼容。文件命令处理已有音频；macOS 的 `status`、`app`、`sources`、`plugins` 和 `dictation` 命令通过本机 Unix socket 复用正在运行 App 的 Controller、Store 和 Keychain 事务。命令不会隐式启动 App。只有明确执行 `dictation start --source ID` 才开始录音，该 CLI 操作固定关闭自动投递，并以返回的 operation ID 停止、取消和读取结果；不能接管无关 GUI 会话。真实录音、权限身份和具体应用兼容性仍需分别验证。
+
+打包后的两个独立可执行文件为 `Contents/MacOS/voiceport-app`（GUI）和 `Contents/MacOS/voiceport`（CLI）。构建后可先检查离线指南与正在运行的目标实例：
+
+```bash
+./target/release/voiceport --version
+./target/release/voiceport skills get cli
+./target/release/voiceport --json status
+./target/release/voiceport --json sources list
+```
+
+完整语法、JSON/退出码、隔离实例和凭据 stdin 用法见 [CLI 文档](docs/CLI.md)。可分发 Skill 位于 [skills/voiceport/SKILL.md](skills/voiceport/SKILL.md)，其命令与工作流引用同时嵌入 CLI 并打入 App 的 `Contents/Resources/skills/voiceport`；安装 Skill 不授权录音、上传或操作目标输入。
+
+原有文件转写和诊断命令保持：
 
 ```bash
 # 缓存为空或不完整时先准备依赖；已有完整缓存可直接离线构建
@@ -201,7 +214,7 @@ CARGO_NET_OFFLINE=true cargo build --workspace --release --locked
 
 文件存在不等于有效登录。`doctor` 不读取、解析或验证凭据，不登录、刷新或联网，也不申请或验证麦克风、语音识别及辅助功能权限；输出不包含选中路径、凭据或底层错误文本。上述四种状态均表示诊断完成，退出码为 **0**；参数错误仍为 **2**，实际转写运行错误为 **1**，取消为 **130**。真实账号、录音、云端转写和目标接收需分别验证。
 
-支持 m4a/mp4、wav、mp3、webm、ogg、flac，文件上限 **20 MB**。可使用 `--auth PATH` 指定登录文件。macOS 应用直接链接 Rust 核心；CLI 与其 JSONL 宿主协议是单独的集成入口。
+文件转写支持 m4a/mp4、wav、mp3、webm、ogg、flac，文件上限 **20 MB**，可使用 `--auth PATH` 指定登录文件。macOS 应用直接链接 Rust 核心；CLI 的 App 控制使用本机 socket，原有文件转写与 JSONL 宿主协议仍为独立入口。
 
 集成子进程可使用 `voiceport-rs host`。协议、消息大小、超时和会话边界见 [宿主协议](docs/HOST_PROTOCOL.md)。
 
@@ -237,6 +250,7 @@ macOS 原生模块位于 `crates/voiceport-macos`：AppKit 界面、AVAudio 录�
 | [方案说明](docs/SOLUTION.md) | 产品目标、技术方案与实现背景。 |
 | [跨平台路线](docs/CROSS_PLATFORM.md) | Rust 共享核心、原生 macOS 与 Windows 迁移范围。 |
 | [Windows 状态](docs/WINDOWS.md) | 已实现的基础能力与未完成的原生验证。 |
+| [CLI 与 Skill](docs/CLI.md) | 同一 App 的本机控制、来源/插件管理和可分发 Skill。 |
 | [宿主协议](docs/HOST_PROTOCOL.md) | Rust JSONL 子进程接口。 |
 | [进度记录](progress.md) / [任务计划](task_plan.md) | 历史开发、返修与阶段验收记录。 |
 | [开发 Loop](docs/LOOP_METHODS.md) / [会话轮换](.claude/COORDINATOR_ROTATION.md) | 协作、独立验证与交接规则。 |

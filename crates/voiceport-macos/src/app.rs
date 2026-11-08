@@ -12,6 +12,7 @@ use objc2_foundation::{
     NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSUserDefaults, ns_string,
 };
 use std::cell::{Cell, OnceCell, RefCell};
+mod control;
 mod picker;
 mod source_manager;
 
@@ -36,6 +37,7 @@ impl StatusAppearance {
 #[derive(Default)]
 struct Ivars {
     controller: RefCell<Option<Controller>>,
+    control: RefCell<control::Control>,
     status: OnceCell<Retained<NSStatusItem>>,
     menu_toggle: OnceCell<Retained<NSMenuItem>>,
     menu_state: OnceCell<Retained<NSMenuItem>>,
@@ -71,6 +73,7 @@ struct Ivars {
     shortcut: OnceCell<Retained<NSPopUpButton>>,
     timer: OnceCell<Retained<NSTimer>>,
     quitting: Cell<bool>,
+    cli_quit_at: Cell<Option<std::time::Instant>>,
     shutdown_started: Cell<bool>,
     alternative: Cell<bool>,
     hotkey: RefCell<Option<crate::hotkey::GlobalHotKey>>,
@@ -111,6 +114,8 @@ define_class!(
                     if !self.ivars().shutdown_started.replace(true) { c.cancel(); }
                     if c.state.phase == Phase::Stopping { return NSApplicationTerminateReply::TerminateLater; }
                 }
+                if self.ivars().managing_sources.get() { return NSApplicationTerminateReply::TerminateLater; }
+                self.ivars().control.borrow_mut().server.take();
                 return NSApplicationTerminateReply::TerminateNow;
             }
             NSApplicationTerminateReply::TerminateLater
@@ -119,7 +124,7 @@ define_class!(
     impl Delegate {
         #[unsafe(method(preparePermissions:))]
         fn prepare_permissions_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().permission_rx.borrow().is_some() { return; }
+            if self.ivars().permission_rx.borrow().is_some() || self.ivars().managing_sources.get() { return; }
             let idle = self.ivars().controller.try_borrow().is_ok_and(|slot| slot.as_ref().is_some_and(|c| !c.busy()));
             if !idle || self.ivars().quitting.get() { return; }
             let (sender, receiver) = std::sync::mpsc::channel();
@@ -143,6 +148,7 @@ define_class!(
         }
         #[unsafe(method(retry:))]
         fn retry_action(&self, _sender: Option<&AnyObject>) {
+            if self.ivars().managing_sources.get() { return; }
             self.with_controller(|c| c.retry()); self.refresh();
         }
         #[unsafe(method(copyText:))]
@@ -175,17 +181,17 @@ define_class!(
         fn accessibility_action(&self, _sender: Option<&AnyObject>) { Delivery::request_accessibility(); }
         #[unsafe(method(toggleAutomatic:))]
         fn automatic_action(&self, _sender: Option<&AnyObject>) {
+            if self.ivars().managing_sources.get() { return; }
             self.with_controller(|c| { c.automatic = !c.automatic; NSUserDefaults::standardUserDefaults().setBool_forKey(c.automatic, ns_string!("automaticPaste")); }); self.refresh();
         }
         #[unsafe(method(selectSource:))]
         fn source_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().permission_rx.borrow().is_some() { return; }
+            if self.ivars().permission_rx.borrow().is_some() || self.ivars().managing_sources.get() { return; }
             self.with_controller(|c| {
                 if c.busy() { return; }
                 if let Some(id) = self.ivars().source.get().and_then(|control| picker::selected_id(control))
                     && c.catalog.entries.iter().any(|entry| entry.id == id) {
-                    c.source_id = id;
-                    unsafe { NSUserDefaults::standardUserDefaults().setObject_forKey(Some(&NSString::from_str(&c.source_id)), ns_string!("transcriptionSource")); }
+                    self.set_source(c, id);
                 }
             }); self.refresh();
         }
@@ -211,6 +217,7 @@ define_class!(
         }
         #[unsafe(method(cycleLanguage:))]
         fn language_action(&self, _sender: Option<&AnyObject>) {
+            if self.ivars().managing_sources.get() { return; }
             self.with_controller(|c| {
                 if c.busy() { return; }
                 let selected = self.ivars().language.get().map(|control| control.indexOfSelectedItem()).unwrap_or(0);
@@ -240,11 +247,19 @@ define_class!(
                 c.poll();
                 if pressed && !self.ivars().quitting.get() && !self.ivars().managing_sources.get() { c.toggle(); }
             });
+            self.poll_control();
+            if self.ivars().cli_quit_at.get().is_some_and(|at| std::time::Instant::now() >= at) {
+                self.ivars().cli_quit_at.set(None);
+                NSApplication::sharedApplication(self.mtm()).terminate(None);
+            }
             self.refresh();
             if self.ivars().quitting.get() {
                 let stopped = self.ivars().shutdown_started.get()
                     && self.ivars().controller.try_borrow().is_ok_and(|slot| slot.as_ref().is_none_or(|c| c.state.phase != Phase::Stopping));
-                if stopped { NSApplication::sharedApplication(self.mtm()).replyToApplicationShouldTerminate(true); }
+                if stopped && !self.ivars().managing_sources.get() && self.ivars().cli_quit_at.get().is_none() {
+                    self.ivars().control.borrow_mut().server.take();
+                    NSApplication::sharedApplication(self.mtm()).replyToApplicationShouldTerminate(true);
+                }
             }
         }
     }
@@ -1159,6 +1174,12 @@ pub fn run() {
         delegate.build_menu();
         println!("VoicePort Rust app launched: menu ready, no recording or network");
         return;
+    }
+    if let Err(response) = delegate.start_control() {
+        if let Some(error) = response.error {
+            eprintln!("VoicePort control: {}: {}", error.code, error.message);
+        }
+        std::process::exit(1);
     }
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     delegate.initialize();

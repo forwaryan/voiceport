@@ -2,7 +2,7 @@
 import hashlib,json,stat
 from pathlib import Path
 FILES=['.gitignore','Cargo.toml','Cargo.lock','README.md','THIRD_PARTY_NOTICES.md']
-FOLDERS=['Tests','crates','scripts','resources','automation','docs']
+FOLDERS=['Tests','crates','scripts','resources','automation','docs','skills']
 def inventory(root):
  root=Path(root);paths=[];directories={}
  def visit(p,directory=False):

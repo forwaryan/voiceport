@@ -36,7 +36,7 @@ class PackagingTests(unittest.TestCase):
             for name in FOLDERS:
                 (root / name).mkdir()
             baseline = inventory(root)
-            for name in ['Cargo.lock', 'README.md', 'docs/new-untracked.md', 'crates/new.rs']:
+            for name in ['Cargo.lock', 'README.md', 'docs/new-untracked.md', 'crates/new.rs', 'skills/new-untracked.md']:
                 path = root / name
                 original = path.read_bytes() if path.exists() else None
                 path.write_text('changed')
@@ -151,7 +151,7 @@ class PackagingTests(unittest.TestCase):
                 self.assertFalse(log.exists(), 'argument rejection must precede all Cargo invocations')
             result = subprocess.run(command + ['--skip-build'], cwd=scope, env=env, capture_output=True)
             self.assertEqual(result.returncode, 1, result.stderr)
-            self.assertIn(b'Rust macOS release product is required', result.stderr)
+            self.assertIn(b'Rust release product is required', result.stderr)
             self.assertEqual([json.loads(line) for line in log.read_text().splitlines()],
                              [['metadata', '--locked', '--no-deps', '--format-version', '1']])
             self.assertFalse((scope / 'VoicePort.app').exists())
@@ -213,6 +213,28 @@ class RealBundleTests(unittest.TestCase):
         self.assertTrue(validate(self.app, self.native)['main_signed_copy_matches'])
         self.assertFalse((self.app / 'Contents/Helpers').exists())
 
+    def test_cli_and_skill_are_bound_to_current_source_and_build(self):
+        result = validate(self.app, self.native)
+        self.assertTrue(result['cli_signed_copy_matches'])
+        self.assertTrue(result['skill_source_matches'])
+        for kind in ['cli', 'skill', 'extra-skill']:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temp:
+                app = pathlib.Path(temp) / 'VoicePort.app'
+                shutil.copytree(self.app, app)
+                if kind == 'cli':
+                    shutil.copyfile(self.native, app / 'Contents/MacOS/voiceport')
+                    subprocess.run(['codesign', '--force', '--sign', '-', str(app / 'Contents/MacOS/voiceport')], check=True, capture_output=True)
+                    expected = 'CLI does not match'
+                elif kind == 'skill':
+                    (app / 'Contents/Resources/skills/voiceport/SKILL.md').write_text('tampered')
+                    expected = 'Skill differs'
+                else:
+                    (app / 'Contents/Resources/skills/extra.md').write_text('unreviewed')
+                    expected = 'unexpected Skill files'
+                resign(app)
+                with self.assertRaisesRegex(AssertionError, expected):
+                    validate(app, self.native)
+
     def test_app_icon_and_menu_bar_only_policy_survive_packaging(self):
         info = plistlib.loads((self.app / 'Contents/Info.plist').read_bytes())
         self.assertEqual(info['CFBundleIconFile'], 'AppIcon')
@@ -235,7 +257,7 @@ class RealBundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             app = pathlib.Path(temp) / 'VoicePort.app'
             shutil.copytree(self.app, app)
-            main = app / 'Contents/MacOS/VoicePort'
+            main = app / 'Contents/MacOS/voiceport-app'
             main.chmod(0o644)
             with self.assertRaisesRegex(AssertionError, 'main must be executable'):
                 validate(app, self.native)
@@ -252,6 +274,8 @@ class RealBundleTests(unittest.TestCase):
             (directory / 'release').mkdir(parents=True)
             copied = directory / 'release/voiceport-macos'
             shutil.copy2(self.native, copied)
+            copied_cli = directory / 'release/voiceport'
+            shutil.copy2(self.release / 'voiceport', copied_cli)
             app = scope / 'alternate-output/VoicePort.app'
             environment = dict(os.environ, CARGO_TARGET_DIR=str(directory), CARGO_NET_OFFLINE='true',
                                VOICEPORT_APP_DIRECTORY=str(app) + os.sep)
@@ -259,7 +283,7 @@ class RealBundleTests(unittest.TestCase):
                                     cwd=scope, env=environment, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stdout.decode() + result.stderr.decode())
             self.assertTrue(validate(app, copied)['main_signed_copy_matches'])
-            self.assertEqual(list((directory / 'release').iterdir()), [copied])
+            self.assertEqual(set((directory / 'release').iterdir()), {copied, copied_cli})
 
     def test_signed_wrong_rust_main_and_semantic_license_corruption(self):
         for kind in ['main', 'unknown-both', 'unknown-declaration', 'unknown-selection', 'omitted-package', 'tampered-material']:
@@ -269,7 +293,7 @@ class RealBundleTests(unittest.TestCase):
                 path = app / 'Contents/Resources/third-party/manifest.json'
                 manifest = json.loads(path.read_text())
                 if kind == 'main':
-                    shutil.copyfile(self.cli, app / 'Contents/MacOS/VoicePort')
+                    shutil.copyfile(self.cli, app / 'Contents/MacOS/voiceport-app')
                 elif kind == 'tampered-material':
                     (path.parent / manifest['packages'][0]['materials'][0]['path']).write_bytes(b'tampered')
                 else:

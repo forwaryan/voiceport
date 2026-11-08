@@ -246,26 +246,48 @@ impl Controller {
                 return;
             }
         };
+        self.start_pinned(source, self.language.clone(), self.automatic);
+    }
+    /// Prepared on a background thread; never changes GUI source/language/preferences.
+    pub(crate) fn start_pinned(
+        &mut self,
+        source: SessionSource,
+        language: String,
+        automatic: bool,
+    ) {
+        if let Some((generation, use_speech)) = self.prepare_start(source, language, automatic) {
+            Recorder::request_permissions_for_source(
+                generation,
+                self.events_tx.clone(),
+                use_speech,
+            );
+        }
+    }
+    fn prepare_start(
+        &mut self,
+        source: SessionSource,
+        language: String,
+        automatic: bool,
+    ) -> Option<(u64, bool)> {
+        if self.busy() {
+            return None;
+        }
         self.delivery.clear();
-        if self.automatic
-            && let Err(message) = self.delivery.begin()
-        {
+        if automatic && let Err(message) = self.delivery.begin() {
             self.delivery_status = message.clone();
             if self.delivery.blocks_recording() {
                 self.message = message;
-                return;
+                return None;
             }
         }
         self.recorder.cancel();
         self.recording = None;
-        let Some(generation) = self.state.begin() else {
-            return;
-        };
+        let generation = self.state.begin()?;
         self.transcript.clear();
         self.testing = false;
-        self.recorded_language = self.language.clone();
+        self.recorded_language = language;
         self.recorded_source = source;
-        self.allow_delivery = self.automatic;
+        self.allow_delivery = automatic;
         let use_speech = self.recorded_source.uses_system_speech();
         self.message = if use_speech {
             "正在检查麦克风和本机语音识别权限…"
@@ -273,7 +295,7 @@ impl Controller {
             "正在检查麦克风权限；此来源无需系统语音识别权限…"
         }
         .into();
-        Recorder::request_permissions_for_source(generation, self.events_tx.clone(), use_speech);
+        Some((generation, use_speech))
     }
     /// Explicit synthetic sample only; no recorder, permissions or delivery target.
     pub fn test_source(&mut self) {
@@ -294,6 +316,12 @@ impl Controller {
                 return;
             }
         };
+        self.test_pinned(source, self.language.clone());
+    }
+    pub(crate) fn test_pinned(&mut self, source: SessionSource, language: String) {
+        if self.busy() {
+            return;
+        }
         self.delivery.clear();
         self.recording = None;
         self.transcript.clear();
@@ -305,7 +333,7 @@ impl Controller {
         self.testing = true;
         self.allow_delivery = false;
         self.recorded_source = source;
-        self.recorded_language = self.language.clone();
+        self.recorded_language = language;
         self.submit();
     }
     pub fn stop(&mut self) {
@@ -1018,6 +1046,63 @@ pub(crate) mod stop_failure_regression {
         control.thread.join().unwrap();
     }
 
+    fn cli_start_stop_uses_pinned_policy_without_devices() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = Storage::at(temp.path().canonicalize().unwrap().join(NAMESPACE));
+        let mut c = Controller::new();
+        c.language = "en".into();
+        c.automatic = true;
+        let source = SessionSource::Local(crate::local_models::Model {
+            kind: crate::local_models::ModelKind::Whisper,
+            directory: "/synthetic/model".into(),
+            runtime: "/synthetic/runtime".into(),
+            encoder: "/synthetic/encoder".into(),
+            decoder: "/synthetic/decoder".into(),
+            tokens: "/synthetic/tokens".into(),
+        });
+        // Same production preparation used by start_pinned; substitute only the
+        // permission/device boundary, never invoke an OS permission request.
+        let (generation, speech) = c.prepare_start(source.clone(), "zh".into(), false).unwrap();
+        assert!(!speech && !c.allow_delivery);
+        assert_eq!(c.source_id, CHATGPT);
+        assert_eq!(c.language, "en");
+        assert!(c.automatic);
+        assert_eq!(c.recorded_source, source);
+        assert_eq!(c.recorded_language, "zh");
+        assert!(
+            c.prepare_start(SessionSource::ChatGpt, "en".into(), false)
+                .is_none()
+        );
+        assert_eq!(c.recorded_source, source);
+        assert!(c.state.permissions(generation, true));
+        let (recorder, recording, audio) =
+            stop_failure_fixture::recorder(&storage, generation, c.events_tx.clone(), Input::Valid);
+        c.recorder = recorder;
+        let worker = controlled_worker(&mut c, 1);
+        c.stop();
+        assert_eq!(
+            worker.started.recv_timeout(Duration::from_secs(5)).unwrap(),
+            generation
+        );
+        assert_eq!(c.state.phase, Phase::Transcribing);
+        assert!(!c.allow_delivery);
+        assert_eq!(c.recorded_source, source);
+        worker
+            .reply
+            .send(Ok("synthetic CLI result".into()))
+            .unwrap();
+        worker
+            .published
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        c.poll();
+        assert_eq!(c.state.phase, Phase::Ready);
+        assert_eq!(c.transcript, "synthetic CLI result");
+        assert!(recording.upgrade().is_none() && !audio.exists());
+        assert_eq!(c.source_id, CHATGPT);
+        assert_eq!(c.language, "en");
+        worker.thread.join().unwrap();
+    }
     pub(crate) fn run(case: &str, _main_thread: MainThreadMarker) {
         assert!(MainThreadMarker::new().is_some());
         match case {
@@ -1025,6 +1110,7 @@ pub(crate) mod stop_failure_regression {
             "retry" => retry_preserves_recording(),
             "cancel" => cancellation_waits_for_recording_release(),
             "local-stop-failure" => local_stop_failure_waits_for_worker(),
+            "cli-session" => cli_start_stop_uses_pinned_policy_without_devices(),
             _ => panic!("unknown stop_failure case: {case}"),
         }
         println!("stop_failure: {case} passed");

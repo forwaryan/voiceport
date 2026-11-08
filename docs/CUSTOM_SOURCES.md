@@ -69,7 +69,7 @@ defaults write "$test_domain" automaticPaste -bool false
 defaults write "$test_domain" alternativeShortcut -bool true
 VOICEPORT_SOURCES_PATH="$test_scope/sources.json" \
   CODEX_HOME="$test_scope/codex-synthetic" \
-  "$test_app/Contents/MacOS/VoicePort"
+  "$test_app/Contents/MacOS/voiceport-app"
 ```
 
 直接启动可执行程序使上述环境仅传给测试实例。启动前核对副本 Info.plist 的 `CFBundleIdentifier` 与 `test_domain` 一致；启动后核对实际路径/PID及自动输入为关闭，再进行管理来源和显式合成样例测试。不要按录音键，不读真实凭据或真实配置；仅使用合成 key 和受控 loopback。该来源路径机制不提供 Keychain 授权豁免；如出现系统认证等待，停止并报告，不处理认证、改变默认 Keychain 或枚举/猜删既有条目。清理凭据时仅精确删除本轮成功返回并记录的自建引用。

@@ -22,19 +22,25 @@ if [[ "$skip_build" == false ]]; then
 fi
 rust_target_directory="$(cargo metadata --locked --no-deps --format-version 1 | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 rust_main="$rust_target_directory/release/voiceport-macos"
-[[ -f "$rust_main" && ! -L "$rust_main" && -x "$rust_main" ]] || { printf 'Rust macOS release product is required: %s\n' "$rust_main" >&2; exit 1; }
+rust_cli="$rust_target_directory/release/voiceport"
+for product in "$rust_main" "$rust_cli"; do
+    [[ -f "$product" && ! -L "$product" && -x "$product" ]] || { printf 'Rust release product is required: %s\n' "$product" >&2; exit 1; }
+done
 python3 -I scripts/license_materials.py
 mkdir -p "$(dirname -- "$app_directory")"
 staging_directory="$(mktemp -d "$(dirname -- "$app_directory")/.voiceport-package.XXXXXX")"
 trap 'rm -rf "$staging_directory"' EXIT
 staged_app="$staging_directory/$(basename -- "$app_directory")"
 mkdir -p "$staged_app/Contents/MacOS" "$staged_app/Contents/Resources"
-install -m 755 "$rust_main" "$staged_app/Contents/MacOS/VoicePort"
+install -m 755 "$rust_main" "$staged_app/Contents/MacOS/voiceport-app"
+install -m 755 "$rust_cli" "$staged_app/Contents/MacOS/voiceport"
+cp -R skills "$staged_app/Contents/Resources/skills"
 install -m 644 resources/Info.plist "$staged_app/Contents/Info.plist"
 install -m 644 resources/AppIcon.icns "$staged_app/Contents/Resources/AppIcon.icns"
 install -m 644 THIRD_PARTY_NOTICES.md "$staged_app/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp -R resources/third-party "$staged_app/Contents/Resources/third-party"
 plutil -lint "$staged_app/Contents/Info.plist"
+codesign --force --sign - "$staged_app/Contents/MacOS/voiceport"
 codesign --force --sign - "$staged_app"
 python3 -I scripts/check_bundle.py "$staged_app" "$rust_main"
 # Reserve the destination exclusively, including against another packaging run.

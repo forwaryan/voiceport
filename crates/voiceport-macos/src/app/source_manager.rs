@@ -1,9 +1,6 @@
 //! Native dialogs. Import/save only read local files; execution requires a separate explicit action.
 use super::*;
-use crate::{
-    plugin_credentials::Keychain,
-    plugins::{Adapter, FieldKind, Manifest, Source, Store},
-};
+use crate::plugins::{Adapter, FieldKind, Manifest, Source, Store};
 use std::{collections::BTreeMap, path::Path};
 fn alert(d: &Delegate, title: &str, detail: &str, buttons: &[&str]) -> Retained<NSAlert> {
     let a = NSAlert::new(d.mtm());
@@ -103,11 +100,8 @@ fn manage_result(d: &Delegate) -> Result<(), String> {
             .runModal()
                 == 1001
             {
-                store.sources.remove(i);
-                save(d, &store, &path)?;
-                for reference in source.credential_refs.values() {
-                    Keychain.delete(reference)?;
-                }
+                crate::source_service::remove(&mut store, &path, &source.id)?;
+                d.with_controller(|c| c.refresh_catalog());
             }
         }
         1003 => import(d, &mut store, &path)?,
@@ -330,42 +324,11 @@ fn edit(d: &Delegate, store: &mut Store, path: &Path, index: Option<usize>) -> R
             source.config.insert(f.id.clone(), value.trim().into());
         }
     }
-    // Validate without reading or writing Keychain first; disabled instances can be saved.
-    let mut validate = source.clone();
-    validate.enabled = true;
-    store.validate_source(&validate)?;
-    let mut created = vec![];
-    let outcome = (|| {
-        for (field, value) in pending {
-            let reference = Keychain.create(&value)?;
-            created.push(reference.clone());
-            source.credential_refs.insert(field, reference);
-        }
-        let mut next = store.clone();
-        if let Some(i) = index {
-            next.sources[i] = source.clone();
-        } else {
-            next.sources.push(source.clone());
-        }
-        save(d, &next, path)?;
-        *store = next;
-        Ok::<(), String>(())
-    })();
-    if let Err(e) = outcome {
-        for reference in created {
-            if Store::reference_is_confirmed_unused(path, &reference) {
-                let _ = Keychain.delete(&reference);
-            }
-        }
-        return Err(e);
-    }
-    if let Some(old) = old {
-        for reference in old.credential_refs.values() {
-            if !source.credential_refs.values().any(|r| r == reference) {
-                Keychain.delete(reference)?;
-            }
-        }
-    }
+    crate::source_service::save_source(store, path, index, source, pending)?;
+    d.with_controller(|c| {
+        c.message = "来源配置已保存；保存未发送网络请求或执行插件。".into();
+        c.refresh_catalog();
+    });
     Ok(())
 }
 pub(super) fn confirm_test(d: &Delegate) -> bool {

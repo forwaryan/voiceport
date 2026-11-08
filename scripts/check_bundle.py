@@ -38,15 +38,25 @@ def validate(app, target):
     contents = app / 'Contents'
     assert {p.name for p in app.iterdir()} == {'Contents'}, 'unexpected bundle root'
     assert {p.name for p in contents.iterdir()} == {'Info.plist', 'MacOS', 'Resources', '_CodeSignature'}, 'unexpected bundle contents (no helpers are shipped)'
-    assert {p.name for p in (contents / 'MacOS').iterdir()} == {'VoicePort'}, 'unexpected app executable'
-    assert {p.name for p in (contents / 'Resources').iterdir()} == {'AppIcon.icns', 'THIRD_PARTY_NOTICES.md', 'third-party'}, 'unexpected app resources'
+    assert {p.name for p in (contents / 'MacOS').iterdir()} == {'voiceport-app', 'voiceport'}, 'unexpected app executable'
+    assert {p.name for p in (contents / 'Resources').iterdir()} == {'AppIcon.icns', 'THIRD_PARTY_NOTICES.md', 'third-party', 'skills'}, 'unexpected app resources'
+    installed_skills = contents / 'Resources/skills'
+    expected_skills = ROOT / 'skills'
+    assert {str(p.relative_to(installed_skills)) for p in installed_skills.rglob('*')} == {str(p.relative_to(expected_skills)) for p in expected_skills.rglob('*')}, 'unexpected Skill files'
+    for source in expected_skills.rglob('*'):
+        if source.is_file():
+            assert (installed_skills / source.relative_to(expected_skills)).read_bytes() == source.read_bytes(), 'Skill differs from repository source'
+    cli = contents / 'MacOS/voiceport'
+    cli_target = target.parent / 'voiceport'
+    assert stat.S_IMODE(cli.stat().st_mode) == 0o755, 'CLI must be executable mode 0755'
+    assert stat.S_ISREG(cli_target.lstat().st_mode), 'expected current CLI release product'
     assert (contents / 'Resources/AppIcon.icns').read_bytes() == (ROOT / 'resources/AppIcon.icns').read_bytes(), 'unexpected app icon'
-    main = contents / 'MacOS/VoicePort'
+    main = contents / 'MacOS/voiceport-app'
     assert main.is_file() and stat.S_IMODE(main.stat().st_mode) == 0o755, 'main must be executable mode 0755'
     assert stat.S_ISREG(target.lstat().st_mode) and target.stat().st_mode & 0o111, 'expected executable Rust macOS product'
     assert (contents / 'Info.plist').read_bytes() == (ROOT / 'resources/Info.plist').read_bytes(), 'unexpected bundle Info'
-    assert plistlib.loads((contents / 'Info.plist').read_bytes())['CFBundleExecutable'] == 'VoicePort'
-    for binary in [main, target]:
+    assert plistlib.loads((contents / 'Info.plist').read_bytes())['CFBundleExecutable'] == 'voiceport-app'
+    for binary in [main, target, cli, cli_target]:
         assert subprocess.check_output(['lipo', '-archs', str(binary)], text=True).strip() == 'arm64', 'unexpected architecture'
     assert (contents / 'Resources/THIRD_PARTY_NOTICES.md').read_bytes() == (ROOT / 'THIRD_PARTY_NOTICES.md').read_bytes(), 'unexpected third-party notices'
     materials = check(contents / 'Resources/third-party')
@@ -54,13 +64,20 @@ def validate(app, target):
     with tempfile.TemporaryDirectory(prefix='voiceport-main-proof-') as temp:
         twin = pathlib.Path(temp) / app.name
         shutil.copytree(app, twin)
-        shutil.copyfile(target, twin / 'Contents/MacOS/VoicePort')
-        (twin / 'Contents/MacOS/VoicePort').chmod(0o755)
+        shutil.copyfile(target, twin / 'Contents/MacOS/voiceport-app')
+        (twin / 'Contents/MacOS/voiceport-app').chmod(0o755)
+        shutil.copyfile(cli_target, twin / 'Contents/MacOS/voiceport')
+        (twin / 'Contents/MacOS/voiceport').chmod(0o755)
+        subprocess.run(['codesign', '--force', '--sign', '-', str(twin / 'Contents/MacOS/voiceport')], check=True, capture_output=True)
         subprocess.run(['codesign', '--force', '--sign', '-', str(twin)], check=True, capture_output=True)
-        assert sha(twin / 'Contents/MacOS/VoicePort') == sha(main), 'main does not match this Rust voiceport-macos build plus bundle signature'
+        assert sha(twin / 'Contents/MacOS/voiceport') == sha(cli), 'CLI does not match current Rust build plus signature'
+        assert sha(twin / 'Contents/MacOS/voiceport-app') == sha(main), 'main does not match this Rust voiceport-macos build plus bundle signature'
     return {
         'main_sha256': sha(main),
         'cargo_product_sha256': sha(target),
+        'cli_sha256': sha(cli),
+        'cli_signed_copy_matches': True,
+        'skill_source_matches': True,
         'main_signed_copy_matches': True,
         'signed_copy_matches': True,
         'license_packages': len(materials['packages']),

@@ -14,6 +14,7 @@ path = "tests/stop_failure.rs"
 harness = false
 
 [dependencies]
+voiceport-control = { path = "../voiceport-control" }
 voiceport-core = { path = "../voiceport-core" }
 serde.workspace = true
 serde_json.workspace = true

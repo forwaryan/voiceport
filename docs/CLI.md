@@ -1,0 +1,51 @@
+# VoicePort CLI and product Skill
+
+`voiceport` is the public executable. `voiceport-rs` retains the original help/host/demo/doctor/file-transcription interface and accepts the same new automation commands. macOS App control uses a local Unix socket connected to the running App's existing Controller, source Store and Keychain transactions. It does not simulate window clicks, start the App implicitly, or run a second transcription daemon.
+
+## Install and find the CLI
+
+Build the locked workspace with `cargo build --workspace --release --locked`. The public executable is in Cargo's release target directory. The signed App package includes `Contents/MacOS/voiceport` alongside `Contents/MacOS/voiceport-app`, and the product Skill under `Contents/Resources/skills/voiceport/`. For an installed bundle use its exact path:
+
+```sh
+"/Applications/VoicePort.app/Contents/MacOS/voiceport" --version
+"/Applications/VoicePort.app/Contents/MacOS/voiceport" --help
+"/Applications/VoicePort.app/Contents/MacOS/voiceport" skills get cli
+```
+
+This assumes the user installed that bundle at `/Applications/VoicePort.app`; packaging itself writes only the requested output path. Nothing writes `/usr/local/bin` or changes shell startup files. A user can add the chosen bundle's `Contents/MacOS` to their own PATH, or continue using the full executable path. App launch is explicit: open the intended bundle after checking its path/version. There is no implicit launch and no `app launch` subcommand.
+
+## Commands and automation
+
+The single versioned detailed command reference is [skills/voiceport/references/cli.md](../skills/voiceport/references/cli.md). It is compiled into both CLI entry points, together with [the core Skill](../skills/voiceport/SKILL.md) and [workflows](../skills/voiceport/references/workflows.md). `voiceport skills list` and `voiceport skills get [core|cli|workflows]` work without an App or network and return the matching installed version; with `--json` the Markdown is in `data.text`.
+
+The command groups are `status` / `app status/show/quit`, `sources list/show/add/update/remove/select/secret/test`, `plugins list/show/import`, and `dictation start/stop/cancel/result`. Source IDs are stable instance IDs, distinct from plugin IDs; one plugin may supply multiple independent instances. Selection persists in the same NSUserDefaults domain as GUI selection. Disabling/removing a selected source keeps that ID unavailable; it never falls back to ChatGPT.
+
+For automation use `voiceport --json [--socket ABSOLUTE_PATH] COMMAND`. The versioned response is `{schema_version:1,status:"ok"|"error",data:...,error:null|{code,message}}`; stdout contains one result object and diagnostics use stderr. Status includes state/busy/source/language/version/bundle/PID/permissions and no transcript, credentials or target content. The exit codes are 0 success, 1 operational failure, 2 invalid arguments/request/config, 3 App missing, 4 busy, 5 explicit confirmation missing, 6 ID missing, 7 unsupported platform/operation, and 130 cancelled. An asynchronous submission succeeds when accepted; inspect the returned operation with `dictation result ID` for its final outcome. Parse `error.code`, not message text.
+
+`plugins import MANIFEST` shows the local program/argv/origin and returns confirmation_required without persistence until `--accept-program` is explicitly supplied. Import never executes code. `sources test ID` likewise requires `--accept-upload`; the accepted action sends built-in one-second silence and returns an operation ID, without microphone/target/automatic delivery. Empty text is a valid result, not recognition-quality proof. Only explicit `dictation start --source ID` records; it pins source/language and fixes automatic delivery to false without modifying the GUI's preferences or current target. Stop/cancel/result require the current CLI operation ID and cannot control an unrelated GUI generation. Busy operations reject mutations and graceful quit. Cancellation remains observable as stopping until the worker releases its resources.
+
+Secret values are accepted only through dedicated stdin options (`sources secret ID FIELD --stdin`, or `--secret-stdin FIELD` during add/update); stdin must be a pipe/file, with nonempty bounded input. Values never appear in argv, response, exported Store or diagnostics. The App stores independent Keychain references using the same validated transaction as GUI editing. Normal metadata commands do not read secrets; credential values are pinned only for an explicit operation. Runtime errors omit raw service bodies and adapter stderr.
+
+The original portable `host`, `demo`, `doctor`, and `transcribe AUDIO` contracts remain unchanged, including host's own JSONL protocol, auth-path precedence and Ctrl-C cancellation. Automation `--json`/`--socket` flags do not extend these legacy commands. File transcription remains the explicit ChatGPT operation; `transcribe --source` is not implemented. Windows can use the portable commands and offline Skill/help; App operations return unsupported.
+
+## IPC boundaries
+
+The shared `crates/voiceport-control/` crate holds protocol and transport only. Schema 1 uses a four-byte big-endian length and JSON, with a 262144-byte limit, one request per connection, five-second total transport deadline, at most four active connections and a four-request queue. Reads/writes recompute remaining deadline, so slow partial frames cannot extend it indefinitely. The listener runs separately from AppKit and never joins on the UI thread. Excess connections receive busy when possible; invalid version/frame/JSON never reaches Controller dispatch. Request deadlines are checked before main-thread dispatch and before starting a prepared recording/sample.
+
+The default macOS path is `/private/tmp/voiceport-control-UID/control.sock`. Override with `VOICEPORT_CONTROL_SOCKET` on the App and explicit `--socket` on the CLI. Empty/relative/overlong paths, linked ancestors, unsafe ownership/modes and non-socket objects fail rather than falling back. The immediate directory must be owned by the effective user with mode 0700, the socket mode 0600. Both ends verify peer UID. Startup exclusively binds a new path and refuses all pre-existing socket paths, even stale ones; it does not remove another instance's active or unknown socket. Graceful shutdown removes only its own matching socket identity. An ungraceful exit can leave a stale socket; select a fresh explicit path or have the owner resolve it after proving the old process has exited. No TCP management endpoint exists. This is a same-user boundary, not a sandbox against hostile same-UID code.
+
+The App timer drains bounded requests on its main thread, and all Controller transitions stay there. Store I/O and credential pinning run on a bounded background path serialized with GUI edits, permissions and sessions. GUI/CLI use the same Store validation and save/credential transaction. A socket timeout or lost reply is ambiguous for a mutation already dispatched; no write/upload is automatically retried. Inspect state before a new user-requested action. Configuration persistence errors after atomic rename may likewise have committed. Full lifecycle and real device/service behavior require their own evidence.
+
+## Test instances
+
+Keep normal HOME; use an independent bundle ID and ad-hoc signature, synthetic CODEX_HOME, a unique 0700 socket parent and explicit `VOICEPORT_SOURCES_PATH` on the test App child. Always pass its `--socket` to the CLI and compare status bundle_path/PID before mutations. These overrides do not isolate system Keychain or TCC automatically. Never use production audio, keys, App paths or targets in automated validation. Source tests use synthetic silence and controlled services; recording tests use inert controller/recorder fixtures and never request permissions. See the [workflow guide](../skills/voiceport/references/workflows.md) and [custom-source isolation notes](CUSTOM_SOURCES.md).
+
+## Skill layout and installation
+
+The product Skill lives at repository root `skills/voiceport/SKILL.md`, with only the substantive `references/cli.md` and `references/workflows.md`. The CLI source remains in `crates/voiceport-cli/`; protocol code lives in its small shared crate. The Skill is not a repository-development instruction in `.claude/skills`, and packaging does not modify the user's global Agent configuration.
+
+The structure follows two inspected fixed-version examples: [agent-browser](https://github.com/vercel-labs/agent-browser/tree/4b0e9f01fa8d214d39bbfe5391257640634fb9a0/skills/agent-browser) keeps a short discovery entry and returns installed-version guidance through its CLI; [Google Workspace CLI](https://github.com/googleworkspace/cli/tree/cd3697e07eb520056dcf142d0c7439bbb9ba32e9/skills) separates root skills from Rust crates and uses capability references. VoicePort embeds its repository Skill files directly, avoiding a second drifting command manual or a Node runtime.
+
+To install manually, copy the complete `skills/voiceport` directory from the chosen checkout or App resources into the supported Agent's skill directory, for example `~/.claude/skills/voiceport` or `~/.codex/skills/voiceport`, after inspecting the destination and deciding whether to replace an existing installation. Alternatively, a standard skills installer supporting repository selection can select only the `voiceport` skill from this repository; use that installer's actual help for its syntax. No installer is invoked automatically. Installing a Skill is not authorization to record/upload audio or deliver text. Agents should start with status, configuration inspection and explicit synthetic testing, not GUI clicks.
+
+The product inventory includes `skills/` files and directory modes, including untracked Skill inputs. Bundle checks require the exact source Skill tree, the current signed CLI and App executable, locked license manifest and signatures. No new external dependency is introduced; the shared protocol uses already-locked serde/serde_json/libc. License metadata must still be regenerated when Cargo build inputs change.

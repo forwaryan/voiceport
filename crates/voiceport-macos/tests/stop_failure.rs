@@ -58,10 +58,11 @@ fn main() {
             "retry",
             "cancel",
             "local-stop-failure",
+            "cli-session",
         ],
         [flag, case] if flag == "--case" => vec![case],
         _ => panic!(
-            "expected no arguments or --case zero|stop-first|poll-first|retry|cancel|local-stop-failure"
+            "expected no arguments or --case zero|stop-first|poll-first|retry|cancel|local-stop-failure|cli-session"
         ),
     };
     for case in cases {
