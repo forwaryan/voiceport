@@ -1,5 +1,11 @@
 # 调研与发现
 
+## 2026-11-09 — R1/D1候选修复与复核重点
+
+新launch解析仅认result.prompt、成功外壳、delivery=submit及journaled/handed-to-terminal；缺失/畸形/明确错误/未知均保存分类并保持单次副作用锁存，迟到回执继续更新同transfer的request/history。安装纯fixture相等与纯contract控制属于schema观察，不证明structured chat具备PTY身份或真实轮换可完成。helper02b0dbcb…和契约修订待独立复核。
+
+新部署proposal f984caf7…使用O_DIRECTORY/O_NOFOLLOW及目录descriptor相对I/O，核对全部祖先identity并拒绝root/source/target/backup链接，六原文件bytes/mode备份和BACKUPS_COMPLETE后才替换，遇部分失败保存已替换列表且不盲重试。manifest b7120867…仍以实际CLI原始ce676e8 before为基线，不拿当前primary HEAD冒充目标原始字节；真实CLI工作区未读写。29开发控制含验证与open间换链反例，开发通过仍需独立审查新提案，不能凭开发报告部署。
+
 ## 2026-11-09 — 独立freeze03确认的两项轮换/部署缺陷
 
 独立03对已安装Orca纯fixture及只读CLI实现核对：agent launch成功信封为result.prompt.outcome（journaled/handed-to-terminal），helper错误期待result.launch.prompt.outcome。75项旧mock全绿但共同使用了错误嵌套；实际格式使delivery_confirmed=false，单次launch锁存后不能通过重试恢复，精确close与产品工作保持阻塞。修复需真实安装形状正负控制和claim先于receipt的竞争路径，不能因此声称真实轮换或structured-chat/PTy身份已验收。

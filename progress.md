@@ -1,5 +1,11 @@
 # 进度记录
 
+## 2026-11-09 — R1/D1返修02开发交付
+
+msg_8d9cc0338bcb正式task_d5b81b668d18/ctx_a927dfa546bc succeeded/停写。实际新session0e0d0ab1、精确term_ee760730、真实PreToolUse/helper初始5eb93703→最终02b0dbcb、transcript起始及prefix SHA、初始最终0核对；SessionStart未观察。只改helper/tests/rotation契约三公共文件，新六文件manifest b7120867…/proposal f984caf7…放新私有证据，旧提案和历史lease不变。协调核对97归档项bytes/mode/SHA及六原始ce676e8 before/当前after快照，未重跑委派测试。
+
+R1按安装result.prompt识别投递并保留错误/未知锁存和迟到回执；D1使用从根目录无链接descriptor锚定全部source/target/backup路径，完整六备份和mode barrier后才替换，部分失败必须停查。原R1/D1目标断言exit1和首轮helper预期分类错误exit1保留；最终78helper、29部署控制、安装schema和claim/receipt/并发控制开发自检通过。原独立03现exited/released，返修开发末次live/reclaimable不作退出证明。准备commit/push、新完整freeze04并沿原独立角色真新会话复核；原CLI保持retained/paused，无register/deploy/真实轮换/产品PASS。
+
 ## 2026-11-09 — freeze03独立审查完成并退回R1/D1
 
 5691e3f/cbd4796/81c9341已push，PR15仍draft；精确HEAD81c9341远端CI42499019278 success。freeze03完整1090输入manifest6fed6d24…/product84a0c26b…由真实独立session59495fe8/task_7f6b260498dd/ctx_9ad83f4cd615正式msg_019ecf6e5d0c完成审查；runtime succeeded表示评审完成，rotation/deployment结论RETURNED。初始最终0、当前helper/真实PreToolUse/精确terminal/transcript起点已核对，SessionStart未观察。API403保留，原会话恢复后完成，没有登录/信任/模型修改或重复全量入口。

@@ -8,7 +8,7 @@
 
 ## 宿主适配与计数
 
-以下计数、身份校验、阻断与交接完整性均为必须满足的策略要求，不是当前实现已获独立接受的保证。首次操作实现独立评审失败，保存了 7 个可复现缺陷：同 inode/大小改写漏计、缺失 transcript 放行、外来 Claude 会话与缺失身份的原生 transcript 放行、通知后笔记可变、笔记符号链接被接受、未核对实际调用者 terminal。当前另有返修进行，完成后的新固定输入独立复核待办；此处不预判返修成败。真实新会话 PreToolUse 加载已有观察，SessionStart、实际 PreCompact veto 和完整自动生命周期仍未执行；原生信任/激活仍阻塞。
+以下计数、身份校验、阻断与交接完整性均为必须满足的策略要求，不是当前实现已获独立接受的保证。首次操作实现独立评审失败，保存了 7 个可复现缺陷：同 inode/大小改写漏计、缺失 transcript 放行、外来 Claude 会话与缺失身份的原生 transcript 放行、通知后笔记可变、笔记符号链接被接受、未核对实际调用者 terminal。R1/D1 返修新增已安装投递信封与无符号链接部署控制，仍须对新固定输入独立复核；此处不预判返修成败。真实新会话 PreToolUse 加载已有观察，SessionStart、实际 PreCompact veto 和完整自动生命周期仍未执行；原生信任/激活仍阻塞。
 
 - Claude Code 使用 `.claude/settings.json` 的 PreCompact、PostCompact、SessionStart、PreToolUse、Stop。按当前会话 `compact_boundary` 的实际 UUID 去重。
 - 原生 Codex 使用 `.codex/hooks.json` 的相同事件。要求按 `session_meta.payload.id` 验证所属会话，按真实 `compacted.payload.window_id` 去重。不能拿 Claude parser 猜 Codex 次数；要求未知 schema/缺失 transcript 明确失败并拦住后续工具或压缩，不能把该要求当成已验证的当前保证。
@@ -72,6 +72,8 @@ hook 使用已验证的注册缓存，不逐次查询 Orca、不执行 run-use�
 5. claim 后先读 `status --run ACTUAL_RUN` 核对投递与继任证明，然后 `python3 -I .claude/hooks/coordinator_rotation.py close-retired --run ACTUAL_RUN --session NEW_SESSION --terminal EXACT_OLD_TERMINAL`。helper 核对已保存的旧 handle/incarnation/工作区，先持久记录 attempt，再只关闭该 terminal，不关闭整个 tab/工作区。只有精确 handle 的 `result.close.ptyKilled=true` 回执才解除继任产品/loop fence；成功 RPC 外壳本身不足。
 6. 确认关闭、原暂停条件和工作边界后，才按 packet 原始 loop_prompt 恢复原授权 loop；不清理旧证据、不改 Run、产品 attempt 或 worker lineage。
 
+launch 按已安装 CLI 的 `result.prompt` 信封读取投递：仅 `delivery=submit` 且 `outcome=journaled`（带字符串 `messageId`）或 `handed-to-terminal` 确认已送达；不接受旧测试误加的 `result.launch.prompt`。缺失、格式错误、明确错误和未知/未确认投递分别保存状态并继续锁存；claim 先于回执时，同一 transfer 的 request/history 都补存迟到回执。此解析由 per-Run 与保留的全局接口共享，不迁移旧 lease。`journaled` 可能属于 structured chat，本身不证明有可验证的 PTY 继任者；真实 structured/terminal 自动生命周期仍未验收，不改偏好来替代验收。
+
 未知 launch/send/close 一律锁存，保留收到的原始 stdout/stderr/退出码或 timeout 信息。可用 `status --run ACTUAL_RUN` 检查保存状态，以及精确 `orca orchestration run-show --id ACTUAL_RUN --full --json`、`orca orchestration run-current --full --json`、`orca terminal show --terminal ACTUAL_HANDLE --json`，或 `orca terminal list --worktree path:/absolute/worktree --limit 20 --json` 作有界检查。不得直接再次 fresh launch/send/close；没有可靠证明时升级阻塞，不手改 accounting 解锁。当前没有自动 reconcile/重发接口；未知结果须由协调者核实并安排受审恢复，不能以超时或静默判断退出。
 
 ## Worker 交接
@@ -112,4 +114,4 @@ python3 -I .claude/hooks/test_coordinator_rotation.py
 
 2026-11-05 核对 Claude Code 2.1.318、原生 Codex 0.166.0 的已安装实现/schema，并只读查阅 [Claude PreCompact](https://code.claude.com/docs/en/hooks#precompact) 与 [Codex hooks](https://learn.chatgpt.com/docs/hooks)。本机原生 Codex rollout 确认 `session_meta` 和带 window_id 的 `compacted` 结构。上述是来源和 schema 证据，不能代替真实 compaction veto/跨窗口全流程执行。
 
-原 16 项协调者测试保留沿革；本次修正保留既有全部 55 项，新增 20 项，合计 75 项开发自检通过。隔离测试覆盖无全局 lease 的真实 hook 分派、per-Run 注册与冒用拒绝、最后一轮行政 gate、未知启动/关闭去重、initial0/transcript 起始时间/Run generation、精确关闭与下一轮回执保存，以及全部角色、四次后交接、双宿主 veto、超过上限不清零、checkpoint 单次通知、错误身份/schema 和旧 lease/token/epoch/暂停规则。只在临时项目/mock Orca 中执行，不运行真实压缩/启动压测。原 [planning-with-files](https://github.com/OthmanAdi/planning-with-files/blob/8eef6dc6540dde5eef3fdc0ac487ad9c48ef3ba5/hooks/claude-hook.sh#L304-L345)、[HumanLayer handoff](https://github.com/humanlayer/humanlayer/blob/f9bd73534a9fb7099a274f951b698b1297122fd9/apps/riptide-api/src/orpc/api/sessions/handoff.ts#L40-L114)、[Ralph](https://github.com/snarktank/ralph/blob/6c53cb0b831ebe8739c6a003e22af14902d8b0b5/ralph.sh#L84-L108) 的持久状态/事务/新进程思路仍适用，不继承权限绕过或文本完成哨兵。
+原 16 项协调者测试保留沿革；前轮修正保留既有全部 55 项并新增 20 项。本轮保留这 75 项、修正其投递 fixture 为已安装信封，新增 3 项带子反例的投递测试，合计 78 项开发自检通过；旧独立评审 R1/D1 退回结论及失败日志保留。隔离测试覆盖无全局 lease 的真实 hook 分派、per-Run 注册与冒用拒绝、最后一轮行政 gate、未知启动/关闭去重、initial0/transcript 起始时间/Run generation、精确关闭与下一轮回执保存，以及全部角色、四次后交接、双宿主 veto、超过上限不清零、checkpoint 单次通知、错误身份/schema 和旧 lease/token/epoch/暂停规则。只在临时项目/mock Orca 中执行，不运行真实压缩/启动压测。原 [planning-with-files](https://github.com/OthmanAdi/planning-with-files/blob/8eef6dc6540dde5eef3fdc0ac487ad9c48ef3ba5/hooks/claude-hook.sh#L304-L345)、[HumanLayer handoff](https://github.com/humanlayer/humanlayer/blob/f9bd73534a9fb7099a274f951b698b1297122fd9/apps/riptide-api/src/orpc/api/sessions/handoff.ts#L40-L114)、[Ralph](https://github.com/snarktank/ralph/blob/6c53cb0b831ebe8739c6a003e22af14902d8b0b5/ralph.sh#L84-L108) 的持久状态/事务/新进程思路仍适用，不继承权限绕过或文本完成哨兵。

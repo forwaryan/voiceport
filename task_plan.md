@@ -6,7 +6,7 @@
 
 - R1（complete）：新协调会话真实 PreToolUse、terminal、transcript 初始零计数已核对；当前两次自然压缩，真实 PostCompact/SessionStart 已观察。不是已完成自动轮换的证明。
 - R2（complete，评审收尾）：freeze02 最终检查 matches:true；独立02正式 failed/BLOCKED、exited/released。现场评审已显式关闭，历史快照和报告保持。HTTP GUI 来源新增/编辑/选择/重启/合成样例/删除及已知 Keychain 修订清理有实测；GUI 导入确认归属与后续外部来源/错误/空结果/取消路径未完成。
-- R3（in_progress，独立RETURNED后返修）：freeze03独立完整评审确认R1：installed CLI为result.prompt但helper误读result.launch.prompt，真实成功launch无法确认交付；D1：部署备份父级symlink可逃出目标工作区。75测试通过不抵消两个有效反例。最终matches:true后显式关闭live评审并保留原快照/报告，原开发已exited/released，沿原角色changed-spec新会话聚焦修复。需新proposal/manifest pin、新完整冻结及独立复核，尚未真实register、CLI部署或自动生命周期。
+- R3（开发返修complete，独立复核pending）：freeze03独立RETURNED R1安装回执嵌套错误、D1备份父级symlink逃逸保持。真实新开发0e0d0ab1/task_d5b81b668d18/ctx_a927dfa546bc正式交付并停写：修正result.prompt解析，保持未知锁存/迟到回执/精确关闭；新部署提案使用无链接目录descriptor锚定、六原文件完整备份/模式和部分失败停查。78helper/29部署控制及安装schema/竞争控制开发自检通过；修前目标断言与首次测试预期错误保留。协调核对97证据及六原始before/当前after快照、真实initial0/final0，历史lease保持。新manifest b7120867…/proposal f984caf7…尚待新完整冻结独立复核；未真实register、CLI部署或自动生命周期。
 - R4（complete，独立合成离线范围ACCEPTED）：CI夹具exact1MB/多1字节、timeout/cancel不变与背压清理经freeze03独立审查接受；独立节流9项通过，禁用真实streaming guard的负向对照在目标断言101失败。精确HEAD81c9341的远端CI42499019278 success；当前版本完整17步独立通过、输入未变，65macOS passed/1原有ignored。原stale binary排除、旧CI失败与报告保持；GUI/CLI/真实ASR不在本接受范围。
 - R5（blocked，原任务保留）：CLI/Skill 开发位于独立工作区，尚未开始产品实现。helper 在无全局 lease 时提前返回，导致真实启动证明缺失。待经复核 helper 部署后补实际 hook 证明，沿原任务继续；不手造状态或改信任。
 - R6（pending）：集成 CLI/Skill 与修复，完整新冻结、不同真实会话独立验收、全量离线检查及新远端 CI；按持续授权完成正常 Git/PR/main 同步，再交付已验证 App。PR15 仍 draft，无产品 PASS。

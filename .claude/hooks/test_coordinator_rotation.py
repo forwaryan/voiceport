@@ -15,6 +15,23 @@ r = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(r)
 
 
+def installed_launch_receipt(outcome='journaled'):
+    # Installed agentLaunchFixture/formatAgentLaunch use result.prompt directly.
+    # Journaled structured delivery alone is not proof of a terminal successor.
+    receipt = {'id': 'req_launch', 'ok': True, 'result': {
+        'outcome': {'kind': 'structured', 'sessionId': 'codex_1', 'handle': 'agent_1'},
+        'worktreeId': 'synthetic-worktree',
+        'receipt': {'mode': 'structured', 'preferred': 'structured', 'reason': 'user_default',
+                    'detail': 'Started a structured chat session, the default for new agent tabs in your settings.'},
+        'prompt': {'delivery': 'submit', 'outcome': outcome, 'messageId': 'msg_1'}},
+        '_meta': {'runtimeId': 'runtime-1'}}
+    if outcome == 'handed-to-terminal':
+        receipt['result']['outcome'] = {'kind': 'terminal', 'handle': 'term_fixture'}
+        receipt['result']['receipt'].update(mode='terminal', preferred='terminal', detail='Synthetic terminal delivery')
+        del receipt['result']['prompt']['messageId']
+    return receipt
+
+
 class RotationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -163,7 +180,7 @@ class RotationTests(unittest.TestCase):
         packet = r.load(self.root / request['packet'])
         self.assertTrue(packet['paused'])
         self.assertEqual(packet['tasks']['VP-013']['attempt'], 'same-attempt')
-        with patch.object(r, 'invoke', return_value={'ok': True, 'result': {'launch': {'prompt': {'outcome': 'journaled'}}}}):
+        with patch.object(r, 'invoke', return_value=installed_launch_receipt()):
             r.launch(self.root, 'old')
         token = r.load(self.path)['request']['token']
         with patch.object(r, 'bound_run', return_value={'verified': True}):
@@ -181,7 +198,7 @@ class RotationTests(unittest.TestCase):
         self.request()
         self.stop()
         request = r.retire(self.root, 'old', str(self.transcript))
-        with patch.object(r, 'invoke', return_value={'ok': True, 'result': {'launch': {'prompt': {'outcome': 'handed-to-terminal'}}}}):
+        with patch.object(r, 'invoke', return_value=installed_launch_receipt('handed-to-terminal')):
             r.launch(self.root, 'old')
         token = r.load(self.path)['request']['token']
         with patch.object(r, 'bound_run', side_effect=ValueError('not bound')):
@@ -201,7 +218,7 @@ class RotationTests(unittest.TestCase):
             token = r.load(self.path)['request']['token']
             with patch.object(r, 'bound_run', return_value={}):
                 r.claim(self.root, 'new', token)
-            return {'ok': True, 'result': {'launch': {'prompt': {'outcome': 'journaled'}}}}
+            return installed_launch_receipt()
         with patch.object(r, 'invoke', side_effect=launched):
             r.launch(self.root, 'old')
         self.assertEqual(r.load(self.path)['owner'], 'new')
@@ -250,7 +267,7 @@ class RotationTests(unittest.TestCase):
         self.assertEqual(packet['rotation_threshold'], 5)
         self.assertEqual(packet['goal'], 'deliver with five context rounds')
         self.assertEqual(packet['rotation_policy'], r.FINAL_ROUND_POLICY)
-        with patch.object(r, 'invoke', return_value={'ok': True, 'result': {'launch': {'prompt': {'outcome': 'journaled'}}}}):
+        with patch.object(r, 'invoke', return_value=installed_launch_receipt()):
             r.launch(self.root, 'old')
         state = r.load(self.path)
         self.assertIn(r.FINAL_ROUND_POLICY, state['request']['launch_argv'][-1])
@@ -1349,7 +1366,7 @@ class RunRotationTests(unittest.TestCase):
             self.assertEqual(state['phase'], 'launching')
             self.assertIn('launch_started_at', state['request'])
             self.assertIn('launch_argv', state['request'])
-            return {'ok': True, 'result': {'launch': {'prompt': {'outcome': 'journaled'}}}}
+            return installed_launch_receipt()
         if argv[:2] == ['terminal', 'close']:
             self.assertIn('close_started_at', r.load(r.coordinator_path(root, self.run))['request'])
             return {'ok': True, 'result': {'close': {'handle': argv[3], 'ptyKilled': True}}}
@@ -1723,6 +1740,113 @@ class RunRotationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '48KB'):
             r.retire(self.root, 'coord', str(self.transcript_for('coord')), self.run)
         self.assertEqual(self.saved()['phase'], 'requested')
+
+    def test_installed_delivery_outcomes_confirm_once(self):
+        self.retire()
+        retired = copy.deepcopy(self.saved())
+        for outcome in ('journaled', 'handed-to-terminal'):
+            with self.subTest(outcome=outcome):
+                r.atomic(r.coordinator_path(self.root, self.run), retired)
+                receipt = installed_launch_receipt(outcome)
+                with patch.object(r, 'invoke', side_effect=lambda root, argv:
+                                  receipt if argv[:2] == ['agent', 'launch'] else self.receipt(root, argv)):
+                    error = None
+                    try:
+                        r.launch(self.root, 'coord', self.run)
+                    except ValueError as caught:
+                        error = str(caught)
+                    self.assertIsNone(error, 'installed result.prompt must confirm delivery')
+                    self.assertTrue(self.saved()['request']['delivery_confirmed'])
+                    self.assertEqual(self.saved()['request']['delivery_status'], outcome)
+                    self.assertEqual(self.saved()['request']['launch_receipt'], receipt)
+                    with self.assertRaisesRegex(ValueError, 'already attempted'):
+                        r.launch(self.root, 'coord', self.run)
+
+    def test_bad_delivery_envelopes_remain_latched_with_distinct_status(self):
+        self.retire()
+        retired = copy.deepcopy(self.saved())
+        cases = [
+            ('nested-only', {'ok': True, 'result': {'launch': {'prompt': {'outcome': 'journaled'}}}}, 'missing'),
+            ('missing', {'ok': True, 'result': {}}, 'missing'),
+            ('missing-outcome', {'ok': True, 'result': {'prompt': {}}}, 'missing'),
+            ('missing-ok', {'result': {'prompt': {'outcome': 'journaled'}}}, 'malformed'),
+            ('false-ok', {'ok': False, 'result': {'prompt': {'outcome': 'journaled'}}}, 'error'),
+            ('error', {**installed_launch_receipt(), 'error': {'code': 'refused'}}, 'error'),
+            ('result-error', {'ok': True, 'result': {'error': 'refused', 'prompt': {'outcome': 'journaled'}}}, 'error'),
+            ('prompt-error', {'ok': True, 'result': {'prompt': {'outcome': 'journaled', 'error': 'refused'}}}, 'error'),
+            ('unknown', installed_launch_receipt('queued'), 'unknown'),
+            ('not-delivered', installed_launch_receipt('not-delivered'), 'unknown'),
+            ('unconfirmed', installed_launch_receipt('unconfirmed'), 'unknown'),
+        ]
+        for field, value, status in (('delivery', None, 'malformed'), ('delivery', [], 'malformed'),
+                                     ('delivery', 'draft', 'unknown'), ('delivery', 'other', 'unknown'),
+                                     ('messageId', None, 'malformed'), ('messageId', [], 'malformed')):
+            receipt = installed_launch_receipt()
+            receipt['result']['prompt'][field] = value
+            cases.append(('bad-' + field + repr(value), receipt, status))
+        for field in ('delivery', 'messageId'):
+            receipt = installed_launch_receipt()
+            del receipt['result']['prompt'][field]
+            cases.append(('missing-' + field, receipt, 'missing'))
+        for value in (None, [], 'bad', 1, True):
+            cases.append(('bad-root-' + repr(value), value, 'malformed'))
+            cases.append(('bad-result-' + repr(value), {'ok': True, 'result': value}, 'malformed'))
+            cases.append(('bad-prompt-' + repr(value), {'ok': True, 'result': {'prompt': value}}, 'malformed'))
+            cases.append(('bad-outcome-' + repr(value), installed_launch_receipt(value),
+                          'unknown' if isinstance(value, str) else 'malformed'))
+        for name, receipt, status in cases:
+            with self.subTest(name=name):
+                r.atomic(r.coordinator_path(self.root, self.run), retired)
+                launches = []
+                def invoke(root, argv):
+                    if argv[:2] == ['agent', 'launch']:
+                        launches.append(argv)
+                        return receipt
+                    return self.receipt(root, argv)
+                with patch.object(r, 'invoke', side_effect=invoke):
+                    with self.assertRaisesRegex(ValueError, 'prompt delivery'):
+                        r.launch(self.root, 'coord', self.run)
+                    with self.assertRaisesRegex(ValueError, 'already attempted'):
+                        r.launch(self.root, 'coord', self.run)
+                request = self.saved()['request']
+                self.assertFalse(request['delivery_confirmed'])
+                self.assertEqual(request['delivery_status'], status)
+                self.assertEqual(request['launch_receipt'], receipt)
+                self.assertEqual(len(launches), 1)
+                self.assertEqual(self.saved()['phase'], 'launching')
+
+    def test_installed_receipt_after_fresh_claim_updates_request_and_history(self):
+        self.retire()
+        receipt = installed_launch_receipt()
+        def invoke(root, argv):
+            if argv[:2] != ['agent', 'launch']:
+                return self.receipt(root, argv)
+            self.boot('next', 'next-terminal')
+            self.current_terminal = 'next-terminal'
+            r.claim(self.root, 'next', self.saved()['request']['token'], self.run)
+            self.assertIn('hookSpecificOutput', r.hook(self.root, self.payload(session='next', name='Edit')))
+            with self.assertRaisesRegex(ValueError, 'close requires'):
+                r.close_retired(self.root, 'next', self.run, 'coord-terminal')
+            os.environ['ORCA_TERMINAL_HANDLE'] = 'coord-terminal'
+            return receipt
+        with patch.object(r, 'invoke', side_effect=invoke):
+            r.launch(self.root, 'coord', self.run)
+        os.environ['ORCA_TERMINAL_HANDLE'] = 'next-terminal'
+        saved = self.saved()
+        for record in (saved['request'], saved['history'][-1]):
+            self.assertEqual(record['launch_receipt'], receipt)
+            self.assertEqual(record['delivery_status'], 'journaled')
+            self.assertTrue(record['delivery_confirmed'])
+        self.assertEqual(saved['owner'], 'next')
+        self.assertIn('hookSpecificOutput', r.hook(self.root, self.payload(session='next', name='Edit')))
+        r.close_retired(self.root, 'next', self.run, 'coord-terminal')
+        self.assertEqual(r.hook(self.root, self.payload(session='next', name='Edit')), {})
+        for i in range(4):
+            self.boundary('next-' + str(i), 'next')
+        r.hook(self.root, self.payload(session='next'))
+        self.assertNotIn('delivery_confirmed', self.saved()['request'])
+        self.assertEqual(self.saved()['history'][-1]['launch_receipt'], receipt)
+        self.assertTrue(self.saved()['history'][-1]['close_confirmed'])
 
     def test_second_rotation_does_not_reuse_old_closure_or_verification(self):
         self.successor()

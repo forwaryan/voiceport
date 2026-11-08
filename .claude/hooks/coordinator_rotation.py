@@ -124,6 +124,45 @@ def receipt_field(receipt, *keys):
     return value
 
 
+def launch_delivery_status(receipt):
+    """Read the installed agent-launch envelope; delivery alone proves no PTY."""
+    if not isinstance(receipt, dict):
+        return 'malformed'
+    if receipt.get('ok') is False or receipt.get('error') is not None:
+        return 'error'
+    if receipt.get('ok') is not True or not isinstance(receipt.get('result'), dict):
+        return 'malformed'
+    result = receipt['result']
+    if result.get('error') is not None:
+        return 'error'
+    if 'prompt' not in result:
+        return 'missing'
+    prompt = result['prompt']
+    if not isinstance(prompt, dict):
+        return 'malformed'
+    if prompt.get('error') is not None:
+        return 'error'
+    if 'outcome' not in prompt:
+        return 'missing'
+    outcome = prompt['outcome']
+    if not isinstance(outcome, str):
+        return 'malformed'
+    if 'delivery' not in prompt:
+        return 'missing'
+    if not isinstance(prompt['delivery'], str):
+        return 'malformed'
+    # The installed CLI sends --prompt as delivery=submit. Draft/unknown
+    # delivery cannot authorize the submitted successor handoff.
+    if prompt['delivery'] != 'submit':
+        return 'unknown'
+    if outcome == 'journaled':
+        if 'messageId' not in prompt:
+            return 'missing'
+        if not isinstance(prompt['messageId'], str):
+            return 'malformed'
+    return outcome if outcome in ('journaled', 'handed-to-terminal') else 'unknown'
+
+
 def update_transfer(state, request_id, **updates):
     """Keep late launch/close receipts when the live request moves to the next epoch."""
     records = [state['request'], *state['history']]
@@ -532,10 +571,11 @@ def launch(root, session, run_id=None):
         with transaction(root, run_id) as state:
             update_transfer(state, request['id'], launch_error=str(error), launch_failure=failure_observation(error))
         raise ValueError('launch outcome may be unknown; inspect Orca and use its replay ID, no fresh launch') from error
-    delivered = receipt_field(receipt, 'result', 'launch', 'prompt', 'outcome') in (
-        'journaled', 'handed-to-terminal')
+    delivery_status = launch_delivery_status(receipt)
+    delivered = delivery_status in ('journaled', 'handed-to-terminal')
     with transaction(root, run_id) as state:
-        update_transfer(state, request['id'], launch_receipt=receipt, delivery_confirmed=delivered)
+        update_transfer(state, request['id'], launch_receipt=receipt,
+                        delivery_status=delivery_status, delivery_confirmed=delivered)
     if not delivered:
         raise ValueError('launch receipt does not prove prompt delivery; inspect existing successor, do not launch again')
     return receipt
