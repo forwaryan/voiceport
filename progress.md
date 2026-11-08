@@ -1,5 +1,50 @@
 # 进度记录
 
+## 2026-11-08 — 同步上游与隔离 PR 候选
+
+已按用户授权 fetch，main 和工作分支基线快进到 `0d9e643`。原有 macOS 输入/入口修改通过 stash 完整保存恢复，README 冲突合并保留双方说明。因另一会话正在相同工作区开发界面美化，原有完整修改已复制到独立临时 worktree `fix/macos-app-entry-pr`，使用独立全新 Cargo target 验证；进行中的美化源码不放入本次候选。上游 main CI 已成功。本次候选验证、PR 与合并结果后续按实际回执补充。
+
+## 2026-11-08 — 当前新包辅助功能实际生效
+
+系统UI仅移除VoicePort条目，重新添加时通过Go to Folder确认当前新包完整路径、VoicePort app实际selected、Open启用，再前台确认Open。系统新VoicePort开关1；PID68143同进程实时按钮变为「辅助功能：已授权（检查）」、本机预览尚未启动/0秒。新证据dist/cursor-entry-20261108-9eaa1fc4/permission-repair-20261108-161159.json。旧report.json不改写；面板仍有先前失败提示但当前权限按钮直接显示实时AX结果。未开始录音、未退出应用、未动其他应用权限或TCC数据库。背景Open出现background_unavailable，按工具要求前台restore后实际picker关闭并新增条目，后续读取应用确认成功。
+
+## 2026-11-08 — 辅助功能修复接续检查
+
+系统认证已通过，之前Go to Folder已读回当前新包完整路径；接续观察时文件picker已关闭，但无法据此确认最终添加发生。系统VoicePort开关仍为1，PID68143实时按钮仍未授权、0秒。已通过系统UI将仅VoicePort开关1→0→1并逐次读回，应用仍未授权；下一步仅重建VoicePort条目并明确选择当前包，不触及其他应用或TCC数据库、不退出应用。新会话真实压缩边界现为1（17ab1f73-0ead-4551-b1ad-dc5758bee1f5），terminal绑定保持、phase active、无drift；保留初始0的历史事实，不清零或改旧报告。
+
+
+## 2026-11-08 — 用户授权处理辅助功能，系统认证待本机完成
+
+用户明确要求“你给我搞一下”，授权在系统UI重新关联当前新包的AX权限。已读取现有VoicePort开启条目，优先点击添加（未先移除旧项），系统设置出现认证表单：“隐私与安全性正在尝试解锁系统设置”“使用触控ID或输入密码允许此操作”。此为真实macOS认证门槛，需用户本机完成；未代填或读取密码、未切换权限、未退出应用、未录音。当前应接着观察该表单认证后的文件picker，定位`/Users/lixiongxiong.6/Desktop/study/voiceport/dist/cursor-entry-20261108-9eaa1fc4/VoicePort.app`并添加，再检查PID68143窗口实时AX状态。系统窗口PID80207/window639；表单索引194仅为此次短期观察，不复用过期索引。认证前不宣称权限已修复。
+
+
+## 2026-11-08 — 用户反馈开关已开启后的复核
+
+用户要求检查“明明打开了”。实际系统设置辅助功能列表中 VoicePort 开关读回1，确认用户已开启；当前新包仍为PID68143/确切cursor-entry路径，应用定时刷新仍显示AX未授权，且开始尝试被[accessibility]拒绝、0秒。原“未授权”只描述新进程的有效AXIsProcessTrusted结果，不能表述成用户没有开系统开关。代码直接在主线程调用AXIsProcessTrusted，每tick刷新，没有缓存旧bool。
+
+只读codesign要求对照：新包cdhash8844f8ab2637e3c1a297c7ff29a7592be20074fc，20261106旧包1c74bfc248abe627c84bc492c9a4853ddb550dcf，均ad-hoc且designated requirement绑定各自cdhash。支持旧条目/签名身份不匹配的解释，但尚未读到该系统条目实际绑定的路径/要求，不能断言根因已确认。系统设置VoicePort行context右击无树变化、synthetic/unverified，未取得路径；未切换权限、移除条目、重置TCC或退出应用。复核时Siri页面总开关0另属语音预览条件，不与AX混为一项。截图观察另存permission-followup-settings.json，原最终报告保持历史事实。
+
+
+## 2026-11-08 — 图标与窗口入口交付完成
+
+完整 `verify.py --app-smoke` 17步全部按预期通过（workspace、fmt、严格Clippy、release、4 loop、17 packaging、CLI/host、签名/对应和安全smoke），报告`.voiceport/evidence/vp012-revision-01/verify-5db70cb2c6a54f9e9f3047180c788f18/report.json`；起止及最终产品SHA均e5a7b98ae485405abb12b7bca755101ad3612aa37916f2c4a0f1da569140fb32。之后仅改根状态记录及dist证据，不改产品输入。
+
+新包`dist/cursor-entry-20261108-9eaa1fc4/VoicePort.app`（0.3.1/build7）独立打包、深层严格签名与主Cargo产物重签对应通过。实际普通启动PID68143、regular policy0、有加载图标、Dock VoicePort item；窗口关闭后同PID存活，Launch Services重开、VP状态菜单「打开结果与设置…」、实际Dock图标点击三路都恢复窗口。最终截图已读取，0秒/本机预览未启动/结果空，当前辅助功能未授权，快捷键无冲突提示。未请求权限、录音、读账号或云端调用，也未退出已有应用。
+
+首次computer close实际关闭后回执误报permission_denied，permissions仍granted；原生窗口列表为空与同PID存活、重开成功另证，不将错误回执直接当成功。一次System Events查询假设所有按钮有可选AXSubrole而-1728，改容错枚举后通过；原错误保留。新目录report.json/窗口截图/MANUAL_TEST.md已交付，旧包和fe46d843 drift fence不变，本会话终态仍初始0、绑定一致。当前工作仍未提交/推送，现有修改全部保留。
+
+
+## 2026-11-08 — 独立 Orca 接收通过，入口收尾验证
+
+`dist/cursor-entry-20261108-9eaa1fc4/check_terminal.py` 在单次有界操作内创建新非执行接收终端、核对ready、切换精确handle、激活Orca后运行生产probe；`orca-terminal-receiver-02.json` passed=true/22 bytes/无Return，probe-06 begin=ok/pending=false。原CGEventPostToPid发送实现通过，临时逐scalar试验已撤回。早期01/02因前台不同拒写，03/04仅发送成功但指定receiver timeout/0 bytes，全部保留不计通过。GUI辅助synthetic输入无接收证明，不作产品通过证据。
+
+macOS all-target测试通过25 unit+12 storage+23 delivery，storage另9 child不重复计数。新增真实包icon/Dock metadata与重签坏icon拒绝回归；已检查原icon渲染。修正正常启动一次性采用Regular policy、安全smoke仍Accessory，补齐诊断help与0.3.1入口文档。完整verify后台task buac8o0io运行中，未提前宣称通过。
+
+## 2026-11-08 — 光标输入与图标入口，新会话接续
+
+新会话 9eaa1fc4-9e2b-470c-a2a0-ef0f1de7fde6 的环境 terminal、Orca terminal show 回执 tab/leaf、真实 PreToolUse 保存绑定一致，初始压缩0，当前 helper 摘要014eeb1e…匹配；SessionStart 未观察。旧 fe46d843 的 terminal_drift 原记录只读保留。现有8修改及未跟踪 examples/icon/fixtures 保留，未操作 Git 提交或恢复旧会话。planning catchup 正常无输出。旧 Orca 探针因焦点 loginwindow 拒绝，receiver timeout/0 bytes，不能当作通过；本轮用新独立终端重新验证。普通 NSTextView 成功证据留在旧 dist 不改。
+
+
 ## 2026-11-07 — 移除旧版 Swift
 
 用户要求清理旧版并更新主分支。从 main `def833a` 创建 `chore/remove-swift-legacy`，已移除37个旧Swift源码/测试/SwiftPM/夹具/说明文件，修正产品清单必需根与当前文档引用；保留实际运行Rust检查的脚本。历史源代码由Git保留，历史验收结论不改写。清理提交已推送并创建PR11。随后完整离线17步通过（Rust工作区测试/fmt/严格Clippy/release、4 loop/16 packaging、CLI/host/签名/安全smoke），报告`.voiceport/evidence/vp012-revision-01/verify-f9cbfb6dabe94eb7aff8eaa510900d66/report.json`，起止SHA `e9b3d5c353b32835045f08f56586fa513e376ba1844fbba8531d5ca1d137de7f`一致。Git archive干净文件树无Swift/legacy且产品清单与工作区相同；当前文档链接、完整差异whitespace和提交范围检查通过。验证后仅补充验证文档与根状态记录，随后正常合并并核对main。不触发真实录音或云端调用，不替换运行中的应用。

@@ -35,6 +35,8 @@ struct Ivars {
     hotkey_rx: RefCell<Option<std::sync::mpsc::Receiver<()>>>,
     permission_rx: RefCell<Option<std::sync::mpsc::Receiver<(u64, crate::audio::AudioEvent)>>>,
     prepare_permissions: OnceCell<Retained<NSButton>>,
+    accessibility: OnceCell<Retained<NSButton>>,
+    hotkey_error: RefCell<Option<String>>,
 }
 define_class!(
     #[unsafe(super = NSObject)]
@@ -45,7 +47,16 @@ define_class!(
     unsafe impl NSApplicationDelegate for Delegate {
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn launched(&self, _notification: &NSNotification) {
-            if std::env::args().any(|a| a == "--show-window") { self.show_window(); }
+            self.show_window();
+        }
+        #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
+        fn reopen(&self, _app: &NSApplication, _visible: bool) -> bool {
+            self.show_window();
+            false
+        }
+        #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
+        fn terminate_after_window_closed(&self, _app: &NSApplication) -> bool {
+            false
         }
         #[unsafe(method(applicationShouldTerminate:))]
         fn should_terminate(&self, _app: &NSApplication) -> NSApplicationTerminateReply {
@@ -150,29 +161,38 @@ impl Delegate {
             action(controller);
         }
     }
+    fn menu_item(
+        &self,
+        title: &str,
+        action: objc2::runtime::Sel,
+        key: &str,
+    ) -> Retained<NSMenuItem> {
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(self.mtm()),
+                &NSString::from_str(title),
+                Some(action),
+                &NSString::from_str(key),
+            )
+        };
+        if action != sel!(terminate:) {
+            unsafe {
+                item.setTarget(Some(self));
+            }
+        }
+        item
+    }
     fn build_menu(&self) {
         let mtm = self.mtm();
         let menu = NSMenu::new(mtm);
         menu.setAutoenablesItems(false);
         for (title, action, key) in [
+            ("打开结果与设置…", sel!(showWindow:), ""),
             ("开始听写", sel!(toggle:), ""),
             ("取消听写", sel!(cancel:), ""),
-            ("结果与设置…", sel!(showWindow:), ","),
-            ("退出 VoicePort", sel!(terminate:), "q"),
+            ("退出 VoicePort", sel!(terminate:), ""),
         ] {
-            let item = unsafe {
-                NSMenuItem::initWithTitle_action_keyEquivalent(
-                    NSMenuItem::alloc(mtm),
-                    &NSString::from_str(title),
-                    Some(action),
-                    &NSString::from_str(key),
-                )
-            };
-            if action != sel!(terminate:) {
-                unsafe {
-                    item.setTarget(Some(self));
-                }
-            }
+            let item = self.menu_item(title, action, key);
             menu.addItem(&item);
             if action == sel!(toggle:) {
                 let _ = self.ivars().menu_toggle.set(item);
@@ -182,10 +202,32 @@ impl Delegate {
             NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
         if let Some(button) = status.button(mtm) {
             button.setTitle(ns_string!("VP"));
-            button.setToolTip(Some(ns_string!("VoicePort · 语音输入")));
+            if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                ns_string!("mic.fill"),
+                Some(ns_string!("VoicePort · 打开结果与设置")),
+            ) {
+                image.setTemplate(true);
+                image.setSize(NSSize::new(16., 16.));
+                button.setImage(Some(&image));
+                button.setImagePosition(NSCellImagePosition::ImageLeading);
+            }
+            button.setToolTip(Some(ns_string!(
+                "VoicePort · 点击打开菜单，再选「打开结果与设置」"
+            )));
         }
+        status.setVisible(true);
         status.setMenu(Some(&menu));
         let _ = self.ivars().status.set(status);
+
+        let main_menu = NSMenu::new(mtm);
+        let application_item = NSMenuItem::new(mtm);
+        let application_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), ns_string!("VoicePort"));
+        application_menu.addItem(&self.menu_item("结果与设置…", sel!(showWindow:), ","));
+        application_menu.addItem(&NSMenuItem::separatorItem(mtm));
+        application_menu.addItem(&self.menu_item("退出 VoicePort", sel!(terminate:), "q"));
+        application_item.setSubmenu(Some(&application_menu));
+        main_menu.addItem(&application_item);
+        NSApplication::sharedApplication(mtm).setMainMenu(Some(&main_menu));
     }
     fn initialize(&self) {
         let defaults = NSUserDefaults::standardUserDefaults();
@@ -227,6 +269,8 @@ impl Delegate {
     }
     fn register_hotkey(&self) {
         self.ivars().hotkey.borrow_mut().take();
+        self.ivars().hotkey_rx.borrow_mut().take();
+        self.ivars().hotkey_error.borrow_mut().take();
         let (tx, rx) = std::sync::mpsc::channel();
         let mut hotkey = crate::hotkey::GlobalHotKey::new(tx);
         match hotkey.register(self.ivars().alternative.get()) {
@@ -234,7 +278,10 @@ impl Delegate {
                 *self.ivars().hotkey.borrow_mut() = Some(hotkey);
                 *self.ivars().hotkey_rx.borrow_mut() = Some(rx);
             }
-            Err(message) => self.with_controller(|c| c.message = message),
+            Err(message) => {
+                *self.ivars().hotkey_error.borrow_mut() = Some(message.clone());
+                self.with_controller(|c| c.message = message);
+            }
         }
     }
     fn button(
@@ -274,7 +321,7 @@ impl Delegate {
             let window = unsafe {
                 NSWindow::initWithContentRect_styleMask_backing_defer(
                     NSWindow::alloc(mtm),
-                    rect(0., 0., 700., 620.),
+                    rect(0., 0., 700., 700.),
                     NSWindowStyleMask::Titled
                         | NSWindowStyleMask::Closable
                         | NSWindowStyleMask::Miniaturizable,
@@ -287,14 +334,14 @@ impl Delegate {
             }
             window.setTitle(ns_string!("VoicePort · 结果与设置"));
             let view = window.contentView().expect("native window content view");
-            self.label(&view, "VoicePort", 566., 30.);
-            let _ = self.ivars().message.set(self.label(&view, "", 516., 48.));
-            let _ = self.ivars().details.set(self.label(&view, "", 466., 46.));
+            self.label(&view, "VoicePort", 646., 30.);
+            let _ = self.ivars().message.set(self.label(&view, "", 596., 48.));
+            let _ = self.ivars().details.set(self.label(&view, "", 512., 82.));
             let scroll =
-                NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(24., 260., 652., 194.));
+                NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(24., 290., 652., 214.));
             scroll.setHasVerticalScroller(true);
             scroll.setBorderType(NSBorderType::BezelBorder);
-            let text = NSTextView::initWithFrame(NSTextView::alloc(mtm), rect(0., 0., 630., 194.));
+            let text = NSTextView::initWithFrame(NSTextView::alloc(mtm), rect(0., 0., 630., 214.));
             text.setEditable(false);
             text.setSelectable(true);
             text.setAccessibilityIdentifier(Some(ns_string!("voiceport.transcript")));
@@ -307,17 +354,17 @@ impl Delegate {
                 "开始听写",
                 sel!(toggle:),
                 24.,
-                214.,
+                244.,
                 130.,
             ));
-            self.button(&view, "取消", sel!(cancel:), 164., 214., 90.);
-            self.button(&view, "复制文字", sel!(copyText:), 264., 214., 110.);
+            self.button(&view, "取消", sel!(cancel:), 164., 244., 90.);
+            self.button(&view, "复制文字", sel!(copyText:), 264., 244., 110.);
             let _ = self.ivars().retry.set(self.button(
                 &view,
                 "手动重试",
                 sel!(retry:),
                 384.,
-                214.,
+                244.,
                 110.,
             ));
             let _ = self.ivars().automatic.set(self.button(
@@ -325,7 +372,7 @@ impl Delegate {
                 "",
                 sel!(toggleAutomatic:),
                 24.,
-                168.,
+                198.,
                 300.,
             ));
             let _ = self.ivars().language.set(self.button(
@@ -333,7 +380,7 @@ impl Delegate {
                 "",
                 sel!(cycleLanguage:),
                 350.,
-                168.,
+                198.,
                 326.,
             ));
             let _ = self.ivars().shortcut.set(self.button(
@@ -341,26 +388,27 @@ impl Delegate {
                 "",
                 sel!(cycleShortcut:),
                 24.,
-                122.,
+                152.,
                 350.,
             ));
-            self.button(
+            let _ = self.ivars().accessibility.set(self.button(
                 &view,
                 "检查辅助功能授权",
                 sel!(requestAccessibility:),
                 394.,
-                122.,
+                152.,
                 282.,
-            );
+            ));
             let _ = self.ivars().prepare_permissions.set(self.button(
                 &view,
                 "准备麦克风与语音权限（不录音）",
                 sel!(preparePermissions:),
                 24.,
-                76.,
+                106.,
                 420.,
             ));
-            self.label(&view,"本机识别提供实时预览，停止后由 ChatGPT 完成最终转写。Orca 终端只追加稳定文字；需要改写的最终结果保留在此处。不会自动发送或按回车。",6.,60.);
+            self.label(&view, "自动输入：先点好目标输入框，再按全局快捷键开始；留在原输入位置，按同一快捷键结束。", 62., 38.);
+            self.label(&view,"本机识别提供实时预览，停止后由 ChatGPT 完成最终转写。Orca 终端只追加稳定文字；需要改写的最终结果保留在此处。不会自动发送或按回车。",6.,52.);
             window.center();
             let _ = self.ivars().window.set(window);
         }
@@ -435,12 +483,27 @@ impl Delegate {
             button.setEnabled(!c.busy());
         }
         if let Some(button) = self.ivars().shortcut.get() {
-            button.setTitle(&NSString::from_str(if self.ivars().alternative.get() {
-                "快捷键：⌃⇧空格（点击切换）"
+            let shortcut = if self.ivars().alternative.get() {
+                "⌃⇧空格"
             } else {
-                "快捷键：⌃⌥空格（点击切换）"
-            }));
+                "⌃⌥空格"
+            };
+            let suffix = if self.ivars().hotkey_error.borrow().is_some() {
+                "未注册，点击换一组"
+            } else {
+                "点击切换"
+            };
+            button.setTitle(&NSString::from_str(&format!(
+                "快捷键：{shortcut}（{suffix}）"
+            )));
             button.setEnabled(!c.busy());
+        }
+        if let Some(button) = self.ivars().accessibility.get() {
+            button.setTitle(if Delivery::trusted() {
+                ns_string!("辅助功能：已授权（检查）")
+            } else {
+                ns_string!("辅助功能：未授权（前往设置）")
+            });
         }
         if let Some(status) = self.ivars().status.get().and_then(|s| s.button(self.mtm())) {
             status.setTitle(&NSString::from_str(if recording {
@@ -461,20 +524,36 @@ pub fn run() {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     if arguments.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "VoicePort Rust macOS\n  --show-window             Show results and settings\n  --smoke-test              Build menu and exit without recording or network\n  --check-input-permission  Print effective input authorization JSON\n  --help                   Show this help"
+            "VoicePort Rust macOS\n  --show-window             Show results and settings (also shown on normal launch)\n  --smoke-test              Build menu and exit without recording or network\n  --check-input-permission  Print input authorization JSON for this execution context\n  --diagnose-input          Inspect focused input metadata without writing\n  --input-self-test         Write fixed text only to the dedicated development fixture\n  --help                   Show this help"
         );
         return;
     }
     if arguments.iter().any(|a| {
         !matches!(
             a.as_str(),
-            "--smoke-test" | "--check-input-permission" | "--show-window"
+            "--smoke-test"
+                | "--check-input-permission"
+                | "--show-window"
+                | "--diagnose-input"
+                | "--input-self-test"
         )
     }) {
         eprintln!("Unknown option; use --help");
         std::process::exit(2);
     }
     let mtm = MainThreadMarker::new().expect("VoicePort starts on the main thread");
+    if arguments
+        .iter()
+        .any(|a| a == "--diagnose-input" || a == "--input-self-test")
+    {
+        let report = if arguments.iter().any(|a| a == "--input-self-test") {
+            Delivery::input_self_test()
+        } else {
+            Delivery::diagnose_input()
+        };
+        println!("{report}");
+        return;
+    }
     if arguments.iter().any(|a| a == "--check-input-permission") {
         let bundle = NSBundle::mainBundle();
         let version = bundle
@@ -490,10 +569,15 @@ pub fn run() {
         return;
     }
     let app = NSApplication::sharedApplication(mtm);
-    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    let smoke = arguments.iter().any(|a| a == "--smoke-test");
+    app.setActivationPolicy(if smoke {
+        NSApplicationActivationPolicy::Accessory
+    } else {
+        NSApplicationActivationPolicy::Regular
+    });
     let delegate = Delegate::new(mtm);
     delegate.build_menu();
-    if arguments.iter().any(|a| a == "--smoke-test") {
+    if smoke {
         println!("VoicePort Rust app launched: menu ready, no recording or network");
         return;
     }

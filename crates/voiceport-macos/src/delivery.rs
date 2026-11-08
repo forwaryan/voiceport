@@ -256,6 +256,30 @@ impl Delivery {
         }
     }
 
+    /// Opt-in, content-free probe of the current input target. Never writes.
+    pub fn diagnose_input() -> serde_json::Value {
+        native::diagnose_input()
+    }
+
+    /// Exercises the production delivery path only against our isolated fixture.
+    pub fn input_self_test() -> serde_json::Value {
+        let mut report = Self::diagnose_input();
+        if !native::self_test_fixture_focused() {
+            report["selfTest"] = "refused: dedicated untouched input fixture is not focused".into();
+            return report;
+        }
+        let mut delivery = Self::new();
+        match delivery.begin() {
+            Ok(()) => {
+                report["begin"] = "ok".into();
+                report["preview"] = delivery.preview("测试").into();
+                report["final"] = delivery.deliver("输入验证🙂", true).into();
+            }
+            Err(error) => report["begin"] = error.into(),
+        }
+        report
+    }
+
     pub fn copy(text: &str) -> bool {
         native::copy(text)
     }
