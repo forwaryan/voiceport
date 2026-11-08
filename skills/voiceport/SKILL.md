@@ -22,6 +22,9 @@ Prefer the `voiceport` CLI for VoicePort operations. Start with `voiceport --ver
    Read the returned operation with `dictation result OPERATION`;
    empty text is a valid response and does not prove recognition quality.
    Cancel with `dictation cancel OPERATION` and observe release through status/result.
+   If the App remains `stopping`, keep new operations and quit blocked.
+   Unconfirmed local adapter cleanup may retain the recording; do not repeat cancel automatically.
+   A further cancel on the same operation is an explicit user-requested observation, without another termination signal.
 4. Start real recording only on a corresponding user instruction:
    `dictation start --source ID [--language zh|en|auto]`.
    CLI recording fixes source/language and disables automatic delivery.

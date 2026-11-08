@@ -1,5 +1,9 @@
 # 调研与发现
 
+## 2026-11-09 — 清理状态与 CLI 组合的边界
+
+CI09 使用 waitid(WNOWAIT) 保留直接 leader 至首次组信号决策，并由共享 typed custody 在派发前保留 owner 和录音lease；单次100ms初始确认后仍未知就保持 Stopping。显式Cancel只发起后台单次观察，不能由状态轮询续预算或再次发信号。三方集成保留CLI固定来源/语言、禁自动投递及operation/generation归属；CLI的busy、结果结算和quit继续读取同一Controller状态。调用链核对与无冲突合并尚不足以证明组合行为，需新冻结的构建、反例与独立复核。181份证据的协调核对也不等于独立接受；实际34命令包含final-checks时点之后的最后检查，原有33计数不改写。
+
 ## 2026-11-09 — CLI/App 实际边界、组终态与 Magpie 规则采用
 
 默认大小写不敏感卷会把旧 GUI 文件 VoicePort 与公共 CLI voiceport 视作同一路径，严格 exact-file-set checker 的失败是有效缺陷。当前候选使用 voiceport-app 与 voiceport，并分别绑定对应 Cargo 产物；不能用签名通过代替这两份内容对应，也不能从 bundle 名未变推断 TCC/Launch Services 身份已接受。

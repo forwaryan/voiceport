@@ -21,7 +21,7 @@ fn manifest(script: &str) -> Manifest {
         }),
     }
 }
-fn run(script: &str) -> Result<String, String> {
+fn run(script: &str) -> Result<String, Failure> {
     execute(
         &manifest(script),
         &BTreeMap::new(),
@@ -66,7 +66,7 @@ fn errors_and_output_limits_do_not_leak_stderr() {
         "import sys;sys.stdin.read();print('{}\\n{}')",
     ] {
         let error = run(script).unwrap_err();
-        assert!(!error.contains("synthetic-secret"));
+        assert!(!error.message.contains("synthetic-secret"));
     }
 }
 fn group_members(pgid: i32) -> Result<Vec<i32>, String> {
@@ -265,10 +265,16 @@ fn cancellation_and_timeout_reap_owned_process_group() {
         watcher.join().unwrap();
         let error = result.unwrap_err();
         assert!(
-            error.contains(if cancel_case { "取消" } else { "超时" }),
+            error
+                .message
+                .contains(if cancel_case { "取消" } else { "超时" }),
             "{error}"
         );
         assert!(now.elapsed() < Duration::from_secs(2));
+        assert!(
+            error.cleanup.is_none(),
+            "cleanup was not confirmed: {error}"
+        );
         let pid = pid.expect("adapter was actually spawned");
         let result = unsafe { libc::kill(pid, 0) };
         let errno = std::io::Error::last_os_error().raw_os_error();
@@ -312,4 +318,269 @@ fn import_validation_is_nonexecuting_and_rejects_version_schema_duplicates_paths
     json["fields"] = serde_json::json!([{"id":"x","label":"X","kind":"number","required":false}]);
     std::fs::write(&file, serde_json::to_vec(&json).unwrap()).unwrap();
     assert!(read_manifest(&file).is_err());
+}
+
+// Cleanup confirmation controls: also extracted byte-for-byte for standalone
+// validation without the package build slot.
+struct ScriptedTermination {
+    observations: std::collections::VecDeque<Result<bool, CleanupIssue>>,
+    signal_result: Result<(), CleanupIssue>,
+    reap_result: Result<bool, CleanupIssue>,
+    signals: usize,
+    observations_taken: usize,
+}
+impl ScriptedTermination {
+    fn new(observations: impl IntoIterator<Item = Result<bool, CleanupIssue>>) -> Self {
+        Self {
+            observations: observations.into_iter().collect(),
+            signal_result: Ok(()),
+            reap_result: Ok(true),
+            signals: 0,
+            observations_taken: 0,
+        }
+    }
+}
+impl Termination for ScriptedTermination {
+    fn observe(&mut self) -> Result<bool, CleanupIssue> {
+        self.observations_taken += 1;
+        self.observations
+            .pop_front()
+            .expect("no implicit observation after trace ends")
+    }
+    fn signal(&mut self) -> Result<(), CleanupIssue> {
+        self.signals += 1;
+        self.signal_result
+    }
+    fn reap(&mut self) -> Result<bool, CleanupIssue> {
+        self.reap_result
+    }
+}
+#[test]
+fn cleanup_confirms_pending_termination_before_returning() {
+    let mut trace = ScriptedTermination::new([Ok(false), Ok(false), Ok(true)]);
+    confirm_termination(&mut trace, CONFIRMATION_BUDGET).unwrap();
+    assert_eq!((trace.signals, trace.observations_taken), (1, 3));
+}
+#[test]
+fn cleanup_budget_exhaustion_does_not_claim_stopped() {
+    let mut trace = ScriptedTermination::new([Ok(false), Ok(false)]);
+    assert_eq!(
+        confirm_termination(&mut trace, Duration::ZERO),
+        Err(CleanupIssue::Pending)
+    );
+    assert_eq!((trace.signals, trace.observations_taken), (1, 2));
+    let mut persistent = ScriptedTermination::new(std::iter::repeat_n(Ok(false), 256));
+    let started = Instant::now();
+    assert_eq!(
+        confirm_termination(&mut persistent, CONFIRMATION_BUDGET),
+        Err(CleanupIssue::Pending)
+    );
+    assert!(started.elapsed() >= CONFIRMATION_BUDGET);
+    assert_eq!(persistent.signals, 1);
+    assert!(persistent.observations_taken > 1 && persistent.observations_taken < 256);
+}
+#[test]
+fn cleanup_never_retries_through_uncertainty_signal_or_reap_errors() {
+    for issue in [
+        CleanupIssue::List,
+        CleanupIssue::Truncated,
+        CleanupIssue::State,
+        CleanupIssue::Identity,
+        CleanupIssue::Membership,
+    ] {
+        let mut trace = ScriptedTermination::new([Err(issue)]);
+        assert_eq!(
+            confirm_termination(&mut trace, CONFIRMATION_BUDGET),
+            Err(issue)
+        );
+        assert_eq!((trace.signals, trace.observations_taken), (1, 1));
+    }
+    let mut trace = ScriptedTermination::new([Ok(false)]);
+    trace.signal_result = Err(CleanupIssue::Signal);
+    assert_eq!(
+        confirm_termination(&mut trace, CONFIRMATION_BUDGET),
+        Err(CleanupIssue::Signal)
+    );
+    assert_eq!((trace.signals, trace.observations_taken), (1, 1));
+    let mut trace = ScriptedTermination::new([Ok(false)]);
+    trace.reap_result = Err(CleanupIssue::Reap);
+    assert_eq!(
+        confirm_termination(&mut trace, CONFIRMATION_BUDGET),
+        Err(CleanupIssue::Reap)
+    );
+    assert_eq!((trace.signals, trace.observations_taken), (1, 1));
+}
+#[test]
+fn cleanup_already_terminal_group_needs_reaping_and_no_signal() {
+    let mut trace = ScriptedTermination::new([Ok(true), Ok(true)]);
+    confirm_termination(&mut trace, Duration::ZERO).unwrap();
+    assert_eq!(trace.signals, 0);
+    let mut trace = ScriptedTermination::new([Ok(true), Ok(true)]);
+    trace.reap_result = Ok(false);
+    assert_eq!(
+        confirm_termination(&mut trace, Duration::ZERO),
+        Err(CleanupIssue::Pending)
+    );
+    assert_eq!(trace.signals, 0);
+}
+struct ScriptedGroup {
+    lists: std::collections::VecDeque<Result<Vec<i32>, CleanupIssue>>,
+    states: std::collections::VecDeque<Result<Option<MemberState>, CleanupIssue>>,
+}
+impl GroupProbe for ScriptedGroup {
+    fn members(&mut self, _: i32) -> Result<Vec<i32>, CleanupIssue> {
+        self.lists.pop_front().unwrap()
+    }
+    fn state(&mut self, _: i32) -> Result<Option<MemberState>, CleanupIssue> {
+        self.states.pop_front().unwrap()
+    }
+}
+fn member(status: u32) -> MemberState {
+    MemberState {
+        pid: 42,
+        pgid: 41,
+        start: (123, 456),
+        status,
+    }
+}
+#[test]
+fn cleanup_group_requires_matching_zombie_evidence_and_preserves_r1() {
+    for state in [
+        Some(member(libc::SZOMB)),
+        None,
+        Some(member(2)),
+        Some(member(4)),
+    ] {
+        let expected = match state {
+            None => Err(CleanupIssue::Membership),
+            Some(info) => Ok(info.status == libc::SZOMB),
+        };
+        let mut group = ScriptedGroup {
+            lists: [Ok(vec![42]), Ok(vec![42])].into(),
+            states: [Ok(state)].into(),
+        };
+        assert_eq!(
+            observe_group(41, &mut GroupHistory::default(), &mut group),
+            expected
+        );
+    }
+    let mut empty = ScriptedGroup {
+        lists: [Ok(vec![]), Ok(vec![])].into(),
+        states: [].into(),
+    };
+    assert_eq!(
+        observe_group(41, &mut GroupHistory::default(), &mut empty),
+        Ok(true)
+    );
+    let mut gone = ScriptedGroup {
+        lists: [Ok(vec![42]), Ok(vec![])].into(),
+        states: [Ok(None)].into(),
+    };
+    assert_eq!(
+        observe_group(41, &mut GroupHistory::default(), &mut gone),
+        Ok(true)
+    );
+}
+#[test]
+fn cleanup_group_rejects_identity_change_and_unverified_final_members() {
+    let mut changed = member(libc::SZOMB);
+    changed.start.0 += 1;
+    let mut group = ScriptedGroup {
+        lists: [Ok(vec![42]), Ok(vec![42]), Ok(vec![42])].into(),
+        states: [Ok(Some(member(2))), Ok(Some(changed))].into(),
+    };
+    let mut history = GroupHistory::default();
+    assert_eq!(observe_group(41, &mut history, &mut group), Ok(false));
+    assert_eq!(
+        observe_group(41, &mut history, &mut group),
+        Err(CleanupIssue::Identity)
+    );
+    let mut group = ScriptedGroup {
+        lists: [Ok(vec![42]), Ok(vec![42, 43])].into(),
+        states: [Ok(Some(member(libc::SZOMB)))].into(),
+    };
+    assert_eq!(
+        observe_group(41, &mut GroupHistory::default(), &mut group),
+        Err(CleanupIssue::Membership)
+    );
+    for (pid, pgid) in [(43, 41), (42, 99)] {
+        let mut changed = member(libc::SZOMB);
+        changed.pid = pid;
+        changed.pgid = pgid;
+        let mut group = ScriptedGroup {
+            lists: [Ok(vec![42])].into(),
+            states: [Ok(Some(changed))].into(),
+        };
+        assert_eq!(
+            observe_group(41, &mut GroupHistory::default(), &mut group),
+            Err(CleanupIssue::Identity)
+        );
+    }
+}
+#[test]
+fn cleanup_group_rejects_reappeared_esrch_across_confirmation_passes() {
+    let mut group = ScriptedGroup {
+        lists: [Ok(vec![42]), Ok(vec![]), Ok(vec![42])].into(),
+        states: [Ok(None)].into(),
+    };
+    let mut history = GroupHistory::default();
+    assert_eq!(observe_group(41, &mut history, &mut group), Ok(true));
+    assert_eq!(
+        observe_group(41, &mut history, &mut group),
+        Err(CleanupIssue::Membership)
+    );
+}
+#[test]
+fn cleanup_native_owned_group_is_terminal_at_return() {
+    let custody = Custody::default();
+    let leader = Command::new("/bin/sleep")
+        .arg("10")
+        .env_clear()
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let pgid = leader.id() as i32;
+    custody.install(leader);
+    let _guard = CleanupGuard(custody.clone());
+    let _first = ReapFixture::spawn(pgid);
+    let _second = ReapFixture::spawn(pgid);
+    custody.finish_initial().unwrap();
+    assert!(!custody.unresolved());
+    let result = unsafe { libc::kill(pgid, 0) };
+    let errno = std::io::Error::last_os_error().raw_os_error();
+    assert_eq!((result, errno), (-1, Some(libc::ESRCH)));
+    group_has_no_live_members(pgid).unwrap(); // Immediate independent oracle.
+}
+#[test]
+fn cleanup_guard_confirms_owned_child_during_unwind() {
+    let custody = Custody::default();
+    let child = Command::new("/bin/sleep")
+        .arg("10")
+        .env_clear()
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let pid = child.id() as i32;
+    custody.install(child);
+    let result = std::panic::catch_unwind(|| {
+        let _guard = CleanupGuard(custody.clone());
+        panic!("deliberate cleanup guard unwind");
+    });
+    assert!(result.is_err());
+    assert!(!custody.unresolved());
+    let result = unsafe { libc::kill(pid, 0) };
+    let errno = std::io::Error::last_os_error().raw_os_error();
+    assert_eq!((result, errno), (-1, Some(libc::ESRCH)));
+    group_has_no_live_members(pid).unwrap();
+}
+#[test]
+fn cleanup_observation_does_not_signal_or_renew_initial_cleanup() {
+    let child = cleanup_fixture::PendingChild::new();
+    assert!(!child.custody.observe_once());
+    assert!(child.custody.unresolved());
+    assert_eq!(child.custody.finish_initial(), Err(CleanupIssue::Pending));
+    assert!(!child.custody.observe_once()); // Still alive: no hidden signal.
+    child.terminate(); // Only the fresh fixture's explicit owner signals it.
+    assert!(child.custody.observe_once());
+    assert!(!child.custody.unresolved());
 }

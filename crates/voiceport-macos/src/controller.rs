@@ -1,10 +1,11 @@
-//! Main-thread orchestration; worker completion follows release of its recording lease.
+//! Main-thread orchestration; cleanup confirmation gates recording release and admission.
 use crate::{
     audio::{AudioEvent, Recorder},
     delivery::Delivery,
     lifecycle::{Lifecycle, Phase},
     local_audio::Incoming,
     local_models::{CHATGPT, Catalog, SessionSource},
+    plugin_process::{CLEANUP_WARNING, Custody, Failure},
     storage::Recording,
 };
 use std::sync::Mutex;
@@ -28,14 +29,25 @@ struct Job {
     source: SessionSource,
     incoming: Option<Incoming>,
     partial: PartialSlot,
+    custody: Custody,
 }
 struct Completion {
     generation: u64,
-    result: Result<String, String>,
+    result: Result<String, Failure>,
 }
 struct ActiveJob {
     generation: u64,
     cancel: CancellationToken,
+    custody: Custody,
+    // Established before dispatch; Job drop/panic/send failure cannot release it.
+    _recording: Option<Arc<Recording>>,
+}
+struct CleanupBlock {
+    generation: u64,
+    custody: Custody,
+    cancelled: bool,
+    original_error: String,
+    observation: Option<Receiver<bool>>,
 }
 struct Worker {
     jobs: SyncSender<Job>,
@@ -50,8 +62,8 @@ impl Worker {
             .spawn(move || {
                 while let Ok(mut job) = incoming.recv() {
                     let generation = job.generation;
-                    // Unwind on the worker only. Resources, runtime and file clone are all
-                    // gone before completion is published; the UI never joins this thread.
+                    // Unwind on the worker only. Controller already holds custody
+                    // and its recording lease before Job can drop or send can fail.
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         match &job.source {
                             SessionSource::Plugin(plugin) => {
@@ -60,12 +72,14 @@ impl Worker {
                                         crate::plugin_runtime::sample(),
                                         &job.language,
                                         &job.cancel,
+                                        &job.custody,
                                     )
                                 } else {
                                     plugin.transcribe(
                                         job.recording.as_ref().ok_or("录音已不可用。")?.path(),
                                         &job.language,
                                         &job.cancel,
+                                        &job.custody,
                                     )
                                 };
                             }
@@ -90,7 +104,8 @@ impl Worker {
                                         &job.cancel,
                                         partial,
                                     ),
-                                };
+                                }
+                                .map_err(Failure::from);
                             }
                             SessionSource::ChatGpt => {}
                         }
@@ -98,27 +113,41 @@ impl Worker {
                             .enable_all()
                             .build()
                             .map_err(|_| "无法启动转写任务。".to_string())?;
-                        runtime.block_on(async {
-                            let auth =
-                                voiceport_core::auth::default_path().map_err(|e| e.to_string())?;
-                            let client =
-                                TranscriptionClient::new_with_proxy(auth, job.proxy.as_deref())
+                        runtime
+                            .block_on(async {
+                                let auth = voiceport_core::auth::default_path()
                                     .map_err(|e| e.to_string())?;
-                            client
-                                .transcribe(
-                                    job.recording.as_ref().ok_or("录音已不可用。")?.path(),
-                                    if job.language.is_empty() {
-                                        None
-                                    } else {
-                                        Some(&job.language)
-                                    },
-                                    &job.cancel,
-                                )
-                                .await
-                                .map_err(|e| e.to_string())
-                        })
+                                let client =
+                                    TranscriptionClient::new_with_proxy(auth, job.proxy.as_deref())
+                                        .map_err(|e| e.to_string())?;
+                                client
+                                    .transcribe(
+                                        job.recording.as_ref().ok_or("录音已不可用。")?.path(),
+                                        if job.language.is_empty() {
+                                            None
+                                        } else {
+                                            Some(&job.language)
+                                        },
+                                        &job.cancel,
+                                    )
+                                    .await
+                                    .map_err(|e| e.to_string())
+                            })
+                            .map_err(Failure::from)
                     }))
                     .unwrap_or_else(|_| Err("转写任务异常结束，请手动重试。".into()));
+                    let result = if job.custody.unresolved() {
+                        let mut failure = result
+                            .err()
+                            .unwrap_or_else(|| job.custody.failure_message().into());
+                        if failure.cleanup.is_none() {
+                            failure.message = job.custody.failure_message();
+                            failure.cleanup = Some(job.custody.clone());
+                        }
+                        Err(failure)
+                    } else {
+                        result
+                    };
                     drop(job);
                     if outgoing.send(Completion { generation, result }).is_err() {
                         break;
@@ -149,6 +178,7 @@ pub struct Controller {
     events: Receiver<(u64, AudioEvent)>,
     worker: Option<Worker>,
     active: Option<ActiveJob>,
+    cleanup: Option<CleanupBlock>,
     recording: Option<Arc<Recording>>,
     recorded_language: String,
     started: Option<Instant>,
@@ -184,6 +214,7 @@ impl Controller {
             events,
             worker: None,
             active: None,
+            cleanup: None,
             recording: None,
             recorded_language: String::new(),
             started: None,
@@ -391,9 +422,14 @@ impl Controller {
             if recording.is_none() && !self.testing {
                 return Err("录音已不可用。".to_string());
             }
+            let custody = Custody::default();
+            // These local clones survive send and are installed synchronously in
+            // Controller. No worker/channel path can become the sole custodian.
+            let retained_recording = recording.clone();
             let job = Job {
                 generation: self.state.generation(),
                 recording,
+                custody: custody.clone(),
                 sample: self.testing,
                 language: self.recorded_language.clone(),
                 proxy: if matches!(self.recorded_source, SessionSource::ChatGpt) {
@@ -406,20 +442,24 @@ impl Controller {
                 incoming,
                 partial: self.partial.clone(),
             };
+            self.active = Some(ActiveJob {
+                generation: self.state.generation(),
+                cancel,
+                custody,
+                _recording: retained_recording,
+            });
             match self.worker.as_ref().unwrap().jobs.try_send(job) {
                 Ok(()) => {}
                 Err(TrySendError::Disconnected(_)) => {
+                    self.active = None; // Rejected Job never reached a worker.
                     self.worker = None;
                     return Err("转写线程已退出，请手动重试。".to_string());
                 }
                 Err(TrySendError::Full(_)) => {
+                    self.active = None;
                     return Err("转写线程仍忙，请稍后手动重试。".to_string());
                 }
             }
-            self.active = Some(ActiveJob {
-                generation: self.state.generation(),
-                cancel,
-            });
             Ok::<(), String>(())
         })();
         match result {
@@ -453,7 +493,114 @@ impl Controller {
             self.state.phase = Phase::Delivering;
         }
     }
+    fn block_cleanup(&mut self, original_error: String) {
+        if self.cleanup.is_none() {
+            let Some(active) = &self.active else {
+                return;
+            };
+            self.cleanup = Some(CleanupBlock {
+                generation: active.generation,
+                custody: active.custody.clone(),
+                cancelled: self.state.phase == Phase::Stopping,
+                original_error,
+                observation: None,
+            });
+        }
+        self.state.phase = Phase::Stopping;
+        self.state.retry_available = false;
+        self.allow_delivery = false;
+        self.delivery_settle = None;
+        self.delivery.clear();
+        self.started = None;
+        self.recorder.cancel();
+        self.show_cleanup_warning();
+    }
+    fn show_cleanup_warning(&mut self) {
+        if let Some(block) = &self.cleanup {
+            self.message = format!("{}{CLEANUP_WARNING}", block.original_error);
+        }
+    }
+    fn request_cleanup_observation(&mut self) {
+        let Some(block) = &mut self.cleanup else {
+            return;
+        };
+        if block.observation.is_some() {
+            return;
+        }
+        let Some(active) = &self.active else {
+            return;
+        };
+        if active.generation != block.generation || !active.custody.same_owner(&block.custody) {
+            return;
+        }
+        let custody = block.custody.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        match std::thread::Builder::new()
+            .name("voiceport-cleanup-check".into())
+            .spawn(move || {
+                let _ = sender.send(custody.observe_once());
+            }) {
+            Ok(_) => {
+                block.observation = Some(receiver);
+                self.message = format!(
+                    "{}正在检查一次；清理尚未确认，录音仍被保留。",
+                    block.original_error
+                );
+            }
+            Err(_) => self.show_cleanup_warning(),
+        }
+    }
+    fn poll_cleanup_observation(&mut self) {
+        let result = self
+            .cleanup
+            .as_ref()
+            .and_then(|block| block.observation.as_ref())
+            .map(|receiver| receiver.try_recv());
+        match result {
+            Some(Ok(true))
+                if self.active.as_ref().is_some_and(|active| {
+                    !active.custody.unresolved()
+                        && self.cleanup.as_ref().is_some_and(|block| {
+                            active.generation == block.generation
+                                && active.custody.same_owner(&block.custody)
+                        })
+                }) =>
+            {
+                let block = self.cleanup.take().expect("matching cleanup observation");
+                self.active = None;
+                if block.cancelled {
+                    self.recording = None;
+                    if let Some(error) = self.stop_failure.take() {
+                        self.state.phase = Phase::Failed;
+                        self.message = error;
+                    } else {
+                        self.state.phase = Phase::Idle;
+                        self.message =
+                            format!("{}插件清理已确认；听写已取消。", block.original_error);
+                    }
+                    self.state.retry_available = false;
+                } else {
+                    self.state.phase = Phase::Failed;
+                    self.state.retry_available = self.recording.is_some();
+                    self.message = format!("{}插件清理已确认；未重试转写。", block.original_error);
+                }
+            }
+            Some(Ok(_)) | Some(Err(TryRecvError::Disconnected)) => {
+                if let Some(block) = &mut self.cleanup {
+                    block.observation = None;
+                }
+                self.show_cleanup_warning();
+            }
+            Some(Err(TryRecvError::Empty)) | None => {}
+        }
+    }
     pub fn cancel(&mut self) {
+        if self.cleanup.is_some() {
+            // This existing, enabled native action is an explicit observation
+            // request. Neither polling nor repeated Quit flags call it for us.
+            self.request_cleanup_observation();
+            return;
+        }
         self.stop_failure = None;
         self.delivery_settle = None;
         let worker_active = self.active.is_some();
@@ -471,6 +618,7 @@ impl Controller {
         }
     }
     pub fn poll(&mut self) {
+        self.poll_cleanup_observation();
         if let Some(discovery) = &self.discovery {
             match discovery.try_recv() {
                 Ok(catalog) => {
@@ -584,7 +732,18 @@ impl Controller {
                 if self.state.phase == Phase::Recording {
                     self.stop();
                 }
-                if let Some(active) = self.active.take() {
+                if self.cleanup.is_some()
+                    || self
+                        .active
+                        .as_ref()
+                        .is_some_and(|active| active.custody.unresolved())
+                {
+                    if let Some(active) = &self.active {
+                        active.cancel.cancel();
+                        let error = active.custody.failure_message();
+                        self.block_cleanup(error);
+                    }
+                } else if let Some(active) = self.active.take() {
                     active.cancel.cancel();
                     self.allow_delivery = false;
                     self.delivery.retain_preview();
@@ -624,6 +783,24 @@ impl Controller {
                 // Finalize the valid AAC lease before offering the same-source retry.
                 self.stop();
             }
+            if self.cleanup.is_some()
+                || self
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.custody.unresolved())
+                || completion
+                    .result
+                    .as_ref()
+                    .is_err_and(|error| error.cleanup.is_some())
+            {
+                let error = completion
+                    .result
+                    .err()
+                    .map(|error| error.message)
+                    .unwrap_or_else(|| self.active.as_ref().unwrap().custody.failure_message());
+                self.block_cleanup(error);
+                return;
+            }
             self.active = None;
             if self.state.phase == Phase::Stopping {
                 self.recorder.cancel();
@@ -649,8 +826,8 @@ impl Controller {
                         self.recorder.finish();
                         self.recording = None;
                     }
-                    Err(message) => {
-                        self.message = message;
+                    Err(error) => {
+                        self.message = error.message;
                         self.delivery.retain_preview();
                         self.wait_for_delivery();
                     }
@@ -835,7 +1012,7 @@ pub(crate) mod stop_failure_regression {
         let (jobs, incoming) = mpsc::sync_channel::<Job>(1);
         let (outgoing, results) = mpsc::channel();
         let (started_tx, started) = mpsc::channel();
-        let (reply, responses) = mpsc::channel();
+        let (reply, responses) = mpsc::channel::<Result<String, String>>();
         let (published_tx, published) = mpsc::channel();
         let completion = outgoing.clone();
         let thread = std::thread::spawn(move || {
@@ -852,7 +1029,12 @@ pub(crate) mod stop_failure_regression {
                 started_tx.send(generation).unwrap();
                 let result = responses.recv_timeout(Duration::from_secs(5)).unwrap();
                 drop(job);
-                completion.send(Completion { generation, result }).unwrap();
+                completion
+                    .send(Completion {
+                        generation,
+                        result: result.map_err(Failure::from),
+                    })
+                    .unwrap();
                 published_tx.send(()).unwrap();
             }
         });
@@ -1133,6 +1315,8 @@ mod tests {
         c.active = Some(ActiveJob {
             generation,
             cancel: CancellationToken::new(),
+            custody: Custody::default(),
+            _recording: None,
         });
         c.allow_delivery = true;
         c
@@ -1335,6 +1519,8 @@ mod tests {
         c.active = Some(ActiveJob {
             generation,
             cancel: cancel.clone(),
+            custody: Custody::default(),
+            _recording: None,
         });
         let (jobs, _incoming) = mpsc::sync_channel(1);
         let (outgoing, results) = mpsc::channel();
@@ -1473,5 +1659,318 @@ mod tests {
         assert_eq!(c.state.phase, Phase::Recording);
         assert_eq!(c.message, "current recording");
         assert_eq!(c.delivery.failure_stage(), None);
+    }
+
+    // Real Controller/Job/Custody and a real synthetic Recording/flock. Only the
+    // transcription service is substituted: it installs a fresh owned child in
+    // the pre-dispatch custody and models an already-unconfirmed cleanup. Native
+    // termination/budget semantics are tested separately in plugin_process.
+    struct CleanupRecording {
+        path: std::path::PathBuf,
+        recording: std::sync::Weak<Recording>,
+        lease: std::fs::File,
+        _temp: tempfile::TempDir,
+    }
+    impl CleanupRecording {
+        fn install(c: &mut Controller) -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let recording = Arc::new(
+                crate::storage::Storage::at(
+                    temp.path()
+                        .canonicalize()
+                        .unwrap()
+                        .join(crate::storage::NAMESPACE),
+                )
+                .create_recording()
+                .unwrap(),
+            );
+            let path = recording.path().to_owned();
+            let lease = std::fs::File::open(path.parent().unwrap().join("lease")).unwrap();
+            let weak = Arc::downgrade(&recording);
+            c.recording = Some(recording);
+            Self {
+                path,
+                recording: weak,
+                lease,
+                _temp: temp,
+            }
+        }
+        fn held(&self) -> bool {
+            use std::os::fd::AsRawFd;
+            if unsafe { libc::flock(self.lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                assert_eq!(
+                    unsafe { libc::flock(self.lease.as_raw_fd(), libc::LOCK_UN) },
+                    0
+                );
+                false
+            } else {
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::EWOULDBLOCK)
+                );
+                true
+            }
+        }
+        fn assert_retained(&self) {
+            assert!(self.recording.upgrade().is_some() && self.path.exists() && self.held());
+        }
+        fn assert_released(&self) {
+            assert!(self.recording.upgrade().is_none() && !self.path.exists() && !self.held());
+        }
+    }
+    fn dispatch_cleanup_control(
+        c: &mut Controller,
+        mode: &'static str,
+    ) -> (
+        crate::plugin_process::cleanup_fixture::PendingChild,
+        Sender<()>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::time::Duration;
+        let (jobs, incoming) = mpsc::sync_channel::<Job>(1);
+        let (outgoing, results) = mpsc::channel();
+        let (ready_tx, ready) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let job = incoming.recv_timeout(Duration::from_secs(2)).unwrap();
+            let child = crate::plugin_process::cleanup_fixture::PendingChild::in_custody(
+                job.custody.clone(),
+            );
+            ready_tx
+                .send(child)
+                .unwrap_or_else(|_| panic!("fixture receiver disappeared"));
+            gate.recv_timeout(Duration::from_secs(2)).unwrap();
+            if mode == "panic" {
+                panic!("deliberate worker unwind with a retained cleanup owner");
+            }
+            let generation = job.generation;
+            let failure = || Failure {
+                message: "插件转写超时。".into(),
+                cleanup: Some(job.custody.clone()),
+            };
+            if mode == "stale" {
+                outgoing
+                    .send(Completion {
+                        generation: generation + 1,
+                        result: Err(failure()),
+                    })
+                    .unwrap();
+            }
+            let result = if mode == "success" {
+                Ok("must never be delivered".into())
+            } else {
+                Err(failure())
+            };
+            drop(job);
+            let sent = outgoing.send(Completion { generation, result });
+            if mode == "send-failure" {
+                assert!(sent.is_err());
+            } else {
+                assert!(sent.is_ok());
+            }
+        });
+        c.active = None;
+        c.recorded_source = local_source(); // No proxy, auth, model load or network.
+        c.worker = Some(Worker { jobs, results });
+        c.submit(); // The real dispatch establishes custody and lease first.
+        let child = ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            c.active
+                .as_ref()
+                .unwrap()
+                .custody
+                .same_owner(&child.custody)
+        );
+        (child, release, thread)
+    }
+    fn assert_cleanup_blocks(c: &mut Controller, recording: &CleanupRecording) {
+        let generation = c.state.generation();
+        assert_eq!(c.state.phase, Phase::Stopping); // Also blocks normal App termination.
+        assert!(c.busy() && !c.state.can_start() && !c.state.retry_available);
+        assert!(c.active.is_some() && c.cleanup.is_some());
+        assert!(!c.allow_delivery && !c.delivery.has_pending());
+        assert!(c.message.contains("超时") && c.message.contains("无法确认"));
+        assert!(c.message.contains("再次点取消") && !c.message.contains("听写已取消"));
+        c.start();
+        c.retry();
+        c.toggle();
+        c.test_source();
+        assert_eq!(c.state.generation(), generation);
+        assert_eq!(c.state.phase, Phase::Stopping);
+        assert!(c.transcript.is_empty());
+        recording.assert_retained();
+    }
+    fn await_single_cleanup_check(c: &mut Controller) {
+        // Poll only transports ONE explicitly requested async observation. It
+        // neither queries native state nor starts another observation itself.
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while c
+            .cleanup
+            .as_ref()
+            .is_some_and(|block| block.observation.is_some())
+        {
+            assert!(
+                Instant::now() < deadline,
+                "single observation thread did not return"
+            );
+            c.poll();
+            std::thread::yield_now();
+        }
+    }
+    #[test]
+    fn unresolved_cleanup_must_not_reopen_admission() {
+        let mut c = transcribing();
+        let recording = CleanupRecording::install(&mut c);
+        let (child, release, thread) = dispatch_cleanup_control(&mut c, "error");
+        c.cancel();
+        release.send(()).unwrap();
+        thread.join().unwrap();
+        c.poll();
+        assert_cleanup_blocks(&mut c, &recording);
+        c.poll(); // Disconnected completion channel must retain the same owner.
+        assert_cleanup_blocks(&mut c, &recording);
+        child.while_locked(|| {
+            for _ in 0..8 {
+                c.cancel();
+            }
+            assert!(c.cleanup.as_ref().unwrap().observation.is_some());
+            await_single_cleanup_check(&mut c);
+        });
+        assert_eq!(child.observations(), 1); // No queue, native wait or hidden retry.
+        assert_cleanup_blocks(&mut c, &recording);
+        c.poll();
+        c.poll();
+        assert_eq!(child.observations(), 1);
+        child.terminate(); // Fixture owner alone signals its fresh child.
+        c.cancel();
+        await_single_cleanup_check(&mut c);
+        assert_eq!(child.observations(), 2);
+        assert!(c.cleanup.is_none() && c.active.is_none());
+        assert_eq!(c.state.phase, Phase::Idle);
+        assert!(c.message.contains("超时") && c.message.contains("清理已确认"));
+        assert!(c.transcript.is_empty());
+        recording.assert_released();
+    }
+    #[test]
+    fn unresolved_normal_error_retains_recording_until_explicit_confirmation() {
+        let mut c = transcribing();
+        let recording = CleanupRecording::install(&mut c);
+        let (child, release, thread) = dispatch_cleanup_control(&mut c, "stale");
+        release.send(()).unwrap();
+        thread.join().unwrap();
+        c.poll(); // Stale typed completion cannot discard the existing owner.
+        assert!(c.active.as_ref().unwrap().custody.unresolved());
+        recording.assert_retained();
+        c.poll();
+        assert_cleanup_blocks(&mut c, &recording);
+        child.terminate();
+        c.poll(); // Terminal OS state alone does not request reconciliation.
+        assert_eq!(child.observations(), 0);
+        assert_cleanup_blocks(&mut c, &recording);
+        c.cancel();
+        await_single_cleanup_check(&mut c);
+        assert_eq!(c.state.phase, Phase::Failed);
+        assert!(c.state.retry_available && c.state.can_start());
+        assert!(c.message.contains("超时") && c.transcript.is_empty());
+        recording.assert_retained(); // Original ordinary-error retention policy.
+        c.cancel();
+        recording.assert_released();
+    }
+    #[test]
+    fn worker_unwind_and_send_failure_cannot_discard_cleanup_or_recording() {
+        for mode in ["panic", "send-failure"] {
+            let mut c = transcribing();
+            let recording = CleanupRecording::install(&mut c);
+            let (child, release, thread) = dispatch_cleanup_control(&mut c, mode);
+            c.cancel();
+            if mode == "send-failure" {
+                c.worker = None;
+            }
+            release.send(()).unwrap();
+            let joined = thread.join();
+            assert_eq!(joined.is_err(), mode == "panic");
+            if mode == "send-failure" {
+                c.worker = Some(disconnected_worker());
+            }
+            c.poll();
+            assert_cleanup_blocks(&mut c, &recording);
+            child.terminate();
+            c.cancel();
+            await_single_cleanup_check(&mut c);
+            assert_eq!(c.state.phase, Phase::Idle);
+            recording.assert_released();
+        }
+    }
+    #[test]
+    fn unconfirmed_success_and_duplicate_completion_never_deliver_or_release() {
+        let mut c = transcribing();
+        let recording = CleanupRecording::install(&mut c);
+        let (child, release, thread) = dispatch_cleanup_control(&mut c, "success");
+        release.send(()).unwrap();
+        thread.join().unwrap();
+        c.poll();
+        assert_cleanup_blocks(&mut c, &recording);
+        let generation = c.active.as_ref().unwrap().generation;
+        let (jobs, _incoming) = mpsc::sync_channel(1);
+        let (outgoing, results) = mpsc::channel();
+        outgoing
+            .send(Completion {
+                generation,
+                result: Ok("duplicate must not deliver".into()),
+            })
+            .unwrap();
+        c.worker = Some(Worker { jobs, results });
+        c.poll();
+        assert_cleanup_blocks(&mut c, &recording);
+        child.terminate();
+        c.cancel();
+        await_single_cleanup_check(&mut c);
+        assert_eq!(c.state.phase, Phase::Failed);
+        assert!(c.transcript.is_empty());
+        c.cancel();
+        recording.assert_released();
+    }
+    #[test]
+    fn cleanup_observation_result_cannot_release_a_different_owner_or_generation() {
+        let mut c = transcribing();
+        let recording = CleanupRecording::install(&mut c);
+        let (child, release, thread) = dispatch_cleanup_control(&mut c, "error");
+        release.send(()).unwrap();
+        thread.join().unwrap();
+        c.poll();
+        let original = c.active.as_ref().unwrap().custody.clone();
+        // Inject a stale observation receipt; even true cannot clear another
+        // owner, an unresolved owner, or a mismatched generation.
+        for mismatch in ["pending", "owner", "generation"] {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            c.cleanup.as_mut().unwrap().observation = Some(receiver);
+            match mismatch {
+                "owner" => c.active.as_mut().unwrap().custody = Custody::default(),
+                "generation" => {
+                    c.active.as_mut().unwrap().generation += 1;
+                }
+                _ => {}
+            }
+            sender.send(true).unwrap();
+            c.poll();
+            assert!(c.cleanup.is_some() && c.active.is_some() && c.busy());
+            c.active.as_mut().unwrap().custody = original.clone();
+            c.active.as_mut().unwrap().generation = c.cleanup.as_ref().unwrap().generation;
+            recording.assert_retained();
+        }
+        child.terminate();
+        assert!(child.custody.observe_once()); // Explicit terminal evidence for this owner.
+        let (sender, receiver) = mpsc::sync_channel(1);
+        c.cleanup.as_mut().unwrap().observation = Some(receiver);
+        c.active.as_mut().unwrap().generation += 1;
+        sender.send(true).unwrap();
+        c.poll();
+        assert!(c.cleanup.is_some() && c.active.is_some() && c.busy());
+        recording.assert_retained();
+        c.active.as_mut().unwrap().generation = c.cleanup.as_ref().unwrap().generation;
+        c.cancel();
+        await_single_cleanup_check(&mut c);
+        c.cancel();
+        recording.assert_released();
     }
 }

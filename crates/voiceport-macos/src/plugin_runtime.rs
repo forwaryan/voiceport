@@ -2,6 +2,7 @@
 use crate::{
     local_audio::{MAX_SAMPLES, Resampler},
     plugin_credentials::{Keychain, Secrets},
+    plugin_process::{Custody, Failure},
     plugins::{Adapter, Manifest, Source, Store, validate_endpoint},
 };
 use std::{collections::BTreeMap, path::Path, time::Duration};
@@ -27,21 +28,23 @@ impl Snapshot {
         self.secrets = Some(Secrets::pin(&self.source.credential_refs, &Keychain)?);
         Ok(self)
     }
-    pub fn transcribe(
+    pub(crate) fn transcribe(
         &self,
         path: &Path,
         language: &str,
         cancel: &CancellationToken,
-    ) -> Result<String, String> {
+        custody: &Custody,
+    ) -> Result<String, Failure> {
         let wav = convert(path, cancel)?;
-        self.execute(wav, language, cancel)
+        self.execute(wav, language, cancel, custody)
     }
-    pub fn execute(
+    pub(crate) fn execute(
         &self,
         wav: Vec<u8>,
         language: &str,
         cancel: &CancellationToken,
-    ) -> Result<String, String> {
+        custody: &Custody,
+    ) -> Result<String, Failure> {
         check(cancel)?;
         let secrets = self.secrets.as_ref().ok_or("来源凭据尚未固定。")?;
         secrets.check(&Keychain)?;
@@ -56,29 +59,41 @@ impl Snapshot {
                     .enable_all()
                     .build()
                     .map_err(|_| "无法启动 HTTP 转写任务。")?;
-                runtime.block_on(http(
-                    &config,
-                    wav,
-                    language,
-                    cancel,
-                    Duration::from_secs(110),
-                    Duration::from_secs(30),
-                ))
+                runtime
+                    .block_on(http(
+                        &config,
+                        wav,
+                        language,
+                        cancel,
+                        Duration::from_secs(110),
+                        Duration::from_secs(30),
+                    ))
+                    .map_err(Failure::from)
             }
-            Adapter::Jsonl => crate::plugin_process::execute(
+            Adapter::Jsonl => crate::plugin_process::execute_owned(
                 &self.manifest,
                 &config,
                 &wav,
                 language,
                 cancel,
                 Duration::from_secs(110),
+                custody,
             ),
             _ => Err("此来源的插件不支持通用批量派发。".into()),
         };
-        result
-            .map(|text| secrets.redact(&text))
-            .map_err(|error| secrets.redact(&error))
+        redact_result(result, secrets)
     }
+}
+fn redact_result(result: Result<String, Failure>, secrets: &Secrets) -> Result<String, Failure> {
+    result
+        .map(|text| secrets.redact(&text))
+        .map_err(|mut error| {
+            error.message = secrets.redact(&error.message);
+            if let Some(owner) = &error.cleanup {
+                owner.remember_failure(&error.message);
+            }
+            error
+        })
 }
 pub fn check(cancel: &CancellationToken) -> Result<(), String> {
     if cancel.is_cancelled() {
@@ -224,6 +239,47 @@ fn parse_response(bytes: &[u8]) -> Result<String, String> {
         .and_then(|s| s.as_str())
         .map(|s| s.trim().to_owned())
         .ok_or_else(|| "转写响应缺少字符串 text。".into())
+}
+#[cfg(test)]
+mod cleanup_redaction_tests {
+    use super::*;
+    struct SyntheticCredentials;
+    impl crate::plugin_credentials::Credentials for SyntheticCredentials {
+        fn get(&self, reference: &str) -> Result<String, String> {
+            assert_eq!(reference, "synthetic-reference");
+            Ok("synthetic-secret".into())
+        }
+    }
+    #[test]
+    fn redaction_preserves_typed_cleanup_owner_and_ordinary_results() {
+        let secrets = Secrets::pin(
+            &BTreeMap::from([("api_key".into(), "synthetic-reference".into())]),
+            &SyntheticCredentials,
+        )
+        .unwrap();
+        let child = crate::plugin_process::cleanup_fixture::PendingChild::new();
+        let error = redact_result(
+            Err(Failure {
+                message: "插件转写超时。synthetic-secret".into(),
+                cleanup: Some(child.custody.clone()),
+            }),
+            &secrets,
+        )
+        .unwrap_err();
+        assert_eq!(error.message, "插件转写超时。[redacted]");
+        assert!(error.cleanup.as_ref().unwrap().same_owner(&child.custody));
+        assert_eq!(child.custody.failure_message(), error.message);
+        assert!(!format!("{error:?}").contains("synthetic-secret"));
+        assert_eq!(
+            redact_result(Ok("synthetic-secret".into()), &secrets).unwrap(),
+            "[redacted]"
+        );
+        let ordinary = redact_result(Err("synthetic-secret".into()), &secrets).unwrap_err();
+        assert_eq!(ordinary.message, "[redacted]");
+        assert!(ordinary.cleanup.is_none());
+        child.terminate();
+        assert!(child.custody.observe_once());
+    }
 }
 #[cfg(test)]
 mod tests;

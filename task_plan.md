@@ -6,9 +6,9 @@
 
 - CLI/Skill 原任务已正式 failed/BLOCKED：实现和开发检查交付，必需 GUI 证据受 Accessibility permission_denied 阻塞。21 步最终自检、232 次 Rust 测试通过、4 LoopTests、18 PackagingTests 与 73 次实际合成 CLI 调用已核对原始日志对应；整体集成仍保留 passed:false/exit1。协调核对5514封存证据、1096产品输入/377目录模式、34变更、源码与签名 App 归档、5产物；所有11个记录测试PID和私有socket均已无。未授予进一步 AX、系统权限、真实音频或账号操作。
 - 主工作区已按相同基线完整集成该34文件交付，并修正 README/SOLUTION 的旧 CLI 限制说明；这是待评审候选，未把工作任务完成当产品接受。GUI/CLI 使用 voiceport-app 与 voiceport 两个真实文件；Skill 在根 skills/voiceport 并随 CLI/App 分发。
-- CI09 的四文件 typed-owner/recording-lease 返修仍在隔离工作区。开发报告16 process、17 controller、library83/1ignored、六 Stop 与严格 all-target Clippy 通过，重型时段已归还；原生 ABI 负向控制和最终封存尚待交付，协调者未读取或合并未完成实现。
+- CI09 已正式交付并停止写入，msg_7f3980583f3a 为 developer-validated/succeeded。协调核对181封存文件、1092项隔离输入、四份 before/final 快照、34组命令回执及原始输出，保留六个预期失败；final-checks 的33命令为最终检查执行前的时点计数。原始日志确证16 process、17 controller、library83/1ignored、六 Stop 与严格 all-target Clippy 通过，均属于隔离开发版本。四文件现已集成：三文件按相同9bf基线接纳，Controller 以9bf为共同祖先三方合并，保留已提交CLI策略；尚无组合构建或独立接受。
 - Magpie 三文件规则提案已核对61封存文件、目标 before/after 及补丁后集成，补齐当前动态调度、skills 清单和实际继任记录。精确 HEAD/测试 merge/run/attempt、单写者、独立复核、完整失败、一次有证据的基础设施重试和重型资源时段成为候选规则；未改 helper，不声称原生 cron stop-proof 或可执行 CI gate 已实现。
-- 下一步收齐 CI09 封存，合并重叠 Controller 并验证 Stopping、录音持有、CLI busy/quit/cancel；对最终代码、文档和规则建立新完整冻结，派不同真实会话独立复核，再按持续授权提交/推送、检查精确新 HEAD CI、满足门槛后正常合并和同步 main。PR15 保持 draft/阻塞；无产品 PASS。
+- 下一步对组合代码、CLI/Skill恢复说明、文档和规则建立新完整冻结，派不同真实会话独立复核并执行一次完整离线验证，覆盖 Stopping、录音持有、CLI busy/quit/cancel。随后按持续授权推送并检查精确新 HEAD CI，满足门槛后正常合并和同步 main。PR15 保持 draft/阻塞；AX GUI 与真实识别效果仍未接受，无产品 PASS。
 
 ## 2026-11-09 当前接续：来源身份返修、CI 复核与原 CLI 恢复
 
