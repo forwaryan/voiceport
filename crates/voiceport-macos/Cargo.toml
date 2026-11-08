@@ -8,6 +8,11 @@ rust-version.workspace = true
 name = "voiceport-macos"
 path = "src/main.rs"
 
+[[test]]
+name = "stop_failure"
+path = "tests/stop_failure.rs"
+harness = false
+
 [dependencies]
 voiceport-core = { path = "../voiceport-core" }
 serde.workspace = true
