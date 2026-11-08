@@ -12,13 +12,17 @@ voiceport-rs host [--auth PATH]
 voiceport-rs demo
     离线模拟，不录音、不读取登录、不访问网络。
 voiceport-rs doctor [--auth PATH]
-    只检查登录文件存在性，不读取或验证凭据。
+    离线检查登录文件元数据：普通文件、未找到、非普通文件或检查失败。
+    不读取、解析或验证凭据，不联网、不申请或验证系统权限。
 voiceport-rs transcribe AUDIO [--language zh] [--auth PATH]
     此命令会使用 Codex ChatGPT 文件登录上传音频，Ctrl-C 取消。
-    默认使用 CODEX_HOME/auth.json，否则 ~/.codex/auth.json。
+    登录路径优先级：--auth PATH > 非空 CODEX_HOME/auth.json > ~/.codex/auth.json。
 
-不刷新登录，不自动重传，不自动投递文字。接口与用量规则未公开保证。
-退出码：0 成功，1 运行错误，2 参数错误，130 取消。";
+不刷新登录，不自动重传。接口与用量规则未公开保证。
+退出码：0 成功（含 doctor 诊断完成），1 运行错误，2 参数错误，130 取消。";
+
+const CAPABILITIES: &str = "CLI 仅处理已有音频文件，不录音、不自动投递文字。
+macOS app 已实现录音、实时预览和受保护输入；真实用户流程仍待验证。";
 
 enum Command {
     Help,
@@ -106,6 +110,25 @@ fn auth_path(path: Option<PathBuf>) -> voiceport_core::Result<PathBuf> {
     path.map_or_else(auth::default_path, Ok)
 }
 
+fn doctor(path: Option<PathBuf>) {
+    let failed = "检查失败（无法确认文件状态，未读取或验证凭据）";
+    let status = match auth_path(path) {
+        Ok(file) => match std::fs::metadata(file) {
+            Ok(info) if info.is_file() => "普通文件（未读取、未验证登录有效性）",
+            Ok(_) => "不是普通文件（未读取、未验证登录有效性）",
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                "未找到（请先通过 codex login 准备 ChatGPT 文件登录）"
+            }
+            Err(_) => failed,
+        },
+        Err(_) => failed,
+    };
+    println!("Codex 登录文件：{status}");
+    println!("仅检查文件系统元数据；文件存在不等于有效登录，不读取、解析或验证凭据。");
+    println!("仅支持 ChatGPT 文件登录；不联网、不登录或刷新，不申请或验证系统权限。");
+    println!("{CAPABILITIES}");
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let command = match parse(std::env::args_os().skip(1).collect()) {
@@ -134,7 +157,7 @@ async fn main() -> ExitCode {
             .await
         }
         Command::Help => {
-            println!("{HELP}");
+            println!("{HELP}\n\n{CAPABILITIES}");
             Ok(())
         }
         Command::Demo => {
@@ -143,17 +166,10 @@ async fn main() -> ExitCode {
             );
             Ok(())
         }
-        Command::Doctor { auth } => auth_path(auth).map(|file| {
-            println!(
-                "Codex 登录文件：{}",
-                if file.exists() {
-                    "存在（未读取、未检查有效性）"
-                } else {
-                    "未找到，请运行 codex login"
-                }
-            );
-            println!("仅支持 ChatGPT 文件登录；不输出路径或凭据。Rust 系统录音和投递尚未接入。");
-        }),
+        Command::Doctor { auth } => {
+            doctor(auth);
+            Ok(())
+        }
         Command::Transcribe {
             audio,
             language,

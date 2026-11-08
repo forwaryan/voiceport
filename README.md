@@ -68,8 +68,11 @@ cd voiceport
 # 使用你自己的 ChatGPT 账号登录
 codex login
 
-# 构建 Rust 原生应用；输出目录必须尚不存在
-bash scripts/package_app.sh
+# 首次构建或依赖缓存不完整时，先按锁文件下载依赖（此步需要网络）
+cargo fetch --locked
+
+# 离线构建 Rust 原生应用；输出目录必须尚不存在
+CARGO_NET_OFFLINE=true bash scripts/package_app.sh
 
 # 打开结果与设置窗口
 open dist/VoicePort.app --args --show-window
@@ -77,7 +80,7 @@ open dist/VoicePort.app --args --show-window
 
 应用默认生成在 `dist/VoicePort.app`。如果该路径已有旧包，使用 `VOICEPORT_APP_DIRECTORY="$PWD/dist/VoicePort-Rust.app" bash scripts/package_app.sh` 选择新的输出路径，再打开对应的新包。打包不会覆盖已有应用。运行打包后的应用无需安装 Rust 工具链；构建细节见 [打包说明](docs/PACKAGING.md)。
 
-登录默认读取 `~/.codex/auth.json`，也支持 `CODEX_HOME/auth.json`。目前只支持 ChatGPT 文件登录，尚不支持 API key、仅保存在 Keychain 中的登录或应用内刷新登录。
+应用与 CLI 优先使用非空 `CODEX_HOME` 下的 `auth.json`，否则使用 `~/.codex/auth.json`；CLI 还支持优先级更高的 `--auth PATH`。目前只支持 ChatGPT 文件登录，尚不支持 API key、仅保存在 Keychain 中的登录或应用内刷新登录。
 
 ### 3. 授予权限
 
@@ -87,7 +90,7 @@ open dist/VoicePort.app --args --show-window
 | 语音识别 | 使用设备端识别，提供实时预览。 | 继续录音，停录后转写。 |
 | 辅助功能 | 确认原输入框、光标和文字输入能力。 | 自动输入开启时，会在录音前提示处理授权；也可关闭自动输入，仅转写到面板。 |
 
-在“结果与设置”中点击 **授权辅助功能**，在系统设置中允许当前的 VoicePort。首次请求麦克风和语音识别权限后，请回到目标输入框，重新开始一次听写。
+在“结果与设置”中点击 **检查辅助功能授权**，按提示在系统设置中允许当前的 VoicePort。也可先点击 **准备麦克风与语音权限（不录音）**，处理系统授权提示；这项显式权限准备不会开始录音。处理完权限后，回到目标应用，重新点好输入位置，再主动用快捷键或菜单开始听写。CLI 的 `doctor` 不申请或验证这些权限。
 
 > **更新开发版后需要留意：** 本机包使用 ad-hoc 签名。更新程序后，辅助功能列表里的开关可能仍亮着，但旧授权已经失效。请移除旧 VoicePort 条目，再添加正在运行的 `dist/VoicePort.app` 并启用。应用会检查当前进程的实际权限。
 
@@ -158,20 +161,38 @@ Windows 的目标编译检查不等于实机运行通过；设备、NTFS 权限�
 
 ## 命令行使用
 
-Rust CLI 适合转写已有音频，不负责录音或向输入框投递文字：
+Rust CLI 处理已有音频文件，不录音、不自动投递文字。macOS app 已实现录音、实时预览和受保护输入；具体应用兼容性与真实用户流程仍需验证。
 
 ```bash
-cargo build --workspace --release --locked
+# 缓存为空或不完整时先准备依赖；已有完整缓存可直接离线构建
+cargo fetch --locked
+CARGO_NET_OFFLINE=true cargo build --workspace --release --locked
+
+./target/release/voiceport-rs --help
 
 # 离线演示，不录音、不读取登录、不联网
 ./target/release/voiceport-rs demo
 
-# 只检查登录文件是否存在，不证明登录有效
+# 离线检查登录文件元数据，不读取或验证凭据
 ./target/release/voiceport-rs doctor
+
+# 也可明确指定待检查文件；输出不会包含该路径
+./target/release/voiceport-rs doctor --auth /path/to/auth.json
 
 # 上传指定文件并转写；Ctrl-C 取消
 ./target/release/voiceport-rs transcribe /path/to/audio.m4a --language zh
 ```
+
+`doctor` 沿用登录路径优先级：显式 `--auth PATH` > 非空 `CODEX_HOME/auth.json` > `HOME/.codex/auth.json`。它只查询文件系统元数据，首行以 `Codex 登录文件：` 开头，区分以下结果：
+
+| 文件状态 | 诊断输出 |
+| --- | --- |
+| 普通文件，包括空文件或畸形内容 | `普通文件（未读取、未验证登录有效性）` |
+| 文件未找到 | `未找到（请先通过 codex login 准备 ChatGPT 文件登录）` |
+| 目录等非普通文件 | `不是普通文件（未读取、未验证登录有效性）` |
+| 元数据检查失败，如符号链接循环 | `检查失败（无法确认文件状态，未读取或验证凭据）` |
+
+文件存在不等于有效登录。`doctor` 不读取、解析或验证凭据，不登录、刷新或联网，也不申请或验证麦克风、语音识别及辅助功能权限；输出不包含选中路径、凭据或底层错误文本。上述四种状态均表示诊断完成，退出码为 **0**；参数错误仍为 **2**，实际转写运行错误为 **1**，取消为 **130**。真实账号、录音、云端转写和目标接收需分别验证。
 
 支持 m4a/mp4、wav、mp3、webm、ogg、flac，文件上限 **20 MB**。可使用 `--auth PATH` 指定登录文件。macOS 应用直接链接 Rust 核心；CLI 与其 JSONL 宿主协议是单独的集成入口。
 
@@ -180,17 +201,29 @@ cargo build --workspace --release --locked
 ## 开发与验证
 
 ```bash
+# 与 CI 一致使用 Rust 1.95.0；工具链需已安装 rustfmt 和 clippy
+export RUSTUP_TOOLCHAIN=1.95.0
+
+# 冷缓存先联网准备锁定依赖，再进行离线检查
+cargo fetch --locked
+export CARGO_NET_OFFLINE=true
+
 # Rust 工作区测试、格式和严格 Clippy
 bash scripts/test_rust.sh
 
 # 也可分别检查 Rust 共享核心与 macOS 应用
 bash scripts/test_core.sh
 bash scripts/test_app.sh
+
+# 完整离线自检，使用新的临时应用包，不覆盖 dist 中的旧包
+python3 -I scripts/verify.py
 ```
 
 macOS 原生模块位于 `crates/voiceport-macos`：AppKit 界面、AVAudio 录音与设备端 Speech、Accessibility 与终端字符投递均由 Rust 实现。应用行为检查使用合成 PCM、隔离存储和模拟输入目标，不会自动启动真实录音或向你的输入框写字。旧 Swift 源码、测试及 SwiftPM 清单已从当前文件树移除，历史实现可通过 Git 历史查看。历史 Swift 检查结果不作为 Rust 新实现的验收。
 
-完整离线打包检查可运行 `python3 -I scripts/verify.py --app-smoke`。它会构建并重新签名开发包；源码依赖需已缓存。该流程不替代真实麦克风、账号转写或 Orca 接收验收，详见 [验证边界](docs/VALIDATION.md) 与 [打包说明](docs/PACKAGING.md)。
+`verify.py` 本身假设依赖缓存已准备，缺少依赖时应先运行上面的 `cargo fetch --locked`。完整流程覆盖 Rust 测试、格式、严格 Clippy、release 构建、临时打包、CLI 离线行为、LoopTests 和完整 PackagingTests。可选的 `python3 -I scripts/verify.py --app-smoke` 会额外执行不录音、不联网的菜单启动与输入权限输出检查；直接运行权限诊断得到的输出不证明 Launch Services 下的有效 TCC 身份。这些检查与 `doctor` 分属不同入口，均不替代真实麦克风、账号转写或 Orca 接收验收，详见 [验证边界](docs/VALIDATION.md) 与 [打包说明](docs/PACKAGING.md)。
+
+[macOS CI](.github/workflows/ci.yml) 在 pull request 和 `main` push 时运行，使用 `macos-15` 与 Rust **1.95.0**。它先执行 `cargo fetch --locked` 准备锁定依赖，再设置 `CARGO_NET_OFFLINE=true`，依次运行 Rust 测试、格式和严格 Clippy、工作区 release 构建、LoopTests 与完整 PackagingTests。release 构建在 PackagingTests 之前完成，供真实临时应用包检查使用；CI 不进行真实登录、权限申请、录音或云端转写。
 
 | 继续阅读 | 内容 |
 | --- | --- |

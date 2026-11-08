@@ -56,10 +56,10 @@ fn recording(root: &Path, name: &str) -> (Recording, i32) {
     let fd = -1;
     (Recording::caller_owned(file, path, Some("en".into())), fd)
 }
-fn until(mut f: impl FnMut() -> bool) {
+fn until(stage: &str, mut f: impl FnMut() -> bool) {
     let end = Instant::now() + Duration::from_secs(5);
     while !f() {
-        assert!(Instant::now() < end);
+        assert!(Instant::now() < end, "timed out waiting for {stage}");
         thread::yield_now();
     }
 }
@@ -114,7 +114,7 @@ fn run_case(root: PathBuf, mode: String) {
         ));
         let (r, fd) = recording(&root, "discard.wav");
         ui.submit_finalized(r).unwrap();
-        until(|| {
+        until("discarded cleanup initial failure", || {
             ui.act(Action::Poll, &mut sink);
             ui.can_retry()
         });
@@ -122,7 +122,7 @@ fn run_case(root: PathBuf, mode: String) {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         for _ in 0..8 {
             ui.act(Action::Retry, &mut sink);
-            until(|| {
+            until("discarded cleanup retry failure", || {
                 ui.act(Action::Poll, &mut sink);
                 ui.can_retry()
             });
@@ -136,7 +136,7 @@ fn run_case(root: PathBuf, mode: String) {
         let mut ui = Actions::with_executor(Executor::new(Arc::new(Good(calls.clone()))));
         let (r, fd) = recording(&root, "control.wav");
         ui.submit_finalized(r).unwrap();
-        until(|| {
+        until("default cleanup result", || {
             assert!(!ui.act(Action::Poll, &mut sink));
             ui.can_copy()
         });
@@ -194,11 +194,13 @@ fn run_case(root: PathBuf, mode: String) {
     assert!(sink.0.is_empty());
     release.send(()).unwrap();
     if mode == "poll" {
-        until(|| calls.load(Ordering::SeqCst) == 1);
+        until("held cleanup service entry", || {
+            calls.load(Ordering::SeqCst) == 1
+        });
         owner.as_mut().unwrap().act(Action::Cancel, &mut sink);
     }
     if let Some(a) = owner.as_mut() {
-        until(|| {
+        until("held cleanup owner cancellation or exit", || {
             let closed = a.act(Action::Poll, &mut sink);
             if mode == "exit" {
                 closed
@@ -207,7 +209,7 @@ fn run_case(root: PathBuf, mode: String) {
             }
         });
     }
-    until(|| !open(fd));
+    until("held recording file disposal", || !open(fd));
     let service_calls = calls.load(Ordering::SeqCst);
     assert_eq!(service_calls, if mode == "poll" { 1 } else { 0 });
     assert!(next.act(Action::Exit, &mut sink));
@@ -219,8 +221,14 @@ fn run_case(root: PathBuf, mode: String) {
     healthy
         .submit_finalized(recording(&root, "healthy.wav").0)
         .unwrap();
-    until(|| {
+    // File disposal precedes the orphan's final Permit drop. Controller admission
+    // can therefore succeed while enqueue fails; recover through explicit Retry.
+    until("healthy result after cleanup permit release", || {
         healthy.act(Action::Poll, &mut sink);
+        if healthy.can_retry() {
+            assert_eq!(calls.load(Ordering::SeqCst), service_calls);
+            healthy.act(Action::Retry, &mut sink);
+        }
         healthy.can_copy()
     });
     assert_eq!(calls.load(Ordering::SeqCst), service_calls + 1);
