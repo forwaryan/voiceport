@@ -1,5 +1,52 @@
 # 调研与发现
 
+## 2026-11-08 — 本地原生运行时实现与实测边界
+
+开发已采用准确sherpa-onnx v1.12.37 C头文件与C++小桥，经系统clang++/ar编译后Rust动态加载Orca外部C API及相邻ONNX Runtime，无Node/PATH依赖、额外模型下载或模型复制。仅当前arm64固定安装/版本可用；常规C++异常变错误，底层原生abort不可恢复，取消等单个native调用返回后释放，不阻塞UI等待join。
+
+公开英文WAV实际推理已证明流式partial、停止排空及端点段落累积可跑通，但输出也暴露Paraformer该英文样本较Whisper Tiny更容易错词，不能据此声称中文或所有场景准确。Whisper明确停录识别且30秒静音边界分块，仍有跨块丢/重词限制；线性重采样不等于高阶滤波质量。完整17步开发离线自检通过不替代真实麦克风、GUI/TCC、中文质量或受保护目标接收。独立验证将绑定最终整合冻结版本。
+
+## 2026-11-08 — Orca 已安装本地模型与实时能力
+
+用户需要的是现有 Orca 模型而非仅 macOS SFSpeech。实际模型根为 `~/Library/Application Support/orca/speech-models`，已观察 paraformer-bilingual-zh-en（encoder/decoder int8+tokens，16kHz中英流式）及 whisper-tiny（多语离线，含int8变体和公开test_wavs）。运行库在 `/Applications/Orca.app/Contents/Resources/node_modules/sherpa-onnx-darwin-arm64`，版本1.12.37，含C API dylib与ONNX Runtime；不能错认app.asar.unpacked或仅凭模型文件存在声称识别通过。
+
+Orca普通speech CLI未提供通用本地转写入口。可评估读取其原生运行库或独立推理helper，但必须使用准确ABI、离开主/音频线程、统一采样率、限制缓冲和离线分块；Finder环境不能假定继承nvm的node PATH。Paraformer停录需排空队列/inputFinished并保留endpoint累计文字；Whisper应明确停录识别，不能伪称流式。现有Controller所有最终结果都走ChatGPT，须按录音时快照的来源分派，本地失败不能静默转云端或访问云端认证。现有原生popup每100ms重复选择会关菜单，新增来源控件也须仅在实际变化时刷新。
+
+
+## 2026-11-08 — 原生控件的定时刷新与真实验收
+
+NSSegmentedControl将听写/设置分开后，NSSwitch与NSPopUpButton比整行循环按钮更符合原生习惯，但不能每100ms无条件selectItemAtIndex：即使选择未变，也会打断打开的原生菜单。已仅在state/index/enabled实际变化时修改，真实UI完成中文、English、两组快捷键和开关变化，并读回language=en/alternativeShortcut=1/automaticPaste=0；随后恢复自动检测/默认快捷键/自动输入1，原先不存在而被测试添加的defaults键也删除。
+
+GUI工具的成功AXPress回执不能替代UI后置条件。菜单在不同工具调用间可能因前台切换失效，同一脚本连续打开两个菜单也须等前一个完成；使用有界原生menu item readiness与真实应用值/持久偏好核对后才计通过。最终原生窗口620×552（内容620×520）、顶部菜单(973,4)、Dock无VoicePort、同PID82829关窗后菜单恢复与完整详情0秒均有证据；实际读取dictation.png、settings.png、menu-open.png。最终包仍AX未授权，不等同于真实语音验收。
+
+## 2026-11-08 — GitHub原生UI设计skill
+
+按用户要求检索GitHub，找到nextlevelbuilder/ui-ux-pro-max-skill（跨平台）及ceorkm/macos-design-skill（更贴合原生macOS工具）。读取后者commit 8f528a2364f996cd42f02a10b1b27198a74ca2a3的SKILL、layout-and-composition、visual-design和interaction-patterns，原文保存在.voiceport/research/macos-ui-20261108。仓库API未声明license，仅参考设计思想，不复制技能文档进公开产品、不运行第三方脚本。
+
+本项目只有听写与设置两个目的地，适用其“少于3个目的地不设侧栏”、约13pt正文、8pt间距、原生分段页签与渐进展示；不引入无用搜索/历史/分享或虚假成功反馈。当前大面积空白、同层级按钮和技术错误顶置应改成紧凑听写页、独立设置页、短权限提醒与完整详情可查看。
+
+## 2026-11-08 — macOS菜单栏宿主组隐藏与无Dock窗口
+
+macOS 26上菜单项在AX树可操作不代表物理可见。VoicePort早期菜单坐标(7,965)/(7,976)，唯一屏幕1512×982；Control Center日志明确Moving host to blocked list。只读trackedApplications显示VoicePort自身isAllowed=true，但它同时归入isAllowed=false的Orca menuItemLocations组。移动菜单注册时间、仅刷新VoicePort开关、Finder和独立launchctl启动均未逃离该组。正常系统UI开启Orca组后图标立即进入顶部；可能同时显示Orca自身入口，须明确披露，不混同辅助功能权限。
+
+最终0.3.2/build8采用LSUIElement=true与Accessory policy1，PID45517在(965,4)显示30×24菜单入口，实际截图已读取；Dock无VoicePort条目，关闭窗口不退出，菜单在同PID恢复窗口。最终新包辅助功能仍未授权，不能外推旧签名包的授权；保持0秒、未录音。完整17步离线验证全通过仅证明其覆盖范围，不代替真实语音或长期耐用性。证据`dist/menubar-only-20261108-9eaa1fc4-final/report.json`。
+
+## 2026-11-08 — Git 集成与并发修改
+
+远程 main 已到 `0d9e643`（PR12：CI 和离线首次运行诊断），该提交的 macOS CI 已成功。stash/快进/恢复后仅 README 冲突，已同时保留图标入口说明和上游 CODEX_HOME/--auth 优先级说明。发现另一活跃会话 voiceport-72 正在同工作区修改 app.rs 的菜单栏与界面，已通过会话消息协调其完成后停写，再做最终验证和 Git 交付。
+
+首轮完整 verify（`verify-9c75bd7838d345e0aa1e35f63cab39da`）测试、fmt 通过，严格 Clippy 101：并发开发中的 StatusAppearance 及新增字段尚未接入，属于中间状态，不能记作最终验证通过或覆盖这些修改。
+
+## 2026-11-08 — AX权限同名旧条目重建后生效
+
+系统VoicePort switch=1与当前app AXIsProcessTrusted=false可同时存在；仅关开同名条目未修复。通过系统UI移除仅VoicePort条目、精确选择新包cursor-entry-20261108-9eaa1fc4/VoicePort.app重新添加后，原PID68143按钮实时变为「辅助功能：已授权（检查）」，无需退出进程，0秒/未录音。支持旧授权关联不匹配的判断，但未直接读取旧TCC条目的内部requirement；不能把推断写成已读取系统根因。面板旧失败文字仍保留，不等同当前权限状态。
+
+
+## 2026-11-08 — Orca 真实终端接收
+
+独立夹具 receiver-02 准确接收固定 `终端输入验证🙂` 共22个UTF-8字节，无Return；生产 Delivery::begin/deliver/poll 与原 CGEventPostToPid 分块发送路径通过。证据 dist/cursor-entry-20261108-9eaa1fc4。早期分散工具切焦尝试存在前台/活动tab漂移：两次拒写，另两次仅事件提交成功但指定receiver未收到，原报告保留不计通过。临时逐scalar实验也未获得独立receiver确认，已撤回，不能据此归因Chromium多字符事件问题。最终用单次有界脚本新建非执行夹具、确认ready、切换精确terminal、激活、立即探针并断言实际接收，原实现通过。GUI辅助输入尝试返回synthetic/unverified且活动工作区已变化，不作产品证据；无Return或命令发送。
+
+
 ## 2026-11-07 — 旧 Swift 清理
 
 - 原归档共37文件，其中35个 `.swift`、1个Python宿主夹具、1个README；都不参与当前构建。当前核心/App兼容测试脚本实际调用Cargo，仍有用途，应保留。

@@ -1,6 +1,7 @@
 import json
 import os
 import pathlib
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -211,6 +212,24 @@ class RealBundleTests(unittest.TestCase):
     def test_bundle_contains_rust_main_without_helper(self):
         self.assertTrue(validate(self.app, self.native)['main_signed_copy_matches'])
         self.assertFalse((self.app / 'Contents/Helpers').exists())
+
+    def test_app_icon_and_menu_bar_only_policy_survive_packaging(self):
+        info = plistlib.loads((self.app / 'Contents/Info.plist').read_bytes())
+        self.assertEqual(info['CFBundleIconFile'], 'AppIcon')
+        self.assertIs(info['LSUIElement'], True)
+        icon = self.app / 'Contents/Resources/AppIcon.icns'
+        data = icon.read_bytes()
+        self.assertEqual(data[:4], b'icns')
+        self.assertEqual(int.from_bytes(data[4:8], 'big'), len(data))
+        # Re-sign the mutated copy so a signature failure cannot mask whether
+        # the bundle checker actually binds the installed icon to the source.
+        with tempfile.TemporaryDirectory() as temp:
+            app = pathlib.Path(temp) / 'VoicePort.app'
+            shutil.copytree(self.app, app)
+            (app / 'Contents/Resources/AppIcon.icns').write_bytes(b'wrong icon')
+            resign(app)
+            with self.assertRaisesRegex(AssertionError, 'unexpected app icon'):
+                validate(app, self.native)
 
     def test_real_bundle_rejects_main_mode_and_missing_material(self):
         with tempfile.TemporaryDirectory() as temp:

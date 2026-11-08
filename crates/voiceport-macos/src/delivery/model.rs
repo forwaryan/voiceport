@@ -13,6 +13,9 @@ pub enum Failure {
     SecureInput,
     Application,
     Focus,
+    FocusRead(i32),
+    FocusApplicationChanged,
+    FocusElementChanged,
     Role,
     Sensitive,
     Disabled,
@@ -35,7 +38,10 @@ impl Failure {
             Self::Accessibility => "accessibility",
             Self::SecureInput => "secureInput",
             Self::Application => "application",
-            Self::Focus => "focus",
+            Self::Focus
+            | Self::FocusRead(_)
+            | Self::FocusApplicationChanged
+            | Self::FocusElementChanged => "focus",
             Self::Role => "role",
             Self::Sensitive => "sensitive",
             Self::Disabled => "disabled",
@@ -57,6 +63,15 @@ impl Failure {
     }
 
     pub fn message(self) -> String {
+        if let Self::FocusRead(status) = self {
+            let reason = match status {
+                -25212 => "目标应用没有提供焦点输入框，请点好输入框后重新开始",
+                -25204 => "目标应用的辅助功能接口暂未响应，请稍后重新开始",
+                -25211 => "目标应用的辅助功能接口不可用，请检查授权",
+                _ => "读取目标输入框失败，请重新定位输入光标后开始",
+            };
+            return format!("[focus] {reason}（AX {status}）；结果保留在面板。");
+        }
         let detail = match self {
             Self::Accessibility => {
                 "当前版本的辅助功能授权未生效。请在系统设置 → 隐私与安全性 → 辅助功能中重新授权当前 VoicePort。"
@@ -65,6 +80,10 @@ impl Failure {
             Self::SecureInput | Self::Sensitive => "当前处于安全输入或密码字段，已停止自动输入。",
             Self::MainThread => "自动输入必须在主线程执行；结果保留在面板。",
             Self::Focus => "无法确认原应用的输入焦点；结果保留在面板。",
+            Self::FocusApplicationChanged => {
+                "前台应用已改变，已停止自动输入；请回到目标输入框后重新开始。"
+            }
+            Self::FocusElementChanged => "焦点输入框已改变，已停止自动输入；请重新开始听写。",
             Self::Role | Self::Disabled | Self::Writable => {
                 "原控件未确认支持文字输入；结果保留在面板。"
             }

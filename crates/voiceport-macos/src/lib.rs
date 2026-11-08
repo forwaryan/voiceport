@@ -6,8 +6,14 @@ mod controller;
 #[cfg(target_os = "macos")]
 mod hotkey;
 pub mod lifecycle;
+pub mod local_audio;
+pub mod local_models;
+#[cfg(target_os = "macos")]
+mod local_runtime;
 #[cfg(target_os = "macos")]
 mod proxy;
+#[cfg(target_os = "macos")]
+mod status_icon;
 #[cfg(target_os = "macos")]
 pub use app::run;
 #[cfg(target_os = "macos")]

@@ -181,6 +181,16 @@ fn writable_result(status: i32, value: u8) -> Result<bool, Failure> {
     }
 }
 
+fn enabled_result(status: i32, enabled: Option<bool>) -> Result<(), Failure> {
+    match (status, enabled) {
+        (0, Some(true)) | (AX_UNSUPPORTED, _) => Ok(()),
+        // NSTextView omits optional AXEnabled. Its explicit selection/text
+        // write capabilities are still required below. A known disabled value,
+        // malformed boolean or AX transport/permission failure remains blocked.
+        _ => Err(Failure::Disabled),
+    }
+}
+
 fn set(element: CFTypeRef, name: &str, value: CFTypeRef) -> Result<(), Failure> {
     let key = CFString::new(name);
     if unsafe { AXUIElementSetAttributeValue(element, key.as_CFTypeRef(), value) } == 0 {
@@ -193,11 +203,89 @@ fn set(element: CFTypeRef, name: &str, value: CFTypeRef) -> Result<(), Failure> 
 fn focused(pid: libc::pid_t) -> Result<OwnedCf, Failure> {
     let application =
         OwnedCf::new(unsafe { AXUIElementCreateApplication(pid) }).ok_or(Failure::Focus)?;
-    let element = attribute(application.0, "AXFocusedUIElement").map_err(|_| Failure::Focus)?;
+    let element = attribute(application.0, "AXFocusedUIElement").map_err(Failure::FocusRead)?;
     if unsafe { CFGetTypeID(element.0) != AXUIElementGetTypeID() } {
         return Err(Failure::Focus);
     }
     Ok(element)
+}
+
+/// Explicit diagnostic: reads only target metadata, never field text or permissions.
+pub(super) fn diagnose_input() -> serde_json::Value {
+    let mut result = serde_json::json!({
+        "mainThread": main_thread(), "accessibilityTrusted": trusted(),
+        "secureInput": secure_input(),
+    });
+    if !main_thread() || !trusted() {
+        return result;
+    }
+    let (pid, bundle) = match frontmost() {
+        Ok(target) => target,
+        Err(failure) => {
+            result["failure"] = failure.message().into();
+            return result;
+        }
+    };
+    result["pid"] = pid.into();
+    result["bundle"] = bundle.into();
+    let Some(application) = OwnedCf::new(unsafe { AXUIElementCreateApplication(pid) }) else {
+        return result;
+    };
+    let element = match attribute(application.0, "AXFocusedUIElement") {
+        Ok(element) => element,
+        Err(status) => {
+            result["focusedElementAXError"] = status.into();
+            return result;
+        }
+    };
+    if unsafe { CFGetTypeID(element.0) != AXUIElementGetTypeID() } {
+        result["failure"] = "Focused value is not an AX element".into();
+        return result;
+    }
+    for name in ["AXRole", "AXSubrole", "AXDescription", "AXIdentifier"] {
+        match attribute(element.0, name) {
+            Ok(value) => result[name] = value.string(1_000).into(),
+            Err(status) => result[format!("{name}Error")] = status.into(),
+        }
+    }
+    match attribute(element.0, "AXEnabled") {
+        Ok(value) => {
+            result["AXEnabledIsBoolean"] =
+                (unsafe { CFGetTypeID(value.0) == CFBooleanGetTypeID() }).into();
+            result["AXEnabled"] = (unsafe { CFEqual(value.0, kCFBooleanTrue.cast()) != 0 }).into();
+        }
+        Err(status) => result["AXEnabledError"] = status.into(),
+    }
+    for name in ["AXSelectedTextRange", "AXSelectedText", "AXValue"] {
+        result[format!("{name}Settable")] = match settable(element.0, name) {
+            Ok(value) => value.into(),
+            Err(failure) => failure.message().into(),
+        };
+    }
+    result
+}
+
+/// Only the dedicated synthetic fixture may receive the fixed self-test string.
+pub(super) fn self_test_fixture_focused() -> bool {
+    let Ok((pid, bundle)) = frontmost() else {
+        return false;
+    };
+    if bundle != "io.github.forwaryan.voiceport.input-fixture" {
+        return false;
+    }
+    let Ok(element) = focused(pid) else {
+        return false;
+    };
+    attribute(element.0, "AXIdentifier")
+        .ok()
+        .and_then(|v| v.string(100))
+        .as_deref()
+        == Some("voiceport.input-self-test")
+        && attribute(element.0, "AXValue")
+            .ok()
+            .and_then(|v| v.string(100))
+            .as_deref()
+            == Some("左|右")
 }
 
 pub(super) enum Captured {
@@ -279,11 +367,11 @@ impl NativeTarget {
         }
         let (pid, bundle) = frontmost()?;
         if pid != self.pid || bundle != self.bundle {
-            return Err(Failure::Focus);
+            return Err(Failure::FocusApplicationChanged);
         }
         let current = focused(pid)?;
         if unsafe { CFEqual(current.0, self.element.0) } == 0 {
-            return Err(Failure::Focus);
+            return Err(Failure::FocusElementChanged);
         }
         if self.bundle == ORCA {
             let description = attribute(self.element.0, "AXDescription")
@@ -312,13 +400,14 @@ impl NativeTarget {
             Err(AX_UNSUPPORTED | AX_NO_VALUE) => {}
             Err(_) => return Err(Failure::Sensitive),
         }
-        let enabled = attribute(self.element.0, "AXEnabled").map_err(|_| Failure::Disabled)?;
-        if unsafe {
-            CFGetTypeID(enabled.0) != CFBooleanGetTypeID()
-                || CFEqual(enabled.0, kCFBooleanTrue.cast()) == 0
-        } {
-            return Err(Failure::Disabled);
-        }
+        let (status, enabled) = match attribute(self.element.0, "AXEnabled") {
+            Ok(value) => (0, unsafe {
+                (CFGetTypeID(value.0) == CFBooleanGetTypeID())
+                    .then(|| CFEqual(value.0, kCFBooleanTrue.cast()) != 0)
+            }),
+            Err(status) => (status, None),
+        };
+        enabled_result(status, enabled)?;
         if !settable(self.element.0, "AXSelectedTextRange")? {
             return Err(Failure::Writable);
         }
@@ -581,6 +670,21 @@ mod tests {
         }
         for (status, value) in [(0, 2), (0, 255), (-25202, 1), (-25211, 0), (-25204, 1)] {
             assert_eq!(writable_result(status, value), Err(Failure::Writable));
+        }
+    }
+
+    #[test]
+    fn optional_enabled_attribute_does_not_reject_native_text_views() {
+        assert_eq!(enabled_result(AX_UNSUPPORTED, None), Ok(()));
+        assert_eq!(enabled_result(0, Some(true)), Ok(()));
+        for (status, enabled) in [
+            (0, Some(false)),
+            (0, None),
+            (AX_NO_VALUE, None),
+            (-25204, None),
+            (-25211, None),
+        ] {
+            assert_eq!(enabled_result(status, enabled), Err(Failure::Disabled));
         }
     }
 

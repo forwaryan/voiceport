@@ -10,6 +10,18 @@ mod audio;
 #[path = "../src/controller.rs"]
 mod controller;
 #[cfg(target_os = "macos")]
+#[allow(dead_code, unused_imports)]
+#[path = "../src/local_audio.rs"]
+mod local_audio;
+#[cfg(target_os = "macos")]
+#[allow(dead_code, unused_imports)]
+#[path = "../src/local_models.rs"]
+mod local_models;
+#[cfg(target_os = "macos")]
+#[allow(dead_code, unused_imports)]
+#[path = "../src/local_runtime.rs"]
+mod local_runtime;
+#[cfg(target_os = "macos")]
 #[allow(dead_code, unused_imports)] // Its libtest-only imports are inert in this harness.
 #[path = "../src/proxy.rs"]
 mod proxy;
@@ -27,9 +39,18 @@ fn main() {
     println!("stop_failure: os_main_thread=true");
     let args: Vec<_> = std::env::args().skip(1).collect();
     let cases: Vec<&str> = match args.as_slice() {
-        [] => vec!["zero", "stop-first", "poll-first", "retry", "cancel"],
+        [] => vec![
+            "zero",
+            "stop-first",
+            "poll-first",
+            "retry",
+            "cancel",
+            "local-stop-failure",
+        ],
         [flag, case] if flag == "--case" => vec![case],
-        _ => panic!("expected no arguments or --case zero|stop-first|poll-first|retry|cancel"),
+        _ => panic!(
+            "expected no arguments or --case zero|stop-first|poll-first|retry|cancel|local-stop-failure"
+        ),
     };
     for case in cases {
         objc2::rc::autoreleasepool(|_| {

@@ -7,11 +7,12 @@
     <key>CFBundleIdentifier</key><string>io.github.forwaryan.voiceport</string>
     <key>CFBundleExecutable</key><string>VoicePort</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.3.0</string>
-    <key>CFBundleVersion</key><string>6</string>
+    <key>CFBundleShortVersionString</key><string>0.3.3</string>
+    <key>CFBundleVersion</key><string>9</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>VoicePort 使用麦克风录制你主动开始的语音，并上传至 ChatGPT 听写服务生成文字。</string>
+    <key>NSMicrophoneUsageDescription</key><string>VoicePort 仅使用麦克风录制你主动开始的语音；选择本地模型时，音频在本机处理；仅在你选择 ChatGPT 时，音频才会上传至 ChatGPT 听写服务生成文字。</string>
     <key>NSSpeechRecognitionUsageDescription</key><string>VoicePort 在你主动录音时使用本机语音识别，让文字实时出现在原输入框；本机识别不可用时仅在停录后转写。</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
