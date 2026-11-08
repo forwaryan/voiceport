@@ -1,5 +1,25 @@
 # 进度记录
 
+## 2026-11-09 — per-Run轮换修复开发交付
+
+正式msg_32c1cf5b0e88：task_016438d6424f/ctx_a93714e8ce35 succeeded并停写；actual session1e36cfa3/精确terminal/真实PreToolUse/初始最终0核对，SessionStart未观察。六个授权源码/文档交付，helper5eb93703…；协调首次核对六项before/after/当前SHA一致、历史lease63cfa66e…保持，原反例目标断言exit1/完整75自检exit0原始输出与部署脚本语法0，未重跑委派测试。部署proposal2feeb8eb…和manifest5ace999c…仅待审，不执行。
+
+CI03已实际exited/released；rotation完成后reclaimable不等于退出，但已正式停止写入。CLI retained但liveness unverifiable不推断退出；原开放任务保持阻塞，无替代启动。准备安全点分逻辑commit/push和PR15更新，再新完整freeze03与真实独立infra/CI审查。自动轮换规则已写loop，但register、CLI工作区更新、实际自动生命周期均未执行/未接受；历史会话和冻结继续只读。
+
+## 2026-11-08 — CI03夹具修复交付与证据核对
+
+真实msg_eade09e027f8：task_f2966eb27810/ctx_9545a7ee6f4b succeeded并停写。actual新sessione0b4c28b/精确terminal/真实PreToolUse/初始最终0核对，SessionStart未观察。只改plugin_runtime/tests.rs，交付SHA a06693e7…；协调首次检查202归档文件SHA/大小、实际与快照字节、production runtime不变、timeout/cancel测试完整相同，以及原101反例/正常和节流各9pass日志、发送1000038/1000039wire字节与cleanup证据，exit0。未重跑委派测试，不算独立接受。
+
+初次paced探针共享Cargo target误用旧binary，其exit0被明确排除；后来单独target重编译在预期断言处101复现。另一evidence脚本因并行helper哈希变化错误比较失败1，原始记录保留，按真实point-in-time hook证明纠正，不改状态/信任。CI03完成后观察live/reclaimable，非exited。基础设施worker仍active，暂不变其HEAD；待安全边界正常commit/push、远端CI和新完整冻结独立验收。CLI原任务继续等待经复核helper。
+
+## 2026-11-08 — 新协调绑定、freeze02关闭与修复范围
+
+新实际session44b41d18 / terminal term_e3097f23已绑定既有run_a9b3754f7871，consumer_generation2；初始真实PreToolUse/零边界已核对，当前自然压缩1次，PostCompact和SessionStart现已观察，helper014eeb1e。旧协调637eb70f及历史transcript只读，未恢复、控制或修改；旧VP013 lease未接管。自动继任轮换尚未成功，不能因新终端已接续就宣称机制通过。
+
+独立02正式msg_4560627addba failed/BLOCKED，真实worker-list failed/exited/released；完整report已读。协调再次freeze02 check matches:true（manifest1d12b500…/产品f8bc5108…）后写freeze02-closure.json，显式结束现场冻结，原归档保持。新CI42490699626确为failure；独立CI-01节流控制与GUI归属缺口保留。生产App与所有旧包保持。
+
+已写独立文件归属spec：run-rotation-repair-01负责helper/tests/loop及窄文档；transcription-plugins-ci-repair-03仅HTTP测试夹具，沿已exited/released原开发创建真正新会话，避免旧session新terminal漂移。实际两项ready回执已登记repair-dispatches-03.json：rotation task_016438d6424f/ctx_a93714e8ce35，CI03 task_f2966eb27810/ctx_9545a7ee6f4b；真实启动证明仍待worker观察，ready不代替证明。原CLI任务仍live/retained且启动阻塞，msg_970314cd8f02已告知helper提前返回原因和保持暂停；没有重复CLI任务或伪造hook证明。根planning以planning-with-files方式维护，实际Git交付待本阶段交付与安全边界。
+
 ## 2026-11-08 — 返修02正式交付与协调证据核对
 
 真实worker_done msg_c86b86cba37c：task_03ef6325c033/ctx_a3aa8344a7e6 succeeded并停写；session555e44ba初始最终0，真实PreToolUse/helper/terminal核对，SessionStart未观察。6项源码/测试/文档窄改，原服务背压同步join死锁、取消与请求到达竞争、Python尚未写PID被杀竞争均有修前反例与cleanup证据；未放宽生产timeout。VOICEPORT_SOURCES_PATH只改变来源配置，可保持正常系统HOME/Keychain，GUI仍待新独立实测。

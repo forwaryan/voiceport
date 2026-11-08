@@ -1,5 +1,17 @@
 # 调研与发现
 
+## 2026-11-09 — per-Run轮换接口的验证边界
+
+新helper显式register核对实际terminal/session/真实PreToolUse/transcript与当前Run coordinator_handle/generation，独立per-Run lease缓存路由，避免把新Run协调者当成历史lease的worker。claim要求真实新session/terminal、initial0、晚于launch的起始时间和递增generation；精确close须有对应handle的ptyKilled=true，未知结果保持锁存。开发75个隔离mock测试通过不代表实际Orca自动生命周期通过；现无自动unknown-result reconcile/replay接口，原生Codex协调loop-stop/继任启动适配也未声称支持。合法旧全局接口语义保留，历史lease未迁移。需要独立复核此边界和CLI部署proposal后才实际采用。
+
+## 2026-11-08 — Run 角色路由、启动计数与 CI-01
+
+现有 hook 先读取全局 coordinator lease：无 state 直接返回，导致新隔离工作区虽配置相同 hook 命令，却没有任何每会话记账；有旧 lease 时非 owner 一律走 worker 分支，新的真实 Run 协调者因此误入 worker checkpoint 限制。这说明应先修 helper 路由，不能把缺状态径直归因为 settings 未加载，更不能覆盖旧 Run lease 或伪造 worker 登记。
+
+独立02对 CI-01 的 paced 控制：20ms/write 时，2秒客户端只收到356314字节 body，4秒仍只收到704474，均未达1MB，读超时符合生产行为；同一未节流副本约630ms完整发送并通过。短测试 deadline 与大小断言存在竞争，远端确切调度原因缺进度日志仍未完全证明。修复应分开大小边界和 timeout/cancel 验证，保留真实 HTTP 覆盖和有界收尾。
+
+freeze02 的正常 HOME GUI 路径已实测来源新增、独立合成凭据修订、编辑、重启、显式样例和删除。导入确认无可归属动作回执，不能算通过或归因某个操作者；外部来源和相关错误/取消 GUI 仍缺独立证据。仅有29次针对性执行，不是完整17步复跑。历史失败和未知 freeze01 key 不猜删。
+
 ## 2026-11-08 — 返修02证据与独立验收接续
 
 开发在旧源码副本用4096发送缓冲复现超大响应fixture写入与测试线程同步join等待环，真实sample显示join/sendto；提前取消无请求也会让旧accept/rx/join无限等待。原Python PID文件在初始化完成前不可作spawn/回收证据，700ms受控延迟触发原断言失败。修复将测试服务I/O和收尾设限，异步finish允许runtime推进、取消先同步完整请求，并从OS spawn观察实际PID且校验PID/组ESRCH。生产HTTP/插件110秒限制未变，原1秒取消返回断言保留。4次23项串并行和完整17步通过，仍待远端CI和独立反例。
