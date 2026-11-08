@@ -213,10 +213,10 @@ class RealBundleTests(unittest.TestCase):
         self.assertTrue(validate(self.app, self.native)['main_signed_copy_matches'])
         self.assertFalse((self.app / 'Contents/Helpers').exists())
 
-    def test_app_icon_and_dock_entry_survive_packaging(self):
+    def test_app_icon_and_menu_bar_only_policy_survive_packaging(self):
         info = plistlib.loads((self.app / 'Contents/Info.plist').read_bytes())
         self.assertEqual(info['CFBundleIconFile'], 'AppIcon')
-        self.assertIs(info['LSUIElement'], False)
+        self.assertIs(info['LSUIElement'], True)
         icon = self.app / 'Contents/Resources/AppIcon.icns'
         data = icon.read_bytes()
         self.assertEqual(data[:4], b'icns')

@@ -1,5 +1,113 @@
 # 进度记录
 
+## 2026-11-08 — 最终独立PASS与用户要求合并、启动
+
+正式回执msg_d07d84160313，实际独立接续session111f5cbd/task_87edbf3c5345/ctx_d168251845c2完成PASS，LM-01 FIXED；起止0次压缩与真实PreToolUse/helper证明，原SessionStart未观察如实披露。已读report.md/summary.json并由协调者重查完整freeze02 e5ff82d5…与产品3a64a677…一致。评审现在结束，冻结/报告保持不可变，后续只补本段行政记录并进入Git交付，不宣称行政记录是验证时旧字节。
+
+新target `/tmp/voiceport-local-models-final-20261108` 正常从整合源码build/package，最终`dist/local-models-20261108-final-02/VoicePort.app`；native SHA5790d2d15e1dc17d72d96ff20481a50085731e2bc17e4f8f65a674210c7c4bca，包main SHA5b530d11edd3d7c88dd59e6b64a23678f4b5336deae62078baf372a7dcd7ed50。元数据/严格签名/Cargo对应/全部17个Mach-O sections/17个packaging tests通过，逐文件确认与首轮审查只有权限说明和两个根记录delta。审查自身Cargo depfile假设错误退出1已留档并仅修证据脚本，不作产品缺陷。
+
+用户明确要求「替换一下，然后把代码合并到主分支里，然后在我的电脑上也启动一下最新版本」，随后继续。图标会话另转来用户明确选A「就左边第一个吧」，和冻结模块一致，无源码变更。当前无活跃产品writer/评审，按授权进行正常提交推送/PR/检查/合并/同步main，再确切新包实际启动及设置页交互；实际回执保存在本轮私有coordination记录和最终回复，避免将外部动作提前写成已完成。不自动录音/上传/真实输入，保留旧包；最新一次pgrep未见VoicePort进程，原因未知。
+
+
+## 2026-11-08 — LM-01文案修正交付与聚焦复核准备
+
+原开发follow-up因新terminal触发真实SessionStart terminal_drift，未改文件。按项目恢复规则保留行政handoff，guarded stop ctx_24a9d4e134f6返回stopped/ptyKilled；另查process_stopped/liveness exited，再release返回released。未改hook/绑定或绕过权限；同Task task_e1c00df64b74以retry-of新建ctx_ef06221dc79f，实际fresh session6fa25592/term260003e1，起止0次压缩及真实PreToolUse证明。
+
+正式回执msg_15634f62e510，已读返修report.md与Info.plist：仅NSMicrophoneUsageDescription改为主动录音、本地处理、仅选择ChatGPT才上传。相关plist/signature/bundle correspondence与17个packaging测试通过；Rust/图标和旧冻结/审查证据不变。额外全freeze比对因协调者此前两份根记录变化退出1，已披露，非packaging失败。当前修正source plist SHA7c9428fa…，产品SHA3a64a677…。
+
+返修打包复用了开发阶段native SHA642900a8…（熊图标集成前），该包只作本次metadata自检，不作为最终交付包；最终聚焦复核须从当前熊图标整合源码构建并证明来源。独立freeze01的完整代码/实际推理/GUI证据保留，变化只有metadata和行政根记录，无理由重跑相同音频全套。
+
+实际查询原verifier ctx_38dc2665e9da为succeeded/settled/liveness exited/terminalState released；因恢复旧session到新terminal必受项目身份保护，明确登记原会话不可安全续用，而非静默换人。准备freeze02后交新真实独立接续会话聚焦验证修正、邻近元数据和最终打包来源，产品暂未接受。
+
+
+## 2026-11-08 — 首次独立验收退回LM-01，关闭freeze01进入窄返修
+
+正式回执msg_2eb8b28de4f1，独立task_db1f174201a9/ctx_38dc2665e9da runtime succeeded但验收RETURNED，不能计产品通过。实际验证session9c6eb66b与开发不同，真实PreToolUse证明且初始0/交接1次压缩；开始/结束/交接及协调者再核对完整freeze7ea71dec…/产品c3d08f1e…均一致。整合版完整17步、公开夹具实际推理、独立运行时live-before-stop/断开/取消、原生惰性全部phase控件和refresh回调均通过；隔离bundle identity实际GUI验证三来源选择、打开菜单1.2秒保持、Whisper保存及退出重启记忆，两个仅本轮新建0秒进程已正常退出，现有84097保持。
+
+唯一确认LM-01 P2：Info.plist:15麦克风用途描述无条件称上传ChatGPT，与local设置解释冲突，源文件及实际包metadata直接证明，无需请求真实权限。独立检查未发现本地运行路径读取云认证或上传，问题是用户可见说明。完整独立report.md/summary.json已读，失败自动化/探针编译日志均保留且不计产品缺陷。
+
+首次审查已结束，显式关闭freeze01供窄返修，不改旧快照/报告；原开发仅获准修NSMicrophoneUsageDescription并做相关打包自检，随后新冻结交原验证复核。真实麦克风、中文质量、生产TCC和目标接收仍未测。
+
+## 2026-11-08 — 熊+语音候选集成与最终冻结准备
+
+peer确认熊+语音候选及证据全部停写，A话筒熊为其实现建议，用户选择只锁定熊+语音方向而非A。已实际读取候选全文、原活动模块及trial-v2/report.json，核对原SHA a6957a44…和候选完整SHA a1ada9586b14fa0a6d1d911f182ccfd5ef365a47a1145627903cfc1c3e5a3ef8后，仅替换活动status_icon.rs，lib/app接口不变。peer在独立旧UI快照中五步fmt/Clippy/原生18/36/144px模板渲染/release/package均0，输入map起止9b6d9bab…一致；首次缓存保护失败原目录保留，不算通过。
+
+模型开发与图标双方均停写。协调者已准备只读清单/完整内容快照工具及独立验证spec，将以完整集成输入冻结后启动新的真实验证会话。最终集成仍未验收，运行包PID84097及旧包保持不变，不自动录音/云端/输入。开发5e501840…自检对应替换图标前版本，不外推最终版本；独立会话须核对最终新摘要。
+
+
+## 2026-11-08 — 本地模型开发正式交付，独立验收待办
+
+收到Orca正式worker_done msg_2c16d7367d3c，task_c891fc8528e0/ctx_d32d69cd0690 outcome succeeded，真实开发session448e9507；核对worker settled，报告明确停写。已读开发report.md、final-integrity.json与LOCAL_MODELS文档，完整17步离线自检通过，产品起止SHA5e501840135c0548914b1f85e24463ce85fac5a16cd13bdc3e8a6f61beb61fa1。公开夹具生产路径实际推理含Paraformer partial/stop前加载/endpoint双段/8k/silence、Whisper零partial，初次编译与夹具EOF失败及修正日志均保留。开发无实际麦克风、云端、GUI下拉或目标接收验收。
+
+实现选择arm64固定Orca 1.12.37原生C API动态加载，准确版本头文件+小C++桥经系统clang/ar静态编入Rust，无Node、运行时下载或模型复制。默认仍ChatGPT；本地来源不请求Speech或访问云端认证，来源/语言固定于录音和重试，有界PCM队列、工作线程归一化与停止排空。当前仅开发自检通过，尚未独立验收。
+
+新熊+语音图标仍由peer在独立候选构建，活动源码未改，候选未正式停写交付；最终冻结会先整合新模块，再交不同真实会话。旧声翼检查保留但不是用户认可方案；新运行图标包PID84097保持、不自动录音。
+
+
+## 2026-11-08 — 图标交付停写并释放最终集成边界
+
+peer9eaa1fc4已明确完成并停止全部产品/本轮证据写入。收到并实际读取`dist/status-icon-20261108-9eaa1fc4-final/report.json`及`icon-only.patch`，范围仅status_icon.rs、lib.rs模块行、app.rs update_status_icon；其余local与root未碰。其重建1058旧输入摘要/模式后叠加图标，1069输入构建起止map SHA 0afb9ac4…一致，五步fmt/Clippy/macOS tests/release/package均0，只代表旧UI+图标候选。物理菜单展开失败/暗色/录音红色/local集成未验收；错误桌面menu-open.png不读取或使用。新图标包PID84097由peer启动后保持，原82829启动前未见且原因未知，不记为任一会话退出。
+
+已向真实local开发dispatch ctx_d32d69cd0690发送停写/全输入可固定自检通知，回执msg_9b6c0b72e871。此前恢复兜底核对该dispatch live/input_accepted，真实开发session448e9507启动PreToolUse/terminal/helper证明存在、0次压缩、未观察SessionStart；代码与首批自检日志存在但无完成报告，未计验收通过。独立验证仍待local实际交付及全输入冻结。
+
+## 2026-11-08 — Orca 本地模型需求接单与开发边界
+
+用户澄清本地模型指 Orca 已下载模型及单来源下拉。已只读核对 Paraformer 中英双语流式、Whisper Tiny 多语离线，以及 Orca 安装内 sherpa-onnx 1.12.37；未执行麦克风、云端、输入投递、修改模型或偏好。此前界面会话停写交接已收到，其后该会话获得新的菜单栏图标需求，双方已明确仅 status_icon.rs/lib.rs模块行/app.rs update_status_icon 由其写，其他本地模型界面与控制器由本任务开发写，target/dist各自独立。
+
+当前会话637eb70f的真实PreToolUse/SessionStart状态、term_dbb1ea5d绑定、helper SHA014eeb1e…与真实1次compact_boundary吻合。新用户目标以真实 run-create 建立 run_6f1edc8ca1f3；旧 run_fce757b919d9/VP013/rotation requested仅作历史保留，不冒认原协调者或修改其账本，产品关联unbound。开发spec已准备，后续须记录实际worker-start回执，文件存在不等于已送达。至此本任务尚未改产品实现，八个继承dirty文件完整保留。
+
+
+## 2026-11-08 — 紧凑原生UI最终交付与停写边界
+
+最终完整verify --app-smoke 17步全通过（4 loop/17 packaging、workspace/fmt/严格Clippy/release/签名/CLI/host/safe smoke），报告`.voiceport/evidence/vp012-revision-01/verify-2482a31db1ec48638525b7b628cfc9f9/report.json`；起止产品SHA e466950c745d76cbb2ce8de0f1a5e561f39298dda7b215c8bcfbf10dc7619fab一致，之后仅补根记录和dist证据。
+
+0.3.3/build9最终包`dist/native-ui-20261108-9eaa1fc4-final/VoicePort.app`，main SHA9971faf192e42c967446dace4f446fc13311cd9d4148b8e4109cda05280f6ae1。实际PID82829、Accessory policy1，窗口620×552（内容620×520）、顶部菜单(973,4)、Dock VoicePort项空。两个页签、详情sheet、关闭后同PID菜单重开均通过；三张实际截图已读取。详情明确本机预览未启动/0秒，当前AX仍未授权，未开始录音、云端或投递，未再改系统权限。
+
+真实交互发现首轮原生popup被每100ms重复selectItemAtIndex打断；已对索引、开关state、enabled作变化检查，重包后中文/English、替代快捷键和自动输入开关均UI与defaults交叉验证，原始偏好已恢复。后台popup/非可设置AXValue被工具拒绝；跨调用menu引用失效与连续菜单未ready报-1719，改为每个菜单前台单次打开并有界等待目标item再选择；所有失败不计成功。get-app-state不支持--full-tree已按有效参数纠正。原临时preview PID66378经自身详情确认0秒、精确bundle路径核对后仅正常terminate该本轮新建试验进程，最终pgrep只剩82829。原45517后来不存在，未向它发送退出，原因未确认；历史包/报告/fenced session不变。
+
+另一会话voiceport-86（uds:/tmp/cc-socks/61281.sock）用户另有复用Orca本地语音模型与单来源下拉需求；其已同意此UI验收完成前产品/根记录/defaults/运行包只读。本会话不接管旧VP013 Run或扩展到该新任务；本次UI交付后发送停写边界供其继续，保留所有dirty文件，不提交/推送。
+
+## 2026-11-08 — GitHub skill参考后的紧凑原生界面首轮
+
+用户要求查找GitHub UI skill并优化；已实际搜索UI UX Pro Max与macOS原生设计skill，选ceorkm/macos-design-skill固定commit 8f528a2364f996cd42f02a10b1b27198a74ca2a3，读取SKILL和三份布局/视觉/交互引用；原文仅存.voiceport/research/macos-ui-20261108，未执行远端脚本或复制进公开产品。采用少导航不用侧栏、原生页签、13pt正文、按状态展示操作与简短可处理提示。
+
+实现0.3.3/build9、620×520内容窗口：听写/设置分开，空状态缩小、主操作与快捷键同行，结果有内容才显示复制，忙时显示取消、失败可重试时显示重试；原始错误保留在信息详情sheet/tooltip。设置改NSSwitch与两个真实NSPopUpButton，语言/快捷键回调按所选项更新，不再循环猜选项。菜单栏/无Dock、录音投递流程保持。
+
+cargo check通过后修复Push样式弃用与多余unsafe两个warning，严格Clippy通过；首轮包dist/native-ui-20261108-9eaa1fc4-preview/VoicePort.app签名/Cargo对应通过，新启动PID66378，旧45517仍在，未退出。实际读取dictation.png与settings-active.png，页签切换成功、原生控件完整，当前AX未授权。未自动录音。Orca后台点击popup被background_unavailable拒绝，工具明确需set-value或前台交互；下一步短暂前台验证，未将拒绝计作成功。首轮大段Edit因旧片段font15误写14不匹配未修改，改为已读函数边界替换，后fmt编译通过；旧包不覆盖。
+
+## 2026-11-08 — 最终右上角菜单栏版交付
+
+完整离线verify --app-smoke 17步按预期全通过，含workspace tests、fmt、严格Clippy、release、4 loop/17 packaging、签名/Cargo对应和安全smoke。报告`.voiceport/evidence/vp012-revision-01/verify-d063b3b372364ea9883fc0adf87ebf97/report.json`，起止产品SHA均f4be731c83b7f03d61391601843a6f17d92f83a24e26bd883f4f3cb6c99e6d25。验证后未再改产品输入。
+
+最终新包`dist/menubar-only-20261108-9eaa1fc4-final/VoicePort.app`为0.3.2/build8，LSUIElement=true、Accessory policy1。正常open得PID45517，最终原生菜单坐标(965,4)/30×24，读取menu-open.png确认图标与实际菜单在系统右上角。关闭窗口后原生窗口数0、同PID存活，点击真实菜单「打开结果与设置…」恢复窗口1，实际窗口仍0秒/未启动本机预览。Dock查询无VoicePort条目。window.png、menu-open.png已读取，reopened-window.json/png与report.json独占新建保存。未自动录音、云端调用或投递。
+
+独立launchctl试验仍继承宿主隐藏规则，最终通过系统设置将Orca菜单栏显示组0→1，先前测试图标立即移到(1003,4)，最终新包正常启动也可见。此改变可能同时显示Orca自身菜单栏图标；先前“未改Orca开关”的记录只反映当时状态，不能用作最终结论。临时launchctl job已移除，只停止本任务新建的空闲试验进程。未直接写系统偏好文件或TCC数据库。
+
+最终PID45517自身实时按钮为「辅助功能：未授权（前往设置）」，菜单以麦克风斜线提示。旧PID68143已授权事实不外推到重新签名的新包，本轮没有再重绑辅助功能。真实语音转写、长期耐用性与实际暗色截图仍未验收。新UI修改未提交/推送，旧包/历史报告/旧fenced session完整保留。当前真实压缩边界2，terminal绑定不变、phase active，无清零。
+
+## 2026-11-08 — 右上角入口与隐藏Dock，定位到宿主继承规则
+
+用户明确只要右上角菜单栏小图标、底部Dock不需要，正在改为0.3.2/build8、LSUIElement=true/Accessory策略，并更新真实包回归和文档。只读系统日志确认ControlCenter接受新host后「Moving host to blocked list」。对照可见magpie菜单坐标(1039,4)与VoicePort屏幕外坐标不同；只读group.com.apple.controlcenter trackedApplications中VoicePort自己isAllowed=true，但它同时列在Orca的menuItemLocations下，该宿主组isAllowed=false。未直接写系统plist或改Orca开关。
+
+已仅结束本轮创建且确认0秒空闲的startup测试PID90929，再从Finder选中相同app并Command-O启动得PID19769，仍继承隐藏；原始68143未由本会话退出。64365旧测试实际仍在，先前Orca ok=false仅表示窗口不可读，不能当进程不存在。Finder AXOpen失败，改为前台核对Finder后Command-O。下一步独立系统会话启动验证，避免改动其他应用的菜单显示。
+
+## 2026-11-08 — 真实顶部图标可见性仍待修复
+
+final包PID64365/后续startup包PID90929窗口外观均已读取截图。严格clippy与25 unit+12 storage+23 delivery顶层测试通过；SF Symbol按真实point size修正。实际顶部条截图没有VoicePort图标，AX菜单项虽可操作但位置(7,976)/(7,965)，唯一屏幕1512×982；不能据AX菜单存在宣称顶部可见。将注册移入applicationDidFinishLaunching并增加autosaveName，暂未改变该现象。原生菜单可关闭后重开PID90929窗口，未触发录音；close后Orca误报permission_denied，原生窗口数0与重开标题另证，不改辅助功能权限。
+
+已实际进入macOS菜单栏显示设置，三个VoicePort条目均开关1；仅VoicePort末项关闭/恢复同时两个同名值0→1，图标仍在屏幕外，其他应用开关保持。记录UI错误：初次SystemSettings已退出app_not_found；restore点击window_not_focused后未复用restore；JXA entireContents查row未找到/转换-1700；改为读取已安装ControlCenterSettings扩展CFBundleIdentifier并正常deep link后到达菜单栏页；过期索引element_not_found后刷新快照再操作。当前正做只读源码定位，不计通过。
+
+## 2026-11-08 — 菜单栏/窗口美化首轮
+
+app.rs增加28pt固定宽度模板语音图标、状态/快捷键菜单标题、最近文字复制与空闲禁用取消；窗口增加原生标题层次、圆角结果区域、空状态和设置分组。首轮cargo check发现NSColor临时借用及NSFontWeight外部静态需unsafe，已修复；fmt/严格clippy/release通过。新包dist/menubar-polish-20261108-9eaa1fc4独立打包签名与Cargo对应通过，实际open -n得到PID42195，已读首轮截图。正在改正SF Symbol实际点大小并减少重复报错行。
+
+GUI检查中同名多进程的System Events返回菜单元数据与预期新图标不一致；直接Python AX读取未获有效属性，不作证据。后续native inventory和pgrep显示PID68143/42195均已不存在，原因未确认；本会话及并行Git会话均未发送任何退出/终止/录音指令。原AppleScript对已不存在PID的查询返回-1719；下一轮以单一新测试进程重验菜单。旧包与历史报告不改，权限不再自动重绑。
+
+
+## 2026-11-08 — PR13 已合并并同步本地
+
+原有完整修改已隔离提交 `89ee01c`，PR13：https://github.com/forwaryan/voiceport/pull/13 。全新独立 Cargo target 的完整离线 verify --app-smoke 17 步通过（4 loop/17 packaging，workspace tests、fmt、严格 Clippy、release、签名和安全 smoke）；起止产品 SHA `d5b8c728986848fd5db7126816f76516c78f8b89de958b3a68d9c6de58791d82` 一致，报告已原样保存至 `.voiceport/evidence/git-pr-13-verify-4265b885/report.json`。GitHub PR CI run42462545447 成功后正常 merge 为 `980a5ee06757915a386ffe72d18a3c748cdf5286`。HEAD、本地 main、origin/main 和 GitHub main 均已核对一致；仅移动引用并重建 index，不改并行会话的工作文件。当前未提交 app.rs 及根记录是随后 UI 美化/进度，未纳入 PR13。首轮原工作区 verify-9c75bd7838d345e0aa1e35f63cab39da 因中间 UI 状态 Clippy 失败的历史日志保留，不能与隔离通过版本混淆。
+
 ## 2026-11-08 — 同步上游与隔离 PR 候选
 
 已按用户授权 fetch，main 和工作分支基线快进到 `0d9e643`。原有 macOS 输入/入口修改通过 stash 完整保存恢复，README 冲突合并保留双方说明。因另一会话正在相同工作区开发界面美化，原有完整修改已复制到独立临时 worktree `fix/macos-app-entry-pr`，使用独立全新 Cargo target 验证；进行中的美化源码不放入本次候选。上游 main CI 已成功。本次候选验证、PR 与合并结果后续按实际回执补充。
