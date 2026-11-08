@@ -1,5 +1,15 @@
 # VoicePort 实施计划
 
+## 2026-11-09 当前接续：来源身份返修、CI 复核与原 CLI 恢复
+
+以下状态覆盖后文旧快照，旧失败和报告保留。PR16 已独立接受、正常合并且 main CI 成功；本地 main 已 ff-only 同步，功能分支已合入最新 main。
+
+- PR15 全差异评审完成并退回重复菜单标题导致来源身份错配；旧冻结已显式关闭。已交付稳定 represented ID 修复及两处合并后测试夹具接线修正，原生菜单反例、library65/1ignored、storage12、delivery23、六项 Stop、fmt/严格 all-target clippy 均为开发自检。需要最终组合输入独立复核。
+- CI 测试 oracle 已用真实 owned zombie 控制证明 ESRCH-only 组检查过强；首个候选独立退回了 ESRCH PID 再出现时缺状态证据的问题，当前 CI07 窄修正对最终成员要求已验证 SZOMB 状态。11 scripted/5 native 通过仅为开发自检；新冻结独立复核及精确新 HEAD CI 待执行。历史远端组成员和单独 storage retained0 根因仍未证明。
+- 原 CLI/Skill Task、Dispatch、session、terminal 和独立工作区保持。经独立有限契约接受的六文件 helper 已在真实协作静止窗口安装，原备份/模式/完成标记已核对；真实 retained-session PreToolUse、当前 helper、实际 terminal 和 transcript 零计数已独立核对，解除其基础设施实现暂停。仍须实际交付 CLI/IPC/可分发 Skill 及独立验收，不把加载证明当产品完成。
+- 协调者继任已实际绑定原 Run、claim、确认投递并收到精确旧终端 ptyKilled 回执，阈值仍为初始加最多四次压缩；当前动态 loop 事件优先、20 分钟兜底，无原计时器自动迁移声明。原生/structured-chat/PreCompact 全生命周期和旧 reviewer 事件/边界计数不一致仍保留未验范围。
+- 下一步提交组合版本、推送并记录精确 HEAD CI，建立最终冻结和真实独立复核；原 CLI 在隔离工作区推进，重编译资源串行。Magpie 私有三文件规则候选尚未采用，不能称已部署。PR15 仍 draft，不合并未验版本，不宣布产品 PASS。
+
 ## 2026-11-08 当前推进：插件、CLI/Skill 与自动轮换
 
 用户新增 CLI 控制 App 和配套可分发 Skill，继续原插件目标；同时要求协调者自动完成正常会话轮换并写入 loop 规则。历史会话只读，不恢复或修改。当前已绑定原插件 Run，未创建重复 Run，旧 VP013 lease 不接管。

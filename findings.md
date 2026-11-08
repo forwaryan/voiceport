@@ -1,5 +1,13 @@
 # 调研与发现
 
+## 2026-11-09 — 原生来源身份、组存活 oracle 与真实 helper 激活
+
+NSPopUpButton 的 addItemWithTitle 会删除相同标题的旧项，不能把可重复的显示文本与完整 ID 数组按 index 并列作为身份。旧原生菜单四个反例均在目标身份断言101失败；新共享 picker 使用显式 NSMenuItem/represented NSString ID，主来源、管理来源、插件选择均按稳定 ID 解析。开发实测 native target/action、重排/重命名、内置名称碰撞及缺失/空 ID，不等于生产 GUI 全流程或真实请求验收。
+
+macOS 的 zombie-only 进程组可在 leader 已 ESRCH 时对负组 ID 返回 EPERM；实际 C/Rust owned 控制和独立 native 检查证明旧 oracle 过强，不证明历史远端该组的成员。修正仍须拒绝不确定状态：独立脚本证明 ESRCH-observed PID 再列出时首候选会无状态证据通过。CI07 改为最终成员必须属于成功取得完整匹配 SZOMB 状态的集合；非原子 PID/代际观察限制继续明确，不能声称绝对消除 PID reuse 或已修复所有远端失败。
+
+真实部署的门槛是当前已知写者和 hook 消费者静止，不是单个 ACK 标志。独立有限契约接受、实际 quiet ACK 与 returned tools、精确身份/唯一消费者/已识别闲置 MCP、六 before/after pins、一次 attempt、全备份和 postchecks 共同支持本次受控 helper 安装。随后原 retained session 的真实 PreToolUse 产生当前 helper 状态，并由原 transcript 身份/计数交叉验证，消除了原 CLI 的实际加载阻塞；没有伪造 SessionStart、清零或更改信任。该观察不外推到 hostile 同 UID、原生 Codex 或完整自动生命周期接受。
+
 ## 2026-11-09 — errno诊断与部署并发范围澄清
 
 CI04两个独立诊断均未复现远端回收后EPERM。开发65owned process组控制只在退出过程的未同步观察者见到EPERM，wait后主线程全部ESRCH；公开XNU源码说明组存在但无可signal成员时可能EPERM，不能据此断定原远端走该路径。新诊断立即保存kill返回errno并输出cancel/正PID或负group，严格语义保持；用于下一次不同HEAD远端观测，不称修复或允许EPERM。

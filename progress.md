@@ -1,5 +1,15 @@
 # 进度记录
 
+## 2026-11-09 — 继任接管、P1/CI07 交付及真实 CLI helper 激活
+
+继任使用真实新 session/PreToolUse/initial0 绑定同一 Run 并成功 claim，验证 launch 的 handed-to-terminal 后只关闭精确退任 terminal，收到 ptyKilled=true。全局暂停 false，沿用五轮限制；原计时器不迁移，动态 loop 以 Orca 事件为主、20 分钟兜底。PR16 已正常合并且精确 main CI 成功；本地 main ff-only 同步，b588b02 合入功能分支，唯一许可清单冲突按锁定依赖重新生成并验证。
+
+PR15 freeze05 完整评审 RETURNED；协调实际核对旧评审85封存文件/22命令回执并最终 matches:true 后显式关闭现场冻结；旧输入及报告不变。新增开发 P1 交付175封存文件/25目录模式已核对，五个实际源码与 after 快照完全一致。33e6a29 保存原生菜单 represented ID 修复及两处获准的测试夹具修正；开发 library65/1ignored、storage12、delivery23、六 Stop、四旧原生身份断言失败及最终原生 action 通过、fmt/严格 all-target clippy 保留，不视作独立接受。
+
+CI05 独立评审61封存文件已核对，RETURNED 的 R1 是 ESRCH 观测 PID 再列出却无状态证据。原隔离开发在同一真实会话交付 CI07，72封存文件/完整差异已核对；d1530d6 保存最终成员仅允许已验证 SZOMB 集合的窄修正。旧目标断言101、新11 scripted/5 native及 scoped rustfmt 通过，仅开发自检；本轮未执行 Cargo/远端 CI。真实自然压缩后该开发 accounting 与 transcript 均为一次完成边界，未清零。历史 CI04 failed、远端组成员未知、单独 storage retained0 和旧 PR15 reviewer hook/边界差异保留。
+
+原 CLI 未被替代。真实最新 ACK、唯一目标终端/精确 worker/进程检查建立协作静止窗口；保留四个原启动的闲置 MCP 服务，未误作活动测试进程或终止它们。已审 exact 六文件安装一次 exit0，所有 after 字节/模式、原备份及 BACKUPS_COMPLETE/DEPLOYMENT_COMPLETE 核对通过，独占 attempt 记录保留。原 session 实际 PreToolUse/当前 helper/精确 terminal/transcript 零计数独立核对；SessionStart 缺失如实保留。CLI 工作区先保存安装 checkpoint，再同步到 b588b02 的完全相同 tracked tree；基础设施暂停解除，原产品任务继续实际实现，最终组合版本和资源安排由协调者接续。
+
 ## 2026-11-09 — 用户要求全部远端PR独立审查后合并/同步/继续loop
 
 当前远端OPEN两项：PR16 3247fbbe980cd71afb8dd0e8ffddcbfa5f24c106（录音Stop失败lease释放，CI42501207977 success）；PR15 346aa61 draft（插件）。新读PR15 CI42504149552/job128803044901为failure：lib65pass/1ignored，但audio_storage unknown_session_content_prevents_drop_and_launch_deletion在tests/audio_storage.rs139 expected1 got0，新增未知根因；保留日志，不能只跟旧errno问题。计划提交strict诊断后freeze05，为两个PR各派独立实际agent；无阻断且精确版本CI通过再正常合并，base变化须重核，安全边界拉最新main继续loop。当前真实已完成压缩3次，第4轮；进入最后轮前要保存交接并处理cron停止证明缺口。
