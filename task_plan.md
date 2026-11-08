@@ -4,10 +4,10 @@
 
 用户新增 CLI 控制 App 和配套可分发 Skill，继续原插件目标；同时要求协调者自动完成正常会话轮换并写入 loop 规则。历史会话只读，不恢复或修改。当前已绑定原插件 Run，未创建重复 Run，旧 VP013 lease 不接管。
 
-- R1（complete）：新协调会话真实 PreToolUse、terminal、transcript 初始零计数已核对；当前一次自然压缩，真实 PostCompact/SessionStart 已观察。不是已完成自动轮换的证明。
+- R1（complete）：新协调会话真实 PreToolUse、terminal、transcript 初始零计数已核对；当前两次自然压缩，真实 PostCompact/SessionStart 已观察。不是已完成自动轮换的证明。
 - R2（complete，评审收尾）：freeze02 最终检查 matches:true；独立02正式 failed/BLOCKED、exited/released。现场评审已显式关闭，历史快照和报告保持。HTTP GUI 来源新增/编辑/选择/重启/合成样例/删除及已知 Keychain 修订清理有实测；GUI 导入确认归属与后续外部来源/错误/空结果/取消路径未完成。
-- R3（开发交付 complete，独立复核 pending）：per-Run 注册/lease、无全局 lease 的真实 hook 记账、最终轮次行政交接、真实新会话证明与精确终端关闭已实现；四次压缩上限、身份/漂移和单次副作用保护保留。自动轮换规则已写入 loop。75 项开发自检通过，旧 helper 缺 lease 反例在目标断言失败；协调核对六项前后快照及历史 lease 未变。待新冻结独立审查；尚未真实 register、CLI 部署或自动启动/接管/关闭。
-- R4（complete，开发自检交付；远端 CI 待跑）：CI-01 仅改 HTTP 测试夹具，分离 redirect/大小边界、精确 1,000,000/1,000,001 字节、实际发送量和背压断言失败清理；原 timeout/cancel 字节不变，生产 110 秒 timeout 不变。修前节流副本在目标断言处失败101，修后正常/节流各9测试及 fmt通过。协调核对202归档文件和实际快照一致，未重跑委派测试；首次共享target未重编译的探针不算证据，原失败保留。等待基础设施写者安全边界后提交/新CI，再独立验收。
+- R3（in_progress，独立RETURNED后返修）：freeze03独立完整评审确认R1：installed CLI为result.prompt但helper误读result.launch.prompt，真实成功launch无法确认交付；D1：部署备份父级symlink可逃出目标工作区。75测试通过不抵消两个有效反例。最终matches:true后显式关闭live评审并保留原快照/报告，原开发已exited/released，沿原角色changed-spec新会话聚焦修复。需新proposal/manifest pin、新完整冻结及独立复核，尚未真实register、CLI部署或自动生命周期。
+- R4（complete，独立合成离线范围ACCEPTED）：CI夹具exact1MB/多1字节、timeout/cancel不变与背压清理经freeze03独立审查接受；独立节流9项通过，禁用真实streaming guard的负向对照在目标断言101失败。精确HEAD81c9341的远端CI42499019278 success；当前版本完整17步独立通过、输入未变，65macOS passed/1原有ignored。原stale binary排除、旧CI失败与报告保持；GUI/CLI/真实ASR不在本接受范围。
 - R5（blocked，原任务保留）：CLI/Skill 开发位于独立工作区，尚未开始产品实现。helper 在无全局 lease 时提前返回，导致真实启动证明缺失。待经复核 helper 部署后补实际 hook 证明，沿原任务继续；不手造状态或改信任。
 - R6（pending）：集成 CLI/Skill 与修复，完整新冻结、不同真实会话独立验收、全量离线检查及新远端 CI；按持续授权完成正常 Git/PR/main 同步，再交付已验证 App。PR15 仍 draft，无产品 PASS。
 

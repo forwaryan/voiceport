@@ -1,5 +1,11 @@
 # 调研与发现
 
+## 2026-11-09 — 独立freeze03确认的两项轮换/部署缺陷
+
+独立03对已安装Orca纯fixture及只读CLI实现核对：agent launch成功信封为result.prompt.outcome（journaled/handed-to-terminal），helper错误期待result.launch.prompt.outcome。75项旧mock全绿但共同使用了错误嵌套；实际格式使delivery_confirmed=false，单次launch锁存后不能通过重试恢复，精确close与产品工作保持阻塞。修复需真实安装形状正负控制和claim先于receipt的竞争路径，不能因此声称真实轮换或structured-chat/PTy身份已验收。
+
+部署proposal对六目标leaf及target.resolve检查仍放过备份父目录.voiceport/evidence symlink；独立临时夹具成功在工作区外写六备份并完成替换。新proposal必须固定原目标及全部source/target/backup父路径无链接和写入锚定，保留六文件scope/原始before哈希/备份/部分失败停查，旧proposal与pin保持只读。正式review RETURNED两项，CI夹具与当前17步offline范围已ACCEPTED，不能替代GUI/CLI/真实ASR验收。
+
 ## 2026-11-09 — per-Run轮换接口的验证边界
 
 新helper显式register核对实际terminal/session/真实PreToolUse/transcript与当前Run coordinator_handle/generation，独立per-Run lease缓存路由，避免把新Run协调者当成历史lease的worker。claim要求真实新session/terminal、initial0、晚于launch的起始时间和递增generation；精确close须有对应handle的ptyKilled=true，未知结果保持锁存。开发75个隔离mock测试通过不代表实际Orca自动生命周期通过；现无自动unknown-result reconcile/replay接口，原生Codex协调loop-stop/继任启动适配也未声称支持。合法旧全局接口语义保留，历史lease未迁移。需要独立复核此边界和CLI部署proposal后才实际采用。
