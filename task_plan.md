@@ -1,5 +1,18 @@
 # VoicePort 实施计划
 
+## 2026-11-09 当前任务：借鉴 Magpie 的插件管理体验
+
+本节覆盖后文历史待办：PR15 已独立接受并合入 main 4a2271a0，PR/main CI 均成功且本地 main 已同步。真实 GUI/音频/上传/输入与原生轮换边界仍未全部验收。
+
+用户要求明确检查剩余问题，并希望插件页面实际借鉴 GitHub 优秀项目和 UI Skill，特别是 Magpie 插件模式。旧插件管理只有下拉选择与多按钮弹窗；之前的 Magpie 调研用于开发/CI规则，不能当作插件页面已参考它的证据。
+
+- 固定读取 yetone/magpie b1e8eb15 的 plugins.js/css、pluginpages.js 和运行时文档，沿用 ceorkm/macos-design-skill 8f528a23 的原生布局/视觉/交互参考；未执行第三方代码。
+- 新分支 feat/plugin-library-ui：原生插件库卡片/我的来源列表、即时搜索、空状态、逐行编辑删除、卡片直接添加来源、草稿字段校验错误保留、事务后重新加载持久状态与读取失败写入锁。说明来源与实际取舍见 docs/PLUGIN_UI_DESIGN.md。
+- 第一版严格 macOS all-target Clippy与lib85pass/1既有ignored通过，但独立UI01正式RETURNED：UI-R1连续修改时刷新请求丢失导致旧来源可用、UI-R2空/过长显示名称导致草稿丢失。39封存证据与完整freeze01最终matches:true已核对，现场评审显式关闭，旧失败/归档不改。
+- 返修候选采用管理操作串行：每次变更前必须Controller空闲且目录刷新已结束；刷新中给出稍候提示，浏览/详情不受限。表单预检完整候选Store及序列化容量，待创建密钥引用使用独立UUID同长度占位，防止多个秘密字段被误判重复。返修严格Clippy、8项定向测试、实际Controller/Store门控控制（停用/删除两组）均通过；接续freeze02独立复核。真实视觉/GUI和生产App仍未更新或验收。
+- 独立UI02正式RETURNED但确认UI-R1与原UI-R2 FIXED，新增UI-R3：无效密钥真实值未参与预检，事务前API校验错误仍丢草稿。39封存证据和freeze02最终匹配已核对后关闭；旧证据不变。返修将纯密钥校验共享给表单/Keychain，事务创建任何密钥前先验证全部pending值；开发检查已完成：格式/严格all-target Clippy退出0，macOS库93pass/1既有ignored；实际Store/source_service/draft与纯校验的独立脚手架确认四类无效密钥均在全部凭据操作前拒绝、不更改Store/磁盘，合法字节边界通过。首次脚手架缺reqwest/libc依赖退出1原样保留，补依赖后只重跑未完成的编译/控制并通过。freeze03独立UI03已ACCEPTED精确UI-R3源码/接口范围：408组无效输入位置/新增编辑组合及合法边界、提交/回滚控制通过，UI-R1与原UI-R2接受范围保持，未发现相邻具体缺陷。协调核对34份封存证据和完整最终冻结一致后关闭现场评审。继续正常Git/CI交付；真实GUI/视觉/键盘/VoiceOver/深浅模式/真实Keychain仍未验收。
+
+
 ## 2026-11-09 当前返修：组合调用链 F1/F2
 
 本节优先于后文历史状态。freeze07 的组合独立评审已完成并 RETURNED：21项完整离线检查通过，但发现 CLI 清理观察把普通失败标为取消，以及 GUI 保存/删除在持久提交后凭据清理报错时未刷新来源目录。已核对140份封存证据、完整最终输入及产物后显式关闭现场评审；原审查者实际 exited/released，旧快照与失败不变。

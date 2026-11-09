@@ -1,5 +1,18 @@
 # 调研与发现
 
+## 2026-11-09 — Magpie 插件页面与原生 UI 参考
+
+独立UI02确认UI-R1与原UI-R2修复，但新增UI-R3：密钥在候选Store中只是合法引用，pending真实值仍需与Keychain.create同规则预检；否则4097字节或控制字符错误会到事务再返回，草稿仍被丢弃。新候选共享纯validate_secret，并在表单循环和全部pending事务前校验中调用；这也避免第一秘密字段已创建后才发现后续值无效。持久化/清理错误仍保留原一次性返回策略，不把提交后错误误作可安全重复的表单校验。
+
+旧管理入口是一个来源下拉框加添加/编辑/删除/导入按钮；多来源关系、配置状态和空状态都不可直视。主窗口此前参考过 macOS design Skill，但 Magpie 的规则研究不等于插件页面研究。
+
+本轮读取 yetone/magpie b1e8eb15 的实际 plugins.js（card/drawInstalled/optionsEditor）、plugins.css 与 pluginpages.js。可迁移的是发现卡片/实例列表分离、搜索、轻量状态、主操作权重和草稿保留；插件自带页面的 iframe/权限桥不是当前 VoicePort 转写适配器能力，未把它说成已实现。参考采用记录见 docs/PLUGIN_UI_DESIGN.md。
+
+独立UI01用真实Controller/Store与受控接收器确认：连续修改时，refresh_catalog对已有discovery直接返回，后一次修改后的刷新会被丢弃，旧catalog可能在之后重新进入可用状态。返修选择在每次变更开始前与发现状态串行，不改变Controller的刷新策略；详情和搜索继续可用。另发现validate_source不校验显示名称与Store约束，需在表单循环内预检完整候选Store与序列化大小，不能只检查插件字段。待创建密钥的临时引用也须逐字段独立，并与真实revision同样长，避免完整预检误判重复或容量。
+
+持久管理窗口还暴露一个新的调用约束：删除函数在持久保存前先更改内存，失败后不能继续使用同一快照。新页面每次操作返回后从磁盘重新加载（包括失败/取消），若读取失败禁止该窗口继续写入；提交后凭据清理报错仍显示原错误并刷新 Controller。此为新的 UI 调用层候选，须与旧单次弹窗流程区分验证。
+
+
 ## 2026-11-09 — 组合独立审查的调用链反例
 
 freeze07 的21项完整离线检查通过，但独立09用真实 Controller/录音租约/受控子进程和精确 App 表达式复现：普通转写错误的未确认清理经显式 Cancel 观察恢复后，Controller 为 Failed/录音保留，CLI 却按 caller.cancelled 返回 cancelled。取消请求本身不足以标识最终结果；修复先核对 generation，再结合 Controller 最终 Idle 判断取消，普通失败仍按 plugin_error/transcription_error 结算。新的开发控制保留原始取消、重复观察和旧 generation 反例，尚待新冻结独立复核。

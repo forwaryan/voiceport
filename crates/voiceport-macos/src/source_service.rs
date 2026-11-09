@@ -1,6 +1,6 @@
 //! Shared GUI/CLI source transactions. Caller serializes edits against sessions.
 use crate::{
-    plugin_credentials::Keychain,
+    plugin_credentials::{Keychain, validate_secret},
     plugins::{Source, Store},
 };
 use std::path::Path;
@@ -16,6 +16,11 @@ pub(crate) fn save_source(
     let mut validate = source.clone();
     validate.enabled = true;
     store.validate_source(&validate)?;
+    // Reject every deterministic input error before the first credential write.
+    // Otherwise an invalid later field could create and then roll back earlier keys.
+    for (_, value) in &pending {
+        validate_secret(value)?;
+    }
     let mut created = vec![];
     let outcome = (|| {
         for (field, value) in pending {

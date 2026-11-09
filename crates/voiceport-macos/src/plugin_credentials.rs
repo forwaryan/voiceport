@@ -50,12 +50,17 @@ fn query(reference: &str) -> Vec<(CFString, CFType)> {
 pub trait Credentials {
     fn get(&self, reference: &str) -> Result<String, String>;
 }
+/// Validate a new value without touching Keychain or including it in an error.
+pub(crate) fn validate_secret(secret: &str) -> Result<(), String> {
+    if secret.len() > 4096 || secret.chars().any(char::is_control) {
+        return Err("密钥过长或包含控制字符。".into());
+    }
+    Ok(())
+}
 pub struct Keychain;
 impl Keychain {
     pub fn create(&self, secret: &str) -> Result<String, String> {
-        if secret.len() > 4096 || secret.chars().any(char::is_control) {
-            return Err("密钥过长或包含控制字符。".into());
-        }
+        validate_secret(secret)?;
         let reference = format!("key-{}", uuid::Uuid::new_v4());
         let mut pairs = query(&reference);
         pairs.push((

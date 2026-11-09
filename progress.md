@@ -1,5 +1,16 @@
 # 进度记录
 
+## 2026-11-09 — PR15 集成完成，启动插件页面体验改造
+
+PR15 正常合并为4a2271a0；精确PR CI42550579432与main CI42550979076 attempt1均success，实际checkout和源tree已核对。本地main同步且clean，最终证据见私有main-final-acceptance.json；loop已停止。此为Git/CI集成，不表示真实录音、云端识别或目标输入已验收。
+
+独立UI02正式msg_e8cfca5ee013完成RETURNED：UI-R1与原UI-R2独立修复，新增UI-R3密钥值预检遗漏。协调39封存项及最终freeze02匹配核对后关闭现场评审；新增共享纯密钥校验与全部pending先检后写，回归覆盖长度/控制字符/合法边界与后续字段错误无前置密钥创建。开发repair03格式/严格all-target Clippy均0，macOS库93pass/1既有ignored。专项脚手架首次缺reqwest/libc依赖编译1，原日志保留；只补依赖并续跑剩余编译与控制均0，确认四类无效值在全部凭据调用前拒绝且Store/磁盘不变，合法字节边界保留。UI02实际exited/released已再次核对。独立UI03正式msg_389e73a5e975已ACCEPTED精确UI-R3源码/接口范围，408组无效值组合及合法边界/事务控制通过，原UI-R1/UI-R2接受范围保持。协调核对34封存文件与完整freeze03最终一致后显式关闭现场评审；后续正常Git/CI交付。真实Keychain/GUI、视觉和键盘体验仍未验收。
+
+独立UI01正式msg_82767119adc4完成RETURNED：UI-R1连续修改可能保留已停用/删除来源、UI-R2名称错误绕过草稿保留。协调核对39封存证据及最终完整freeze01匹配后关闭现场评审，旧失败保留。返修采用操作入口检查Controller空闲/非发现状态，完整候选Store/序列化容量预检，独立临时密钥引用；定向控制与新冻结复核接续，不把开发检查当独立接受。
+
+用户随后要求明确剩余问题，并要求插件页面真正参考GitHub优秀项目/UI Skill，尤其Magpie。本轮固定读取Magpie实际插件管理源码与既有原生macOS design Skill参考，在feat/plugin-library-ui实现插件库卡片、来源列表、搜索、空状态、逐行操作与字段校验草稿保留，事务后重新读取持久状态。未操作生产App或重试AX权限。首次编译因NSColor引用类型及Message trait缺失退出101；修复后严格macOS all-target Clippy退出0。接续测试和独立审阅，尚无视觉/交互验收。
+
+
 ## 2026-11-09 — 真实协调者轮换与组合调用链返修
 
 新协调者从自己的 terminal 绑定既有 Run，核对实际 PreToolUse、当前 helper、晚于启动的真实新 transcript 与 initial0 后成功 claim；consumer generation4、lease epoch3、阈值5、paused=false。核对 handed-to-terminal 后 close-retired 收到精确旧 terminal 的 ptyKilled=true；保留 Run、产品未绑定关联、原 CLI/CI 工作任务及所有证据，不把新 terminal 当新上下文证明。SessionStart 在启动时未观察到，如实保留。
