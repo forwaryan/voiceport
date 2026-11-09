@@ -1,5 +1,9 @@
 # VoicePort 实施计划
 
+## 2026-11-09 当前交付阻塞：PR18 并行缓存测试
+
+新Skill已独立接受、预览已打开；b72db655推送并创建PR18后，精确CI42575538008/attempt1/job129022296802失败，真实checkout41cfc227（父5e8a/b72）。audio_storage的过期删除和未知内容保留计数各预期1/实际0；本地按默认并行方式复现过期断言101，原始日志保留。增加诊断输出的一次运行通过，不能当修复。一次受控fork/合成缓存控制证明CLOEXEC lease在子进程exec前仍被继承，父句柄关闭后清理报告active=1、removed/retained=0；子进程reap后两种分支恢复预期。原远端未输出完整report，因此不声称唯一根因已由远端直接证明。候选仅为该测试二进制的isolated夹具增加生命周期Mutex门，防止fixture创建子进程与其他cleanup断言交叠；保留全部严格断言、默认测试线程、CI及生产实现。12项测试/严格定向Clippy/fmt通过，review07已独立ACCEPTED精确夹具修复：默认12测试及真实Recording lease/精确guard互斥、回收顺序、unwind/poison控制通过，41份封存证据和完整freeze d41817e0最终一致已核对并关闭评审。接续提交新HEAD；不重跑原SHA、不替换运行预览。
+
 ## 2026-11-09 最新需求：用 Skill 和实际例子引导插件接入
 
 独立接受后已从相同签名产品另行打包dist/VoicePort-preview-skills-01.app并打开，CLI确认准确bundle/PID14154、idle、shown。旧预览进程已无，未退出用户其他App；所有旧包保留。接续正常源码提交/PR和精确CI门槛。

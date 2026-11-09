@@ -1,5 +1,9 @@
 # 进度记录
 
+## 2026-11-09 — PR18 并行缓存夹具失稳
+
+发布b72db655/PR18后，精确CI42575538008 attempt1/job129022296802在原有audio_storage两项计数断言101；watch bfaggztx2返回1，完整run/jobs/log归档于plugin-skill-publication-01-20261109。一次本地默认并行复现过期断言101；只加report诊断的一次后续运行通过，未冒称修好。受控fork一次/两组合成临时缓存（无录音）证明即便CLOEXEC，子进程exec前继承lease也能使清理暂记active1而非removed/retained；释放并waitpid后过期删除/未知内容保留均符合预期。该控制解释一致机制，不补写远端未记录的report。测试候选让所有isolated夹具持有同一Mutex至临时目录回收后，排除同进程fixture fork干扰；生产storage/CI不改，12严格断言测试默认并行通过、定向strict Clippy/fmt通过。所有工具与控制子进程返回/reap；原始失败保留，未重跑远端。review07 msg_8545f283aef9已ACCEPTED精确修复，独立默认12测试、真实Recording锁继承与精确guard生命周期/异常/poison控制通过；41封存文件seal4b805158…和完整freeze d41817e0最终一致核对后评审关闭。保留历史唯一归因不确定性，接续新提交/新精确CI；用户预览不变。
+
 ## 2026-11-09 — Skill 与实例接入引导开发
 
 评审关闭后核对完整产品字节不变（仅task_plan/progress更新接受记录），从已验证release构建新的dist/VoicePort-preview-skills-01.app，签名主程序7c433cdf…、CLIc09e6be2…与正式开发包相同，153依赖许可及完整Skill树通过。默认IPC确认App未运行且旧预览准确路径进程已无后，显式打开新包；CLI确认准确路径/PID14154、idle/busy=false/discovering=false，app show返回shown=true。不请求权限、不录音、不读取真实密钥/目标/剪贴板，旧包全部保留。接续已授权Git/CI发布。

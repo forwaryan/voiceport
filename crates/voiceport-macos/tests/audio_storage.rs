@@ -5,16 +5,38 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use voiceport_macos::audio::Recorder;
 use voiceport_macos::storage::{NAMESPACE, RETENTION, Storage};
 
-fn isolated() -> (tempfile::TempDir, Storage) {
+// A fork in another fixture can temporarily inherit even CLOEXEC lease handles
+// until exec closes them. Keep child creation and lease cleanup assertions in the
+// same admission scope; isolated paths alone do not isolate process-wide fds.
+static STORAGE_FIXTURE_GATE: Mutex<()> = Mutex::new(());
+struct Isolated {
+    temp: tempfile::TempDir,
+    _guard: MutexGuard<'static, ()>,
+}
+impl Isolated {
+    fn path(&self) -> &Path {
+        self.temp.path()
+    }
+}
+fn isolated() -> (Isolated, Storage) {
+    let guard = STORAGE_FIXTURE_GATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let temp = tempfile::tempdir().unwrap();
     // macOS /var and /tmp are symlinks, deliberately unsupported by this store.
     let root = temp.path().canonicalize().unwrap().join(NAMESPACE);
-    (temp, Storage::at(root))
+    (
+        Isolated {
+            temp,
+            _guard: guard,
+        },
+        Storage::at(root),
+    )
 }
 fn created_time() -> SystemTime {
     UNIX_EPOCH
@@ -120,7 +142,7 @@ fn expired_crashed_session_is_removed_only_strictly_after_24_hours() {
     assert_eq!(boundary.removed, 0);
     assert!(session.exists());
     let expired = store.cleanup_expired_at(created + RETENTION + Duration::from_secs(1));
-    assert_eq!(expired.removed, 1);
+    assert_eq!(expired.removed, 1, "cleanup report: {expired:?}");
     assert!(!session.exists());
 }
 
@@ -136,7 +158,7 @@ fn unknown_session_content_prevents_drop_and_launch_deletion() {
         b"unknown"
     );
     let report = store.cleanup_expired_at(SystemTime::now() + RETENTION + Duration::from_secs(5));
-    assert_eq!(report.retained, 1);
+    assert_eq!(report.retained, 1, "cleanup report: {report:?}");
     assert_eq!(report.removed, 0);
     assert!(session.join("dictation.m4a").exists());
 }
