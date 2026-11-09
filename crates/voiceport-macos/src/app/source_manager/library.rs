@@ -43,14 +43,8 @@ define_class!(
         }
         #[unsafe(method(filterLibrary:))]
         fn filter_action(&self, _sender: Option<&AnyObject>) { self.render(); }
-        #[unsafe(method(showPluginLibrary:))]
-        fn browse_action(&self, _sender: Option<&AnyObject>) {
-            self.ivars().tabs.get().unwrap().setSelectedSegment(0);
-            self.ivars().search.get().unwrap().setStringValue(ns_string!(""));
-            self.render();
-        }
-        #[unsafe(method(importLibraryPlugin:))]
-        fn import_action(&self, _sender: Option<&AnyObject>) { self.perform(None); }
+        #[unsafe(method(addLibraryConnection:))]
+        fn add_action(&self, _sender: Option<&AnyObject>) { self.add_connection(); }
         #[unsafe(method(libraryItem:))]
         fn item_action(&self, sender: &NSButton) {
             let action = usize::try_from(sender.tag()).ok()
@@ -75,9 +69,20 @@ fn description(p: &Manifest) -> &'static str {
         Adapter::Chatgpt => "使用 ChatGPT 登录；系统语音预览，停止后校正。",
         Adapter::Paraformer => "使用 Orca 已安装的本地模型，边说边预览。",
         Adapter::Whisper => "使用 Orca 已安装的本地模型，停止后转写。",
-        Adapter::Http => "连接兼容音频转写服务。每个来源独立设置地址、模型和密钥。",
-        Adapter::Jsonl => "接入已安装的本地适配器。每个来源保存一份独立配置。",
+        Adapter::Http => "有 API 地址、模型和密钥？直接连接兼容转写服务，无需导入文件。",
+        Adapter::Jsonl => "插件已导入。点击「配置此插件」，填写信息并启用后即可选用。",
     }
+}
+fn matching_plugins(store: &Store, query: &str) -> Vec<Manifest> {
+    let mut plugins: Vec<_> = store
+        .descriptors()
+        .into_iter()
+        .filter(|p| matches_query(query, &[&p.name, &p.id, &p.origin, description(p)]))
+        .collect();
+    // Import hands off using the complete stable ID. Keep that destination first,
+    // even when a short ID also matches builtin fields or other plugin names.
+    plugins.sort_by_key(|p| p.id != query.trim());
+    plugins
 }
 fn source_status(store: &Store, source: &Source) -> (String, bool) {
     // A valid local configuration is not a successful connection/ASR test.
@@ -90,6 +95,22 @@ fn source_status(store: &Store, source: &Source) -> (String, bool) {
     }
 }
 impl Library {
+    fn add_connection(&self) {
+        if self.ivars().blocked.get() {
+            return;
+        }
+        let choice = alert(
+            &self.ivars().owner,
+            "你准备接入哪种转写方式？",
+            "有兼容 API 的服务地址、模型名和 API Key\n选择「连接兼容 API」，直接填表，无需下载或导入插件。服务需支持 OpenAI 兼容的音频转写接口。\n\n已有插件作者提供的 VoicePort 清单（.json）\n选择「导入本地插件」。清单指向的适配器程序必须已在本机安装；导入后还需要填写配置。\n\n只有官网、GitHub 链接、压缩包或模型文件？\n这些不能直接导入。请向服务商确认兼容 API，或向插件作者索取 VoicePort 清单与适配器。",
+            &["连接兼容 API…", "导入本地插件…", "取消"],
+        );
+        match choice.runModal() {
+            1000 => self.perform(Some(Action::Add(crate::plugins::HTTP.into()))),
+            1001 => self.perform(None),
+            _ => {}
+        }
+    }
     fn button(
         &self,
         view: &NSView,
@@ -138,11 +159,7 @@ impl Library {
         let sources = iv.tabs.get().unwrap().selectedSegment() == 1;
         iv.actions.borrow_mut().clear();
         let width = 776.;
-        let plugins: Vec<_> = store
-            .descriptors()
-            .into_iter()
-            .filter(|p| matches_query(&query, &[&p.name, &p.id, &p.origin, description(p)]))
-            .collect();
+        let plugins = matching_plugins(&store, &query);
         let rows: Vec<_> = store
             .sources
             .iter()
@@ -172,7 +189,7 @@ impl Library {
             if sources {
                 "每份配置独立保存；启用不代表连接成功。样例测试请在听写页选择来源后发起。"
             } else {
-                "先选接入方式，再添加自己的来源。同一插件可以连接多个服务或账号。"
+                "有兼容 API 可直接填表；本地插件需先导入清单，再填写配置。"
             },
             rect(12., height - 58., 750., 22.),
         );
@@ -197,15 +214,15 @@ impl Library {
                 if !query.trim().is_empty() {
                     "试试插件名称或来源名称，也可以清空搜索。"
                 } else {
-                    "在插件库选择 HTTP 服务或已导入的适配器，填写配置即可。"
+                    "点击「添加转写方式」，选择连接兼容 API 或导入本地插件。"
                 },
                 rect(180., height - 244., 550., 32.),
             );
             if query.trim().is_empty() {
                 self.button(
                     &view,
-                    "浏览插件库",
-                    sel!(showPluginLibrary:),
+                    "添加转写方式…",
+                    sel!(addLibraryConnection:),
                     rect(310., height - 294., 156., 32.),
                 );
             }
@@ -305,7 +322,11 @@ impl Library {
                 if configurable(p) {
                     self.action_button(
                         &view,
-                        "添加来源…",
+                        if p.adapter == Adapter::Http {
+                            "填写服务信息…"
+                        } else {
+                            "配置此插件…"
+                        },
                         Action::Add(p.id.clone()),
                         rect(x + 228., y + 14., 124., 28.),
                     );
@@ -359,6 +380,7 @@ impl Library {
         }
         let before = iv.store.borrow().clone();
         let adding = matches!(action, Some(Action::Add(_)));
+        let mut imported_id = None;
         let result = {
             let mut store = iv.store.borrow_mut();
             match action {
@@ -372,7 +394,7 @@ impl Library {
                     .ok_or_else(|| "来源不存在。".to_owned())
                     .and_then(|i| edit(d, &mut store, &iv.path, Some(i))),
                 Some(Action::Remove(id)) => remove(d, &mut store, &iv.path, &id),
-                None => import(d, &mut store, &iv.path),
+                None => import(d, &mut store, &iv.path).map(|id| imported_id = id),
                 Some(Action::Details(_)) => unreachable!(),
             }
         };
@@ -385,13 +407,27 @@ impl Library {
             Ok(store) => {
                 let changed = store != before;
                 *iv.store.borrow_mut() = store;
-                if changed && adding {
+                if let Some(id) = &imported_id {
+                    iv.tabs.get().unwrap().setSelectedSegment(0);
+                    iv.search
+                        .get()
+                        .unwrap()
+                        .setStringValue(&NSString::from_str(id));
+                } else if changed && adding {
                     iv.tabs.get().unwrap().setSelectedSegment(1);
                     iv.search.get().unwrap().setStringValue(ns_string!(""));
                 }
                 match result {
                     Err(error) => (format!("操作未完全完成：{error}"), true),
-                    Ok(()) if changed => ("更改已保存。启用的来源可在听写页选择。".into(), false),
+                    Ok(()) if imported_id.is_some() => (
+                        "已定位到导入的插件。下一步点击「配置此插件…」，填写信息并启用来源。"
+                            .into(),
+                        false,
+                    ),
+                    Ok(()) if changed => (
+                        "更改已保存。启用后，回到听写页选择此来源即可使用。".into(),
+                        false,
+                    ),
                     Ok(()) => ("未更改配置。".into(), false),
                 }
             }
@@ -448,7 +484,7 @@ pub(super) fn show(d: &Delegate, store: Store, path: PathBuf) {
     d.label(&view, "插件与转写来源", rect(24., 558., 570., 30.), 22.);
     d.caption(
         &view,
-        "选择适合你的接入方式，让每个服务拥有独立配置。",
+        "添加自己的转写服务：兼容 API 直接填表，本地插件按清单导入。",
         rect(24., 530., 700., 22.),
     );
     let tabs = NSSegmentedControl::initWithFrame(
@@ -486,13 +522,13 @@ pub(super) fn show(d: &Delegate, store: Store, path: PathBuf) {
     view.addSubview(&scroll);
     let notice = d.caption(
         &view,
-        "浏览和保存不发送音频。导入清单后，仍需添加并启用来源。",
+        "不确定如何接入？点击「添加转写方式」。填写和保存不会发送音频。",
         rect(24., 14., 500., 44.),
     );
     library.button(
         &view,
-        "导入插件…",
-        sel!(importLibraryPlugin:),
+        "添加转写方式…",
+        sel!(addLibraryConnection:),
         rect(528., 22., 136., 32.),
     );
     let done = library.button(
@@ -528,6 +564,33 @@ mod tests {
         assert!(matches_query("  工作  ", &["工作账号", "source-1"]));
         assert!(!matches_query("other", &["工作账号", "source-1"]));
         assert!(matches_query(" ", &[]));
+    }
+    #[test]
+    fn imported_destination_precedes_substring_collisions() {
+        let mut store = Store::default();
+        for id in ["aa", "prefix-a", "a", "unrelated"] {
+            let mut p = store.plugin(crate::plugins::HTTP).unwrap();
+            p.id = id.into();
+            p.name = format!("Plugin {id}");
+            p.adapter = Adapter::Jsonl;
+            store.plugins.push(p);
+        }
+        for id in ["a", "aa", "prefix-a", "unrelated"] {
+            let matches = matching_plugins(&store, id);
+            assert_eq!(matches.first().unwrap().id, id);
+            assert_eq!(matches.iter().filter(|p| p.id == id).count(), 1);
+        }
+        let matches = matching_plugins(&store, "a");
+        assert!(matches.iter().any(|p| p.id == crate::plugins::HTTP));
+        assert!(matches.iter().any(|p| p.id == "aa"));
+        assert!(matches.iter().any(|p| p.id == "prefix-a"));
+        let all: Vec<_> = matching_plugins(&store, "")
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        let original: Vec<_> = store.descriptors().into_iter().map(|p| p.id).collect();
+        assert_eq!(all, original);
+        assert!(matching_plugins(&store, "no-such-plugin-xyz").is_empty());
     }
     #[test]
     fn local_status_distinguishes_disabled_invalid_and_untested() {

@@ -1,5 +1,9 @@
 # 进度记录
 
+## 2026-11-09 — 本地试用后的接入引导返修
+
+PR17及main CI均通过、本地main同步后，按用户明确请求编译独立预览包并用CLI确认运行的是dist/VoicePort-preview-5e8a1ef.app，idle且窗口shown。用户随后反馈仍不理解如何导入新方式；这是真实易用性反馈，源码复核通过未等于体验接受。feat/plugin-onboarding新增「添加转写方式」分流、兼容API字段示例、文件选择前说明和导入后定位/配置指引，后续保存和执行权限不变。首次编译因NSOpenPanel两个setter需要Option引用退出101，修正后格式/严格macOS all-target Clippy/十项来源管理定向测试均0；独立review04正式RETURNED ONB-R1：短ID搜索可能淹没导入卡片的配置按钮，两项控制通过/预期目标断言101；19项封存证据和最终冻结已核对后关闭评审，原worker实际exited/released。返修抽出实际渲染使用的搜索排序，完整ID精确匹配置顶，回归覆盖短ID/相互包含/普通搜索；review05正式ACCEPTED ONB-R1源码/引导接口修复，22封存文件及完整freeze02最终一致已核对后关闭评审；11定向测试/严格Clippy通过。独立构建dist/VoicePort-preview-onboarding-02.app，旧App包保留；启动前无运行实例，打开后CLI确认新包路径、PID70350/idle/shown。用户真实视觉/理解评价仍待反馈，接续正常源码checkpoint与Git/CI门槛。
+
 ## 2026-11-09 — PR15 集成完成，启动插件页面体验改造
 
 PR15 正常合并为4a2271a0；精确PR CI42550579432与main CI42550979076 attempt1均success，实际checkout和源tree已核对。本地main同步且clean，最终证据见私有main-final-acceptance.json；loop已停止。此为Git/CI集成，不表示真实录音、云端识别或目标输入已验收。
