@@ -7,6 +7,8 @@
 以下来源是设计参考，未安装或执行第三方脚本，也未复制 Magpie 的页面代码。
 
 - [ceorkm/macos-design-skill](https://github.com/ceorkm/macos-design-skill/blob/8f528a2364f996cd42f02a10b1b27198a74ca2a3/SKILL.md)：已固定版本的 Skill 与布局、交互、视觉三篇参考。采用系统窗口、原生分段导航和搜索、13pt 正文附近的文字层级、系统语义颜色、空状态与渐进展示。两种视图使用分段控件，避免为小工具增加多层导航。
+- [Maccy 紧凑设置行](https://github.com/p0deje/Maccy/blob/f0b571e32e4031d7b91ba811f50d0f33e8e5548b/Maccy/Settings/GeneralSettingsPane.swift#L20-L115)：固定提交 `f0b571e32e4031d7b91ba811f50d0f33e8e5548b`，采用窄内容列、标签与控件对齐、较小次级提示和显式 accessibility label。VoicePort 使用 AppKit 原生行，不引入其 Settings/SwiftUI 依赖，也不采用其剪贴板 popup 的 FloatingPanel 行为。
+- [CotEditor 设置窗口控制器](https://github.com/coteditor/CotEditor/blob/0bab1dd9a1212bc9d1d755a1f6735e85c40dfec7/Packages/MacUI/Sources/ControlUI/SettingsWindow/SettingsWindowController.swift#L29-L68)：固定提交 `0bab1dd9a1212bc9d1d755a1f6735e85c40dfec7`，普通 titled/closable 设置窗口通过控制器持有并调用 showWindow，不运行 App-wide modal loop。[SettingsWindow](https://github.com/coteditor/CotEditor/blob/0bab1dd9a1212bc9d1d755a1f6735e85c40dfec7/Packages/MacUI/Sources/ControlUI/SettingsWindow/SettingsWindow.swift#L29-L45) 的 Escape 关闭与 [FormatSettingsView](https://github.com/coteditor/CotEditor/blob/0bab1dd9a1212bc9d1d755a1f6735e85c40dfec7/CotEditor/Sources/Settings%20Window/Panes/FormatSettingsView.swift#L83-L205) 的对齐表单、辅助帮助、fitted sheet 用于本轮管理与编辑生命周期。VoicePort 是 accessory 菜单栏 App，需要显式保留 manager/delegate 及来源互斥，不能依赖文档窗口或 SwiftUI scene 的所有权。
 - [Magpie 插件管理](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/internal/gui/assets/plugins.js)：`card` 与 `drawInstalled` 将接入方式的发现卡片和已安装条目分开；`optionsEditor` 保留草稿及校验错误。借鉴卡片承载用途和一个主要操作、列表承载实例状态、局部错误不清空已有内容。
 - [Magpie 插件样式](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/internal/gui/assets/plugins.css)：参考卡片信息层级、轻量状态、搜索、空状态与次要操作的权重。本项目通过 AppKit 控件与系统语义颜色实现，不引入 WebView/CSS。
 - [Magpie 插件页面运行时](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/internal/gui/assets/pluginpages.js)：它另有插件自带页面和权限桥接。本轮不实现这套运行时；VoicePort 当前的插件仍是转写适配器描述，统一由原生表单配置。
@@ -22,7 +24,7 @@
 | 有服务地址、模型和密钥 | 直接进入兼容 API 表单，无需 JSON；提供完整转写地址和音频模型示例，提示不能填写官网或控制台链接 |
 | 拿到本地插件 | 解释需作者提供 VoicePort 清单及已安装适配器；选文件后审阅程序，确认导入后按完整 ID 精确匹配置顶对应卡片并提示继续配置，避免短 ID 被普通搜索淹没 |
 | 只有 GitHub 链接、zip 或模型文件 | 在添加引导说明不能直接导入，需向服务商确认兼容 API，或向作者索取清单和适配器 |
-| 选择接入方式 | 插件卡片显示用途、内置/本地导入、版本、转写能力和来源数 |
+| 选择接入方式 | 紧凑原生行显示用途及主要操作；版本、声明来源、来源数和程序信息在详情中查看 |
 | 为同一插件连接多个服务 | 卡片内「填写服务信息」或「配置此插件」直接进入该插件表单，不额外询问插件 |
 | 管理已有配置 | 「我的来源」逐行展示名称、插件、版本、启用状态与配置问题，直接编辑/删除 |
 | 查找多个同名来源 | 搜索支持显示名称和稳定 ID；操作绑定稳定 ID，不按标题查找 |
@@ -35,6 +37,18 @@
 | 查看程序路径等技术信息 | 放在卡片「详情」及导入确认中，避免占满日常列表 |
 
 管理窗口在整个操作期间继续保持 App 的来源管理互斥。浏览、搜索、导入和保存不触发录音、凭据读取、转写程序或网络请求。样例测试仍使用已有听写页的明确确认入口；本轮不自动替换生产 App。
+
+## 紧凑窗口与所有权（2026-11-09）
+
+管理窗口默认内容尺寸为 700×480 logical points，并按当前屏幕 visibleFrame 留出标题栏和边距。标题只出现在原生标题栏；顶行合并分段视图、按名称/稳定 ID 搜索和「添加转写方式」。插件与来源均使用约 80pt 行距，四个内置选项在默认视口内完整呈现；版本、来源 ID、程序路径与参数移入详情，来源仍直接显示启用/配置问题/连接未检测。更多来源或小屏幕使用原生滚动视图。
+
+编辑器使用独立 NSWindow 作为管理窗口拥有的 sheet，普通 HTTP 表单约 620×428pt（字段较多时上限 480pt，表单滚动）；显示名称、转写地址、模型、secure 密钥字段、移除密钥和启用选项按标签对齐。简短示例在字段下方，较长说明由「填写帮助」显式展开，不再用带大图标的 NSAlert accessory form。名称是初始第一响应者，显式设置循环 key-view 顺序，Return 保存、Escape 取消。纯校验失败只更新行内提示，保留全部控件及输入；实际事务返回后重载磁盘并在管理窗口显示结果，避免提交后错误导致旧草稿覆盖新配置。
+
+Delegate 明确保留 manager，manager 保留其 window/目标对象与 editor，editor 保留 library；管理窗口关闭时清除 Delegate 的 manager 与 managing_sources，编辑器结束后清除 library 的 editor，断开所有权环。整个可见管理会话继续阻止录音、控制器来源变更、CLI 来源写入等互斥操作；返回 manage() 不再释放 admission。重复入口聚焦同一窗口。同步来源写入期间另持有 write admission，防止钥匙串交互引起的重入保存/删除；退出请求先 fence 后续回调并等待当前写入返回，再由主循环显式取消草稿、结束 sheet、关闭窗口并等待控制器停机。
+
+管理、编辑、添加分流、AI/Skill 帮助、插件详情、NSOpenPanel、导入和删除确认均不使用 runModal / modal session，也不设置 floating level。每次 sheet 绑定 presentation token，旧/重复 completion 不能释放后来 sheet 的 admission；shutdown 先进入 closed 状态再结束 sheet，阻止迟到回调继续写配置。小型确认使用异步 parent sheet；打开下一步发生在前一 sheet 的 completion 后，不嵌套 App-wide 模态循环。既有听写页的独立「发送内置样例」确认仍为小型同步 alert，不属于管理路径，不能从管理窗口触发。
+
+以上为实现与开发自检范围。普通 window/sheet 的跨 App 层级、close/cancel/reopen、真实键盘遍历、深浅色及缩小屏幕表现仍需新预览 App 的实际观察；未获得专属打包/启动时段前不启动预览，不重试既有 AX 拒绝。
 
 ## 验证边界
 

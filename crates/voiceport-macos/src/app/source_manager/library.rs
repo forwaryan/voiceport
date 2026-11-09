@@ -1,7 +1,9 @@
-//! A local plugin library, with separate adapter cards and configured source rows.
-//! Browsing, filtering and rendering never resolve credentials or run an adapter.
+//! Retained ordinary management window. Only its owned sheets block this window.
 use super::*;
+use block2::RcBlock;
 use objc2::Message;
+#[cfg(test)]
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -11,7 +13,33 @@ enum Action {
     Remove(String),
     Details(String),
 }
-struct LibraryState {
+/// Keep the selected file's provenance with the parsed contents until review.
+struct ImportReview {
+    path: PathBuf,
+    manifest: Manifest,
+}
+impl ImportReview {
+    fn load(path: PathBuf) -> Result<Self, String> {
+        let manifest = crate::plugins::read_manifest(&path)?;
+        Ok(Self { path, manifest })
+    }
+    fn detail(&self) -> Result<String, String> {
+        let manifest = &self.manifest;
+        let program = manifest.program.as_ref().ok_or("插件没有本地程序。")?;
+        Ok(format!(
+            "清单文件：{}\n{} · {} · {}\n声明来源：{}\n程序：{}\n参数：{}\n\n程序具有当前用户权限，可能读文件和联网，VoicePort 不提供沙箱。只导入可信程序；导入和保存不会执行它。",
+            self.path.display(),
+            manifest.name,
+            manifest.id,
+            manifest.version,
+            manifest.origin,
+            program.executable.display(),
+            serde_json::to_string(&program.args).unwrap_or_default()
+        ))
+    }
+}
+
+pub(crate) struct LibraryState {
     owner: Retained<Delegate>,
     store: RefCell<Store>,
     path: PathBuf,
@@ -21,39 +49,48 @@ struct LibraryState {
     scroll: OnceCell<Retained<NSScrollView>>,
     notice: OnceCell<Retained<NSTextField>>,
     actions: RefCell<Vec<Action>>,
+    editor: RefCell<Option<Retained<editor::Editor>>>,
+    alert: RefCell<Option<Retained<NSAlert>>>,
+    panel: RefCell<Option<Retained<NSOpenPanel>>>,
     blocked: Cell<bool>,
+    presentation: presentation::Presentation,
+    cleaned: Cell<bool>,
 }
 define_class!(
     #[unsafe(super = NSObject)]
     #[thread_kind = MainThreadOnly]
     #[ivars = LibraryState]
-    struct Library;
+    pub(crate) struct Library;
     unsafe impl NSObjectProtocol for Library {}
     unsafe impl NSWindowDelegate for Library {
         #[unsafe(method(windowShouldClose:))]
-        fn should_close(&self, _window: &NSWindow) -> bool {
-            NSApplication::sharedApplication(self.mtm()).stopModal();
-            false
+        fn should_close(&self, window: &NSWindow) -> bool { !self.ivars().presentation.writing() && window.attachedSheet().is_none() }
+        #[unsafe(method(windowWillClose:))]
+        fn will_close(&self, _notification: &NSNotification) {
+            let keep_alive = self.retain();
+            let iv = keep_alive.ivars();
+            iv.presentation.close();
+            if iv.cleaned.replace(true) { return; }
+            iv.window.get().unwrap().setDelegate(None);
+            iv.owner.ivars().source_manager.borrow_mut().take();
+            iv.owner.ivars().managing_sources.set(false);
+            iv.owner.refresh();
         }
     }
     impl Library {
         #[unsafe(method(closeLibrary:))]
-        fn close_action(&self, _sender: Option<&AnyObject>) {
-            NSApplication::sharedApplication(self.mtm()).stopModal();
-        }
+        fn close_action(&self, _sender: Option<&AnyObject>) { self.window().performClose(None); }
         #[unsafe(method(filterLibrary:))]
         fn filter_action(&self, _sender: Option<&AnyObject>) { self.render(); }
         #[unsafe(method(addLibraryConnection:))]
         fn add_action(&self, _sender: Option<&AnyObject>) { self.add_connection(); }
         #[unsafe(method(libraryItem:))]
         fn item_action(&self, sender: &NSButton) {
-            let action = usize::try_from(sender.tag()).ok()
-                .and_then(|i| self.ivars().actions.borrow().get(i).cloned());
-            if let Some(action) = action { self.perform(Some(action)); }
+            let action = usize::try_from(sender.tag()).ok().and_then(|i| self.ivars().actions.borrow().get(i).cloned());
+            if let Some(action) = action { self.perform(action); }
         }
     }
 );
-
 fn mutation_ready(controller: Option<&Controller>) -> bool {
     controller.is_some_and(|c| !c.busy() && !c.discovering())
 }
@@ -66,11 +103,11 @@ fn matches_query(query: &str, values: &[&str]) -> bool {
 }
 fn description(p: &Manifest) -> &'static str {
     match p.adapter {
-        Adapter::Chatgpt => "使用 ChatGPT 登录；系统语音预览，停止后校正。",
-        Adapter::Paraformer => "使用 Orca 已安装的本地模型，边说边预览。",
-        Adapter::Whisper => "使用 Orca 已安装的本地模型，停止后转写。",
-        Adapter::Http => "有 API 地址、模型和密钥？直接连接兼容转写服务，无需导入文件。",
-        Adapter::Jsonl => "插件已导入。点击「配置此插件」，填写信息并启用后即可选用。",
+        Adapter::Chatgpt => "ChatGPT 登录 · 系统语音预览，停止后校正",
+        Adapter::Paraformer => "Orca 本地模型 · 边说边预览",
+        Adapter::Whisper => "Orca 本地模型 · 停止后转写",
+        Adapter::Http => "填写地址、模型和密钥，连接兼容音频转写 API",
+        Adapter::Jsonl => "本地插件 · 填写配置后启用",
     }
 }
 fn matching_plugins(store: &Store, query: &str) -> Vec<Manifest> {
@@ -79,38 +116,134 @@ fn matching_plugins(store: &Store, query: &str) -> Vec<Manifest> {
         .into_iter()
         .filter(|p| matches_query(query, &[&p.name, &p.id, &p.origin, description(p)]))
         .collect();
-    // Import hands off using the complete stable ID. Keep that destination first,
-    // even when a short ID also matches builtin fields or other plugin names.
+    // An exact imported ID must precede shorter substring/name collisions.
     plugins.sort_by_key(|p| p.id != query.trim());
     plugins
 }
 fn source_status(store: &Store, source: &Source) -> (String, bool) {
-    // A valid local configuration is not a successful connection/ASR test.
     let mut candidate = source.clone();
     candidate.enabled = true;
     match store.validate_source(&candidate) {
         Err(error) => (format!("需要处理 · {error}"), true),
         Ok(_) if !source.enabled => ("已停用".into(), false),
-        Ok(_) => ("已启用 · 连接状态未检测".into(), false),
+        Ok(_) => ("已启用 · 连接未检测".into(), false),
     }
 }
 impl Library {
-    fn add_connection(&self) {
-        if self.ivars().blocked.get() {
+    pub(super) fn window(&self) -> &NSWindow {
+        self.ivars().window.get().unwrap()
+    }
+    pub(super) fn owner(&self) -> &Delegate {
+        &self.ivars().owner
+    }
+    pub(super) fn store(&self) -> Store {
+        self.ivars().store.borrow().clone()
+    }
+    pub(super) fn path(&self) -> &std::path::Path {
+        &self.ivars().path
+    }
+    pub(in crate::app) fn bring_forward(&self) {
+        self.window().makeKeyAndOrderFront(None);
+    }
+    /// Shutdown is explicit: discard an unsaved editor, end any owned sheet and
+    /// break Delegate -> Library -> Delegate ownership on windowWillClose.
+    pub(in crate::app) fn close_for_shutdown(&self) {
+        self.ivars().presentation.close();
+        if self.ivars().presentation.writing() {
             return;
         }
-        let choice = alert(
-            &self.ivars().owner,
-            "你准备接入哪种转写方式？",
-            "有兼容 API 的服务地址、模型名和 API Key\n选择「连接兼容 API」，直接填表，无需下载或导入插件。服务需支持 OpenAI 兼容的音频转写接口。\n\n已有插件作者提供的 VoicePort 清单（.json）\n选择「导入本地插件」。清单指向的适配器程序必须已在本机安装；导入后还需要填写配置。\n\n只有官网、GitHub 链接、压缩包或模型文件？\n这些不能直接导入。请向服务商确认兼容 API，或向插件作者索取 VoicePort 清单与适配器。",
-            &["连接兼容 API…", "导入本地插件…", "用 AI 帮我接入…", "取消"],
-        );
-        match choice.runModal() {
-            1000 => self.perform(Some(Action::Add(crate::plugins::HTTP.into()))),
-            1001 => self.perform(None),
-            1002 => self.ai_help(),
-            _ => {}
+        let editor = self.ivars().editor.borrow().clone();
+        if let Some(editor) = editor {
+            editor.cancel();
         }
+        if let Some(sheet) = self.window().attachedSheet() {
+            self.window()
+                .endSheet_returnCode(&sheet, NSModalResponseCancel);
+            sheet.orderOut(None);
+        }
+        self.ivars().alert.borrow_mut().take();
+        self.ivars().panel.borrow_mut().take();
+        self.window().close();
+    }
+    pub(super) fn editor_finished(&self, token: u64) {
+        self.ivars().presentation.complete(token);
+        self.ivars().editor.borrow_mut().take();
+    }
+    fn edit(&self, index: Option<usize>, plugin: Manifest) {
+        let Some(token) = self.ivars().presentation.begin() else {
+            return;
+        };
+        let editor = editor::show(self, index, plugin, token);
+        *self.ivars().editor.borrow_mut() = Some(editor);
+    }
+    pub(super) fn ready(&self) -> bool {
+        if self.ivars().presentation.closed()
+            || self.ivars().presentation.writing()
+            || self.ivars().blocked.get()
+        {
+            return false;
+        }
+        if !mutation_ready(self.owner().ivars().controller.borrow().as_ref()) {
+            self.set_notice("正在刷新来源，请稍候再操作。", false);
+            return false;
+        }
+        true
+    }
+    pub(super) fn writing(&self) -> bool {
+        self.ivars().presentation.writing()
+    }
+    pub(super) fn begin_write(&self) -> bool {
+        self.ready() && self.ivars().presentation.begin_write()
+    }
+    fn available(&self) -> bool {
+        self.ivars().presentation.browsing() && self.window().attachedSheet().is_none()
+    }
+    pub(super) fn set_notice(&self, message: &str, failed: bool) {
+        let notice = self.ivars().notice.get().unwrap();
+        notice.setStringValue(&NSString::from_str(message));
+        notice.setToolTip(Some(&NSString::from_str(message)));
+        let color = if failed {
+            NSColor::systemOrangeColor()
+        } else {
+            NSColor::secondaryLabelColor()
+        };
+        notice.setTextColor(Some(&color));
+    }
+    fn sheet(
+        &self,
+        title: &str,
+        detail: &str,
+        buttons: &[&str],
+        action: impl Fn(&Library, isize) + 'static,
+    ) {
+        if !self.available() {
+            return;
+        }
+        let Some(token) = self.ivars().presentation.begin() else {
+            return;
+        };
+        let a = alert(self.owner(), title, detail, buttons);
+        let library = self.retain();
+        let callback = RcBlock::new(move |response| {
+            if library.ivars().presentation.complete(token) {
+                library.ivars().alert.borrow_mut().take();
+                action(&library, response);
+            }
+        });
+        *self.ivars().alert.borrow_mut() = Some(a.clone());
+        a.beginSheetModalForWindow_completionHandler(self.window(), Some(&callback));
+    }
+    fn add_connection(&self) {
+        if !self.available() || !self.ready() {
+            return;
+        }
+        // A short routing sheet; explanations live in explicit help.
+        self.sheet("添加转写方式", "已有服务地址和模型？连接兼容 API。\n本地插件需要作者提供的 VoicePort .json 清单和已安装的适配器。", &["连接兼容 API…", "导入本地插件…", "AI / Skill 帮助…", "取消"], |library, code| match code {
+            1000 => library.perform(Action::Add(crate::plugins::HTTP.into())),
+            1001 => library.import(),
+            1002 => library.ai_help(),
+            _ => {}
+        });
     }
     fn ai_help(&self) {
         let cli = PathBuf::from(NSBundle::mainBundle().bundlePath().to_string())
@@ -119,31 +252,78 @@ impl Library {
             "请用 VoicePort 接入 Skill，根据我接下来提供的服务文档判断：直接配置兼容 API，还是生成 JSONL 适配器和清单。给出具体配置、文件路径和使用步骤；缺失信息不要猜。\n\n当前 App 的 CLI 完整路径：{}\n请用该路径运行离线命令：\nskills get plugins\nskills get plugin-examples\n\n只生成和检查方案；不要读取真实密钥、录音、上传音频或修改配置。",
             cli.display()
         );
-        let a = alert(
-            &self.ivars().owner,
-            "把接入指南交给你的 AI",
-            "复制下面的说明给 AI，再提供服务商文档或本地项目说明。随 App 附有三种例子：兼容 API、本机服务、自定义 JSON 接口。AI 会先判断是否需要插件；你不必从写 JSON 开始。",
-            &["复制接入说明", "关闭"],
-        );
-        let text = NSTextField::wrappingLabelWithString(&NSString::from_str(&prompt), self.mtm());
-        text.setFrame(rect(0., 0., 480., 280.));
-        a.setAccessoryView(Some(&text));
-        if a.runModal() == 1000 {
-            let pasteboard = NSPasteboard::generalPasteboard();
-            pasteboard.clearContents();
-            let copied = pasteboard.setString_forType(&NSString::from_str(&prompt), unsafe {
-                NSPasteboardTypeString
-            });
-            self.ivars()
-                .notice
-                .get()
-                .unwrap()
-                .setStringValue(&NSString::from_str(if copied {
-                    "接入说明已复制。粘贴给 AI，再提供服务文档即可开始。"
-                } else {
-                    "未能复制接入说明。请重新打开指南并手动选择文字复制。"
-                }));
+        self.sheet("AI / Skill 接入帮助", &format!("官网、GitHub 链接、zip 和模型文件不能直接导入。请提供服务文档，让 AI 判断接入方式。\n\n{prompt}"), &["关闭", "复制接入说明"], move |library, code| {
+            if code == 1001 {
+                let pasteboard = NSPasteboard::generalPasteboard();
+                pasteboard.clearContents();
+                let copied = pasteboard.setString_forType(&NSString::from_str(&prompt), unsafe { NSPasteboardTypeString });
+                library.set_notice(if copied { "接入说明已复制；请粘贴给 AI 并提供服务文档。" } else { "复制失败，请重新打开帮助。" }, !copied);
+            }
+        });
+    }
+    fn import(&self) {
+        if !self.available() || !self.ready() {
+            return;
         }
+        let Some(token) = self.ivars().presentation.begin() else {
+            return;
+        };
+        let panel = NSOpenPanel::openPanel(self.mtm());
+        panel.setCanChooseFiles(true);
+        panel.setCanChooseDirectories(false);
+        panel.setAllowsMultipleSelection(false);
+        panel.setTitle(Some(ns_string!("选择 VoicePort 插件清单")));
+        panel.setPrompt(Some(ns_string!("审阅插件")));
+        panel.setMessage(Some(ns_string!(
+            "选择作者提供的 .json 清单；不会下载或运行程序。"
+        )));
+        let library = self.retain();
+        let callback = RcBlock::new(move |response| {
+            if !library.ivars().presentation.complete(token) {
+                return;
+            }
+            let panel = library.ivars().panel.borrow_mut().take();
+            if response != NSModalResponseOK {
+                return;
+            }
+            let result = panel
+                .and_then(|p| p.URL())
+                .and_then(|u| u.path())
+                .map(|path| PathBuf::from(path.to_string()))
+                .ok_or_else(|| "未选择本地清单。".to_string())
+                .and_then(ImportReview::load);
+            match result {
+                Ok(review) => library.review_import(review),
+                Err(error) => library.set_notice(&error, true),
+            }
+        });
+        *self.ivars().panel.borrow_mut() = Some(panel.clone());
+        panel.beginSheetModalForWindow_completionHandler(self.window(), &callback);
+    }
+    fn review_import(&self, review: ImportReview) {
+        let detail = match review.detail() {
+            Ok(detail) => detail,
+            Err(error) => {
+                self.set_notice(&error, true);
+                return;
+            }
+        };
+        let manifest = review.manifest;
+        self.sheet(
+            "确认导入本地插件",
+            &detail,
+            &["取消", "导入"],
+            move |library, code| {
+                if code != 1001 || !library.begin_write() {
+                    return;
+                }
+                let mut next = library.store();
+                let result = next
+                    .import(manifest.clone())
+                    .and_then(|()| next.save(library.path()));
+                library.reconcile(result, false, Some(&manifest.id));
+            },
+        );
     }
     fn button(
         &self,
@@ -169,30 +349,27 @@ impl Library {
         let tag = self.ivars().actions.borrow().len();
         let b = self.button(view, title, sel!(libraryItem:), frame);
         b.setTag(tag as isize);
-        // Identity is independent of duplicate display names, sorting and filtering.
-        let id = match &action {
-            Action::Add(id) | Action::Edit(id) | Action::Remove(id) | Action::Details(id) => id,
+        let (kind, id) = match &action {
+            Action::Add(id) => ("add", id),
+            Action::Edit(id) => ("edit", id),
+            Action::Remove(id) => ("remove", id),
+            Action::Details(id) => ("details", id),
         };
         b.setAccessibilityIdentifier(Some(&NSString::from_str(&format!(
-            "voiceport.library.{}.{id}",
-            match action {
-                Action::Add(_) => "add",
-                Action::Edit(_) => "edit",
-                Action::Remove(_) => "remove",
-                Action::Details(_) => "details",
-            }
+            "voiceport.library.{kind}.{id}"
         ))));
-        b.setEnabled(!self.ivars().blocked.get());
+        b.setEnabled(kind == "details" || !self.ivars().blocked.get());
         self.ivars().actions.borrow_mut().push(action);
     }
     fn render(&self) {
         let iv = self.ivars();
-        let d = &iv.owner;
+        let d = self.owner();
         let store = iv.store.borrow();
         let query = iv.search.get().unwrap().stringValue().to_string();
         let sources = iv.tabs.get().unwrap().selectedSegment() == 1;
         iv.actions.borrow_mut().clear();
-        let width = 776.;
+        let scroll = iv.scroll.get().unwrap();
+        let width = scroll.contentSize().width;
         let plugins = matching_plugins(&store, &query);
         let rows: Vec<_> = store
             .sources
@@ -205,188 +382,114 @@ impl Library {
                 matches_query(&query, &[&s.name, &s.id, &s.plugin_id, &name])
             })
             .collect();
-        let content_height = if sources {
-            66. + rows.len() as f64 * 118.
-        } else {
-            66. + plugins.len().div_ceil(2) as f64 * 196.
-        };
-        let height = content_height.max(408.);
+        let count = if sources { rows.len() } else { plugins.len() };
+        let height = (count as f64 * 80.).max(scroll.contentSize().height);
         let view = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., width, height));
-        let title = if sources {
-            format!("我的来源  ·  {} 个", rows.len())
-        } else {
-            format!("可用接入方式  ·  {} 个", plugins.len())
-        };
-        d.label(&view, &title, rect(12., height - 32., 700., 24.), 15.);
-        d.caption(
-            &view,
-            if sources {
-                "每份配置独立保存；启用不代表连接成功。样例测试请在听写页选择来源后发起。"
-            } else {
-                "有兼容 API 可直接填表；本地插件需先导入清单，再填写配置。"
-            },
-            rect(12., height - 58., 750., 22.),
-        );
-        if (sources && rows.is_empty()) || (!sources && plugins.is_empty()) {
-            d.icon(
+        if count == 0 {
+            d.label(
                 &view,
                 if query.trim().is_empty() {
-                    "puzzlepiece.extension"
+                    "还没有转写来源"
                 } else {
-                    "magnifyingglass"
+                    "没有匹配项"
                 },
-                rect(362., height - 160., 44., 44.),
+                rect(24., height - 66., width - 48., 26.),
+                15.,
             );
-            let empty = if !query.trim().is_empty() {
-                "没有找到匹配项"
-            } else {
-                "添加第一个转写来源"
-            };
-            d.label(&view, empty, rect(260., height - 206., 380., 28.), 20.);
             d.caption(
                 &view,
-                if !query.trim().is_empty() {
-                    "试试插件名称或来源名称，也可以清空搜索。"
+                if query.trim().is_empty() {
+                    "点击右上角「添加」，连接 API 或导入本地插件。"
                 } else {
-                    "点击「添加转写方式」，选择连接兼容 API 或导入本地插件。"
+                    "试试名称或完整 ID，也可以清空搜索。"
                 },
-                rect(180., height - 244., 550., 32.),
+                rect(24., height - 104., width - 48., 32.),
             );
-            if query.trim().is_empty() {
-                self.button(
-                    &view,
-                    "添加转写方式…",
-                    sel!(addLibraryConnection:),
-                    rect(310., height - 294., 156., 32.),
-                );
-            }
         } else if sources {
             for (i, s) in rows.iter().enumerate() {
-                let y = height - 66. - (i + 1) as f64 * 118.;
-                d.surface(&view, rect(8., y + 8., 752., 104.));
-                d.icon(&view, "waveform", rect(24., y + 64., 22., 22.));
-                d.label(&view, &s.name, rect(58., y + 62., 430., 26.), 15.);
+                let y = height - (i + 1) as f64 * 80.;
+                d.surface(&view, rect(0., y + 3., width, 74.));
+                let name = d.label(&view, &s.name, rect(14., y + 48., width - 210., 22.), 13.);
+                name.setToolTip(Some(&NSString::from_str(&format!("{}\n{}", s.name, s.id))));
                 let plugin = store
                     .plugin(&s.plugin_id)
                     .map(|p| p.name)
                     .unwrap_or_else(|_| "插件未安装".into());
-                d.caption(
-                    &view,
-                    &format!("{} · v{}", plugin, s.plugin_version),
-                    rect(58., y + 38., 450., 20.),
-                );
+                d.caption(&view, &plugin, rect(14., y + 29., width - 210., 18.));
                 let (status, invalid) = source_status(&store, s);
-                let label = d.caption(&view, &status, rect(58., y + 12., 450., 24.));
+                let label = d.caption(&view, &status, rect(14., y + 7., width - 210., 20.));
+                label.setToolTip(Some(&NSString::from_str(&status)));
                 if invalid {
                     label.setTextColor(Some(&NSColor::systemOrangeColor()));
                 }
-                label.setToolTip(Some(&NSString::from_str(&status)));
                 self.action_button(
                     &view,
                     "编辑…",
                     Action::Edit(s.id.clone()),
-                    rect(528., y + 43., 100., 30.),
+                    rect(width - 174., y + 25., 78., 28.),
                 );
                 self.action_button(
                     &view,
                     "删除…",
                     Action::Remove(s.id.clone()),
-                    rect(634., y + 43., 100., 30.),
+                    rect(width - 90., y + 25., 78., 28.),
                 );
             }
         } else {
             for (i, p) in plugins.iter().enumerate() {
-                let x = 8. + (i % 2) as f64 * 384.;
-                let y = height - 66. - (i / 2 + 1) as f64 * 196.;
-                d.surface(&view, rect(x, y + 10., 368., 180.));
-                let symbol = match p.adapter {
-                    Adapter::Http => "network",
-                    Adapter::Jsonl => "puzzlepiece.extension",
-                    Adapter::Chatgpt => "bubble.left.and.bubble.right",
-                    _ => "desktopcomputer",
-                };
-                d.icon(&view, symbol, rect(x + 16., y + 142., 28., 28.));
-                d.label(&view, &p.name, rect(x + 56., y + 145., 296., 28.), 15.);
-                d.caption(
-                    &view,
-                    &format!(
-                        "{} · v{}",
-                        if p.adapter == Adapter::Jsonl {
-                            "本地导入"
-                        } else {
-                            "内置"
-                        },
-                        p.version
-                    ),
-                    rect(x + 56., y + 122., 290., 20.),
-                );
-                d.label(
-                    &view,
-                    description(p),
-                    rect(x + 16., y + 69., 336., 44.),
-                    12.,
-                );
-                let count = store.sources.iter().filter(|s| s.plugin_id == p.id).count();
-                let capability = if p.capabilities.streaming {
-                    "本地流式"
-                } else if p.capabilities.system_preview {
-                    "语音预览 + 最终转写"
-                } else {
-                    "停止后转写"
-                };
-                d.caption(
-                    &view,
-                    &format!(
-                        "{}{}",
-                        capability,
-                        if configurable(p) {
-                            format!("  ·  {count} 个来源")
-                        } else {
-                            String::new()
-                        }
-                    ),
-                    rect(x + 16., y + 45., 336., 20.),
-                );
+                let y = height - (i + 1) as f64 * 80.;
+                d.surface(&view, rect(0., y + 3., width, 74.));
+                let name = d.label(&view, &p.name, rect(14., y + 46., width - 212., 24.), 13.);
+                name.setToolTip(Some(&NSString::from_str(&p.name)));
+                d.caption(&view, description(p), rect(14., y + 20., width - 212., 24.));
                 self.action_button(
                     &view,
                     "详情",
                     Action::Details(p.id.clone()),
-                    rect(x + 12., y + 14., 64., 28.),
+                    rect(width - 198., y + 25., 60., 28.),
                 );
                 if configurable(p) {
                     self.action_button(
                         &view,
                         if p.adapter == Adapter::Http {
-                            "填写服务信息…"
+                            "连接 API…"
                         } else {
-                            "配置此插件…"
+                            "配置插件…"
                         },
                         Action::Add(p.id.clone()),
-                        rect(x + 228., y + 14., 124., 28.),
+                        rect(width - 134., y + 25., 124., 28.),
                     );
                 } else {
-                    d.caption(&view, "在听写页选择", rect(x + 240., y + 18., 112., 20.));
+                    d.caption(
+                        &view,
+                        "在听写页选择",
+                        rect(width - 128., y + 29., 118., 20.),
+                    );
                 }
             }
         }
-        iv.scroll.get().unwrap().setDocumentView(Some(&view));
+        scroll.setDocumentView(Some(&view));
         view.scrollPoint(NSPoint::new(0., height));
     }
-    fn perform(&self, action: Option<Action>) {
-        let iv = self.ivars();
-        if iv.blocked.get() {
+    fn perform(&self, action: Action) {
+        if !self.available() {
             return;
         }
-        let d = &iv.owner;
-        if let Some(Action::Details(id)) = &action {
-            let plugin = iv.store.borrow().plugin(id);
-            if let Ok(p) = plugin {
+        if let Action::Details(id) = &action {
+            if let Ok(p) = self.store().plugin(id) {
+                let count = self
+                    .store()
+                    .sources
+                    .iter()
+                    .filter(|s| s.plugin_id == p.id)
+                    .count();
                 let detail = format!(
-                    "{}\n\n版本：{}\n插件 ID：{}\n声明来源：{}{}",
+                    "{}\n\n版本：{}\n插件 ID：{}\n声明来源：{}\n配置来源数：{}{}",
                     description(&p),
                     p.version,
                     p.id,
                     p.origin,
+                    count,
                     p.program
                         .as_ref()
                         .map(|p| format!(
@@ -396,93 +499,100 @@ impl Library {
                         ))
                         .unwrap_or_default()
                 );
-                alert(d, &p.name, &detail, &["完成"]).runModal();
+                self.sheet(&p.name, &detail, &["完成"], |_, _| {});
             }
             return;
         }
-        // The manager stays open across edits, unlike the old one-shot alert.
-        // Serialize every mutation against the previous catalog reconciliation;
-        // refresh_catalog intentionally drops requests during an active discovery.
-        let ready = mutation_ready(d.ivars().controller.borrow().as_ref());
-        if !ready {
-            let notice = iv.notice.get().unwrap();
-            notice.setStringValue(ns_string!(
-                "正在刷新来源，请稍候再操作。你仍可浏览和搜索插件。"
-            ));
-            notice.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        if !self.ready() {
             return;
         }
-        let before = iv.store.borrow().clone();
-        let adding = matches!(action, Some(Action::Add(_)));
-        let mut imported_id = None;
-        let result = {
-            let mut store = iv.store.borrow_mut();
-            match action {
-                Some(Action::Add(id)) => store
-                    .plugin(&id)
-                    .and_then(|p| edit_with_plugin(d, &mut store, &iv.path, None, p)),
-                Some(Action::Edit(id)) => store
-                    .sources
-                    .iter()
-                    .position(|s| s.id == id)
-                    .ok_or_else(|| "来源不存在。".to_owned())
-                    .and_then(|i| edit(d, &mut store, &iv.path, Some(i))),
-                Some(Action::Remove(id)) => remove(d, &mut store, &iv.path, &id),
-                None => import(d, &mut store, &iv.path).map(|id| imported_id = id),
-                Some(Action::Details(_)) => unreachable!(),
+        match action {
+            Action::Add(id) => match self.store().plugin(&id) {
+                Ok(plugin) => self.edit(None, plugin),
+                Err(e) => self.set_notice(&e, true),
+            },
+            Action::Edit(id) => {
+                let store = self.store();
+                if let Some(index) = store.sources.iter().position(|s| s.id == id) {
+                    match store.plugin(&store.sources[index].plugin_id) {
+                        Ok(plugin) => self.edit(Some(index), plugin),
+                        Err(e) => self.set_notice(&e, true),
+                    }
+                }
             }
-        };
-        // A failed credential cleanup or directory fsync may follow a committed
-        // save. Reload durable state on every return, including failed removals.
-        // If reloading fails, prevent further writes from this stale snapshot.
-        let reload = Store::load(&iv.path);
-        d.with_controller(|c| c.refresh_catalog());
-        let (message, failed) = match reload {
+            Action::Remove(id) => {
+                if let Some(source) = self.store().sources.iter().find(|s| s.id == id) {
+                    self.sheet(
+                        "删除此来源？",
+                        &format!(
+                            "将删除「{}」及其独立密钥。当前选择若指向它将保持不可用。",
+                            source.name
+                        ),
+                        &["取消", "删除"],
+                        move |library, code| {
+                            if code == 1001 && library.begin_write() {
+                                let mut next = library.store();
+                                let result =
+                                    crate::source_service::remove(&mut next, library.path(), &id);
+                                library.reconcile(result, false, None);
+                            }
+                        },
+                    );
+                }
+            }
+            Action::Details(_) => unreachable!(),
+        }
+    }
+    /// Reload after every transaction, including failures after a durable commit.
+    /// Never allow a stale snapshot to overwrite disk if reload itself fails.
+    pub(super) fn reconcile(
+        &self,
+        result: Result<(), String>,
+        adding: bool,
+        imported: Option<&str>,
+    ) {
+        self.owner().with_controller(|c| c.refresh_catalog());
+        let message = match Store::load(self.path()) {
             Ok(store) => {
-                let changed = store != before;
-                *iv.store.borrow_mut() = store;
-                if let Some(id) = &imported_id {
-                    iv.tabs.get().unwrap().setSelectedSegment(0);
-                    iv.search
-                        .get()
-                        .unwrap()
-                        .setStringValue(&NSString::from_str(id));
-                } else if changed && adding {
-                    iv.tabs.get().unwrap().setSelectedSegment(1);
-                    iv.search.get().unwrap().setStringValue(ns_string!(""));
+                *self.ivars().store.borrow_mut() = store;
+                if result.is_ok() {
+                    if let Some(id) = imported {
+                        self.ivars().tabs.get().unwrap().setSelectedSegment(0);
+                        self.ivars()
+                            .search
+                            .get()
+                            .unwrap()
+                            .setStringValue(&NSString::from_str(id));
+                    } else if adding {
+                        self.ivars().tabs.get().unwrap().setSelectedSegment(1);
+                        self.ivars()
+                            .search
+                            .get()
+                            .unwrap()
+                            .setStringValue(ns_string!(""));
+                    }
                 }
-                match result {
-                    Err(error) => (format!("操作未完全完成：{error}"), true),
-                    Ok(()) if imported_id.is_some() => (
-                        "已定位到导入的插件。下一步点击「配置此插件…」，填写信息并启用来源。"
-                            .into(),
-                        false,
-                    ),
-                    Ok(()) if changed => (
-                        "更改已保存。启用后，回到听写页选择此来源即可使用。".into(),
-                        false,
-                    ),
-                    Ok(()) => ("未更改配置。".into(), false),
+                match &result {
+                    Err(e) => format!("操作未完全完成：{e}"),
+                    Ok(()) if imported.is_some() => {
+                        "已定位导入插件；点击「配置插件…」继续。".into()
+                    }
+                    Ok(()) => "更改已保存；保存未测试连接。".into(),
                 }
             }
-            Err(error) => {
-                iv.blocked.set(true);
-                (
-                    format!("无法重新读取配置：{error} 请关闭此窗口后重新打开。"),
-                    true,
-                )
+            Err(e) => {
+                self.ivars().blocked.set(true);
+                let operation = result
+                    .as_ref()
+                    .err()
+                    .map(|error| format!("操作未完全完成：{error} "))
+                    .unwrap_or_default();
+                format!("{operation}无法重新读取配置：{e} 请关闭后重开。")
             }
         };
-        let notice = iv.notice.get().unwrap();
-        notice.setStringValue(&NSString::from_str(&message));
-        let color = if failed {
-            NSColor::systemOrangeColor()
-        } else {
-            NSColor::secondaryLabelColor()
-        };
-        notice.setTextColor(Some(&color));
-        notice.setToolTip(Some(&NSString::from_str(&message)));
+        self.set_notice(&message, result.is_err() || self.ivars().blocked.get());
         self.render();
+        self.ivars().presentation.end_write();
     }
 }
 
@@ -497,13 +607,20 @@ pub(super) fn show(d: &Delegate, store: Store, path: PathBuf) {
         scroll: OnceCell::new(),
         notice: OnceCell::new(),
         actions: RefCell::new(vec![]),
+        editor: RefCell::new(None),
+        alert: RefCell::new(None),
+        panel: RefCell::new(None),
         blocked: Cell::new(false),
+        presentation: presentation::Presentation::default(),
+        cleaned: Cell::new(false),
     });
     let library: Retained<Library> = unsafe { msg_send![super(library), init] };
+    let size = content_size(d, NSSize::new(700., 480.));
+    let (w, h) = (size.width, size.height);
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(d.mtm()),
-            rect(0., 0., 824., 610.),
+            rect(0., 0., w, h),
             NSWindowStyleMask::Titled | NSWindowStyleMask::Closable,
             NSBackingStoreType::Buffered,
             false,
@@ -515,20 +632,15 @@ pub(super) fn show(d: &Delegate, store: Store, path: PathBuf) {
     window.setTitle(ns_string!("插件与转写来源"));
     window.setDelegate(Some(ProtocolObject::from_ref(&*library)));
     let view = window.contentView().unwrap();
-    d.label(&view, "插件与转写来源", rect(24., 558., 570., 30.), 22.);
-    d.caption(
-        &view,
-        "添加自己的转写服务：兼容 API 直接填表，本地插件按清单导入。",
-        rect(24., 530., 700., 22.),
-    );
     let tabs = NSSegmentedControl::initWithFrame(
         NSSegmentedControl::alloc(d.mtm()),
-        rect(24., 480., 300., 32.),
+        rect(16., h - 48., 200., 30.),
     );
     tabs.setSegmentCount(2);
     tabs.setLabel_forSegment(ns_string!("插件库"), 0);
     tabs.setLabel_forSegment(ns_string!("我的来源"), 1);
-    tabs.setSelectedSegment(if library.ivars().store.borrow().sources.is_empty() {
+    tabs.setAccessibilityLabel(Some(ns_string!("管理视图")));
+    tabs.setSelectedSegment(if library.store().sources.is_empty() {
         0
     } else {
         1
@@ -538,9 +650,11 @@ pub(super) fn show(d: &Delegate, store: Store, path: PathBuf) {
         tabs.setAction(Some(sel!(filterLibrary:)));
     }
     view.addSubview(&tabs);
-    let search =
-        NSSearchField::initWithFrame(NSSearchField::alloc(d.mtm()), rect(488., 482., 312., 28.));
-    search.setPlaceholderString(Some(ns_string!("搜索插件或来源")));
+    let search = NSSearchField::initWithFrame(
+        NSSearchField::alloc(d.mtm()),
+        rect(228., h - 46., w - 400., 26.),
+    );
+    search.setPlaceholderString(Some(ns_string!("搜索名称或 ID")));
     search.setAccessibilityLabel(Some(ns_string!("搜索插件或来源")));
     search.setSendsWholeSearchString(false);
     search.setSendsSearchStringImmediately(true);
@@ -549,27 +663,29 @@ pub(super) fn show(d: &Delegate, store: Store, path: PathBuf) {
         search.setAction(Some(sel!(filterLibrary:)));
     }
     view.addSubview(&search);
-    let scroll =
-        NSScrollView::initWithFrame(NSScrollView::alloc(d.mtm()), rect(24., 66., 776., 408.));
+    library.button(
+        &view,
+        "添加转写方式…",
+        sel!(addLibraryConnection:),
+        rect(w - 156., h - 48., 140., 30.),
+    );
+    let scroll = NSScrollView::initWithFrame(
+        NSScrollView::alloc(d.mtm()),
+        rect(16., 64., w - 32., h - 124.),
+    );
     scroll.setHasVerticalScroller(true);
     scroll.setAutohidesScrollers(true);
     view.addSubview(&scroll);
     let notice = d.caption(
         &view,
-        "不确定如何接入？点击「添加转写方式」。填写和保存不会发送音频。",
-        rect(24., 14., 500., 44.),
-    );
-    library.button(
-        &view,
-        "添加转写方式…",
-        sel!(addLibraryConnection:),
-        rect(528., 22., 136., 32.),
+        "保存不运行插件、不发送音频。启用不代表连接成功。",
+        rect(16., 10., w - 120., 42.),
     );
     let done = library.button(
         &view,
         "完成",
         sel!(closeLibrary:),
-        rect(688., 22., 112., 32.),
+        rect(w - 96., 18., 80., 28.),
     );
     done.setKeyEquivalent(ns_string!("\u{1b}"));
     let iv = library.ivars();
@@ -579,16 +695,77 @@ pub(super) fn show(d: &Delegate, store: Store, path: PathBuf) {
     let _ = iv.scroll.set(scroll);
     let _ = iv.notice.set(notice);
     library.render();
+    *d.ivars().source_manager.borrow_mut() = Some(library);
     window.center();
     window.makeKeyAndOrderFront(None);
-    NSApplication::sharedApplication(d.mtm()).runModalForWindow(&window);
-    window.orderOut(None);
-    window.setDelegate(None);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn local_manifest(dir: &std::path::Path) -> Manifest {
+        use std::os::unix::fs::PermissionsExt;
+        let program = dir.join("synthetic-program-never-executed");
+        std::fs::write(&program, b"synthetic metadata fixture, never executed").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut manifest = Store::default().plugin(crate::plugins::HTTP).unwrap();
+        manifest.id = "synthetic-local".into();
+        manifest.adapter = Adapter::Jsonl;
+        manifest.program = Some(crate::plugins::Program {
+            executable: program,
+            args: vec!["--synthetic".into(), "value with spaces".into()],
+        });
+        manifest
+    }
+    #[test]
+    fn import_confirmation_distinguishes_same_named_files_and_retains_program_details() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = local_manifest(dir.path());
+        let program = manifest.program.as_ref().unwrap();
+        let mut reviews = vec![];
+        for subdir in ["reviewed", "different-download"] {
+            let parent = dir.path().join(subdir);
+            std::fs::create_dir(&parent).unwrap();
+            let path = parent.join("plugin.json");
+            std::fs::write(&path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+            let review = ImportReview::load(path.clone()).unwrap();
+            let detail = review.detail().unwrap();
+            assert_eq!(review.path, path);
+            assert_eq!(review.manifest, manifest);
+            assert!(detail.contains(&path.display().to_string()));
+            assert!(detail.contains(&program.executable.display().to_string()));
+            assert!(detail.contains(&serde_json::to_string(&program.args).unwrap()));
+            for value in [
+                &manifest.name,
+                &manifest.id,
+                &manifest.version,
+                &manifest.origin,
+            ] {
+                assert!(detail.contains(value));
+            }
+            reviews.push((path, detail));
+        }
+        assert_eq!(reviews[0].0.file_name(), reviews[1].0.file_name());
+        assert_ne!(reviews[0].1, reviews[1].1);
+        assert!(!reviews[0].1.contains(&reviews[1].0.display().to_string()));
+        assert!(!reviews[1].1.contains(&reviews[0].0.display().to_string()));
+        assert!(!dir.path().join("sources.json").exists());
+    }
+    #[test]
+    fn import_review_rejects_unreadable_invalid_and_programless_manifests_before_confirmation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plugin.json");
+        assert!(ImportReview::load(path.clone()).is_err());
+        std::fs::write(&path, b"invalid JSON").unwrap();
+        assert!(ImportReview::load(path.clone()).is_err());
+        let mut manifest = local_manifest(dir.path());
+        manifest.program = None;
+        std::fs::write(&path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+        assert!(ImportReview::load(path.clone()).is_err());
+        let review = ImportReview { path, manifest };
+        assert!(review.detail().is_err());
+        assert!(!dir.path().join("sources.json").exists());
+    }
     #[test]
     fn search_matches_identity_without_secrets() {
         assert!(matches_query(
@@ -648,7 +825,7 @@ mod tests {
         source.enabled = true;
         assert_eq!(
             source_status(&store, &source),
-            ("已启用 · 连接状态未检测".into(), false)
+            ("已启用 · 连接未检测".into(), false)
         );
         source.config.remove("model");
         assert!(source_status(&store, &source).1);
