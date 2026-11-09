@@ -1,5 +1,95 @@
 # 调研与发现
 
+## 2026-11-09 — 组合独立审查的调用链反例
+
+freeze07 的21项完整离线检查通过，但独立09用真实 Controller/录音租约/受控子进程和精确 App 表达式复现：普通转写错误的未确认清理经显式 Cancel 观察恢复后，Controller 为 Failed/录音保留，CLI 却按 caller.cancelled 返回 cancelled。取消请求本身不足以标识最终结果；修复先核对 generation，再结合 Controller 最终 Idle 判断取消，普通失败仍按 plugin_error/transcription_error 结算。新的开发控制保留原始取消、重复观察和旧 generation 反例，尚待新冻结独立复核。
+
+共享 source_service 先提交 Store、再删除旧独立凭据。GUI 若对该事务直接使用 ?，提交后的清理错误会跳过目录刷新，使已删除/禁用来源暂时仍可选。修复在传播结果前保守刷新目录，并只在成功时设置保存成功文案。故障注入控制分别证实保存/删除已持久提交、返回原清理错误并刷新至 unavailable；未运行真实 Keychain 或 GUI。完整测试的绿色不能替代未覆盖故障分支，旧 RETURNED 与封存证据保持。
+
+## 2026-11-09 — 清理状态与 CLI 组合的边界
+
+CI09 使用 waitid(WNOWAIT) 保留直接 leader 至首次组信号决策，并由共享 typed custody 在派发前保留 owner 和录音lease；单次100ms初始确认后仍未知就保持 Stopping。显式Cancel只发起后台单次观察，不能由状态轮询续预算或再次发信号。三方集成保留CLI固定来源/语言、禁自动投递及operation/generation归属；CLI的busy、结果结算和quit继续读取同一Controller状态。调用链核对与无冲突合并尚不足以证明组合行为，需新冻结的构建、反例与独立复核。181份证据的协调核对也不等于独立接受；实际34命令包含final-checks时点之后的最后检查，原有33计数不改写。
+
+## 2026-11-09 — CLI/App 实际边界、组终态与 Magpie 规则采用
+
+默认大小写不敏感卷会把旧 GUI 文件 VoicePort 与公共 CLI voiceport 视作同一路径，严格 exact-file-set checker 的失败是有效缺陷。当前候选使用 voiceport-app 与 voiceport，并分别绑定对应 Cargo 产物；不能用签名通过代替这两份内容对应，也不能从 bundle 名未变推断 TCC/Launch Services 身份已接受。
+
+真实隔离 App 的 CLI/Store/Keychain/受控 HTTP 和 JSONL 检查能独立于 AX 观察完成，但不能补足被拒绝的 GUI 证据。最终73次 CLI 退出匹配、合成控件通过与 ui_verified:false/整体exit1同时成立；协调只读核对归档和原始日志，不重试 AX 或修改权限。--check-input-permission 实际只调用 AV/Speech 状态、AXIsProcessTrusted 和安全输入查询，在 NSApplication 初始化前返回；请求授权的 prompt=true 路径只供显式按钮，不能混称两者。
+
+成功发送 SIGKILL 并 reap 直接 leader 不足以证明整个 owned group 已终止。CI08 有本机 state2 到 SZOMB 的原生证据；新远端 CI 的 state2 仍是实际失败。错误字符串无法承载未确认终止的 owner，且现有 worker drop(Job)/Stopping→Idle 会丢失录音引用和准入约束。CI09 授权在 process/runtime/controller 间携带 typed owner 与录音 lease，保持 Stopping/警告/正常quit和新操作阻塞；仅显式 Cancel 可发一次有界、后台、只观察的恢复，不额外发信号或续初始100ms预算。最终实现和组合 CLI 行为仍待独立验证。
+
+Magpie 固定版本可借鉴的是已评审提交绑定、完整失败日志、工作区归属、资源预算和文档/实现分层；已检查范围未证明等价的 Orca 自动 CI 返修 DAG。当前三文件规则候选实际采用这些取舍及本项目的精确 head/base/merge/run/attempt、独立 Task 归属和一次基础设施重试预算。它是协议改进，不是新增共享 Task 多 owner、全局 suite lock 或可执行 CI 验收 gate。helper 不识别 CronDelete 的停止证明和最终 gate 缺口仍公开保留，当前动态调度不能据此声称原生 cron 自动迁移已实现。
+
+## 2026-11-09 — 原生来源身份、组存活 oracle 与真实 helper 激活
+
+NSPopUpButton 的 addItemWithTitle 会删除相同标题的旧项，不能把可重复的显示文本与完整 ID 数组按 index 并列作为身份。旧原生菜单四个反例均在目标身份断言101失败；新共享 picker 使用显式 NSMenuItem/represented NSString ID，主来源、管理来源、插件选择均按稳定 ID 解析。开发实测 native target/action、重排/重命名、内置名称碰撞及缺失/空 ID，不等于生产 GUI 全流程或真实请求验收。
+
+macOS 的 zombie-only 进程组可在 leader 已 ESRCH 时对负组 ID 返回 EPERM；实际 C/Rust owned 控制和独立 native 检查证明旧 oracle 过强，不证明历史远端该组的成员。修正仍须拒绝不确定状态：独立脚本证明 ESRCH-observed PID 再列出时首候选会无状态证据通过。CI07 改为最终成员必须属于成功取得完整匹配 SZOMB 状态的集合；非原子 PID/代际观察限制继续明确，不能声称绝对消除 PID reuse 或已修复所有远端失败。
+
+真实部署的门槛是当前已知写者和 hook 消费者静止，不是单个 ACK 标志。独立有限契约接受、实际 quiet ACK 与 returned tools、精确身份/唯一消费者/已识别闲置 MCP、六 before/after pins、一次 attempt、全备份和 postchecks 共同支持本次受控 helper 安装。随后原 retained session 的真实 PreToolUse 产生当前 helper 状态，并由原 transcript 身份/计数交叉验证，消除了原 CLI 的实际加载阻塞；没有伪造 SessionStart、清零或更改信任。该观察不外推到 hostile 同 UID、原生 Codex 或完整自动生命周期接受。
+
+## 2026-11-09 — errno诊断与部署并发范围澄清
+
+CI04两个独立诊断均未复现远端回收后EPERM。开发65owned process组控制只在退出过程的未同步观察者见到EPERM，wait后主线程全部ESRCH；公开XNU源码说明组存在但无可signal成员时可能EPERM，不能据此断定原远端走该路径。新诊断立即保存kill返回errno并输出cancel/正PID或负group，严格语义保持；用于下一次不同HEAD远端观测，不称修复或允许EPERM。
+
+保留stage fd/最后hash仍不能让macOS按名称rename绑定同一inode，同UID恶意写者可在syscall前替换；增加特权安装broker超出本机协作部署需要。协调显式采用已知写者和消费者静止的协作契约，独占锁与原字节/模式/descriptor校验/备份保持；恶意同UID反例保留为未覆盖限制，独立验收应明确契约变化而非悄悄改变失败oracle。实际目标静止无法证明则继续阻塞apply。
+
+## 2026-11-09 — freeze04新发现与CI闭环规则需求
+
+R1安装result.prompt解析经独立78helper+20邻近控制FIXED；原D1父目录链接逃逸也已FIXED，但新proposal只重新检查target leaf与父目录，未绑定staging leaf。独立在os.replace前替换stage为symlink，脚本把链接安装到执行目标后才通过O_NOFOLLOW发现错误，因此proposal整体RETURNED；39绿色行为观测不能替代失败的目标安全断言。新方案须解决实际替换边界并明确同UID并发假设，不能仅在更早位置补lstat后声称消除了竞态。
+
+CI42502439010原始errno1vs3失败缺少case/PID或group的归属输出；独立一次exact本地test与12个owned process观测均ESRCH，未确定远端原因。用户新增CI loop/多agent规则要求：一个逻辑问题拆分独立Task/Dispatch，单文件单writer，冻结期间修复走隔离worktree/私有草稿，整合后重新冻结，精确提交CI结果才可计完成。新CronCreate定时器与原helper ScheduleWakeup stop-proof不兼容须显式处理；定时器session-only、不会随继任自动迁移。
+
+## 2026-11-09 — R1/D1候选修复与复核重点
+
+新launch解析仅认result.prompt、成功外壳、delivery=submit及journaled/handed-to-terminal；缺失/畸形/明确错误/未知均保存分类并保持单次副作用锁存，迟到回执继续更新同transfer的request/history。安装纯fixture相等与纯contract控制属于schema观察，不证明structured chat具备PTY身份或真实轮换可完成。helper02b0dbcb…和契约修订待独立复核。
+
+新部署proposal f984caf7…使用O_DIRECTORY/O_NOFOLLOW及目录descriptor相对I/O，核对全部祖先identity并拒绝root/source/target/backup链接，六原文件bytes/mode备份和BACKUPS_COMPLETE后才替换，遇部分失败保存已替换列表且不盲重试。manifest b7120867…仍以实际CLI原始ce676e8 before为基线，不拿当前primary HEAD冒充目标原始字节；真实CLI工作区未读写。29开发控制含验证与open间换链反例，开发通过仍需独立审查新提案，不能凭开发报告部署。
+
+## 2026-11-09 — 独立freeze03确认的两项轮换/部署缺陷
+
+独立03对已安装Orca纯fixture及只读CLI实现核对：agent launch成功信封为result.prompt.outcome（journaled/handed-to-terminal），helper错误期待result.launch.prompt.outcome。75项旧mock全绿但共同使用了错误嵌套；实际格式使delivery_confirmed=false，单次launch锁存后不能通过重试恢复，精确close与产品工作保持阻塞。修复需真实安装形状正负控制和claim先于receipt的竞争路径，不能因此声称真实轮换或structured-chat/PTy身份已验收。
+
+部署proposal对六目标leaf及target.resolve检查仍放过备份父目录.voiceport/evidence symlink；独立临时夹具成功在工作区外写六备份并完成替换。新proposal必须固定原目标及全部source/target/backup父路径无链接和写入锚定，保留六文件scope/原始before哈希/备份/部分失败停查，旧proposal与pin保持只读。正式review RETURNED两项，CI夹具与当前17步offline范围已ACCEPTED，不能替代GUI/CLI/真实ASR验收。
+
+## 2026-11-09 — per-Run轮换接口的验证边界
+
+新helper显式register核对实际terminal/session/真实PreToolUse/transcript与当前Run coordinator_handle/generation，独立per-Run lease缓存路由，避免把新Run协调者当成历史lease的worker。claim要求真实新session/terminal、initial0、晚于launch的起始时间和递增generation；精确close须有对应handle的ptyKilled=true，未知结果保持锁存。开发75个隔离mock测试通过不代表实际Orca自动生命周期通过；现无自动unknown-result reconcile/replay接口，原生Codex协调loop-stop/继任启动适配也未声称支持。合法旧全局接口语义保留，历史lease未迁移。需要独立复核此边界和CLI部署proposal后才实际采用。
+
+## 2026-11-08 — Run 角色路由、启动计数与 CI-01
+
+现有 hook 先读取全局 coordinator lease：无 state 直接返回，导致新隔离工作区虽配置相同 hook 命令，却没有任何每会话记账；有旧 lease 时非 owner 一律走 worker 分支，新的真实 Run 协调者因此误入 worker checkpoint 限制。这说明应先修 helper 路由，不能把缺状态径直归因为 settings 未加载，更不能覆盖旧 Run lease 或伪造 worker 登记。
+
+独立02对 CI-01 的 paced 控制：20ms/write 时，2秒客户端只收到356314字节 body，4秒仍只收到704474，均未达1MB，读超时符合生产行为；同一未节流副本约630ms完整发送并通过。短测试 deadline 与大小断言存在竞争，远端确切调度原因缺进度日志仍未完全证明。修复应分开大小边界和 timeout/cancel 验证，保留真实 HTTP 覆盖和有界收尾。
+
+freeze02 的正常 HOME GUI 路径已实测来源新增、独立合成凭据修订、编辑、重启、显式样例和删除。导入确认无可归属动作回执，不能算通过或归因某个操作者；外部来源和相关错误/取消 GUI 仍缺独立证据。仅有29次针对性执行，不是完整17步复跑。历史失败和未知 freeze01 key 不猜删。
+
+## 2026-11-08 — 返修02证据与独立验收接续
+
+开发在旧源码副本用4096发送缓冲复现超大响应fixture写入与测试线程同步join等待环，真实sample显示join/sendto；提前取消无请求也会让旧accept/rx/join无限等待。原Python PID文件在初始化完成前不可作spawn/回收证据，700ms受控延迟触发原断言失败。修复将测试服务I/O和收尾设限，异步finish允许runtime推进、取消先同步完整请求，并从OS spawn观察实际PID且校验PID/组ESRCH。生产HTTP/插件110秒限制未变，原1秒取消返回断言保留。4次23项串并行和完整17步通过，仍待远端CI和独立反例。
+
+显式VOICEPORT_SOURCES_PATH将来源配置隔离到专用绝对文件；无效值和非普通文件拒绝且不回落。它不隔离NSUserDefaults/Keychain，也不改变Orca模型或Codex路径；新GUI验证应独立bundle domain和合成CODEX_HOME，保持正常HOME，精准操作自建测试密钥。该路径能力本身不证明GUI Keychain保存可用。
+
+## 2026-11-08 — 首轮GUI阻塞与CI真实失败
+
+freeze01独立review未完成：精确冻结副本62 lib passed/1 ignored和真实Security framework合成Keychain探针通过，但GUI在私有HOME下SecItemAdd等待defaultKeychainUI/AuthorizationCopyRights；未建立具体提示原因，不能断言生产必然失败。该CLI探针不替代GUI。独立已停止且exited/released；协调仅正常退出确切测试PID45269，随后ps无行/exit1，未处理系统认证。GUI未返回引用且未存配置，未知测试条目不能声称已清理或猜删。
+
+CI42483256463完整日志确认plugin_process cancellation_and_timeout_reap_owned_process_group及plugin_runtime timeout_and_cancel_drop_network_operation FAILED，malformed_oversize_failure_and_redirect_are_bounded持续超过60秒直至约30分钟任务被取消。根因仍待开发诊断，不能通过提高CI timeout或本机原通过抵消。需有界复现/服务和进程清理，并考虑显式来源配置路径隔离替换修改HOME的测试方法。freeze01在协调最终matches true后明确关闭当前评审；历史字节和BLOCKED报告永久保留，返修后新完整冻结。
+
+## 2026-11-08 — 插件开发交付与独立验收缺口
+
+开发采用内置HTTP和外部JSONL v1 batch适配器；一个descriptor定义插件，Source稳定ID保存配置，多实例与独立Keychain revision引用并存。外部适配器env_clear、根工作目录、JSONL stdin音频与选定配置、有界非阻塞stdout/stderr、自建进程组和后台kill/wait；不是恶意代码沙箱，协议明确禁止派生/逃离进程组。样例是显式确认的一秒静音，不能证明真实ASR识别准确率。
+
+开发61项macOS通过/1个原有真实模型测试显式忽略、完整17步与输入一致已交付；协调独立核对交付20项、34原始日志hash及3个实际产物，未重跑委派测试。报告明确未做完整GUI和原生Security framework Keychain存取，必须补不同真实会话的隔离App/临时HOME配置和唯一测试条目实测；不得读取用户既有来源、认证或改真实偏好。整合README/SOLUTION后应产生新的最终冻结摘要，不继续把开发1793d204…当整合版本。
+
+## 2026-11-08 — 自定义来源与插件边界
+
+当前Catalog仅有ChatGPT与两种已知Orca模型，SessionSource只有ChatGpt/Local；并无自定义客户端或管理UI。voiceport-core的ChatGPT客户端故意固定端点且加载Codex认证，不能通过开放endpoint参数实现通用服务，否则会破坏凭据边界。控制器中以is_local反推系统Speech/云端路径的分支需要改为明确能力与适配器派发。
+
+本轮用户明确提出一个插件代表一种接入方式。同一插件应允许多个来源实例，插件描述协议/配置/实时能力，来源保存独立端点/模型/认证；来源在开始录音及重试时固定。第一版必须有实际可加载新增插件的扩展路径，不能只有新名称或硬编码枚举。通用HTTP只能承诺停录后转写，任意ONNX或WebSocket需对应适配器。
+
+新增实现从当前main d3af863开始；README/SOLUTION/CUSTOM_SOURCES三项方案文档已存在但未实现。新Run独立于已完成本地模型Run与旧VP013。真实协调session状态已记录2次已完成压缩、terminal/helper匹配；旧协调lease的requested状态不重置、不冒领。
+
 ## 2026-11-08 — 本地原生运行时实现与实测边界
 
 开发已采用准确sherpa-onnx v1.12.37 C头文件与C++小桥，经系统clang++/ar编译后Rust动态加载Orca外部C API及相邻ONNX Runtime，无Node/PATH依赖、额外模型下载或模型复制。仅当前arm64固定安装/版本可用；常规C++异常变错误，底层原生abort不可恢复，取消等单个native调用返回后释放，不阻塞UI等待join。

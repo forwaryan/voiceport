@@ -27,9 +27,12 @@ def safe_inventory():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app-smoke', action='store_true', help='run safe menu smoke and permission-output diagnostics; no ordinary GUI launch')
+    parser.add_argument('--evidence-directory', type=pathlib.Path, help='new owned evidence directory; never reuse an existing path')
+    parser.add_argument('--app-directory', type=pathlib.Path, help='new owned package path; default is a temporary bundle')
     args = parser.parse_args()
-    evidence = ROOT / '.voiceport/evidence/vp012-revision-01' / ('verify-' + uuid.uuid4().hex)
-    evidence.mkdir(parents=True)
+    evidence = args.evidence_directory or ROOT / '.voiceport/evidence/vp012-revision-01' / ('verify-' + uuid.uuid4().hex)
+    evidence = evidence.absolute()
+    evidence.mkdir(parents=True, exist_ok=False)
     before = safe_inventory()
     (evidence / 'inputs-before.json').write_text(json.dumps(before, indent=2))
     report = {
@@ -43,7 +46,7 @@ def main():
         home = temp / 'synthetic-codex'
         home.mkdir()
         (home / 'auth.json').write_text('synthetic invalid JSON, not credentials')
-        app = temp / 'VoicePort.app'
+        app = args.app_directory.absolute() if args.app_directory else temp / 'VoicePort.app'
         env = dict(os.environ, CARGO_NET_OFFLINE='true', CODEX_HOME=str(home), TMPDIR=str(temp),
                    PYTHONDONTWRITEBYTECODE='1', VOICEPORT_APP_DIRECTORY=str(app))
         differences = {key: env[key] for key in ['CARGO_NET_OFFLINE', 'CODEX_HOME', 'TMPDIR', 'PYTHONDONTWRITEBYTECODE', 'VOICEPORT_APP_DIRECTORY']}
@@ -102,7 +105,12 @@ def main():
                 for command, code, marker in cases:
                     run([rust] + command, code, marker, timeout=10)
                 run(['python3', '-I', str(ROOT / 'scripts/check_bundle.py'), app, native], marker='main_signed_copy_matches')
-                # The CLI host protocol remains independently verified; no CLI is installed in the app.
+                # Portable host compatibility remains independent of the new local control socket.
+                public_cli = target / 'release/voiceport'
+                run([public_cli, '--json', '--version'], marker='control_schema', timeout=10)
+                run([public_cli, '--json', 'skills', 'list'], marker='workflows', timeout=10)
+                run([public_cli, '--json', '--socket', pathlib.Path('/private/tmp') / ('vp-absent-' + uuid.uuid4().hex) / 'control.sock', 'status'], 3, 'app_not_running', timeout=10)
+                run([public_cli, '--json', 'dictation', 'start'], 2, 'invalid_arguments', timeout=10)
                 wire = b'{"version":1,"action":"status","request_id":"q"}\n{"version":1,"action":"shutdown","request_id":"end"}\n'
                 out = run([rust, 'host', '--auth', str(home / 'auth.json')], marker='shutdown', input=wire, timeout=10)
                 (evidence / 'cli-host.stdin.jsonl').write_bytes(wire)
@@ -112,13 +120,13 @@ def main():
                     str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path): {
                         'bytes': path.stat().st_size, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
                         'mode': path.stat().st_mode & 0o777,
-                    } for path in [rust, native, app / 'Contents/MacOS/VoicePort']
+                    } for path in [rust, public_cli, native, app / 'Contents/MacOS/voiceport-app', app / 'Contents/MacOS/voiceport']
                 }
                 if args.app_smoke:
-                    out = run([app / 'Contents/MacOS/VoicePort', '--smoke-test'], marker='menu ready', timeout=20)
+                    out = run([app / 'Contents/MacOS/voiceport-app', '--smoke-test'], marker='menu ready', timeout=20)
                     if out is not None:
                         success = success and out == b'VoicePort Rust app launched: menu ready, no recording or network\n'
-                    out = run([app / 'Contents/MacOS/VoicePort', '--check-input-permission'], timeout=10)
+                    out = run([app / 'Contents/MacOS/voiceport-app', '--check-input-permission'], timeout=10)
                     if out is not None:
                         diagnostic = json.loads(out)
                         success = success and all(type(diagnostic.get(key)) is bool for key in ['accessibilityTrusted', 'secureInput'])

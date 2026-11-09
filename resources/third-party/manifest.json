@@ -235,16 +235,17 @@
   ],
   "lock_only_policy": "Not in this native target metadata graph; not labelled shipped or linked. Cargo.lock records public source/checksum. These excluded-platform packages are not included as runtime license material.",
   "build_inputs": {
-    "Cargo.toml": "d6e26ae83ce62b9f24d8a10bc047c3cab1b1066910205eafdab8a8ac27e9b7b4",
-    "Cargo.lock": "2ac27e3bd1ada10d55fa735732212f5a073a30feffb51edb3bd142412949965c",
-    "crates/voiceport-cli/Cargo.toml": "357a127670ea787f3f51a55284f2e1e14372cbb549a4e1b94e5e787d8ea588db",
+    "Cargo.toml": "51f289634d933221b3a7514f1bcee056dacc2819d221a7d61f6d1efbdf48bc62",
+    "Cargo.lock": "bf3c201ddf785eb6b45078a6e8d62d63fe92341347f2eadaa6790fb409ead6ac",
+    "crates/voiceport-cli/Cargo.toml": "65d7e65bf5569fcfead3b4dc1e337dc447c68aadb3efc2ed29b8abb9b68f3a08",
+    "crates/voiceport-control/Cargo.toml": "822a697d7316fd2593f959f70c765817328c69a8e2ff74ee45f96f258229300f",
     "crates/voiceport-core/Cargo.toml": "24373b4c020cb68638193871625c013657cda89f27d318805d35158868d391bf",
-    "crates/voiceport-macos/Cargo.toml": "ffd471f9253642434e1c1e36f6d6d2f0a8c1f9de9a1ccfdbf95e51a5fca67f45",
+    "crates/voiceport-macos/Cargo.toml": "286fa4debe5eea42eac4be3437f0d8d6f6d10241e167468916b288801361e08a",
     "crates/voiceport-windows/Cargo.toml": "b331679c8bbd64bce735bf2700f2b6a0e38d249569906d3089a7c615c8afbeec"
   },
   "schema": 1,
   "target": "aarch64-apple-darwin",
-  "cargo_lock_sha256": "2ac27e3bd1ada10d55fa735732212f5a073a30feffb51edb3bd142412949965c",
+  "cargo_lock_sha256": "bf3c201ddf785eb6b45078a6e8d62d63fe92341347f2eadaa6790fb409ead6ac",
   "policy": "Overinclusive source materials. runtime means reachable normal target dependency, NOT proof every object is linked; build includes proc macros/build tools; dev and other-platform/lock-only are separately labelled. Complete notice-bearing source files are supplementary attribution material, not build inputs.",
   "packages": [
     {
@@ -1381,7 +1382,8 @@
       "selection": "MIT",
       "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
       "scope": [
-        "dev"
+        "dev",
+        "runtime"
       ],
       "enabled_features": [
         "alloc",
@@ -7900,7 +7902,8 @@
       "selection": "MIT",
       "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
       "scope": [
-        "dev"
+        "dev",
+        "runtime"
       ],
       "enabled_features": [
         "alloc",
@@ -8781,7 +8784,8 @@
       "selection": "MIT",
       "selection_basis": "Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.",
       "scope": [
-        "dev"
+        "dev",
+        "runtime"
       ],
       "enabled_features": [
         "default",

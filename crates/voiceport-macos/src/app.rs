@@ -12,6 +12,9 @@ use objc2_foundation::{
     NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSUserDefaults, ns_string,
 };
 use std::cell::{Cell, OnceCell, RefCell};
+mod control;
+mod picker;
+mod source_manager;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StatusAppearance {
@@ -34,6 +37,7 @@ impl StatusAppearance {
 #[derive(Default)]
 struct Ivars {
     controller: RefCell<Option<Controller>>,
+    control: RefCell<control::Control>,
     status: OnceCell<Retained<NSStatusItem>>,
     menu_toggle: OnceCell<Retained<NSMenuItem>>,
     menu_state: OnceCell<Retained<NSMenuItem>>,
@@ -63,9 +67,13 @@ struct Ivars {
     source_rows: RefCell<Vec<(String, String)>>,
     source_detail: OnceCell<Retained<NSTextField>>,
     refresh_models: OnceCell<Retained<NSButton>>,
+    manage_sources: OnceCell<Retained<NSButton>>,
+    test_source: OnceCell<Retained<NSButton>>,
+    managing_sources: Cell<bool>,
     shortcut: OnceCell<Retained<NSPopUpButton>>,
     timer: OnceCell<Retained<NSTimer>>,
     quitting: Cell<bool>,
+    cli_quit_at: Cell<Option<std::time::Instant>>,
     shutdown_started: Cell<bool>,
     alternative: Cell<bool>,
     hotkey: RefCell<Option<crate::hotkey::GlobalHotKey>>,
@@ -106,6 +114,8 @@ define_class!(
                     if !self.ivars().shutdown_started.replace(true) { c.cancel(); }
                     if c.state.phase == Phase::Stopping { return NSApplicationTerminateReply::TerminateLater; }
                 }
+                if self.ivars().managing_sources.get() { return NSApplicationTerminateReply::TerminateLater; }
+                self.ivars().control.borrow_mut().server.take();
                 return NSApplicationTerminateReply::TerminateNow;
             }
             NSApplicationTerminateReply::TerminateLater
@@ -114,7 +124,7 @@ define_class!(
     impl Delegate {
         #[unsafe(method(preparePermissions:))]
         fn prepare_permissions_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().permission_rx.borrow().is_some() { return; }
+            if self.ivars().permission_rx.borrow().is_some() || self.ivars().managing_sources.get() { return; }
             let idle = self.ivars().controller.try_borrow().is_ok_and(|slot| slot.as_ref().is_some_and(|c| !c.busy()));
             if !idle || self.ivars().quitting.get() { return; }
             let (sender, receiver) = std::sync::mpsc::channel();
@@ -122,14 +132,14 @@ define_class!(
             let mut use_speech = true;
             self.with_controller(|c| {
                 use_speech = c.uses_system_speech();
-                c.message = if use_speech { "正在准备麦克风与系统语音权限；不会开始录音。" } else { "正在准备麦克风权限；本地模型不需要系统语音识别权限，不会开始录音。" }.into();
+                c.message = if use_speech { "正在准备麦克风与系统语音权限；不会开始录音。" } else { "正在准备麦克风权限；此来源不需要系统语音识别权限，不会开始录音。" }.into();
             });
             self.refresh();
             crate::audio::Recorder::request_permissions_for_source(0, sender, use_speech);
         }
         #[unsafe(method(toggle:))]
         fn toggle_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().permission_rx.borrow().is_none() { self.with_controller(|c| c.toggle()); }
+            if self.ivars().permission_rx.borrow().is_none() && !self.ivars().managing_sources.get() { self.with_controller(|c| c.toggle()); }
             self.refresh();
         }
         #[unsafe(method(cancel:))]
@@ -138,6 +148,7 @@ define_class!(
         }
         #[unsafe(method(retry:))]
         fn retry_action(&self, _sender: Option<&AnyObject>) {
+            if self.ivars().managing_sources.get() { return; }
             self.with_controller(|c| c.retry()); self.refresh();
         }
         #[unsafe(method(copyText:))]
@@ -170,19 +181,34 @@ define_class!(
         fn accessibility_action(&self, _sender: Option<&AnyObject>) { Delivery::request_accessibility(); }
         #[unsafe(method(toggleAutomatic:))]
         fn automatic_action(&self, _sender: Option<&AnyObject>) {
+            if self.ivars().managing_sources.get() { return; }
             self.with_controller(|c| { c.automatic = !c.automatic; NSUserDefaults::standardUserDefaults().setBool_forKey(c.automatic, ns_string!("automaticPaste")); }); self.refresh();
         }
         #[unsafe(method(selectSource:))]
         fn source_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().permission_rx.borrow().is_some() { return; }
+            if self.ivars().permission_rx.borrow().is_some() || self.ivars().managing_sources.get() { return; }
             self.with_controller(|c| {
                 if c.busy() { return; }
-                let index = self.ivars().source.get().map(|control| control.indexOfSelectedItem()).unwrap_or(-1);
-                if let Some((id, _)) = usize::try_from(index).ok().and_then(|i| self.ivars().source_rows.borrow().get(i).cloned()) {
-                    c.source_id = id;
-                    unsafe { NSUserDefaults::standardUserDefaults().setObject_forKey(Some(&NSString::from_str(&c.source_id)), ns_string!("transcriptionSource")); }
+                if let Some(id) = self.ivars().source.get().and_then(|control| picker::selected_id(control))
+                    && c.catalog.entries.iter().any(|entry| entry.id == id) {
+                    self.set_source(c, id);
                 }
             }); self.refresh();
+        }
+        #[unsafe(method(manageSources:))]
+        fn manage_sources_action(&self, _sender: Option<&AnyObject>) {
+            let idle=self.ivars().controller.borrow().as_ref().is_some_and(|c|!c.busy() && !c.discovering());
+            if !idle || self.ivars().permission_rx.borrow().is_some() || self.ivars().managing_sources.replace(true) {return;}
+            source_manager::manage(self);
+            self.ivars().managing_sources.set(false);self.refresh();
+        }
+        #[unsafe(method(testSource:))]
+        fn test_source_action(&self, _sender: Option<&AnyObject>) {
+            if self.ivars().permission_rx.borrow().is_none() && !self.ivars().managing_sources.get() {
+                self.ivars().managing_sources.set(true);
+                if source_manager::confirm_test(self) {self.with_controller(|c|c.test_source());}
+                self.ivars().managing_sources.set(false);
+            } self.refresh();
         }
         #[unsafe(method(refreshModels:))]
         fn refresh_models_action(&self, _sender: Option<&AnyObject>) {
@@ -191,6 +217,7 @@ define_class!(
         }
         #[unsafe(method(cycleLanguage:))]
         fn language_action(&self, _sender: Option<&AnyObject>) {
+            if self.ivars().managing_sources.get() { return; }
             self.with_controller(|c| {
                 if c.busy() { return; }
                 let selected = self.ivars().language.get().map(|control| control.indexOfSelectedItem()).unwrap_or(0);
@@ -210,7 +237,7 @@ define_class!(
             let permission_reply = self.ivars().permission_rx.borrow().as_ref().and_then(|rx| rx.try_recv().ok());
             if let Some((_, crate::audio::AudioEvent::Permissions { microphone, speech })) = permission_reply {
                 self.ivars().permission_rx.borrow_mut().take();
-                self.with_controller(|c| c.message = format!("权限检查：麦克风{}；{}；辅助功能{}。未开始录音。", if microphone { "已允许" } else { "未允许" }, if !c.uses_system_speech() { "本地模型无需系统语音识别权限" } else if speech { "系统语音识别已允许" } else { "系统语音识别未允许（无设备端预览）" }, if Delivery::trusted() { "已允许" } else { "未允许" }));
+                self.with_controller(|c| c.message = format!("权限检查：麦克风{}；{}；辅助功能{}。未开始录音。", if microphone { "已允许" } else { "未允许" }, if !c.uses_system_speech() { "此来源无需系统语音识别权限" } else if speech { "系统语音识别已允许" } else { "系统语音识别未允许（无设备端预览）" }, if Delivery::trusted() { "已允许" } else { "未允许" }));
             }
             let pressed = self.ivars().hotkey_rx.borrow().as_ref().is_some_and(|rx| rx.try_recv().is_ok()) && self.ivars().permission_rx.borrow().is_none();
             self.with_controller(|c| {
@@ -218,13 +245,21 @@ define_class!(
                     c.cancel(); self.ivars().shutdown_started.set(true);
                 }
                 c.poll();
-                if pressed && !self.ivars().quitting.get() { c.toggle(); }
+                if pressed && !self.ivars().quitting.get() && !self.ivars().managing_sources.get() { c.toggle(); }
             });
+            self.poll_control();
+            if self.ivars().cli_quit_at.get().is_some_and(|at| std::time::Instant::now() >= at) {
+                self.ivars().cli_quit_at.set(None);
+                NSApplication::sharedApplication(self.mtm()).terminate(None);
+            }
             self.refresh();
             if self.ivars().quitting.get() {
                 let stopped = self.ivars().shutdown_started.get()
                     && self.ivars().controller.try_borrow().is_ok_and(|slot| slot.as_ref().is_none_or(|c| c.state.phase != Phase::Stopping));
-                if stopped { NSApplication::sharedApplication(self.mtm()).replyToApplicationShouldTerminate(true); }
+                if stopped && !self.ivars().managing_sources.get() && self.ivars().cli_quit_at.get().is_none() {
+                    self.ivars().control.borrow_mut().server.take();
+                    NSApplication::sharedApplication(self.mtm()).replyToApplicationShouldTerminate(true);
+                }
             }
         }
     }
@@ -686,6 +721,22 @@ impl Delegate {
         shortcut.setAccessibilityLabel(Some(ns_string!("开始 / 停止快捷键")));
         let _ = self.ivars().shortcut.set(shortcut);
 
+        let _ = self.ivars().manage_sources.set(self.button(
+            page,
+            "管理来源…",
+            sel!(manageSources:),
+            350.,
+            0.,
+            110.,
+        ));
+        let _ = self.ivars().test_source.set(self.button(
+            page,
+            "测试转写（使用内置样例）",
+            sel!(testSource:),
+            90.,
+            0.,
+            250.,
+        ));
         self.surface(page, rect(0., 24., 572., 68.));
         self.icon(page, "hand.raised", rect(16., 60., 20., 22.));
         self.label(page, "辅助功能", rect(46., 68., 300., 20.), 13.);
@@ -716,11 +767,6 @@ impl Delegate {
         prepare.setContentTintColor(Some(&NSColor::controlAccentColor()));
         prepare.setFont(Some(&NSFont::systemFontOfSize(12.)));
         let _ = self.ivars().prepare_permissions.set(prepare);
-        self.caption(
-            page,
-            "检查权限不会开始录音。转写完成后，仍由你确认发送。",
-            rect(0., 0., 572., 18.),
-        );
     }
     fn show_window(&self) {
         let mtm = self.mtm();
@@ -807,7 +853,7 @@ impl Delegate {
             let title = if c.uses_system_speech() {
                 "检查麦克风与语音权限…"
             } else {
-                "检查麦克风权限（本地模型）…"
+                "检查麦克风权限（此来源）…"
             };
             if button.title().to_string() != title {
                 button.setTitle(&NSString::from_str(title));
@@ -869,7 +915,19 @@ impl Delegate {
             button.setTitle(&NSString::from_str(title));
             button.setEnabled(!preparing_permissions && (recording || c.state.can_start()));
         }
-        let idle = !c.busy() && !preparing_permissions;
+        let idle = !c.busy() && !preparing_permissions && !self.ivars().managing_sources.get();
+        if let Some(button) = self.ivars().manage_sources.get() {
+            button.setEnabled(idle && !c.discovering());
+        }
+        if let Some(button) = self.ivars().test_source.get() {
+            button.setEnabled(
+                idle && !c.discovering()
+                    && matches!(
+                        c.catalog.snapshot(&c.source_id),
+                        Ok(crate::local_models::SessionSource::Plugin(_))
+                    ),
+            );
+        }
         if let Some(control) = self.ivars().source.get() {
             let rows: Vec<_> = c
                 .catalog
@@ -878,24 +936,10 @@ impl Delegate {
                 .map(|entry| (entry.id.clone(), entry.title.clone()))
                 .collect();
             if *self.ivars().source_rows.borrow() != rows {
-                control.removeAllItems();
-                for (_, title) in &rows {
-                    control.addItemWithTitle(&NSString::from_str(title));
-                }
+                picker::set_rows(control, &rows);
                 *self.ivars().source_rows.borrow_mut() = rows;
             }
-            let selected = self
-                .ivars()
-                .source_rows
-                .borrow()
-                .iter()
-                .position(|(id, _)| id == &c.source_id)
-                .map(|i| i as isize);
-            if let Some(selected) = selected
-                && control.indexOfSelectedItem() != selected
-            {
-                control.selectItemAtIndex(selected);
-            }
+            picker::select_id(control, &c.source_id);
             if control.isEnabled() != idle {
                 control.setEnabled(idle);
             }
@@ -1130,6 +1174,12 @@ pub fn run() {
         delegate.build_menu();
         println!("VoicePort Rust app launched: menu ready, no recording or network");
         return;
+    }
+    if let Err(response) = delegate.start_control() {
+        if let Some(error) = response.error {
+            eprintln!("VoicePort control: {}: {}", error.code, error.message);
+        }
+        std::process::exit(1);
     }
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     delegate.initialize();

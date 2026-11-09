@@ -1523,7 +1523,18 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "voiceport-control",
  "voiceport-core",
+]
+
+[[package]]
+name = "voiceport-control"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1544,6 +1555,7 @@ dependencies = [
 name = "voiceport-macos"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "block2",
  "core-foundation",
  "core-graphics",
@@ -1554,12 +1566,14 @@ dependencies = [
  "objc2-avf-audio",
  "objc2-foundation",
  "objc2-speech",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "unicode-segmentation",
  "uuid",
+ "voiceport-control",
  "voiceport-core",
 ]
 

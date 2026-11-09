@@ -1,5 +1,58 @@
 # VoicePort 实施计划
 
+## 2026-11-09 当前返修：组合调用链 F1/F2
+
+本节优先于后文历史状态。freeze07 的组合独立评审已完成并 RETURNED：21项完整离线检查通过，但发现 CLI 清理观察把普通失败标为取消，以及 GUI 保存/删除在持久提交后凭据清理报错时未刷新来源目录。已核对140份封存证据、完整最终输入及产物后显式关闭现场评审；原审查者实际 exited/released，旧快照与失败不变。
+
+- 两处调用链修复已形成开发候选：CLI 先核对 generation，只有 Controller 最终 Idle 才结算取消；保存/删除均在传播事务错误前刷新目录，成功文案仅在成功时设置。
+- 开发定向控制通过普通错误/原始取消、重复显式观察、旧 generation 拒绝和保存/删除的提交后凭据删除故障；真实临时子进程已 reap/ESRCH。源服务与 Controller 使用实际生产字节，Keychain 为注入故障，未操作真实 GUI 或凭据。fmt/whitespace 通过；这些是开发自检，尚无修复版本独立接受。
+- 下一步保存逻辑提交、建立完整 freeze08，并沿原独立角色的新真实会话复核 F1/F2 与相邻路径；依据输入对应复用未变范围，构建最终实际 App。随后推送、核对精确新 HEAD 远端 CI、正常合并并同步 main。PR15 保持 draft；历史远端失败、AX permission_denied、真实录音/服务/投递未验继续保留。
+
+## 2026-11-09 当前组合：CLI/Skill 交付、终止确认返修与规则集成
+
+本节覆盖后文历史快照，全部旧失败、包和冻结保留。P1 来源身份、CI07 oracle 及两处夹具接线已在 freeze06 独立接受；现场评审已关闭。9bf5514 的远端 CI42512271396 仍失败，原生状态证据为组内成员 state=2，不能用本地绿色或早期 EPERM 解释结算。CLI 与使用文档已保存本地 checkpoint febe25d，三文件规则已保存250ef14；尚未推送，待 CI09 组合修复及新冻结核对后一起交付，避免对已知未修后端重复触发同类 CI。
+
+- CLI/Skill 原任务已正式 failed/BLOCKED：实现和开发检查交付，必需 GUI 证据受 Accessibility permission_denied 阻塞。21 步最终自检、232 次 Rust 测试通过、4 LoopTests、18 PackagingTests 与 73 次实际合成 CLI 调用已核对原始日志对应；整体集成仍保留 passed:false/exit1。协调核对5514封存证据、1096产品输入/377目录模式、34变更、源码与签名 App 归档、5产物；所有11个记录测试PID和私有socket均已无。未授予进一步 AX、系统权限、真实音频或账号操作。
+- 主工作区已按相同基线完整集成该34文件交付，并修正 README/SOLUTION 的旧 CLI 限制说明；这是待评审候选，未把工作任务完成当产品接受。GUI/CLI 使用 voiceport-app 与 voiceport 两个真实文件；Skill 在根 skills/voiceport 并随 CLI/App 分发。
+- CI09 已正式交付并停止写入，msg_7f3980583f3a 为 developer-validated/succeeded。协调核对181封存文件、1092项隔离输入、四份 before/final 快照、34组命令回执及原始输出，保留六个预期失败；final-checks 的33命令为最终检查执行前的时点计数。原始日志确证16 process、17 controller、library83/1ignored、六 Stop 与严格 all-target Clippy 通过，均属于隔离开发版本。四文件现已集成：三文件按相同9bf基线接纳，Controller 以9bf为共同祖先三方合并，保留已提交CLI策略；尚无组合构建或独立接受。
+- Magpie 三文件规则提案已核对61封存文件、目标 before/after 及补丁后集成，补齐当前动态调度、skills 清单和实际继任记录。精确 HEAD/测试 merge/run/attempt、单写者、独立复核、完整失败、一次有证据的基础设施重试和重型资源时段成为候选规则；未改 helper，不声称原生 cron stop-proof 或可执行 CI gate 已实现。
+- 下一步对组合代码、CLI/Skill恢复说明、文档和规则建立新完整冻结，派不同真实会话独立复核并执行一次完整离线验证，覆盖 Stopping、录音持有、CLI busy/quit/cancel。随后按持续授权推送并检查精确新 HEAD CI，满足门槛后正常合并和同步 main。PR15 保持 draft/阻塞；AX GUI 与真实识别效果仍未接受，无产品 PASS。
+
+## 2026-11-09 当前接续：来源身份返修、CI 复核与原 CLI 恢复
+
+以下状态覆盖后文旧快照，旧失败和报告保留。PR16 已独立接受、正常合并且 main CI 成功；本地 main 已 ff-only 同步，功能分支已合入最新 main。
+
+- PR15 全差异评审完成并退回重复菜单标题导致来源身份错配；旧冻结已显式关闭。已交付稳定 represented ID 修复及两处合并后测试夹具接线修正，原生菜单反例、library65/1ignored、storage12、delivery23、六项 Stop、fmt/严格 all-target clippy 均为开发自检。需要最终组合输入独立复核。
+- CI 测试 oracle 已用真实 owned zombie 控制证明 ESRCH-only 组检查过强；首个候选独立退回了 ESRCH PID 再出现时缺状态证据的问题，当前 CI07 窄修正对最终成员要求已验证 SZOMB 状态。11 scripted/5 native 通过仅为开发自检；新冻结独立复核及精确新 HEAD CI 待执行。历史远端组成员和单独 storage retained0 根因仍未证明。
+- 原 CLI/Skill Task、Dispatch、session、terminal 和独立工作区保持。经独立有限契约接受的六文件 helper 已在真实协作静止窗口安装，原备份/模式/完成标记已核对；真实 retained-session PreToolUse、当前 helper、实际 terminal 和 transcript 零计数已独立核对，解除其基础设施实现暂停。仍须实际交付 CLI/IPC/可分发 Skill 及独立验收，不把加载证明当产品完成。
+- 协调者继任已实际绑定原 Run、claim、确认投递并收到精确旧终端 ptyKilled 回执，阈值仍为初始加最多四次压缩；当前动态 loop 事件优先、20 分钟兜底，无原计时器自动迁移声明。原生/structured-chat/PreCompact 全生命周期和旧 reviewer 事件/边界计数不一致仍保留未验范围。
+- 下一步提交组合版本、推送并记录精确 HEAD CI，建立最终冻结和真实独立复核；原 CLI 在隔离工作区推进，重编译资源串行。Magpie 私有三文件规则候选尚未采用，不能称已部署。PR15 仍 draft，不合并未验版本，不宣布产品 PASS。
+
+## 2026-11-08 当前推进：插件、CLI/Skill 与自动轮换
+
+用户新增 CLI 控制 App 和配套可分发 Skill，继续原插件目标；同时要求协调者自动完成正常会话轮换并写入 loop 规则。历史会话只读，不恢复或修改。当前已绑定原插件 Run，未创建重复 Run，旧 VP013 lease 不接管。
+
+- R1（complete）：新协调会话真实 PreToolUse、terminal、transcript 初始零计数已核对；当前两次自然压缩，真实 PostCompact/SessionStart 已观察。不是已完成自动轮换的证明。
+- R2（complete，评审收尾）：freeze02 最终检查 matches:true；独立02正式 failed/BLOCKED、exited/released。现场评审已显式关闭，历史快照和报告保持。HTTP GUI 来源新增/编辑/选择/重启/合成样例/删除及已知 Keychain 修订清理有实测；GUI 导入确认归属与后续外部来源/错误/空结果/取消路径未完成。
+- R3（R1独立FIXED，部署D1-stage返修pending）：freeze04独立msg_00835240f08a完整评审，78helper/20独立R1控制通过，安装信封修复R1与原D1父路径逃逸FIXED；新proposal f984caf7…在os.replace边界会先安装被替换的staging symlink再拒绝，故部署整体RETURNED。39观察控制不抵消目标安全断言exit1。协调核对201hash/模式/字节及真实initial0/final0，最终freeze matches:true后显式关闭live评审，历史报告/快照保持。沿原已exited/released开发角色派仅私有新proposal返修，不重复改已通过helper；未真实register、CLI部署或自动生命周期。
+- R4（in_progress，保留已接受离线范围，修复新远端失败）：HTTP夹具经freeze03独立接受，节流9项/禁用guard负向101保留；checkpoint81c9341的17步独立通过与CI42499019278 success仅对应原提交。新68e2e6b的CI42502439010失败plugin_process进程回收errno1vs3（64pass/1fail/1ignored）；独立一次本地exact及12owned process观测未复现，原因未定。隔离CI开发task_81587872fb63/ctx_a9bb43af05f5正式failed/unresolved：本地65owned组与required workspace/fmt/clippy通过，未复现根因；已核对75封存项并整合strict errno即时捕获/分支PID归属诊断补丁，仍要求-1/ESRCH。下一步新冻结独立审查与新精确HEAD诊断CI补证，禁止原样盲重跑或声称已修复；原stale binary/历史失败保持，GUI/CLI/真实ASR不在离线接受范围。
+- R5（blocked，原任务保留）：CLI/Skill 开发位于独立工作区，尚未开始产品实现。helper 在无全局 lease 时提前返回，导致真实启动证明缺失。待经复核 helper 部署后补实际 hook 证明，沿原任务继续；不手造状态或改信任。
+- R6（pending）：集成 CLI/Skill 与修复，完整新冻结、不同真实会话独立验收、全量离线检查及新远端 CI；按持续授权完成正常 Git/PR/main 同步，再交付已验证 App。PR15 仍 draft，无产品 PASS。
+- R7（in_progress，用户新增CI loop/多agent方法改进）：规则task_a94ba83876a4/ctx_7dd1da129b80只写私有candidate，核对Magpie实际固定commit机制并完善精确HEAD远端CI修复、证据/停止条件、单writer隔离、逻辑任务多agent子分工及独立验证；整合前审查base/链接/与现有接口一致。CronCreate f0ad2ff1每20分钟兜底已启用（session-only/7天），其退休stop-proof与helper现有ScheduleWakeup语义的兼容缺口须明确修正/约束，不能称真实自动轮换通过。
+
+本轮工具差错：仓库根 CLAUDE.md 不存在，已转读现有角色/loop 契约；未创建替代规则。保留所有旧包，不自动录音、读真实凭据、上传真实音频或向真实目标输入。
+
+## 2026-11-08 前阶段记录：插件式转写来源与真实验证
+
+用户在自定义来源方案后明确要求实际实现并测试，随后要求类似 harness 的插件机制：一个插件代表一种接入方式，并 loop 持续完成。每次听写只使用一个来源；同一插件可配置多个独立来源。不要求安装 Orca，不扩展为多服务对比或词典。
+
+- P1（complete）：新Run run_a9b3754f7871已注册；插件/来源实例/能力/凭据边界和自包含交接已完成。当前协调者实际 session637eb70f、terminal term_dbb1ea5d、真实 hook helper014eeb1e及2次已完成压缩已核对；旧VP013 requested lease/attempt保留不接管。新目标产品关联unbound，基线main d3af863，分支feat/transcription-plugins，保留三项方案文档修改。
+- P2（complete，开发自检）：真实开发sessiondf6fa345/task_38af9f83182c/ctx_3f257aa3b76f正式worker_done msg_dce1e74219cf并停写。20项源码/文档/许可输入、61个macOS测试通过与1个原有真实模型测试忽略、完整17步通过；协调核对20项实际/快照字节、34份原始日志、3个产物与产品摘要1793d204…，未重跑开发测试。真实PreToolUse/helper/精确terminal/首次和最终0已核对，SessionStart未观察。只有开发自检，GUI及原生Keychain未验。
+- P3（in_progress，首轮BLOCKED后的返修）：checkpoint0277551已push，PR15 draft；完整freeze01由真实独立session5da9b40b审查，62个lib测试通过/1原有测试忽略、原生Keychain探针通过，但隔离HOME下GUI保存合成key进入系统授权等待，GUI评审未完成。真实failed/BLOCKED回执msg_bfb3a15a65aa，不能算PASS或完整RETURNED。测试PID45269经正常退出请求后ps确认已无；未操作系统认证、未猜删未知条目。CI42483256463为cancelled：两个取消/超时测试FAILED，响应边界测试挂起至取消，根因待诊断。两原worker均实际exited/released，freeze01当前matches true后显式关闭live评审，原快照/报告不改。新changed-spec开发successor session555e44ba/task_03ef6325c033/ctx_a3aa8344a7e6已msg_c86b86cba37c正式交付6项窄改并停写：受控服务有界I/O和异步收尾、取消/实际spawn PID同步、VOICEPORT_SOURCES_PATH。修前背压/提前取消挂起及Python PID竞争已复现，4次23项串并行与完整17步通过（64 macOS passed/1原有ignored），仅自检；协调首次核对6源码/快照、160封存文件、34完整入口日志和3产物hash/模式/字节、前后当前f8bc5108…一致，未重跑委派测试。先提交推送修复并触发新远端CI，再新完整冻结、真实独立GUI和反例验收。协调实际已3次完成压缩，未达最后一轮；旧生产App保持。
+- P4（pending）：验收后按持续授权正常commit/push/PR/CI/merge与main同步，交付验证过的新包并停止loop。不得用方案文档、编译或固定文本测试替代实际已实现能力/真实识别效果；未测真实录音及云端列明。
+
+边界：不自动录音、不读取真实账号/无关输入、不上传真实音频、不操作真实输入目标；合成音频与受控本机服务可用于验证。保留当前运行App和所有旧构建/快照/报告，不修改Orca模型、偏好或系统信任。
+
 ## 2026-11-08 当前任务：复用 Orca 本地语音模型与来源选择
 
 用户明确要求复用 Orca 已下载的本地语音模型，在原生设置中下拉选择单一转写来源；Paraformer 提供实时预览及本地最终结果，Whisper Tiny 停录后本地识别，保留 ChatGPT 选项，不做多源对比或词典。

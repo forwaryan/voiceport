@@ -8,7 +8,12 @@ rust-version.workspace = true
 name = "voiceport-rs"
 path = "src/main.rs"
 
+[[bin]]
+name = "voiceport"
+path = "src/voiceport.rs"
+
 [dependencies]
+voiceport-control = { path = "../voiceport-control" }
 serde_json.workspace = true
 voiceport-core = { path = "../voiceport-core" }
 tokio.workspace = true

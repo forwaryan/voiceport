@@ -30,8 +30,41 @@ pub struct Model {
 pub enum SessionSource {
     ChatGpt,
     Local(Model),
+    #[cfg(target_os = "macos")]
+    Plugin(Box<crate::plugin_runtime::Snapshot>),
 }
 impl SessionSource {
+    pub fn uses_system_speech(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.descriptor().capabilities.system_preview
+        }
+        #[cfg(not(target_os = "macos"))]
+        matches!(self, Self::ChatGpt)
+    }
+    #[cfg(target_os = "macos")]
+    pub fn descriptor(&self) -> crate::plugins::Manifest {
+        use crate::plugins::*;
+        let id = match self {
+            Self::ChatGpt => CHATGPT_PLUGIN,
+            Self::Local(m) => match m.kind {
+                ModelKind::Paraformer => PARA_PLUGIN,
+                ModelKind::Whisper => WHISPER_PLUGIN,
+            },
+            Self::Plugin(p) => return p.manifest.clone(),
+        };
+        builtins()
+            .into_iter()
+            .find(|p| p.id == id)
+            .expect("builtin descriptor")
+    }
+    #[cfg(target_os = "macos")]
+    pub fn pin(self) -> Result<Self, String> {
+        match self {
+            Self::Plugin(p) => Ok(Self::Plugin(Box::new(p.pin()?))),
+            other => Ok(other),
+        }
+    }
     pub fn is_local(&self) -> bool {
         matches!(self, Self::Local(_))
     }
@@ -111,12 +144,65 @@ impl Catalog {
             }
             return catalog;
         };
-        Self::discover(
+        let catalog = Self::discover(
             &PathBuf::from(home).join("Library/Application Support/orca/speech-models"),
             Path::new(RUNTIME_DIRECTORY),
             saved,
             std::env::consts::ARCH,
-        )
+        );
+        #[cfg(target_os = "macos")]
+        {
+            let mut catalog = catalog;
+            catalog.load_configured(saved);
+            catalog
+        }
+        #[cfg(not(target_os = "macos"))]
+        catalog
+    }
+    #[cfg(target_os = "macos")]
+    fn load_configured(&mut self, saved: &str) {
+        match crate::plugins::default_path().and_then(|path| crate::plugins::Store::load(&path)) {
+            Ok(store) => self.add_configured(&store),
+            Err(error) => {
+                self.entries.push(Entry {
+                    id: "configuration-error".into(),
+                    title: "自定义来源配置不可用".into(),
+                    detail: error.clone(),
+                    source: Err(error.clone()),
+                });
+                if saved != CHATGPT && !self.entries.iter().any(|e| e.id == saved) {
+                    self.entries.push(unavailable(saved, &error));
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    pub fn add_configured(&mut self, store: &crate::plugins::Store) {
+        for source in &store.sources {
+            self.entries.retain(|e| e.id != source.id);
+            let snapshot = crate::plugin_runtime::Snapshot::configured(store, source);
+            let detail = match &snapshot {
+                Ok(s) => format!(
+                    "{} · {} · 停止后转写；仅使用此来源，不启用系统语音预览。",
+                    s.manifest.name, s.manifest.version
+                ),
+                Err(e) => e.clone(),
+            };
+            self.entries.push(Entry {
+                id: source.id.clone(),
+                title: format!(
+                    "{}{}",
+                    source.name,
+                    if snapshot.is_ok() {
+                        ""
+                    } else {
+                        "（不可用）"
+                    }
+                ),
+                detail,
+                source: snapshot.map(|p| SessionSource::Plugin(Box::new(p))),
+            });
+        }
     }
     pub fn snapshot(&self, selected: &str) -> Result<SessionSource, String> {
         self.entries

@@ -4,7 +4,7 @@
 
 VoicePort 的产品目标是提供一个统一的桌面语音输入入口：**ChatGPT、微信语音或其他识别引擎，按你的习惯选择和替换。** 更换识别来源后，仍沿用同一套快捷键、录音、预览与输入流程，将文字送到正在使用的编辑器或终端，由你检查并发送。
 
-当前 macOS 开发版可在原生设置的「转写来源」下拉框中选择 **ChatGPT、Paraformer 本地流式或 Whisper Tiny 本地离线**。本地来源复用已安装的 Orca 模型与运行时，不联网；缺失的来源不会自动切换到云端。安装要求和限制见 [本地模型](docs/LOCAL_MODELS.md)。微信语音和通用自定义后端仍是产品方向；下图为早期概念示意。
+当前 macOS 开发实现支持选择 **ChatGPT、Paraformer 本地流式、Whisper Tiny 本地离线，以及自己配置的转写服务或插件来源**。一个插件定义接入方式，同一插件可以配置多个来源，每次听写只使用一个。通过「管理来源…」添加兼容 HTTP 服务或导入本机 JSONL 适配器，无需安装 Orca；见 [自定义来源](docs/CUSTOM_SOURCES.md) 和 [插件接入](docs/TRANSCRIPTION_PLUGINS.md)。两种内置本地来源仍复用 Orca 模型与运行时，要求见 [本地模型](docs/LOCAL_MODELS.md)。微信语音尚未接入；下图为早期概念示意。
 
 <p align="center">
   <img src="docs/images/voiceport-hero.png" alt="VoicePort 产品方向图：ChatGPT、微信语音与更多识别引擎汇入同一个语音输入入口，再将文字送到当前光标。ChatGPT 标为已接入，微信语音、其他引擎和切换能力标为规划中。" width="880">
@@ -24,7 +24,7 @@ VoicePort 的产品目标是提供一个统一的桌面语音输入入口：**Ch
 
 | 能力 | 使用体验与状态 |
 | --- | --- |
-| 识别来源下拉框 | 可选择 ChatGPT、已安装的 Paraformer 或 Whisper Tiny；每次听写仅使用一个来源。 |
+| 识别来源下拉框 | 可选择 ChatGPT、已安装的 Paraformer / Whisper，以及配置的 HTTP 或外部适配器来源；每次听写仅使用一个来源。 |
 | 全局快捷键 | 已实现。在目标应用中开始、结束听写，应用常驻菜单栏。 |
 | 本机实时预览 | Paraformer 提供本地流式文字；ChatGPT 可使用系统设备端预览；Whisper 无实时预览。 |
 | 停录后转写 | 由所选来源生成最终文字；本地来源全程在本机完成。 |
@@ -41,14 +41,15 @@ VoicePort 的产品目标是提供一个统一的桌面语音输入入口：**Ch
 | **Paraformer 本地流式** | 录音时持续产生部分文字，停止后在本地完成最终转写。 | 复用 Orca 已安装的中英双语模型，支持 arm64。 |
 | **Whisper Tiny 本地离线** | 停止后在本地分段识别，无实时预览。 | 复用 Orca 已安装的 int8 模型，支持 arm64。 |
 | **微信语音** | 作为可替换的识别来源，沿用相同快捷键和输入流程。 | 规划中，接入方式尚未确定。 |
-| **其他识别服务 / 自定义后端** | 为不同语言、识别偏好或部署需求提供更多选择。 | 扩展方向，尚无通用插件、配置界面或自动发现机制。 |
+| **兼容音频转写 HTTP** | 配置自己的本机或远程服务，停止后转写，无需 Orca 或 ChatGPT 登录。 | 开发实现：来源管理、独立 Bearer key、显式静音样例测试；见 [接入说明](docs/CUSTOM_SOURCES.md)。 |
+| **JSONL 本地适配器插件** | 导入插件清单，通过本机程序接入其他引擎，停止后转写。 | 开发实现：版本化协议、配置字段和受控子进程；见 [插件契约与参考程序](docs/TRANSCRIPTION_PLUGINS.md)。 |
 | **macOS 设备端识别** | 录音期间提供本机实时预览。 | 已实现；目前是预览环节，不能作为可切换的最终转写后端。 |
 
-当前版默认使用 ChatGPT，只有显式选择本地来源才改变数据去向。模型缺失或失败时会清楚报错，不自动回退；曾选中但丢失的模型仍显示为不可用。录音和重试固定使用开始时的来源与语言，更换设置不会重定向已有录音。“由你确认发送”的操作边界保持一致。
+当前版默认使用 ChatGPT。选择本地模型后音频在本机处理；选择自定义服务后发往配置地址；外部适配器执行用户确认的本机程序，可能联网。缺失、禁用或失败的来源会清楚报错，不自动切换。录音和重试固定使用开始时的来源、配置、凭据关联与语言，更换设置不会重定向已有录音。“由你确认发送”的操作边界保持一致。
 
 ## 快速开始
 
-以下步骤用于当前已经接入的 **ChatGPT 路径**。
+以下登录步骤用于 **ChatGPT 路径**。使用兼容服务或外部插件时可跳过 `codex login`，构建启动后按 [自定义来源](docs/CUSTOM_SOURCES.md) 配置；使用内置本地模型则按 [本地模型](docs/LOCAL_MODELS.md) 准备运行时与模型。
 
 ### 1. 准备环境
 
@@ -86,17 +87,17 @@ open dist/VoicePort.app
 
 如果右上角没有图标，请检查「系统设置 → 菜单栏」的显示开关。macOS 26 可能把终端启动的 VoicePort 归入启动应用（例如 Orca）的菜单栏组；此时 VoicePort 和该启动应用的显示开关都需要允许。菜单栏显示与「辅助功能」授权是两个独立设置。
 
-应用与 CLI 优先使用非空 `CODEX_HOME` 下的 `auth.json`，否则使用 `~/.codex/auth.json`；CLI 还支持优先级更高的 `--auth PATH`。目前只支持 ChatGPT 文件登录，尚不支持 API key、仅保存在 Keychain 中的登录或应用内刷新登录。
+ChatGPT 来源与 CLI 文件转写优先使用非空 `CODEX_HOME` 下的 `auth.json`，否则使用 `~/.codex/auth.json`；文件转写还支持优先级更高的 `--auth PATH`。此路径只支持 ChatGPT 文件登录，不支持用 API key 替代该登录或应用内刷新。macOS 自定义服务使用独立的可选 Bearer key，按来源保存于 Keychain；外部插件的 secret 字段同样独立保存，不使用或转发 Codex 登录。`voiceport sources` 与 `voiceport plugins` 通过本机 IPC 管理同一个 App 的来源、凭据事务和插件；完整命令见 [CLI 与 Skill](docs/CLI.md)。
 
 ### 3. 授予权限
 
 | 权限 | 用途 | 未授权时 |
 | --- | --- | --- |
 | 麦克风 | 录制你主动开始的语音。 | 无法录音。 |
-| 语音识别 | ChatGPT 来源的可选系统设备端预览；本地模型不申请此权限。 | ChatGPT 仍可停录后转写；本地来源不受影响。 |
+| 语音识别 | ChatGPT 来源的可选系统设备端预览；本地模型和自定义插件不申请此权限。 | ChatGPT 仍可停录后转写；其他来源不受影响。 |
 | 辅助功能 | 确认原输入框、光标和文字输入能力。 | 自动输入开启时，会在录音前提示处理授权；也可关闭自动输入，仅转写到面板。 |
 
-窗口分为 **听写** 和 **设置** 两个页签：听写页展示当前状态与本次文字，复制、取消、重试仅在适用时出现；完整诊断可从底部信息按钮查看。设置页使用原生开关及转写来源、语言、快捷键下拉选项；「刷新」重新检查已安装的本地模型，录音 / 转写期间不能更改设置。点击辅助功能一行的 **未授权 · 设置**，按提示在系统设置中允许当前的 VoicePort。也可先点击权限检查按钮（本地来源只检查麦克风），处理系统授权提示；这项显式权限准备不会开始录音。处理完权限后，回到目标应用，重新点好输入位置，再主动用快捷键或菜单开始听写。CLI 的 `doctor` 不申请或验证这些权限。
+窗口分为 **听写** 和 **设置** 两个页签：听写页展示当前状态与本次文字，复制、取消、重试仅在适用时出现；完整诊断可从底部信息按钮查看。设置页提供来源、语言、快捷键及「管理来源…」；可添加、编辑、删除来源或导入插件。保存不联网或执行插件。选中自定义来源后，可显式确认发送内置一秒静音样例；样例测试不启用麦克风或投递文字，也不能证明识别质量。录音 / 转写期间不能更改设置。点击辅助功能一行的 **未授权 · 设置**，按提示允许当前的 VoicePort。也可先点击权限检查按钮（本地和自定义来源只检查麦克风）；这项显式权限准备不会开始录音。处理完权限后，回到目标应用，重新点好输入位置，再主动用快捷键或菜单开始听写。CLI 的 `doctor` 不申请或验证这些权限。
 
 > **更新开发版后需要留意：** 本机包使用 ad-hoc 签名。更新程序后，辅助功能列表里的开关可能仍亮着，但旧授权已经失效。请移除旧 VoicePort 条目，再添加正在运行的 `dist/VoicePort.app` 并启用。应用会检查当前进程的实际权限。
 
@@ -115,7 +116,7 @@ open dist/VoicePort.app
   <img src="docs/images/voiceport-workflow.png" alt="产品目标的四步分镜：选择识别引擎、定位光标、说话、检查文字。ChatGPT 已接入；微信语音、其他引擎及切换能力标为规划中，最后仍由使用者自行发送。" width="880">
 </p>
 
-上图为早期概念示意；当前设置已有来源选择。**Paraformer 边说边在本机出字，Whisper Tiny 停止后本地识别，ChatGPT 则使用可选的系统设备端预览并在停止后上传转写。** 系统预览不可用时，ChatGPT 路径会说明原因并保留停录后转写；不会自动改用 Apple 云端语音识别。本地来源失败时不回退到云端。
+上图为早期概念示意；当前设置已有来源选择。**Paraformer 边说边在本机出字，Whisper Tiny 停止后本地识别，ChatGPT 使用可选的系统设备端预览并在停止后上传；自定义 HTTP / JSONL 插件第一版在停止后转写，无实时预览。** 系统预览不可用时，ChatGPT 路径会说明原因并保留停录后转写；不会自动改用 Apple 云端语音识别。所选来源失败时不自动切换到其他来源。
 
 不同输入位置有不同的处理方式：
 
@@ -135,7 +136,7 @@ open dist/VoicePort.app
 | --- | --- |
 | macOS 菜单栏应用 | 已提供源码构建；包括录音、本机预览、云端转写、结果面板和输入权限检查。 |
 | macOS 自动输入 | 已实现普通字段与 Orca 终端路径；具体应用兼容性和 Orca 完整语音输入仍需实测。 |
-| Rust 转写 CLI / 子进程 | 已实现文件转写、取消、手动重试和有界 JSONL 宿主协议。 |
+| Rust CLI / 子进程 | 提供文件转写和有界 JSONL 宿主协议；macOS 还可经本机 IPC 控制同一个 App、管理来源与插件，并取得版本匹配的 Skill。 |
 | Windows 桌面听写 | 开发中。采集所有权、后台执行和存储基础已合入；桌面 Start/Stop 尚未接通，不能作为可用的听写应用。 |
 
 Windows 的目标编译检查不等于实机运行通过；设备、NTFS 权限、完整链接与打包仍有未完成的验证。详见 [Windows 状态](docs/WINDOWS.md) 和 [跨平台路线](docs/CROSS_PLATFORM.md)。
@@ -167,7 +168,20 @@ Windows 的目标编译检查不等于实机运行通过；设备、NTFS 权限�
 
 ## 命令行使用
 
-Rust CLI 处理已有音频文件，不录音、不自动投递文字。macOS app 已实现录音、实时预览和受保护输入；具体应用兼容性与真实用户流程仍需验证。
+公开入口为 `voiceport`，原有 `voiceport-rs` 保持兼容。文件命令处理已有音频；macOS 的 `status`、`app`、`sources`、`plugins` 和 `dictation` 命令通过本机 Unix socket 复用正在运行 App 的 Controller、Store 和 Keychain 事务。命令不会隐式启动 App。只有明确执行 `dictation start --source ID` 才开始录音，该 CLI 操作固定关闭自动投递，并以返回的 operation ID 停止、取消和读取结果；不能接管无关 GUI 会话。真实录音、权限身份和具体应用兼容性仍需分别验证。
+
+打包后的两个独立可执行文件为 `Contents/MacOS/voiceport-app`（GUI）和 `Contents/MacOS/voiceport`（CLI）。构建后可先检查离线指南与正在运行的目标实例：
+
+```bash
+./target/release/voiceport --version
+./target/release/voiceport skills get cli
+./target/release/voiceport --json status
+./target/release/voiceport --json sources list
+```
+
+完整语法、JSON/退出码、隔离实例和凭据 stdin 用法见 [CLI 文档](docs/CLI.md)。可分发 Skill 位于 [skills/voiceport/SKILL.md](skills/voiceport/SKILL.md)，其命令与工作流引用同时嵌入 CLI 并打入 App 的 `Contents/Resources/skills/voiceport`；安装 Skill 不授权录音、上传或操作目标输入。
+
+原有文件转写和诊断命令保持：
 
 ```bash
 # 缓存为空或不完整时先准备依赖；已有完整缓存可直接离线构建
@@ -200,7 +214,7 @@ CARGO_NET_OFFLINE=true cargo build --workspace --release --locked
 
 文件存在不等于有效登录。`doctor` 不读取、解析或验证凭据，不登录、刷新或联网，也不申请或验证麦克风、语音识别及辅助功能权限；输出不包含选中路径、凭据或底层错误文本。上述四种状态均表示诊断完成，退出码为 **0**；参数错误仍为 **2**，实际转写运行错误为 **1**，取消为 **130**。真实账号、录音、云端转写和目标接收需分别验证。
 
-支持 m4a/mp4、wav、mp3、webm、ogg、flac，文件上限 **20 MB**。可使用 `--auth PATH` 指定登录文件。macOS 应用直接链接 Rust 核心；CLI 与其 JSONL 宿主协议是单独的集成入口。
+文件转写支持 m4a/mp4、wav、mp3、webm、ogg、flac，文件上限 **20 MB**，可使用 `--auth PATH` 指定登录文件。macOS 应用直接链接 Rust 核心；CLI 的 App 控制使用本机 socket，原有文件转写与 JSONL 宿主协议仍为独立入口。
 
 集成子进程可使用 `voiceport-rs host`。协议、消息大小、超时和会话边界见 [宿主协议](docs/HOST_PROTOCOL.md)。
 
@@ -236,6 +250,7 @@ macOS 原生模块位于 `crates/voiceport-macos`：AppKit 界面、AVAudio 录�
 | [方案说明](docs/SOLUTION.md) | 产品目标、技术方案与实现背景。 |
 | [跨平台路线](docs/CROSS_PLATFORM.md) | Rust 共享核心、原生 macOS 与 Windows 迁移范围。 |
 | [Windows 状态](docs/WINDOWS.md) | 已实现的基础能力与未完成的原生验证。 |
+| [CLI 与 Skill](docs/CLI.md) | 同一 App 的本机控制、来源/插件管理和可分发 Skill。 |
 | [宿主协议](docs/HOST_PROTOCOL.md) | Rust JSONL 子进程接口。 |
 | [进度记录](progress.md) / [任务计划](task_plan.md) | 历史开发、返修与阶段验收记录。 |
 | [开发 Loop](docs/LOOP_METHODS.md) / [会话轮换](.claude/COORDINATOR_ROTATION.md) | 协作、独立验证与交接规则。 |

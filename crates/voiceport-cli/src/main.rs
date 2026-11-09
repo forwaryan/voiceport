@@ -1,3 +1,4 @@
+mod commands;
 mod host;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
@@ -21,8 +22,9 @@ voiceport-rs transcribe AUDIO [--language zh] [--auth PATH]
 不刷新登录，不自动重传。接口与用量规则未公开保证。
 退出码：0 成功（含 doctor 诊断完成），1 运行错误，2 参数错误，130 取消。";
 
-const CAPABILITIES: &str = "CLI 仅处理已有音频文件，不录音、不自动投递文字。
-macOS app 已实现录音、实时预览和受保护输入；真实用户流程仍待验证。";
+const CAPABILITIES: &str = "便携文件命令范围：CLI 仅处理已有音频文件，不录音、不自动投递文字。
+macOS app 已实现录音、实时预览和受保护输入；真实用户流程仍待验证。
+新增 App 控制命令使用受限本机 socket；仅显式 dictation start 才录音，CLI 会话不自动投递文字。";
 
 enum Command {
     Help,
@@ -131,7 +133,11 @@ fn doctor(path: Option<PathBuf>) {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    let command = match parse(std::env::args_os().skip(1).collect()) {
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if let Some(code) = commands::run(&arguments) {
+        return ExitCode::from(code);
+    }
+    let command = match parse(arguments) {
         Ok(command) => command,
         Err(()) => {
             eprintln!("VoicePort: 参数无效。运行 voiceport-rs --help 查看用法。");
@@ -157,7 +163,7 @@ async fn main() -> ExitCode {
             .await
         }
         Command::Help => {
-            println!("{HELP}\n\n{CAPABILITIES}");
+            println!("{}\n\n{HELP}\n\n{CAPABILITIES}", commands::help());
             Ok(())
         }
         Command::Demo => {

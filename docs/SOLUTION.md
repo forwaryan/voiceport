@@ -1,16 +1,18 @@
 # VoicePort 完整方案
 
-## 当前实现（2026-11-06）
+## 当前实现（2026-11-08）
 
-VoicePort 的目标仍是可替换识别引擎、统一光标输入。目前最终转写只接 ChatGPT，微信语音和用户引擎切换仍未实现。
+VoicePort 的目标仍是可替换识别引擎、统一光标输入。macOS 开发实现保留 ChatGPT、Orca Paraformer 本地流式和 Orca Whisper Tiny 本地离线，新增插件式来源管理：一个插件定义接入方式，同一插件可保存多个独立来源，每次听写只使用一个。兼容 HTTP 来源和可导入的 JSONL 本机适配器无需 Orca；两种内置本地模型仍依赖规定的 Orca 运行时与布局，详见 [LOCAL_MODELS.md](LOCAL_MODELS.md)。
 
-macOS 应用的运行链路现为 `voiceport-macos → voiceport-core → 固定 ChatGPT 转写端点`。UI、菜单、Carbon 快捷键、AVAudioEngine 同 tap 录音/设备端 Speech、24kHz 单声道 AAC 编码、私有存储与 flock、AX 普通字段拥有范围编辑及 Orca 稳定前缀字符追加均在 Rust 中实现。应用不启动 Swift 或 Rust helper 子进程；旧 Swift 源码、测试和 SwiftPM 清单已从当前文件树移除，历史对照可从 Git 历史查看。
+macOS 应用按选定来源运行：ChatGPT 经 `voiceport-core` 请求固定 ChatGPT 转写端点；两种本地模型通过后台原生桥接调用已安装的 sherpa-onnx 运行时，不读取 ChatGPT 登录或上传音频。UI、菜单、Carbon 快捷键、AVAudioEngine 录音与 PCM 分流、24kHz 单声道 AAC 编码、可选设备端 Speech、私有存储与 flock、AX 普通字段拥有范围编辑及 Orca 稳定前缀字符追加均在 Rust 中实现。内置来源不启动 Swift 或 Rust helper；用户导入并启用的 JSONL 插件则在后台执行明确确认的本机程序。HTTP 插件使用独立客户端和来源凭据，不转发 Codex 登录；通用 HTTP / JSONL 第一版只支持停止后转写，Paraformer 保留实时能力。旧 Swift 源码、测试和 SwiftPM 清单已从当前文件树移除，历史对照可从 Git 历史查看。
 
 会话通过递增 generation 拒绝迟到权限与识别回调；录音仅在主动操作后打开。云端任务在后台线程执行，录音 Arc 租约保持到工作资源释放后才回报完成。取消先使会话失效，界面继续轮询停止确认；手动重试清除旧输入目标，不把旧音频的结果写入新焦点。设备端 Speech 不可用时继续录音并等停录后转写，不回退 Apple 云端识别。
 
 普通字段每次更新检查焦点、选区和前后文，只改本次拥有的文字；终端只追加、不删除、不回车，用户活动使未发送部分停止。最终结果无法安全改写时保留面板。录音存储使用独立 `io.voiceport.rust-recordings-v1` 缓存域，避免迁移时触碰运行中的旧版；失败录音只允许显式重试，启动清理仅针对严格超过 24 小时且可确认归属/未占用的已知残留。
 
 默认打包和验证全部使用 Cargo，旧测试兼容脚本也转向 Rust。构建细节见 [PACKAGING.md](PACKAGING.md)，实际测试和仍未执行的真实语音/账号/Orca 验收见 [VALIDATION.md](VALIDATION.md)。Windows 的既有阶段及未验边界独立保留。
+
+自定义来源的添加、编辑、删除及显式样例测试见 [CUSTOM_SOURCES.md](CUSTOM_SOURCES.md)；版本化清单、配置字段、JSONL 协议和可实际加载的参考适配器见 [TRANSCRIPTION_PLUGINS.md](TRANSCRIPTION_PLUGINS.md)。保存和导入不执行插件或联网，密钥使用每来源独立 Keychain 引用，取消保持 busy 直至后台释放。开发自检与独立验收、真实 GUI / 录音 / 服务质量 / 目标接收分别记录，不能互相替代；现有 ChatGPT 客户端仍保持固定端点。
 
 ## 历史方案与验收背景
 
@@ -55,9 +57,17 @@ M0–M3 是本地可独立实施范围。M4 中用户声音、账号调用和受
 
 ## 3. 技术选型
 
+当前 macOS 产品使用 Rust 原生 AppKit 应用，默认启动不依赖旧 Swift 或转写子进程。`voiceport` 是公开 CLI，`voiceport-rs` 保留文件转写、demo、doctor 和 JSONL host 兼容入口；macOS App 控制经共享 `voiceport-control` 协议和受限本机 Unix socket，复用同一个 Controller、来源 Store 与 Keychain 事务。CLI 支持状态、窗口、来源/插件管理及显式听写操作，不隐式启动 App；CLI 听写按 operation ID 管理且固定关闭自动投递。Skill 位于根目录 `skills/voiceport/`，版本匹配的指南嵌入 CLI 并随 App 分发，见 [CLI 与 Skill](CLI.md)。
+
+`VoicePort.app` 内使用不同叶名称 `Contents/MacOS/voiceport-app` 与 `Contents/MacOS/voiceport`，避免默认大小写不敏感卷上的 GUI/CLI 文件冲突；二者分别匹配对应的 Cargo 产物并验证签名。原生权限、真实语音和目标接收仍需分别验收，合成 IPC/服务检查不代表 GUI 或真实录音通过。
+
+### 历史 Swift 首版选型
+
+以下条目及目录树记录最初设计，已被当前 Rust 原生实现替代；历史检查不作为新版本验收。
+
 - SwiftPM，macOS 13+，Swift 6；首版本机 Apple Silicon 构建，Intel 构建与发行待验证。
 - `VoicePortCore`：Foundation 核心库，隔离认证、HTTP、错误和投递策略，便于离线测试。
-- `voiceport-cli`：CLI，提供 `demo`、`doctor` 和 `transcribe`，便于同音频对照与诊断。CLI 与应用二进制使用不同名称，避免 macOS 默认大小写不敏感磁盘将 `voiceport` / `VoicePort` 视作同一路径。
+- 历史 `voiceport-cli`：首版提供 `demo`、`doctor` 和 `transcribe`，便于同音频对照与诊断。当前公开 Rust CLI 还提供同一 App 的控制和 Skill，实际包内名称见本节开头；不能在默认大小写不敏感卷上同时安装仅大小写不同的 `voiceport` / `VoicePort`。
 - `VoicePort`：AppKit 菜单栏和全局快捷键；SwiftUI 结果/设置面板；AVFoundation 录音；Accessibility/CGEvent 粘贴。
 - Swift/macOS 基线不添加第三方运行时依赖。Rust 新版本的依赖与范围见下节；脚本负责 .app 打包、验证和开发 loop 状态记录。
 - 本机 Command Line Tools 缺少 XCTest / Swift Testing，因此核心检查采用 `bash scripts/test_core.sh`：将核心源文件与独立断言程序一并编译执行。公开 API 不因测试暴露内部认证细节；`python3 -I scripts/verify.py` 汇总完整验证。首版不以 `swift test` 作为入口。
@@ -79,7 +89,7 @@ automation/              开发任务定义
 
 ### Rust 新版本切片（VP-009）
 
-Rust转写由根Cargo workspace的 `crates/voiceport-core` 和 `crates/voiceport-cli` 提供，二进制 `voiceport-rs`，Rust 1.95+ / edition 2024。VP-013另新增开发中的 `crates/voiceport-windows`：直接复用核心API的控制器、PCM WAV及显式--run的Win32托盘/消息循环/快捷键动作/手动复制壳已有部分编译/测试证据；完整默认Windows all-target类型检查已通过，实际链接仍缺GNU运行库，没有PE成品和Windows运行，录音/安全存储等平台能力未完成，后台转写调度已交付但未通过独立验收，见 [Windows进展](WINDOWS.md)。核心已实现文件登录与固定端点转写；CLI 已实现 help/demo/doctor/transcribe。VP-009 的 59 文件 freeze-01 已通过本机离线独立验收，协调者核对完整字节与实际日志后完成账本。36 项既有检查、8 组独立反例、37 个 release CLI 用例、真实 release SIGINT 130 和 4 项 loop 回归通过，边界见验证记录。VP-010 会话状态机与有界 JSONL 也已通过本机离线独立验收。VP-011 已把 .app 默认转写切换为打包内 Rust host，修复后的 freeze-02 已完成独立离线验收与协调核对；VP-012完整开发包、入口及依赖许可已通过freeze-02独立验收并完成账本，当前VP-013 Windows系统适配的部分freeze-01已独立退回，确认Actions取消后普通轮询不恢复停止状态，任务释放后新录音仍Busy；原开发交付修复后，新完整freeze-02已由原独立会话亲自确认缺陷修复和相邻状态行为，无新已实现范围阻断；原11断言修前101历史保留，当前独立执行0，当前Mac25步/52Rust及完整Windows目标检查通过，协调完整核对后接受本次返修阶段检查。完整VP-013仍未接受。续作03已交付生产后台执行器、结果回收与显式手动重试：进程单worker许可和完成槽保留唯一票据到实际线程结束，取消/退出先失效，手动Retry保留路径语言且不自动投递；异常owner drop通过有界进程持有保留活线程及录音引用，后续显式提交才回收已结束线程。该实现的完整freeze-03已由原独立会话以VP013-I-002退回：is_finished可先于线程局部析构完成，消息线程在Poll/取消Poll/orphan reap同步join，明确门闩反例三路均等待释放，成功预期0实际1。独立53项Rust、Mac25步和完整Windows默认目标检查仍通过；协调核对完整冻结/历史/1489新证据后真实retry/start新attempt，原开发须将可能等待的join移到受控后台路径或证明实际OS停止，保证消息线程不等待并保留唯一票据/File/许可到真实停止。不能只检查结果槽或计时后释放；原开发返修02已交付并通过协调材料核对：单一进程级清理线程启动至多一个worker并真实join，release/acquire停止确认后才准许消费Job/File/许可；一条闲置清理线程随进程保留，初始化失败不启动worker，异常owner仍有界持有。新增真实TLS及发布后panic检查，最终54Rust/fmt/严格clippy/完整Windows默认目标检查通过。原样after探针仍因孤立任务即时成功假设退出101，保留失败；仅恢复尾增加显式Retry的适配三处原响应断言均通过，原11断言保持。新设计的初始化、确认时序、清理线程退出和异常资源边界仍须原独立在新完整冻结自行复核。Windows类型检查不能代替完整链接/实机或录音/安全存储/保护投递及打包验收。
+Rust转写由根Cargo workspace的 `crates/voiceport-core` 和 `crates/voiceport-cli` 提供，二进制 `voiceport-rs`，Rust 1.95+ / edition 2024。VP-013另新增开发中的 `crates/voiceport-windows`：直接复用核心API的控制器、PCM WAV及显式--run的Win32托盘/消息循环/快捷键动作/手动复制壳已有部分编译/测试证据；完整默认Windows all-target类型检查已通过，实际链接仍缺GNU运行库，没有PE成品和Windows运行，录音/安全存储等平台能力未完成，后台转写调度已交付但未通过独立验收，见 [Windows进展](WINDOWS.md)。VP-009 核心切片实现文件登录与固定端点转写，当时的 CLI 范围为 help/demo/doctor/transcribe；后续 macOS App 控制、来源/插件命令和 Skill 见本节开头与 [CLI 文档](CLI.md)。VP-009 的 59 文件 freeze-01 已通过本机离线独立验收，协调者核对完整字节与实际日志后完成账本。36 项既有检查、8 组独立反例、37 个 release CLI 用例、真实 release SIGINT 130 和 4 项 loop 回归通过，边界见验证记录。VP-010 会话状态机与有界 JSONL 也已通过本机离线独立验收。VP-011 已把 .app 默认转写切换为打包内 Rust host，修复后的 freeze-02 已完成独立离线验收与协调核对；VP-012完整开发包、入口及依赖许可已通过freeze-02独立验收并完成账本，当前VP-013 Windows系统适配的部分freeze-01已独立退回，确认Actions取消后普通轮询不恢复停止状态，任务释放后新录音仍Busy；原开发交付修复后，新完整freeze-02已由原独立会话亲自确认缺陷修复和相邻状态行为，无新已实现范围阻断；原11断言修前101历史保留，当前独立执行0，当前Mac25步/52Rust及完整Windows目标检查通过，协调完整核对后接受本次返修阶段检查。完整VP-013仍未接受。续作03已交付生产后台执行器、结果回收与显式手动重试：进程单worker许可和完成槽保留唯一票据到实际线程结束，取消/退出先失效，手动Retry保留路径语言且不自动投递；异常owner drop通过有界进程持有保留活线程及录音引用，后续显式提交才回收已结束线程。该实现的完整freeze-03已由原独立会话以VP013-I-002退回：is_finished可先于线程局部析构完成，消息线程在Poll/取消Poll/orphan reap同步join，明确门闩反例三路均等待释放，成功预期0实际1。独立53项Rust、Mac25步和完整Windows默认目标检查仍通过；协调核对完整冻结/历史/1489新证据后真实retry/start新attempt，原开发须将可能等待的join移到受控后台路径或证明实际OS停止，保证消息线程不等待并保留唯一票据/File/许可到真实停止。不能只检查结果槽或计时后释放；原开发返修02已交付并通过协调材料核对：单一进程级清理线程启动至多一个worker并真实join，release/acquire停止确认后才准许消费Job/File/许可；一条闲置清理线程随进程保留，初始化失败不启动worker，异常owner仍有界持有。新增真实TLS及发布后panic检查，最终54Rust/fmt/严格clippy/完整Windows默认目标检查通过。原样after探针仍因孤立任务即时成功假设退出101，保留失败；仅恢复尾增加显式Retry的适配三处原响应断言均通过，原11断言保持。新设计的初始化、确认时序、清理线程退出和异常资源边界仍须原独立在新完整冻结自行复核。Windows类型检查不能代替完整链接/实机或录音/安全存储/保护投递及打包验收。
 
 当前返修03更新：freeze-04已由原独立以VP013-I-003退回，合法清理线程仍在TLS中可领取请求时的is_finished推断会误消费Job并panic。现以UI和请求显式双重Job/许可所有权替代推断，清理请求真实销毁或后台实际join后才释放并确认；健康状态绑定真实receiver生命周期。UI owner丢失后清理侧也可在真实停止后自行释放，无需另一次UI回收。原清理TLS四例自检均0、健康后续请求可执行；最终55Rust/fmt/严格clippy/完整Windows默认目标检查0。完整freeze-05已由原独立亲自确认原样清理TLS四例及新所有权/健康后续/丢失循环/自动释放控制通过，当前Mac25步55Rust及完整Windows默认目标检查0。协调核对完整冻结/证据后接受返修阶段；全产品未接受，旧freeze和失败保持。下一实施切片先补Windows私有存储与held lease，设备采集和Start/Stop接线须在安全存储边界成立后推进；Windows原生运行分别留证。
 
@@ -93,7 +103,7 @@ Rust 保留逐请求重读、API-key 拒绝、JWT 到期 30 秒余量、安全�
 
 Rust 实际读取音频不超过 20,000,000 字节，认证文件和保留的响应正文各不超过 1,000,000 字节；正文超限 chunk 不追加，不把缓冲限制写成精确网络收包限制。连接上限 15 秒、每次读取停顿上限 90 秒、请求至正文读取总上限 110 秒；与 Swift URLSession 计时语义有差异。本地同步文件读取发生在 HTTP 计时前，有字节限制和前后取消检查，但单次文件调用不能中途取消，文件内容/身份也不承诺在同 UID 并发修改下原子。网络等待及逐 chunk 读取支持取消；CLI Ctrl-C 退出 130，无法撤回已被服务接收的音频。
 
-CLI 不录音或自动投递；`demo` 无网络/登录读取，`doctor` 只看文件是否存在，不证明有效。成功退出 0、运行错误 1、参数错误 2。Windows完整默认目标类型检查已通过，链接/运行及真实云端仍未验证；macOS 宿主集成已独立离线验收，完整开发包已在VP-012 freeze-02通过独立离线验收，具体边界见 [跨平台路线](CROSS_PLATFORM.md) 和 [验证记录](VALIDATION.md)。
+便携文件转写命令不录音或自动投递；`demo` 无网络/登录读取，`doctor` 只检查文件系统元数据，不证明登录有效。该入口成功退出 0、运行错误 1、参数错误 2。当前 macOS App 控制另有 missing/busy/confirmation 等稳定退出码，只有显式 `dictation start --source ID` 才录音，且固定关闭自动投递，完整语法与状态语义见 [CLI 文档](CLI.md)。Windows完整默认目标类型检查已通过，链接/运行及真实云端仍未验证；历史 macOS 宿主集成与 VP-012 freeze-02 开发包的离线接受只对应各自冻结，不能覆盖新增 CLI/IPC、组合修复或 GUI 验收，具体边界见 [跨平台路线](CROSS_PLATFORM.md) 和 [验证记录](VALIDATION.md)。
 
 ### Rust 会话与 JSONL 子进程（VP-010 本机离线独立验收通过）
 
