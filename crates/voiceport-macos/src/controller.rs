@@ -1715,7 +1715,16 @@ mod tests {
             assert!(self.recording.upgrade().is_some() && self.path.exists() && self.held());
         }
         fn assert_released(&self) {
-            assert!(self.recording.upgrade().is_none() && !self.path.exists() && !self.held());
+            assert!(self.recording.upgrade().is_none(), "recording still owned");
+            assert!(!self.path.exists(), "recording file still exists");
+            // A concurrent test's fork can inherit the lease until exec closes
+            // CLOEXEC descriptors. Ownership and unlink must be immediate; only
+            // this process-wide descriptor inheritance gets a bounded wait.
+            let deadline = Instant::now() + std::time::Duration::from_secs(2);
+            while self.held() {
+                assert!(Instant::now() < deadline, "recording lease still held");
+                std::thread::yield_now();
+            }
         }
     }
     fn dispatch_cleanup_control(
