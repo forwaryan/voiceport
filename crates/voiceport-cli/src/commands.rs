@@ -2,10 +2,34 @@
 use serde_json::json;
 use std::{collections::BTreeMap, ffi::OsString, path::PathBuf};
 use voiceport_control::{Action, Response};
-const CORE: &str = include_str!("../../../skills/voiceport/SKILL.md");
-const CLI: &str = include_str!("../../../skills/voiceport/references/cli.md");
-const WORKFLOWS: &str = include_str!("../../../skills/voiceport/references/workflows.md");
-const HELP: &str = "voiceport [--json] [--socket ABSOLUTE_PATH] COMMAND\n\nstatus | app status/show/quit\nsources list/show/add/update/remove/select/secret/test\nplugins list/show/import\ndictation start/stop/cancel/result\nskills list | skills get [core|cli|workflows]\n--version\n\nUse voiceport skills get cli for complete arguments.\nApp control requires the running macOS App at the chosen socket.\nNo command implicitly launches, records, uploads audio or delivers text.\nOnly dictation start records; sources test requires --accept-upload.\nLegacy help/host/demo/doctor/transcribe are also available.";
+const GUIDES: &[(&str, &str)] = &[
+    ("core", include_str!("../../../skills/voiceport/SKILL.md")),
+    (
+        "cli",
+        include_str!("../../../skills/voiceport/references/cli.md"),
+    ),
+    (
+        "workflows",
+        include_str!("../../../skills/voiceport/references/workflows.md"),
+    ),
+    (
+        "plugins",
+        include_str!("../../../skills/voiceport-plugins/SKILL.md"),
+    ),
+    (
+        "plugin-examples",
+        include_str!("../../../skills/voiceport-plugins/references/examples.md"),
+    ),
+    (
+        "plugin-protocol",
+        include_str!("../../../docs/TRANSCRIPTION_PLUGINS.md"),
+    ),
+    (
+        "plugin-template",
+        include_str!("../../../skills/voiceport-plugins/templates/json_http_adapter.py"),
+    ),
+];
+const HELP: &str = "voiceport [--json] [--socket ABSOLUTE_PATH] COMMAND\n\nstatus | app status/show/quit\nsources list/show/add/update/remove/select/secret/test\nplugins list/show/import\ndictation start/stop/cancel/result\nskills list | skills get [GUIDE]\nGuides: core, cli, workflows, plugins, plugin-examples, plugin-protocol, plugin-template\n--version\n\nUse voiceport skills get cli for complete arguments.\nApp control requires the running macOS App at the chosen socket.\nNo command implicitly launches, records, uploads audio or delivers text.\nOnly dictation start records; sources test requires --accept-upload.\nLegacy help/host/demo/doctor/transcribe are also available.";
 fn invalid() -> Response {
     Response::error(
         "invalid_arguments",
@@ -89,16 +113,14 @@ fn execute(mut args: Vec<String>) -> Result<Response, Response> {
     if args[0] == "skills" {
         return match args.get(1).map(String::as_str) {
             Some("list") if args.len() == 2 => Ok(Response::ok(
-                json!({"version":env!("CARGO_PKG_VERSION"),"skills":["core","cli","workflows"]}),
+                json!({"version":env!("CARGO_PKG_VERSION"),"skills":GUIDES.iter().map(|(name, _)| *name).collect::<Vec<_>>()}),
             )),
             Some("get") if (2..=3).contains(&args.len()) => {
                 let guide = args.get(2).map_or("core", String::as_str);
-                let text = match guide {
-                    "core" => CORE,
-                    "cli" => CLI,
-                    "workflows" => WORKFLOWS,
-                    _ => return Err(invalid()),
-                };
+                let text = GUIDES
+                    .iter()
+                    .find_map(|(name, text)| (*name == guide).then_some(*text))
+                    .ok_or_else(invalid)?;
                 Ok(Response::ok(
                     json!({"version":env!("CARGO_PKG_VERSION"),"guide":guide,"text":text}),
                 ))

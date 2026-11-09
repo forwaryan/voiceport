@@ -21,12 +21,23 @@ fn json(args: &[&str], exit: i32) -> serde_json::Value {
 }
 #[test]
 fn bundled_guides_equal_repository_single_source_offline() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/voiceport");
-    for (name, file) in [
-        ("core", "SKILL.md"),
-        ("cli", "references/cli.md"),
-        ("workflows", "references/workflows.md"),
-    ] {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let guides = [
+        ("core", "skills/voiceport/SKILL.md"),
+        ("cli", "skills/voiceport/references/cli.md"),
+        ("workflows", "skills/voiceport/references/workflows.md"),
+        ("plugins", "skills/voiceport-plugins/SKILL.md"),
+        (
+            "plugin-examples",
+            "skills/voiceport-plugins/references/examples.md",
+        ),
+        ("plugin-protocol", "docs/TRANSCRIPTION_PLUGINS.md"),
+        (
+            "plugin-template",
+            "skills/voiceport-plugins/templates/json_http_adapter.py",
+        ),
+    ];
+    for (name, file) in guides {
         let response = json(&["--json", "skills", "get", name], 0);
         assert_eq!(
             response["data"]["text"].as_str().unwrap(),
@@ -38,11 +49,12 @@ fn bundled_guides_equal_repository_single_source_offline() {
         1
     );
     assert_eq!(
-        json(&["--json", "skills", "list"], 0)["data"]["skills"]
-            .as_array()
-            .unwrap()
-            .len(),
-        3
+        json(&["--json", "skills", "list"], 0)["data"]["skills"],
+        serde_json::json!(guides.map(|(name, _)| name))
+    );
+    assert_eq!(
+        json(&["--json", "skills", "get"], 0)["data"]["text"],
+        std::fs::read_to_string(root.join("skills/voiceport/SKILL.md")).unwrap()
     );
 }
 #[test]
@@ -54,6 +66,8 @@ fn invalid_automation_never_starts_app_or_records() {
         vec!["--json", "plugins", "import"],
         vec!["--json", "--json", "status"],
         vec!["--json", "--socket"],
+        vec!["--json", "skills", "get", "unknown"],
+        vec!["--json", "skills", "get", "plugins", "extra"],
     ] {
         assert_eq!(json(&args, 2)["error"]["code"], "invalid_arguments");
     }

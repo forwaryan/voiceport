@@ -68,16 +68,18 @@ fn remove(d: &Delegate, store: &mut Store, path: &Path, id: &str) -> Result<(), 
     d.with_controller(|c| c.refresh_catalog());
     result
 }
-fn import(d: &Delegate, store: &mut Store, path: &Path) -> Result<(), String> {
+fn import(d: &Delegate, store: &mut Store, path: &Path) -> Result<Option<String>, String> {
     let panel = NSOpenPanel::openPanel(d.mtm());
     panel.setCanChooseFiles(true);
     panel.setCanChooseDirectories(false);
     panel.setAllowsMultipleSelection(false);
+    panel.setTitle(Some(ns_string!("选择 VoicePort 插件清单")));
+    panel.setPrompt(Some(ns_string!("审阅插件")));
     panel.setMessage(Some(ns_string!(
-        "选择本机 JSON 插件清单；不会安装或下载程序。"
+        "选择插件作者提供的 .json 清单；适配器程序须已安装在本机。下一步将展示插件和程序信息，确认后才导入。不会下载或运行程序。"
     )));
     if panel.runModal() != 1 {
-        return Ok(());
+        return Ok(None);
     }
     let file = panel
         .URL()
@@ -97,10 +99,12 @@ fn import(d: &Delegate, store: &mut Store, path: &Path) -> Result<(), String> {
     );
     if alert(d, "确认导入外部插件", &detail, &["取消", "导入此清单"]).runModal() != 1001
     {
-        return Ok(());
+        return Ok(None);
     }
+    let id = manifest.id.clone();
     store.import(manifest)?;
-    save(d, store, path)
+    save(d, store, path)?;
+    Ok(Some(id))
 }
 fn input(
     d: &Delegate,
@@ -202,23 +206,47 @@ fn edit_with_plugin(
         height - 48.,
         false,
     );
+    name.setPlaceholderString(Some(ns_string!("例如：我的转写服务")));
     let mut fields = vec![];
     for (i, f) in plugin.fields.iter().enumerate() {
         let y = height - 102. - i as f64 * 54.;
         let value = retained
             .and_then(|s| s.config.get(&f.id))
             .map_or("", String::as_str);
+        let field_label = if plugin.adapter == Adapter::Http {
+            match f.id.as_str() {
+                "endpoint" => "完整转写接口地址",
+                "model" => "模型 ID（按服务商文档填写）",
+                "api_key" => "API Key",
+                _ => &f.label,
+            }
+        } else {
+            &f.label
+        };
+        let has_key = retained.is_some_and(|s| s.credential_refs.contains_key(&f.id));
         let label = format!(
             "{}{}{}",
-            f.label,
+            field_label,
             if f.required { " *" } else { "" },
-            if f.kind == FieldKind::Secret {
+            if f.kind == FieldKind::Secret && has_key {
                 "（留空保留已有密钥）"
+            } else if !f.required {
+                "（可选）"
             } else {
                 ""
             }
         );
         let control = input(d, &view, &label, value, y, f.kind == FieldKind::Secret);
+        if plugin.adapter == Adapter::Http {
+            let placeholder = match f.id.as_str() {
+                "endpoint" => "例如：https://api.example.com/v1/audio/transcriptions",
+                "model" => "例如：whisper-1；以服务商提供的模型 ID 为准",
+                "api_key" if has_key => "已保存；留空保留，输入新值则替换",
+                "api_key" => "服务要求鉴权时填写；不是 ChatGPT 登录密码",
+                _ => "",
+            };
+            control.setPlaceholderString(Some(&NSString::from_str(placeholder)));
+        }
         let remove = if f.kind == FieldKind::Secret {
             Some(checkbox(
                 d,
@@ -235,12 +263,12 @@ fn edit_with_plugin(
     let enabled = checkbox(
         d,
         &view,
-        "显式启用此来源",
+        "启用此来源（保存后可在听写页选择）",
         old.as_ref().is_some_and(|s| s.enabled),
         rect(0., 0., 300., 26.),
     );
     let detail = format!(
-        "插件：{} · {}\n{}\n配置只保存 Keychain 引用。保存不执行插件、不发送音频；一段录音只使用选中来源。",
+        "插件：{} · {}\n{}\n服务信息保存在本机，密钥独立保存在系统钥匙串。保存不执行插件、不发送音频。",
         plugin.name,
         plugin.version,
         if let Some(p) = &plugin.program {
@@ -251,10 +279,17 @@ fn edit_with_plugin(
                 serde_json::to_string(&p.args).unwrap_or_default()
             )
         } else {
-            "按完整地址 POST multipart；远程 HTTPS，本机可用 loopback HTTP。".into()
+            "需要支持 OpenAI 兼容音频转写的服务。地址须包含 /v1/audio/transcriptions 等完整接口路径，不能只填官网或控制台地址。\n填写服务地址、模型 ID 和所需的 API Key；保存并启用后，回听写页选择此来源。保存不测试连接。远程须为 HTTPS，本机可用 loopback HTTP。".into()
         }
     );
-    let a = alert(d, "配置转写来源", &detail, &["保存", "取消"]);
+    let title = if old.is_some() {
+        "编辑转写来源"
+    } else if plugin.adapter == Adapter::Http {
+        "连接兼容转写 API"
+    } else {
+        "配置导入的插件"
+    };
+    let a = alert(d, title, &detail, &["保存来源", "取消"]);
     let scroll = NSScrollView::initWithFrame(
         NSScrollView::alloc(d.mtm()),
         rect(0., 0., 500., height.min(380.)),
