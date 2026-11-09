@@ -14,6 +14,7 @@ use objc2_foundation::{
 use std::cell::{Cell, OnceCell, RefCell};
 mod control;
 mod picker;
+mod quick_panel;
 mod source_manager;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,8 @@ struct Ivars {
     controller: RefCell<Option<Controller>>,
     control: RefCell<control::Control>,
     status: OnceCell<Retained<NSStatusItem>>,
+    quick_panel: OnceCell<quick_panel::QuickPanel>,
+    context_menu: OnceCell<Retained<NSMenu>>,
     menu_toggle: OnceCell<Retained<NSMenuItem>>,
     menu_state: OnceCell<Retained<NSMenuItem>>,
     menu_shortcut: OnceCell<Retained<NSMenuItem>>,
@@ -56,6 +59,7 @@ struct Ivars {
     cancel: OnceCell<Retained<NSButton>>,
     copy: OnceCell<Retained<NSButton>>,
     window: OnceCell<Retained<NSWindow>>,
+    show_window_on_launch: Cell<bool>,
     message: OnceCell<Retained<NSTextField>>,
     details: OnceCell<Retained<NSTextField>>,
     transcript: OnceCell<Retained<NSTextView>>,
@@ -94,11 +98,15 @@ define_class!(
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn launched(&self, _notification: &NSNotification) {
             self.build_menu();
-            self.show_window();
+            if self.ivars().show_window_on_launch.get() {
+                self.show_window();
+            } else {
+                self.refresh();
+            }
         }
         #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
         fn reopen(&self, _app: &NSApplication, _visible: bool) -> bool {
-            self.show_window();
+            self.show_quick_panel();
             false
         }
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
@@ -157,6 +165,16 @@ define_class!(
         #[unsafe(method(copyText:))]
         fn copy_action(&self, _sender: Option<&AnyObject>) {
             self.with_controller(|c| { c.message = if Delivery::copy(&c.transcript) { "文字已复制。" } else { "复制失败，请选中文字手动复制。" }.into(); }); self.refresh();
+        }
+        #[unsafe(method(showQuickPanel:))]
+        fn quick_panel_action(&self, _sender: Option<&AnyObject>) { self.toggle_quick_panel(); }
+        #[unsafe(method(selectQuickSource:))]
+        fn quick_source_action(&self, sender: &NSButton) { self.select_quick_source(sender); }
+        #[unsafe(method(quickManageSources:))]
+        fn quick_manage_action(&self, _sender: Option<&AnyObject>) {
+            self.close_quick_panel();
+            self.show_window(); self.select_page(true);
+            self.manage_sources_action(sel!(manageSources:), None);
         }
         #[unsafe(method(showWindow:))]
         fn show_action(&self, _sender: Option<&AnyObject>) { self.show_window(); }
@@ -348,10 +366,15 @@ impl Delegate {
             self.update_status_icon(&button, StatusAppearance::Ready);
             button.setAccessibilityIdentifier(Some(ns_string!("voiceport.menu-bar")));
             button.setAccessibilityLabel(Some(ns_string!("VoicePort · 就绪")));
-            button.setToolTip(Some(ns_string!("VoicePort · 点击打开菜单")));
+            button.setToolTip(Some(ns_string!("VoicePort · 点击选择转写方式")));
+            unsafe {
+                button.setTarget(Some(self));
+                button.setAction(Some(sel!(showQuickPanel:)));
+            }
+            button.sendActionOn(NSEventMask::LeftMouseUp | NSEventMask::RightMouseUp);
         }
         status.setVisible(true);
-        status.setMenu(Some(&menu));
+        let _ = self.ivars().context_menu.set(menu);
         let _ = self.ivars().status.set(status);
 
         let main_menu = NSMenu::new(mtm);
@@ -780,6 +803,7 @@ impl Delegate {
         let _ = self.ivars().prepare_permissions.set(prepare);
     }
     fn show_window(&self) {
+        self.close_quick_panel();
         let mtm = self.mtm();
         if self.ivars().window.get().is_none() {
             let window = unsafe {
@@ -1096,12 +1120,15 @@ impl Delegate {
                 ns_string!("辅助功能未授权，前往系统设置")
             }));
         }
+        self.refresh_quick_panel(c, state_text, shortcut, idle);
         if let Some(status) = self.ivars().status.get().and_then(|s| s.button(self.mtm())) {
             self.update_status_icon(&status, appearance);
-            let description = NSString::from_str(&format!("VoicePort · {state_text}"));
+            let source_title = quick_panel::selected_title(c);
+            let description =
+                NSString::from_str(&format!("VoicePort · {source_title} · {state_text}"));
             status.setAccessibilityLabel(Some(&description));
             status.setToolTip(Some(&NSString::from_str(&format!(
-                "VoicePort · {state_text}\n{shortcut} 开始 / 停止听写\n点击打开菜单"
+                "VoicePort · {state_text}\n当前转写：{source_title}\n{shortcut} 开始 / 停止听写\n点击快速切换 · 右键更多操作"
             ))));
         }
     }
@@ -1131,7 +1158,7 @@ pub fn run() {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     if arguments.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "VoicePort Rust macOS\n  --show-window             Show results and settings (also shown on normal launch)\n  --smoke-test              Build menu and exit without recording or network\n  --check-input-permission  Print input authorization JSON for this execution context\n  --diagnose-input          Inspect focused input metadata without writing\n  --input-self-test         Write fixed text only to the dedicated development fixture\n  --help                   Show this help"
+            "VoicePort Rust macOS\n  --show-window             Explicitly open results and settings (normal launch stays in the menu bar)\n  --smoke-test              Build menu and exit without recording or network\n  --check-input-permission  Print input authorization JSON for this execution context\n  --diagnose-input          Inspect focused input metadata without writing\n  --input-self-test         Write fixed text only to the dedicated development fixture\n  --help                   Show this help"
         );
         return;
     }
@@ -1181,6 +1208,10 @@ pub fn run() {
     // occupying the Dock or replacing the foreground app's application menu.
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     let delegate = Delegate::new(mtm);
+    delegate
+        .ivars()
+        .show_window_on_launch
+        .set(arguments.iter().any(|a| a == "--show-window"));
     if smoke {
         delegate.build_menu();
         println!("VoicePort Rust app launched: menu ready, no recording or network");
