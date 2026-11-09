@@ -70,6 +70,7 @@ struct Ivars {
     manage_sources: OnceCell<Retained<NSButton>>,
     test_source: OnceCell<Retained<NSButton>>,
     managing_sources: Cell<bool>,
+    source_manager: RefCell<Option<Retained<source_manager::Manager>>>,
     shortcut: OnceCell<Retained<NSPopUpButton>>,
     timer: OnceCell<Retained<NSTimer>>,
     quitting: Cell<bool>,
@@ -107,6 +108,8 @@ define_class!(
         #[unsafe(method(applicationShouldTerminate:))]
         fn should_terminate(&self, _app: &NSApplication) -> NSApplicationTerminateReply {
             self.ivars().quitting.set(true);
+            let manager = self.ivars().source_manager.borrow().clone();
+            if let Some(manager) = manager { manager.close_for_shutdown(); }
             // Idle shutdown can finish synchronously. Reentrant termination
             // must wait until the controller borrow and any worker lease end.
             if let Ok(mut slot) = self.ivars().controller.try_borrow_mut() {
@@ -197,10 +200,16 @@ define_class!(
         }
         #[unsafe(method(manageSources:))]
         fn manage_sources_action(&self, _sender: Option<&AnyObject>) {
+            let manager = self.ivars().source_manager.borrow().clone();
+            if let Some(manager) = manager { manager.bring_forward(); return; }
             let idle=self.ivars().controller.borrow().as_ref().is_some_and(|c|!c.busy() && !c.discovering());
-            if !idle || self.ivars().permission_rx.borrow().is_some() || self.ivars().managing_sources.replace(true) {return;}
-            source_manager::manage(self);
-            self.ivars().managing_sources.set(false);self.refresh();
+            if self.ivars().quitting.get() || !idle || self.ivars().permission_rx.borrow().is_some() || self.ivars().managing_sources.replace(true) {return;}
+            if let Err(error) = source_manager::manage(self) {
+                self.ivars().managing_sources.set(false);
+                self.with_controller(|c| c.message = format!("无法打开来源管理：{error}"));
+            }
+            // The retained manager releases admission in windowWillClose.
+            self.refresh();
         }
         #[unsafe(method(testSource:))]
         fn test_source_action(&self, _sender: Option<&AnyObject>) {
@@ -254,6 +263,8 @@ define_class!(
             }
             self.refresh();
             if self.ivars().quitting.get() {
+                let manager = self.ivars().source_manager.borrow().clone();
+                if let Some(manager) = manager { manager.close_for_shutdown(); }
                 let stopped = self.ivars().shutdown_started.get()
                     && self.ivars().controller.try_borrow().is_ok_and(|slot| slot.as_ref().is_none_or(|c| c.state.phase != Phase::Stopping));
                 if stopped && !self.ivars().managing_sources.get() && self.ivars().cli_quit_at.get().is_none() {
