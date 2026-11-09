@@ -2,6 +2,8 @@
 use super::*;
 use crate::plugins::{Adapter, FieldKind, Manifest, Source, Store};
 use std::{collections::BTreeMap, path::Path};
+mod draft;
+mod library;
 fn alert(d: &Delegate, title: &str, detail: &str, buttons: &[&str]) -> Retained<NSAlert> {
     let a = NSAlert::new(d.mtm());
     a.setMessageText(&NSString::from_str(title));
@@ -38,77 +40,33 @@ pub(super) fn manage(d: &Delegate) {
 }
 fn manage_result(d: &Delegate) -> Result<(), String> {
     let path = crate::plugins::default_path()?;
-    let mut store = Store::load(&path)?;
-    let a = alert(
-        d,
-        "管理转写来源",
-        "一个插件是一种接入方式；可为同一插件添加多个独立来源。ChatGPT 与已检测的 Orca 模型仍在主选择框中。保存、扫描和导入均不发送音频。",
-        &[
-            "添加来源…",
-            "编辑来源…",
-            "删除来源…",
-            "导入插件清单…",
-            "关闭",
-        ],
-    );
-    let rows: Vec<_> = store
+    let store = Store::load(&path)?;
+    library::show(d, store, path);
+    Ok(())
+}
+fn remove(d: &Delegate, store: &mut Store, path: &Path, id: &str) -> Result<(), String> {
+    let source = store
         .sources
         .iter()
-        .map(|s| {
-            (
-                s.id.clone(),
-                format!(
-                    "{} · {}{}",
-                    s.name,
-                    s.plugin_id,
-                    if s.enabled { "" } else { "（未启用）" }
-                ),
-            )
-        })
-        .collect();
-    let choice = popup(d, &rows);
-    choice.setAccessibilityLabel(Some(ns_string!("要管理的自定义来源")));
-    a.setAccessoryView(Some(&choice));
-    match a.runModal() {
-        1000 => edit(d, &mut store, &path, None)?,
-        1001 => {
-            let id = picker::selected_id(&choice).ok_or("请先添加或选择来源。")?;
-            let i = store
-                .sources
-                .iter()
-                .position(|s| s.id == id)
-                .ok_or("来源不存在。")?;
-            edit(d, &mut store, &path, Some(i))?;
-        }
-        1002 => {
-            let id = picker::selected_id(&choice).ok_or("请先选择来源。")?;
-            let i = store
-                .sources
-                .iter()
-                .position(|s| s.id == id)
-                .ok_or("来源不存在。")?;
-            let source = store.sources.get(i).ok_or("来源不存在。")?.clone();
-            if alert(
-                d,
-                "删除此来源？",
-                &format!(
-                    "将删除「{}」及其独立密钥。当前选择若指向它将保持不可用，不会切换云端。",
-                    source.name
-                ),
-                &["取消", "删除"],
-            )
-            .runModal()
-                == 1001
-            {
-                let result = crate::source_service::remove(&mut store, &path, &source.id);
-                d.with_controller(|c| c.refresh_catalog());
-                result?;
-            }
-        }
-        1003 => import(d, &mut store, &path)?,
-        _ => {}
+        .find(|s| s.id == id)
+        .ok_or("来源不存在。")?;
+    if alert(
+        d,
+        "删除此来源？",
+        &format!(
+            "将删除「{}」及其独立密钥。当前选择若指向它将保持不可用，不会切换云端。",
+            source.name
+        ),
+        &["取消", "删除"],
+    )
+    .runModal()
+        != 1001
+    {
+        return Ok(());
     }
-    Ok(())
+    let result = crate::source_service::remove(store, path, id);
+    d.with_controller(|c| c.refresh_catalog());
+    result
 }
 fn import(d: &Delegate, store: &mut Store, path: &Path) -> Result<(), String> {
     let panel = NSOpenPanel::openPanel(d.mtm());
@@ -216,9 +174,23 @@ fn choose_plugin(d: &Delegate, store: &Store, old: Option<&Source>) -> Option<Ma
 }
 fn edit(d: &Delegate, store: &mut Store, path: &Path, index: Option<usize>) -> Result<(), String> {
     let old = index.and_then(|i| store.sources.get(i)).cloned();
-    let Some(plugin) = choose_plugin(d, store, old.as_ref()) else {
+    let Some(plugin) = old
+        .as_ref()
+        .and_then(|s| store.plugin(&s.plugin_id).ok())
+        .or_else(|| choose_plugin(d, store, old.as_ref()))
+    else {
         return Ok(());
     };
+    edit_with_plugin(d, store, path, index, plugin)
+}
+fn edit_with_plugin(
+    d: &Delegate,
+    store: &mut Store,
+    path: &Path,
+    index: Option<usize>,
+    plugin: Manifest,
+) -> Result<(), String> {
+    let old = index.and_then(|i| store.sources.get(i)).cloned();
     let retained = old.as_ref().filter(|s| s.plugin_id == plugin.id);
     let height = 100. + plugin.fields.len() as f64 * 54.;
     let view = NSView::initWithFrame(NSView::alloc(d.mtm()), rect(0., 0., 480., height));
@@ -291,48 +263,56 @@ fn edit(d: &Delegate, store: &mut Store, path: &Path, index: Option<usize>) -> R
     scroll.setDocumentView(Some(&view));
     view.scrollPoint(NSPoint::new(0., (height - 380.).max(0.)));
     a.setAccessoryView(Some(&scroll));
-    if a.runModal() != 1000 {
-        return Ok(());
-    }
-    let mut source = Source {
-        id: old.as_ref().map_or_else(
-            || format!("source-{}", uuid::Uuid::new_v4()),
-            |s| s.id.clone(),
-        ),
-        name: name.stringValue().to_string().trim().into(),
-        plugin_id: plugin.id.clone(),
-        plugin_version: plugin.version.clone(),
-        enabled: enabled.state() == NSControlStateValueOn,
-        config: BTreeMap::new(),
-        credential_refs: retained.map_or_else(BTreeMap::new, |s| s.credential_refs.clone()),
-    };
-    let mut pending = vec![];
-    for (f, control, remove) in fields {
-        let value = control.stringValue().to_string();
-        if f.kind == FieldKind::Secret {
-            if remove
-                .as_ref()
-                .is_some_and(|b| b.state() == NSControlStateValueOn)
-            {
-                source.credential_refs.remove(&f.id);
-            } else if !value.is_empty() {
-                source
-                    .credential_refs
-                    .insert(f.id.clone(), "pending-key-reference".into());
-                pending.push((f.id.clone(), value));
+    loop {
+        if a.runModal() != 1000 {
+            return Ok(());
+        }
+        let mut source = Source {
+            id: old.as_ref().map_or_else(
+                || format!("source-{}", uuid::Uuid::new_v4()),
+                |s| s.id.clone(),
+            ),
+            name: name.stringValue().to_string().trim().into(),
+            plugin_id: plugin.id.clone(),
+            plugin_version: plugin.version.clone(),
+            enabled: enabled.state() == NSControlStateValueOn,
+            config: BTreeMap::new(),
+            credential_refs: retained.map_or_else(BTreeMap::new, |s| s.credential_refs.clone()),
+        };
+        let mut pending = vec![];
+        for (f, control, remove) in &fields {
+            let value = control.stringValue().to_string();
+            if f.kind == FieldKind::Secret {
+                if remove
+                    .as_ref()
+                    .is_some_and(|b| b.state() == NSControlStateValueOn)
+                {
+                    source.credential_refs.remove(&f.id);
+                } else if !value.is_empty() {
+                    source
+                        .credential_refs
+                        .insert(f.id.clone(), format!("key-{}", uuid::Uuid::new_v4()));
+                    pending.push((f.id.clone(), value));
+                }
+            } else if !value.trim().is_empty() {
+                source.config.insert(f.id.clone(), value.trim().into());
             }
-        } else if !value.trim().is_empty() {
-            source.config.insert(f.id.clone(), value.trim().into());
         }
+        if let Err(message) = draft::validate_with_pending(store, index, &source, &pending) {
+            a.setInformativeText(&NSString::from_str(&format!(
+                "{message}\n请修改后再次保存。已填写的内容仍保留。\n\n{detail}"
+            )));
+            continue;
+        }
+        let result = crate::source_service::save_source(store, path, index, source, pending);
+        d.with_controller(|c| {
+            if result.is_ok() {
+                c.message = "来源配置已保存；保存未发送网络请求或执行插件。".into();
+            }
+            c.refresh_catalog();
+        });
+        return result;
     }
-    let result = crate::source_service::save_source(store, path, index, source, pending);
-    d.with_controller(|c| {
-        if result.is_ok() {
-            c.message = "来源配置已保存；保存未发送网络请求或执行插件。".into();
-        }
-        c.refresh_catalog();
-    });
-    result
 }
 pub(super) fn confirm_test(d: &Delegate) -> bool {
     let target = d
