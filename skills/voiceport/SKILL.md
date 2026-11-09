@@ -7,6 +7,8 @@ description: Controls VoicePort through its CLI to inspect app status, configure
 
 Prefer the `voiceport` CLI for VoicePort operations. Start with `voiceport --version`, `voiceport --help`, and `voiceport skills get cli`. The installed binary embeds guides matching its version; use those when they differ from a checkout. Guides and help work offline without the App. `voiceport-rs` remains a compatible entry.
 
+For “how do I add/import a new transcription service?”, start with `voiceport skills get plugins` and `voiceport skills get plugin-examples`. The separate `voiceport-plugins` Skill helps choose compatible API configuration or a JSONL adapter, with concrete examples. Do not ask for a plugin file when the built-in compatible API is sufficient.
+
 1. Identify the intended instance.
    Use `voiceport --json --socket ABSOLUTE_SOCKET status` for an isolated instance,
    or the default socket for the normal App.

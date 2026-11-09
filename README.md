@@ -179,7 +179,7 @@ Windows 的目标编译检查不等于实机运行通过；设备、NTFS 权限�
 ./target/release/voiceport --json sources list
 ```
 
-完整语法、JSON/退出码、隔离实例和凭据 stdin 用法见 [CLI 文档](docs/CLI.md)。可分发 Skill 位于 [skills/voiceport/SKILL.md](skills/voiceport/SKILL.md)，其命令与工作流引用同时嵌入 CLI 并打入 App 的 `Contents/Resources/skills/voiceport`；安装 Skill 不授权录音、上传或操作目标输入。
+完整语法、JSON/退出码、隔离实例和凭据 stdin 用法见 [CLI 文档](docs/CLI.md)。[VoicePort 控制 Skill](skills/voiceport/SKILL.md) 和 [插件接入 Skill](skills/voiceport-plugins/SKILL.md) 随 App 放在 `Contents/Resources/skills/`。不知道如何接入新服务时，在「添加转写方式…」中点击「用 AI 帮我接入…」，复制说明并附上服务文档；也可运行 `voiceport skills get plugins` 和 `voiceport skills get plugin-examples`，离线取得兼容 API、本机服务、JSONL 适配器三个例子。安装 Skill 不授权录音、上传或操作目标输入。
 
 原有文件转写和诊断命令保持：
 

@@ -1,5 +1,11 @@
 # VoicePort 实施计划
 
+## 2026-11-09 最新需求：用 Skill 和实际例子引导插件接入
+
+独立接受后已从相同签名产品另行打包dist/VoicePort-preview-skills-01.app并打开，CLI确认准确bundle/PID14154、idle、shown。旧预览进程已无，未退出用户其他App；所有旧包保留。接续正常源码提交/PR和精确CI门槛。
+
+用户要求给接入过程配可分发 Skill 和例子。此前6345193已完成19项完整离线交付校验（259 Rust通过/1既有忽略），但未push/PR；该结果不覆盖新范围。新增根目录skills/voiceport-plugins：先根据真实文档选择兼容API或JSONL，给出配置表/实际文件；三个例子覆盖远程兼容API、本机兼容服务、自有JSON协议。附可审阅Python转换器和只生成新目录的清单工具；接入指南/例子/现有协议/模板由CLI离线读取，App完整打包。添加引导中提供「用 AI 帮我接入…」及用户明确点击的说明复制，保留当前App准确CLI路径。五项受控localhost/合成WAV测试通过，完整离线verify的19项均通过，23项PackagingTests包括新例子测试，signed App已打包完整Skill目录；完整freeze-skill01已由新真实review06独立ACCEPTED精确Skill/例子/CLI/原生源码集成范围：三个CLI的七种离线内容、真实Manifest/Store生成文件契约、七组补充适配器控制通过；139份封存证据和最终完整冻结一致核对后评审关闭。原始模板换行oracle错误及修正记录保留。接续新本地预览和既有授权Git/CI交付，真实GUI/剪贴板/理解与ASR仍未验。模板不含ASR、不假称真实供应商兼容；不自动安装全局Skill、不执行npm/真实录音/凭据读取/上传/AX重试。
+
 ## 2026-11-09 当前反馈：不知道怎样接入新的转写方式
 
 PR17 已合并为5e8a1ef，精确PR/main CI均通过，本地main已同步；用户明确要求本地编译试用后反馈导入方式难理解。新分支feat/plugin-onboarding将主入口改成「添加转写方式」：兼容API直接填表，无需清单；本地插件说明文件来源/安装前提，确认导入后定位卡片并引导配置。HTTP表单补全接口地址/音频模型示例与保存后选用步骤，保留原校验、刷新串行和事务边界。独立review04正式RETURNED ONB-R1：短ID如a会匹配所有内置卡片，将导入插件的配置按钮留在首屏下方。协调核对19份封存证据及最终完整冻结一致后关闭评审；实际exited/released。返修将完整ID精确匹配稳定置顶，并覆盖相互包含的ID与普通搜索，同时修正文档旧入口名称。11项定向测试与严格Clippy通过，review05独立接受ONB-R1精确源码/引导接口范围；22份封存证据及完整freeze02最终一致已核对后关闭评审。新版dist/VoicePort-preview-onboarding-02.app已独立构建并按用户本地试用授权打开，CLI确认准确包路径/idle/shown，真实用户体验仍需用户试用；不重试AX拒绝，不自动录音/上传/读取密钥。

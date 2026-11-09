@@ -103,12 +103,46 @@ impl Library {
             &self.ivars().owner,
             "你准备接入哪种转写方式？",
             "有兼容 API 的服务地址、模型名和 API Key\n选择「连接兼容 API」，直接填表，无需下载或导入插件。服务需支持 OpenAI 兼容的音频转写接口。\n\n已有插件作者提供的 VoicePort 清单（.json）\n选择「导入本地插件」。清单指向的适配器程序必须已在本机安装；导入后还需要填写配置。\n\n只有官网、GitHub 链接、压缩包或模型文件？\n这些不能直接导入。请向服务商确认兼容 API，或向插件作者索取 VoicePort 清单与适配器。",
-            &["连接兼容 API…", "导入本地插件…", "取消"],
+            &["连接兼容 API…", "导入本地插件…", "用 AI 帮我接入…", "取消"],
         );
         match choice.runModal() {
             1000 => self.perform(Some(Action::Add(crate::plugins::HTTP.into()))),
             1001 => self.perform(None),
+            1002 => self.ai_help(),
             _ => {}
+        }
+    }
+    fn ai_help(&self) {
+        let cli = PathBuf::from(NSBundle::mainBundle().bundlePath().to_string())
+            .join("Contents/MacOS/voiceport");
+        let prompt = format!(
+            "请用 VoicePort 接入 Skill，根据我接下来提供的服务文档判断：直接配置兼容 API，还是生成 JSONL 适配器和清单。给出具体配置、文件路径和使用步骤；缺失信息不要猜。\n\n当前 App 的 CLI 完整路径：{}\n请用该路径运行离线命令：\nskills get plugins\nskills get plugin-examples\n\n只生成和检查方案；不要读取真实密钥、录音、上传音频或修改配置。",
+            cli.display()
+        );
+        let a = alert(
+            &self.ivars().owner,
+            "把接入指南交给你的 AI",
+            "复制下面的说明给 AI，再提供服务商文档或本地项目说明。随 App 附有三种例子：兼容 API、本机服务、自定义 JSON 接口。AI 会先判断是否需要插件；你不必从写 JSON 开始。",
+            &["复制接入说明", "关闭"],
+        );
+        let text = NSTextField::wrappingLabelWithString(&NSString::from_str(&prompt), self.mtm());
+        text.setFrame(rect(0., 0., 480., 280.));
+        a.setAccessoryView(Some(&text));
+        if a.runModal() == 1000 {
+            let pasteboard = NSPasteboard::generalPasteboard();
+            pasteboard.clearContents();
+            let copied = pasteboard.setString_forType(&NSString::from_str(&prompt), unsafe {
+                NSPasteboardTypeString
+            });
+            self.ivars()
+                .notice
+                .get()
+                .unwrap()
+                .setStringValue(&NSString::from_str(if copied {
+                    "接入说明已复制。粘贴给 AI，再提供服务文档即可开始。"
+                } else {
+                    "未能复制接入说明。请重新打开指南并手动选择文字复制。"
+                }));
         }
     }
     fn button(

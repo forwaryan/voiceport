@@ -8,8 +8,8 @@
 
 - `--version`: CLI package version and control schema.
 - `help`, `--help`, `-h`: usage; legacy portable commands included.
-- `skills list`: bundled guides `core`, `cli`, `workflows` and installed version.
-- `skills get [core|cli|workflows]`: embedded Markdown matching this binary; default `core`.
+- `skills list`: bundled guides and installed version: `core`, `cli`, `workflows`, `plugins`, `plugin-examples`, `plugin-protocol`, `plugin-template`.
+- `skills get [GUIDE]`: embedded content matching this binary; default `core`. `plugins` is the new-service onboarding Skill, `plugin-examples` covers compatible/local APIs and JSONL conversion, `plugin-protocol` is the manifest/execution contract, and `plugin-template` is the example Python adapter source (plain text; retrieval never executes it).
 
 ## App commands (macOS)
 

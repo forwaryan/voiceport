@@ -1,5 +1,11 @@
 # 进度记录
 
+## 2026-11-09 — Skill 与实例接入引导开发
+
+评审关闭后核对完整产品字节不变（仅task_plan/progress更新接受记录），从已验证release构建新的dist/VoicePort-preview-skills-01.app，签名主程序7c433cdf…、CLIc09e6be2…与正式开发包相同，153依赖许可及完整Skill树通过。默认IPC确认App未运行且旧预览准确路径进程已无后，显式打开新包；CLI确认准确路径/PID14154、idle/busy=false/discovering=false，app show返回shown=true。不请求权限、不录音、不读取真实密钥/目标/剪贴板，旧包全部保留。接续已授权Git/CI发布。
+
+用户提出接入过程应有Skill引导及例子后，暂停6345193的发布准备（其19项交付验证已通过）。新增独立voiceport-plugins Skill、三种接入例子、JSON音频/结果字段转换模板、拒绝复用目录的manifest生成器；CLI通过单一指南表列出并返回七种已安装版本内容，协议复用既有文档、模板复用实际文件。原生添加选择页新增「用 AI 帮我接入…」，显示可选择说明，只有点击复制才写剪贴板；不读取原剪贴板或修改来源。五项新示例测试首次开发执行均通过，覆盖从根目录/仅LANG环境运行、含空格绝对路径、请求映射、自动语言、一次请求、拒绝重定向、响应错误/超限脱敏、坏输入/明文远端拒绝、已有文件与缺失父目录保护。首轮测试输出保留于宿主工具记录，后续完整verify将归档正式输出；未把开发检查称为独立接受。完整verify后台bvqsxh3jf现已exit0：19检查均通过、inputs_unchanged，38份原始输出hash核对，23项PackagingTests包含新五项控制；独立signed App包含完整Skill树，纯Skill校验allPassed=true。证据位于.voiceport/evidence/plugin-skill-development-01-20261109/verify/report.json。review06正式msg_95c171e849de为ACCEPTED精确新范围：真实生产Manifest/Store校验两个实际生成清单、保存加载、负面控制通过；三种CLI各七种内容离线一致，七组补充localhost/合成适配器控制通过。初次raw模板展示换行oracle失败及修正attempt02原样保留。协调已核对139份封存证据（seal106524eb…）、最终完整freeze3dd89808…及身份/零压缩，关闭现场评审；新预览与Git/CI交付接续。真实GUI/剪贴板/服务ASR不在通过范围，原预览与所有旧证据保留。
+
 ## 2026-11-09 — 本地试用后的接入引导返修
 
 PR17及main CI均通过、本地main同步后，按用户明确请求编译独立预览包并用CLI确认运行的是dist/VoicePort-preview-5e8a1ef.app，idle且窗口shown。用户随后反馈仍不理解如何导入新方式；这是真实易用性反馈，源码复核通过未等于体验接受。feat/plugin-onboarding新增「添加转写方式」分流、兼容API字段示例、文件选择前说明和导入后定位/配置指引，后续保存和执行权限不变。首次编译因NSOpenPanel两个setter需要Option引用退出101，修正后格式/严格macOS all-target Clippy/十项来源管理定向测试均0；独立review04正式RETURNED ONB-R1：短ID搜索可能淹没导入卡片的配置按钮，两项控制通过/预期目标断言101；19项封存证据和最终冻结已核对后关闭评审，原worker实际exited/released。返修抽出实际渲染使用的搜索排序，完整ID精确匹配置顶，回归覆盖短ID/相互包含/普通搜索；review05正式ACCEPTED ONB-R1源码/引导接口修复，22封存文件及完整freeze02最终一致已核对后关闭评审；11定向测试/严格Clippy通过。独立构建dist/VoicePort-preview-onboarding-02.app，旧App包保留；启动前无运行实例，打开后CLI确认新包路径、PID70350/idle/shown。用户真实视觉/理解评价仍待反馈，接续正常源码checkpoint与Git/CI门槛。
