@@ -173,6 +173,20 @@ preload 的适配已继续核对：模块 `298` / SFI `847` 在 `5`–`12` 导�
 
 本轮无新提取，5 个 preload 函数新反汇编退出 `0`；复用严格解析为 2,414 对象 / 273 编译函数、9 字节允许 NOP、零 forward/RO 未解决引用和指令警告，16 个辅助对象缺布局，typed profile 未验证、payload checksum 缺失。证据为 `voiceport-qq-preload-parse-vQHDbX/summary.json`、`voiceport-qq-disasm-ybh23K/`、`voiceport-qq-disasm-9KQwLz/847.txt`、前述 `Hvsn6J/892.txt` / `3pRsfP/1367.txt` 和 `voiceport-qq-disasm-DnAuKb/{126775,126943,126983}.txt`。没有执行 preload 或调用真实 IPC。
 
+主端缺失依赖已进一步恢复：模块 `53694` 的父函数 `126648` 在 `80`–`89` 导入 `28861` 至 context slot `5`，在 `91`–`102` 导入 `42261` 至 slot `6`；构造 `126943` 使用 `42261.jW(win, options)`、`28861.zD + w4` 作为发送前缀、`28861.zD + _W` 作为接收前缀。模块 `80416` 的 peer 构造 `126253` 在 `303`–`344` 注册 `ipcImpl.on(receivePrefix + peerId, handleEvent.bind(this))`，发送 `126356` 使用 `ipcImpl.send(sendPrefix + peerId, header, body)`。
+
+在程序文件偏移 `112395752`、长度 `123080`、SHA-256 `2976a9c76995d19345b5bb25c3d6064b6fa3bd6ad1a0a2170497f6c217763aa5` 的缓存中，模块 `28861` / SFI `579` 在 `54`–`64` 写入准确字面量：
+
+| 导出 | getter SFI | 值 |
+| --- | --- | --- |
+| `zD` | `601` | `RM_IPC` |
+| `_W` | `589` | `FROM_RENDERER` |
+| `w4` | `595` | `FROM_MAIN` |
+
+因此主端接收 `RM_IPCFROM_RENDERER + win.webContents.id`，发送 `RM_IPCFROM_MAIN + win.webContents.id`，与 renderer 的方向准确配对。模块 `42261` / SFI `611` 的 getter `620` 导出适配工厂 `626`：`on`（`636` / `643`）调用 `require(72298).ipcMain.on(channel, wrapper)`，原样传递 event 和其余参数；`removeAllListeners`（`650`）调用该 provider 的同名方法；`send`（`657`）在窗口销毁时返回，否则通过传入的 webContents override 或 `win.webContents` 发送原 channel 与参数。这些 listener/转发函数没有 `event.sender` 比较；peer 后缀只证明路由，不能当作调用方鉴权或整条链无权限检查的结论。provider `72298` 的 Electron 绑定仍需单独核对。
+
+该缓存严格解析为 2,970 对象 / 284 编译函数，5 字节允许 NOP，零校验/函数/指令警告和未解决图/forward/RO 引用；5 个辅助对象缺布局，producer typed layout 未验证、payload checksum 缺失。保持 10,000 对象上限、Node 512 MiB / 25 秒，只选 11 函数，解析与反汇编进程均退出 `0`。证据为 `voiceport-qq-main-adapter-extract-lo_lzjti/provenance.json`、`voiceport-qq-main-adapter-parse-zdHwrW/summary.json`、`voiceport-qq-disasm-88nFNs/579.txt` 和 `voiceport-qq-disasm-rZ4UBj/{589,595,601,626,636,643,650,657}.txt`。没有执行目标代码、注册真实监听、连接 IPC 或取得转写。
+
 主实现 `3812.emitStreamASRText` 在记录窗口存在且未销毁时，通过 `audioSDKApi.onStreamASRText(streamRecordWindow, eventPayload)` 将结果发回该窗口；否则使用只传 eventPayload 的广播分支，`eventPayload.isEnd` 时清空记录窗口。这是静态事件路由，不代表已取得真实文字或窗口状态。
 
 传输分析选择性读取 100 个函数，六次解析/反汇编子进程退出 `0`、零警告；上下文 hook 后续 11 + 1 个函数同样通过。保留匹配快照与 Windows x64 typed profile 限制。私有原始证据为 `voiceport-qq-disasm-{cAN8Ef,DnAuKb,7Aq2WD,an0y1R,cBV9wf}`，以及 getter/注册表证据 `nFbvEr` / `yJKzsl`。没有连接或调用真实 QQ IPC。
@@ -207,7 +221,7 @@ preload 的适配已继续核对：模块 `298` / SFI `847` 在 `5`–`12` 导�
 
 仍待解决：
 
-- renderer 模块 `41386`、工厂 `63198` 和枚举 `43145` 的调用链、`AudioSDKApi` 声明方法及 RM 收发方向已恢复；底层 `10413` 的 prefix/peer 拼接、调用/事件/响应线格式和清理行为也已恢复；preload 的普通 `ipcImpl` 分支已确认直接转发 Electron IPC；仍需核对替代 provider、主端适配/prefix 配对和实际窗口可达的服务注册，尚未运行验证。
+- renderer 模块 `41386`、工厂 `63198` 和枚举 `43145` 的调用链、`AudioSDKApi` 声明方法及 RM 收发方向已恢复；底层 `10413` 的 prefix/peer 拼接、调用/事件/响应线格式和清理行为也已恢复；preload 的普通 `ipcImpl` 分支已确认直接转发 Electron IPC；主端适配函数与 prefix 字面量配对也已恢复；仍需核对主端 `72298` 的 Electron 绑定、preload 替代 provider 和实际窗口可达的服务注册，尚未运行验证。
 - 从实际 renderer 可达的调用入口及其权限/状态条件，不能由内部 facade 链直接推断。
 - 恢复出的任务、音频和回调约定在本机服务中的接受条件，以及取消/超时和完整错误行为。
 - 在当前签名 App Store 构建中可用的进程内加载方式；上述 pipe 候选尚未建立新启动路径。
