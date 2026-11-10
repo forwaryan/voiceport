@@ -4,13 +4,13 @@
 
 优先处理真实 worker 事件、返修和待验证项。按依赖启动可独立推进且有具体必要性的任务，写清 role/predecessor、工作区、输入哈希、文件归属、产物和并发预算；常规已知文件工作不为凑人数分派。每个文件/工作区只有明确写者，共享工作区允许文件集合不相交的写入，HEAD/index/checkout 由协调者独占。独立冻结评审保持不可变；同期返修只在 Orca 隔离工作区或私有 candidate 中进行，不修改、读取或合并他人的未完成产物；旧评审明确结束或中断后才集成并重冻。协调者不替已分派的验证者执行独立检查。
 
-派发可独立工作后结束当前轮，靠 Orca 事件唤醒；只有宿主明确要求 check 才执行该条命令，不用消费邮箱的轮询、不重复启动。远端 CI 用宿主跟踪的后台 gh run watch EXACT_RUN --exit-status 等待完成，保存后台句柄、命令和退出码，结束轮等待工具完成事件；之后重新核对 run/attempt/HEAD，watch 本身不证明精确版本通过。协调者比较不同假设和反例，把返修/复核交回原逻辑角色并保留真实续接身份；原角色到上限时按正常轮换接续。
+有已授权且可立即执行的下一步，就在当前轮继续推进；调查小结、文档更新或派发任务都不是等待理由。派发后先完成自己不依赖其结果的工作，只有全部剩余步骤确实等待尚未返回的任务时才结束当前轮，靠 Orca 事件唤醒；只有宿主明确要求 check 才执行该条命令，不用消费邮箱的轮询、不重复启动。远端 CI 用宿主跟踪的后台 gh run watch EXACT_RUN --exit-status 等待完成，保存后台句柄、命令和退出码，先推进其他独立步骤，无独立可执行步骤时才结束轮等待工具完成事件；之后重新核对 run/attempt/HEAD，watch 本身不证明精确版本通过。协调者比较不同假设和反例，把返修/复核交回原逻辑角色并保留真实续接身份；原角色到上限时按正常轮换接续。
 
 开发执行按 [证据与资源约束](../docs/LOOP_EXECUTION.md)：账本 status/audit 只读，finish 须非空稳定证据并保存内容摘要；audit 中历史 unsealed/缺失/变化不补造为通过。完整 verify 同 checkout 互斥、全新日志目录、逐步报告，超时/中断只清理自己启动的进程组，真实退出与清理未知分开记录。失败后不启动后续检查，不覆写首次失败或删锁重跑；输入清单已含 README/docs 等，另冻 `.claude/`、`.codex/` 和相关 planning。
 
 CI 属于完成闭环。逐次绑定仓库、分支、完整提交、PR head/base、实际测试提交及其关系、workflow/run/job/attempt 和必需检查名，保存完整实际日志、退出码、checks 与 artifacts 清单、失败和取消回执。用证据区分代码、测试判据、基础设施、环境和不稳定测试；本地复现目标失败，最小定向修复，独立复核，安全边界 commit/push，再等待新精确 HEAD 的远端检查和复核/合并条件。新失败回到修复，缺失、pending、cancelled、skipped、别的 HEAD/run 绿色或本地绿色都不算完成。不删/跳过控制，不靠广泛重试或放宽超时转绿；仅有明确基础设施证据时，每次故障最多一次同 SHA 重试，事前记原因/预算、保留全部 attempt，重试失败停止重复并诊断。完整约束与命令见 docs/LOOP_METHODS.md 第8节。
 
-调度只由原授权顶层会话或主协调者拥有且必须显式登记 scheduler kind、job ID、owner session、原始完整 prompt、周期、实际 next/expiry、暂停及停止回执。用户已授权的固定 CronCreate 与动态 ScheduleWakeup 不能互相当停止证明；恢复不自动迁移旧 job。固定 cron 是 session-only、重复任务7天到期、实际触发时间以回执为准；worker 不装额外计时器。事件为主，兜底至少1200秒且无工作可推进时停止；只恢复实际已授权且仍适用的一份兜底，并按真实回执登记。历史固定 cron 不代表当前存在，不能在已有动态 loop 上叠加创建。
+调度只由原授权顶层会话或主协调者拥有且必须显式登记 scheduler kind、job ID、owner session、原始完整 prompt、周期、实际 next/expiry、暂停及停止回执。用户已授权的固定 CronCreate 与动态 ScheduleWakeup 不能互相当停止证明；恢复不自动迁移旧 job。固定 cron 是 session-only、重复任务7天到期、实际触发时间以回执为准；worker 不装额外计时器。先按 [动态等待入口约束](../docs/LOOP_METHODS.md#51-动态等待入口约束) 判断继续执行、等待或停止；ScheduleWakeup 的 reason 必须声明真实等待对象和 runnable=none，后台等待须有本会话未结束的异步回执。事件为主，后台兜底至少1200秒；有可执行步骤时立即推进，不挂 timer 等下轮。没有可观测的等待对象且无工作可推进时停止；只恢复实际已授权且仍适用的一份兜底，并按真实回执登记。历史固定 cron 不代表当前存在，不能在已有动态 loop 上叠加创建。
 
 已登记的独立顶层可用 `session-request --session ACTUAL_SESSION_ID --reason '实际原因'` 提前走同一交接流程，保留真实计数/阈值；演练不冒充自然压缩验收，前代未关闭则拒绝。所有角色最多5轮上下文=初始轮+最多4次已完成压缩；进入最后一轮直接交接，禁止第5次压缩，不强制压缩或额外压测。按 [全角色会话轮换](COORDINATOR_ROTATION.md) 核对真实 PreToolUse/helper 哈希、session/terminal、transcript 起始身份/时间与计数；缺 SessionStart 如实披露，不造 accounting、信任或加载证明。不同 Run 显式 register 各自 lease，不改写历史 Run。退任前停止全部本人调度：动态须最后一次 ScheduleWakeup({stop:true}) 的配对结构化 stopped:true；cron 须同 session 成功 CronCreate 的 ID/完整 prompt 来源、每个自有 ID 的配对 CronDelete 结果及最后 mutation 后 CronList 确认所有自有 ID 不存在。最终 gate 允许精确 stop、CronList({}) 和仅含已证明自有 id 的 CronDelete，不允许未知归属删除、创建或续订；不再要求提前一轮停 cron。scan 持久保存动态调用与其停止/未决结果、cron ownership 与未决 mutation；截断不清除任何已知调度义务，动态 stop 须证明晚于所有已知动态调用，恢复早期 stop 不覆盖较晚调度。来源缺失、结果未知或停止失败则保留阻塞，不能删他人任务或绕 gate。原生 Codex 0.167 已支持压缩适配，但没有 VERIFIED scheduler 接口，原生调度退任仍阻塞，不猜工具名。
 

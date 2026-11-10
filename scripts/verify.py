@@ -129,7 +129,7 @@ def verify_checks(args, evidence, report):
             (['cargo', 'clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings'], None),
             (['bash', str(ROOT / 'scripts/package_app.sh')], 'Built '),
             (['python3', '-I', '-m', 'unittest', 'discover', '-s', 'Tests/LoopTests', '-v'], 'OK'),
-            (['python3', '-I', '-m', 'unittest', 'discover', '-s', '.claude/hooks', '-p', 'test_*rotation.py', '-v'], 'OK'),
+            (['python3', '-I', '-m', 'unittest', 'discover', '-s', '.claude/hooks', '-p', 'test_*.py', '-v'], 'OK'),
             (['python3', '-I', '-m', 'unittest', 'discover', '-s', 'Tests/PackagingTests', '-v'], 'OK'),
         ]
         for cmd, marker in checks:

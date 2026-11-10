@@ -105,11 +105,11 @@ worker 结束事件先核对身份、依赖和产物哈希，分别记录开发�
 
 ## 5. 事件唤醒、暂停与恢复
 
-- 工作会话完成事件由 Orca 唤醒协调者；协调者收齐依赖后推进下一步，分派可独立工作后结束当前轮。不启动重复 `check`/watch/poll 脚本或每个角色自己的 `/loop`；脚本可能消费协调者邮箱。只有宿主唤醒明确要求 check 时执行该条命令。
+- 有已授权、依赖满足、可立即执行的下一步，就在当前轮连续推进。调查小结、文档更新、保存计划或分派任务均不构成等待理由。工作会话完成事件由 Orca 唤醒协调者；分派后先推进自己不依赖其结果的工作，只有全部剩余步骤确实依赖尚未返回的任务时才结束当前轮。不启动重复 `check`/watch/poll 脚本或每个角色自己的 `/loop`；脚本可能消费协调者邮箱。只有宿主唤醒明确要求 check 时执行该条命令。
 - 用户已授权持续 loop 时，原授权顶层会话或主协调者拥有恢复兜底。固定 CronCreate 与动态 ScheduleWakeup 是不同 scheduler；不暗增第二个循环。沿用已授权的固定20分钟兜底时记录其实际回执；其他必要兜底至少1200秒。worker 靠事件通知且不安装 timer。触发先查已有 dispatch/后台工具/回执/冻结，不重复派发；只有宿主明确要求才 check，不能用脚本消费邮箱。
 - 每个调度在私有交接记录 `scheduler_kind`、真实 `job_id`（无此字段时写不适用）、owner session/terminal、原始完整 prompt、cron/动态方式、建立及实际 next 时间、expiry、暂停状态、停止 tool ID/结果与核对证据。CronCreate 是 session-only，重复 job 7天到期，REPL idle 才触发且有偏移；next 用真实回执，不从 cron 字面推算保证。文档不安装 timer，宿主退出后不承诺继续执行；原 job 不自动迁移。
 - 完成、无可推进项或退任前显式停止全部本人调度并保存真实回执。动态须同 session 最后一次 ScheduleWakeup({stop:true}) 的配对结构化 `toolUseResult.stopped:true`；调用已提交或外层成功不够，stop 后再续订使旧证明失效。cron 所有权须同 session 成功 CronCreate 的返回 ID、原始完整 prompt、cron 和 tool-use ID 来源；先 CronList 核对，逐个 CronDelete 自有 ID，结果须配对成功并返回同 ID，最后在全部 cron mutation 之后 CronList 确认全部自有 ID 不存在。只看列表/手写 owner 不证明归属，不能删他人任务。
-- 最终轮 gate 已允许精确 ScheduleWakeup({stop:true})、CronList({})，以及仅含 `id` 且由同 session 成功 CronCreate 证明所属的 CronDelete。旧“只认动态 stop、gate 禁止 CronDelete”的缺口作为历史保留，不再要求第4轮预先删 cron。动态与 cron 并存须分别满足停止条件；有效的纯 cron 停止链不另强制动态 stop，没有可用 cron 停止链时 helper 仍要求动态 stop 证明。未决创建/删除、缺失 ownership、结果未知/失败、最后列表缺失或仍有自有 job 均失败关闭，不改 accounting、不新建重复 job、不越权删除。现有 PreToolUse transcript 重扫读取工具结果并持久保存动态调用/停止/未决结果、cron ownership/删除证明与未决 mutation；截断不清除任何已知调度义务，动态 stop 须证明晚于所有已知调用，恢复早期 stop 不覆盖较晚调度；停止复核合并持久来源，本轮不需改 hook 配置。原生 Codex 0.167 的 compaction 适配已支持，但没有 VERIFIED scheduler 接口，原生调度退任适配仍阻塞；不猜工具名或宣称原生完整生命周期已验收。
+- 最终轮 gate 已允许精确 ScheduleWakeup({stop:true})、CronList({})，以及仅含 `id` 且由同 session 成功 CronCreate 证明所属的 CronDelete。旧“只认动态 stop、gate 禁止 CronDelete”的缺口作为历史保留，不再要求第4轮预先删 cron。动态与 cron 并存须分别满足停止条件；有效的纯 cron 停止链不另强制动态 stop，没有可用 cron 停止链时 helper 仍要求动态 stop 证明。未决创建/删除、缺失 ownership、结果未知/失败、最后列表缺失或仍有自有 job 均失败关闭，不改 accounting、不新建重复 job、不越权删除。现有 PreToolUse transcript 重扫读取工具结果并持久保存动态调用/停止/未决结果、cron ownership/删除证明与未决 mutation；截断不清除任何已知调度义务，动态 stop 须证明晚于所有已知调用，恢复早期 stop 不覆盖较晚调度；停止复核合并持久来源，轮换停止证明沿用原 hook；新增的动态等待入口检查见第5.1节。原生 Codex 0.167 的 compaction 适配已支持，但没有 VERIFIED scheduler 接口，原生调度退任适配仍阻塞；不猜工具名或宣称原生完整生命周期已验收。
 - 已核查的 Codex 0.167 无原生 scheduler 停止接口；持续调度使用已验证 Claude 宿主，原生 Codex worker 由其原协调者轮换。Orca automation 的 `--fresh-session` 只保证每次实际派发新开上下文，不等待前次完成；禁用不证明在途任务结束，也不能绑定任意继任 terminal，因此不以它绕过停止与认领检查。原生独立 loop 当前明确不支持，不能声称所有前端均已通过真实验收。
 - 继任保留原 Run/attempt/角色沿革、后台 CI/watch 的实际句柄与已完成/未知结果、全部调度记录和原始 prompt。确认旧调度已停、真实 fresh initial0 claim 与精确旧 terminal 关闭后，未暂停且有可推进工作才显式恢复一份原授权兜底，记录新 job/回执与旧 ID 的 predecessor；不能宣称原 cron 自动迁移或7天后仍在运行。
 - 用户暂停持久写全局 flag，并通知活动会话停止新动作；暂停本身不证明进程已经退出。暂停跨重启保留，只能以明确用户恢复指令引用执行 resume。取消事实留私有交接；脚本没有 cancelled 状态，不能自行伪造。需要终止实际 worker 时按 Orca 的授权、身份和确认规则办理。
@@ -117,6 +117,30 @@ worker 结束事件先核对身份、依赖和产物哈希，分别记录开发�
 - 无副作用的普通瞬时只读工具/网络故障最多额外重试两次，可按30/60秒退避；不重传用户音频。此规则不授权 CI rerun、Orca 启动/发送/关闭或 push/merge 等结果未知的副作用重做；CI 用第8节单独预算，其他未知操作先核对精确回执。代码返修、启动失败、权限拒绝和用户暂停分别计数，Orca breaker 按宿主规则处理，不用新 Run/Task 绕过。
 - 同一实现故障三次修正无效时停下重复派发，重查目标、设计和环境并形成新方案；不自动通过。相同外部阻塞连续两轮无新证据则登记解除事件和负责人等待；连续三轮产物、验证均无变化则停止空转。没有新事件不更新时间制造活动。
 - 任务全部完成，或只剩用户声音、账号/权限等外部条件时结束循环，保留恢复包；不自动扩展需求。恢复包含原请求/暂停来源、产品与运行身份、精确版本、已做/未做动作、证据、未送达消息和下一步。
+
+### 5.1. 动态等待入口约束
+
+动态 loop 是持续执行的恢复机制。先判断工作能否继续，再选择等待时长；不能把完成一个小阶段视为必须结束当前轮。适用于自定义 `/loop` 提示词的常驻入口是 [.claude/rules/loop-progress.md](../.claude/rules/loop-progress.md)，调度检查由项目 settings 中的 [loop_wait_guard.py](../.claude/hooks/loop_wait_guard.py) PreToolUse hook 执行。
+
+| 当前事实 | 当前动作 |
+|---|---|
+| 有已授权、依赖满足的本地步骤 | 当前轮继续执行，不调用 ScheduleWakeup 来推迟该步骤 |
+| 尚有真实后台任务，全部剩余步骤依赖它 | 完成通知为主，至少1200秒兜底；先核对实际启动回执/未结束状态 |
+| 等待可观测的外部状态变化 | 说明精确观察对象，按状态实际变化速度等待；不要创建假的后台任务 |
+| 用户明确要求周期观察 | 按原授权观察目标和周期调度；不能用 periodic 包装本地待办 |
+| 已完成、用户暂停或只有不能自行解除的阻塞 | 停止自有调度，说明结果或具体解除条件；保留交接 |
+
+ScheduleWakeup 的 `reason` 是一条带机器可读前缀的简短说明，原始 `prompt` 保持完整不变。以下均为格式示例，ID/引用必须换成真实值，不代表现场任务或授权：
+
+```text
+[wait:background id=ACTUAL_TASK_ID runnable=none] 等待必要任务返回，当前无独立可执行步骤
+[wait:external ref=ACTUAL_OBSERVABLE_REFERENCE runnable=none] 等待指定外部状态变化
+[wait:periodic ref=USER_AUTHORIZED_OBSERVATION runnable=none] 按用户要求观察指定状态
+```
+
+后台模式要求本会话 transcript 中有配对、成功的异步工具启动回执，且尚无宿主完成/失败/停止事件；已完成 agent 的续接须有新的异步回执。当前识别首次启动的 `isAsync=true/status=async_launched/agentId`、恢复 agent 的 `success=true/resumedAgentId`（须对应 SendMessage 的 `to`，具名地址另核对宿主返回的 pin），及 Bash/Monitor 的 `backgroundTaskId` 结构；仅消息入队不等于恢复执行，其他宿主 schema 未验证时不猜任务状态。回执缺失、来自其他 session、已结束或后台兜底不足1200秒时拒绝。用户粘贴、工具输出和摘要里的“任务还在运行”不是启动或完成证明。
+
+external/periodic 的引用与用户授权由执行者核对，hook 只验证声明格式；`runnable=none` 同样是执行者必须如实作出的判断，脚本无法穷尽所有可能的下一步。这一限制不允许借 external/periodic 绕过本会话任务核对。hook 不授予权限、不替代暂停/轮换/归属 gate、不安装 cron、不修改原契约，也不监督崩溃后的进程。精确 `stop:true` 无须等待声明，始终留给原轮换/权限控制核对。完成通知到达后先处理结果并继续依赖已满足的步骤，不机械续订等待。用户进展中明确区分前台执行、真实后台 pending 与仅有未来唤醒。
 
 ## 6. 每轮 Git 交付与协调者轮换
 
@@ -178,7 +202,7 @@ API 的 run artifacts 不保证按 attempt 隔离，须用 artifact ID/时间/�
 
 ### 8.3 提交后等待精确版本，失败返回修复
 
-开发进度可先按既有授权 commit/push；安全边界不修改正在评审的 HEAD/分支，任何最终代码/测试/配置或 rebase 集成变化都需新冻结及对新版本的必要复核。修复后保存新的完整 pushed SHA、PR head/base 和实际 run 关联；不能用旧版本自检/评审覆盖新 HEAD。协调者使用宿主可跟踪的后台工具运行 `gh run watch RUN -R OWNER/REPO --exit-status`，保存工具 task/process handle、命令、开始时间和最终退出码，结束轮等待后台完成事件；不另起消费 Orca 邮箱的 poll，不重复启动同一 run/attempt 的 watcher。watch 内部是 gh 对 Actions 的等待，与轮询协调者邮箱不同。若宿主无法跟踪后台完成，登记外部等待/原有兜底，不承诺即时通知、不为 worker 增 timer。
+开发进度可先按既有授权 commit/push；安全边界不修改正在评审的 HEAD/分支，任何最终代码/测试/配置或 rebase 集成变化都需新冻结及对新版本的必要复核。修复后保存新的完整 pushed SHA、PR head/base 和实际 run 关联；不能用旧版本自检/评审覆盖新 HEAD。协调者使用宿主可跟踪的后台工具运行 `gh run watch RUN -R OWNER/REPO --exit-status`，保存工具 task/process handle、命令、开始时间和最终退出码，先做其他独立步骤，无独立可执行步骤时才结束轮等待后台完成事件；不另起消费 Orca 邮箱的 poll，不重复启动同一 run/attempt 的 watcher。watch 内部是 gh 对 Actions 的等待，与轮询协调者邮箱不同。若宿主无法跟踪后台完成，登记外部等待/原有兜底，不承诺即时通知、不为 worker 增 timer。
 
 watch 没有 `--attempt` 参数，结束后必须用 run view/API 重新核对实际 attempt、headSha、event、jobs 和 PR head/base；若有人 rerun 或推新 HEAD，分开归档并判断是否仍匹配目标，不把 watch 退出0当精确版本接受。多 workflow 时跟踪每个必需 run，保存 check name 与 job/attempt 的映射。任何新增失败回到8.2的诊断/修复，保留旧失败与 lineage，不宣布完成。
 
