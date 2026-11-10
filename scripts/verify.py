@@ -124,6 +124,8 @@ def verify_checks(args, evidence, report):
             return out if success else None
 
         checks = [
+            (['node', '--test', *[str(path) for path in sorted((ROOT / 'Tests/QQBridgeTests').glob('*.test.cjs'))]], None),
+            (['python3', '-I', '-m', 'unittest', 'discover', '-s', 'Tests/QQBridgeTests', '-p', 'test_*.py', '-v'], 'OK'),
             (['cargo', 'test', '--workspace', '--all-targets', '--locked'], '0 failed'),
             (['cargo', 'fmt', '--all', '--', '--check'], None),
             (['cargo', 'clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings'], None),

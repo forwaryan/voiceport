@@ -436,7 +436,13 @@ class RevisionBoundaries(unittest.TestCase):
                     self.assertEqual(report['checks'], [])
                 else:
                     self.assertFalse(report['inputs_unchanged'])
-                    self.assertEqual([row['exit_code'] for row in report['checks']], [0, 7])
+                    self.assertEqual([row['exit_code'] for row in report['checks']], [0, 0, 0, 7])
+                    self.assertEqual([row['argv'][0] for row in report['checks']],
+                                     ['node', 'python3', 'cargo', 'cargo'])
+                    self.assertEqual(report['checks'][0]['argv'][1], '--test')
+                    self.assertIn('Tests/QQBridgeTests', report['checks'][1]['argv'])
+                    self.assertEqual([row['argv'][1] for row in report['checks'][2:]],
+                                     ['test', 'fmt'])
 
 
 if __name__ == '__main__':
