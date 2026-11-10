@@ -2,6 +2,10 @@
 
 调查日期：2026-11-10。状态：**未接通，没有新增可用的 QQ 转写来源。**
 
+后续静态分析已恢复本机 `uploadSmartPttSlice` 的两个参数结构、六个准确对象键、两个回调的位置参数，以及部分任务生命周期。继续追踪还确认了 metadata 选择器直接对应 protobuf 字段号，以及桌面 `AudioFoundation.node` 流式采集模块的 SILK 分片头、长度/payload 记录和最终短帧补零路径；它与 SmartPtt 的准确调用衔接仍待验证。详见 [本机 SmartPtt 调用契约](../scripts/qq_bridge/SMARTPTT_CONTRACT.md)。本文的 GitHub 调查保留其证据边界；当前加载试验结果见 [诊断说明](../scripts/qq_bridge/README.md)。
+
+2026-11-10 继任验证又完成了一次渲染调试入口实验：QQ 正常运行但未观察到回环调试监听，未执行 IPC；随后静态追踪发现 QQNT 的参数处理路径结束时删除 `inspect` 和 `remote-debugging-port` 开关。主页面 URL、preload/RPC/AudioSDK 标识及通用请求/事件/响应封装已静态恢复；renderer 的 `audioSDKApi` 创建点已定位为 `63198.Z(43145.Qe.AudioSDK)`，工厂声明的调用/订阅方法、RM 收发方向及底层线格式也已恢复，preload 普通分支已确认原样转发 Electron IPC，替代 provider、主端配对和运行可达性仍未验证。可复现地址、二进制指纹及真实/夹具边界见 [渲染端 IPC 与调试入口证据](../scripts/qq_bridge/RENDERER_IPC.md)。
+
 目标是复用 QQ 输入框工具栏的「语音输入文字」：VoicePort 提供录音，QQ 的识别能力返回文字。已有 QQ 语音消息的转文字接口不能替代这个目标。
 
 ## 与当前 ChatGPT 来源的区别
@@ -37,7 +41,7 @@ OnSmartPttTranslateFinished: task_id={} error_code={} err_msg={}
 
 同一绑定区还包含 `addKernelBdhUploadListener` 和 `removeKernelBdhUploadListener`，各自的参数数量断言为 1。
 
-这些是静态绑定和日志字符串：可以确认方法名称及参数数量断言，**不能确认两个参数的类型、属性、顺序或语义，也不能将日志的 snake_case 名称当作 JavaScript 属性名**。
+仅凭这些静态绑定和日志字符串，可以确认方法名称及参数数量断言，**不能确认两个参数的类型、属性、顺序或语义，也不能将日志的 snake_case 名称当作 JavaScript 属性名**。后续对 N-API 属性读取与类型转换的反汇编已经恢复结构，见上方契约文档；音频和任务的完整操作语义仍待验证。
 
 在本机 `application.asar` 原始字节中搜索 `SmartPtt`、`smartPtt`、`smart_ptt`、`uploadSmart`、`KVOICETOTEXT` 和 UTF-8「语音输入文字」均无匹配；安装目录外置 JS 的相同 SmartPtt 关键词搜索也无匹配。arm64 `nm` 输出没有匹配的 SmartPtt 符号。因此本轮没有取得按钮到 native 方法的可读调用点。
 
@@ -50,7 +54,7 @@ OnSmartPttTranslateFinished: task_id={} error_code={} err_msg={}
 - [`PttSliceInfoBean`](https://github.com/tsuzcx/qq_apk/blob/afe46ef5640d0ba6850cdefd3c11badbd725a3f6/com.tencent.mobileqq/classes.jar/com/tencent/mobileqq/transfile/SmartPttTranHelper%24PttSliceInfoBean.java) 明确声明 `chatType`、`encodeType`、`filePath`、`isLast`、`isfirst`、`md5`、`offset`、`vegNum`、`vegPos`、`voiceId`。
 - 较新的 Android 9.2.5 [`SmartPttTranHelper.smali`](https://github.com/cxxsheng/Android_9.2.5_64/blob/bdf49f7db358393cc96a961fa50ceca4d33852f4/smali_classes14/com/tencent/mobileqq/transfile/SmartPttTranHelper.smali) 的 `getSmartPttReqBody` 明确设置 `bits_per_sample=16`、`samples_per_sec=16000`、`voice_file_type=1`、`service_id=1`，并将语音 ID、首末片标记、编码类型和偏移写入请求。
 
-因此“音频格式和任务信息完全没有公开线索”需要修正：**Android 侧有具体实现可参考；macOS 侧两个参数的绑定契约仍未确认。** 这些仓库保存的是客户端反编译材料，并非已经验证可工作的第三方 macOS SmartPtt 适配器。不能把 Android 的 `encodeType=6`、6400 字节 PCM 分块或 Java 字段名直接当作桌面接口规范。
+因此“音频格式和任务信息完全没有公开线索”需要修正：**Android 侧有具体实现可参考；macOS 侧两个参数的绑定契约已在后续原生静态分析中恢复，音频要求仍未确认。** 这些仓库保存的是客户端反编译材料，并非已经验证可工作的第三方 macOS SmartPtt 适配器。不能把 Android 的 `encodeType=6`、6400 字节 PCM 分块或 Java 字段名直接当作桌面接口规范。
 
 本轮 GitHub 定向查询 `uploadSmartPttSlice`、`SmartPttSlice` 及相关 issue 未找到桌面调用点；`SmartPtt`、`getSmartPttReqBody`、`PttSliceInfoBean` 找到了上述 Android 材料。搜索结果有索引和覆盖范围限制，不能据此断言无人做过。
 
@@ -74,18 +78,52 @@ NapCat Shell 和 Waylay 的独立登录模式不等于挂接用户已打开的 Q
 
 LiteLoader 历史 issue 中有 App Store QQ [6.9.19 的启动/退出问题](https://github.com/LiteLoaderQQNT/LiteLoaderQQNT/issues/130) 和 [6.9.33 因缺失 versions/config.json 加载失败](https://github.com/LiteLoaderQQNT/LiteLoaderQQNT/issues/303) 的记录。它们表明历史版本存在加载先例及版本差异，不能证明本机 `7.0.1-52892` 兼容。
 
-所查 [macOS 安装脚本](https://github.com/Mzdyl/LiteLoaderQQNT_Install/blob/32a5eeda8768039dcba525984e32026122f802e6/install.sh#L332-L359) 修改 app 中的加载文件与入口，没有提供可据以认定本机需要或只需重新签名的依据。当前构建的签名、沙盒、插件路径访问和本机通信均需实际验证。本轮没有执行安装器或修改 QQ。
+所查 [macOS 安装脚本](https://github.com/Mzdyl/LiteLoaderQQNT_Install/blob/32a5eeda8768039dcba525984e32026122f802e6/install.sh#L332-L359) 修改 app 中的加载文件与入口，没有提供可据以认定本机需要或只需重新签名的依据。没有执行该安装器。后续仅在私有 QQ 副本中尝试过入口修改，被 Gatekeeper 拒绝并已恢复；原安装包未改。本机通信和兼容加载仍待验证。
+
+## 当前官网发行版与新版加载线索
+
+2026-11-10 重新核对 GitHub 与 QQ 官网后，仍不能将本机几种入口失败解释为 QQ 能力无法接入：
+
+- [NapCat issue #2139](https://github.com/NapNeko/NapCatQQ/issues/2139) 报告官网非 App Store QQ `7.0.2-53644`、LiteLoader `1.4.1` 能加载插件，但 NapCat `4.18.41` 获取原生 session 失败。这是第三方运行报告，没有在本机复现；维护者当时回复 macOS 暂不支持。
+- 随后的 [原生 wrapper 适配提交 e8fbda4](https://github.com/NapNeko/NapCatQQ/commit/e8fbda4be614cd5a9deacb9c563b2447b04cd3b8)（2026-10-30）改为观察 QQ 自己调用的 `create` / `getNTWrapperSession`，并通过代理处理只读原生对象与初始化监听器。因此旧 issue 的工厂问题不能直接套用到当前源码；该提交也不能单独证明 macOS 已可用。
+- 本仓库观察器已经支持两种工厂名。与上述框架不同，当前诊断仅包装 QQ 已有的就绪回调；没有补造第四个初始化参数或替换为完整 session 代理。是否需要这些改变，应由实际兼容性证据决定。
+
+官网根页面通过脚本跳转到 [当前首页](https://im.qq.com/index/)。当前 `c2de0837/assets/download.js` 使用的 [官方配置](https://qq-web.cdn-go.cn/im.qq.com_new/latest/rainbow/pcConfig.json) 返回 macOS QQ `7.0.3 (Intel+Apple Silicon)`、更新日期 `2026-11-03`，安装包为：
+
+```text
+https://qqdl.gtimg.cn/qqfile/QQNTV2/9.9.37/release/a8ffd03b/QQ_7.0.3_261103_01.dmg
+```
+
+官网配置的代理和旧域名配置也返回同一版本与地址；旧 `macqq/index.shtml` 中的 `6.8.3/2022` 内容不能用作当前发行版依据。当前页面的 macOS 下载函数直接返回配置 URL，没有观察到另行生成的下载令牌。
+
+本机获取上述 `7.0.3` 官方 DMG 返回 `HTTP 403`、空正文；带普通网页 User-Agent / Referer 的只读响应检查也未成功。后续从 [Homebrew 的固定 QQ cask](https://github.com/Homebrew/homebrew-cask/blob/b2f92d79f7a50b2d156489275e5ffc0dfa59ed53/Casks/q/qq.rb) 取得官方旧版 `7.0.0_260812_01`，隔离下载成功：大小 `472997968` 字节，实际 SHA-256 与公开值 `b195c26df362af58954c898ab1dd984784a2ba6f57a629e6fb9b3ecc3bf9e65c` 完全一致。cask 的 livecheck 正则只匹配 `/QQNT/`，不匹配当前官网的 `/QQNTV2/`，所以它停留旧版也不能用来否定当前新版存在。
+
+只读挂载后，对官方 `7.0.0-52194` 与本机 App Store `7.0.1-52892` 做了实际静态比较：
+
+| 检查项 | 官方旧独立版 | 本机 App Store 版 |
+| --- | --- | --- |
+| 签名 | Developer ID Application，Tencent，团队 `FN2V63AD2J` | Apple Mac OS Application Signing，同一团队 |
+| `codesign --verify --deep --strict` | 通过 | 通过 |
+| App Sandbox / allow-jit / disable-library-validation | 均为 `true` | 均为 `true` |
+| `package.main` | `./application.asar/app_launcher/index.js` | 相同 |
+| bytecode shell / 归档入口 | 开启 / 非 UTF-8 字节 | 相同类型，内容哈希不同 |
+| package、ASAR、外置 index.js、major.node 资源封存 | 均在 `files` / `files2` 中 | 相同 |
+| QQNT 调试参数处理 | 删除 `inspect` 和 `remote-debugging-port` | 已确认相同机制 |
+
+官方旧版 QQNT 的 arm64 静态证据：`0x13b855c` / `0x13b8570` 将两个键交给 `0x13b9740`；后者在 `0x13b9914`–`0x13b9928` 更新树大小并删除节点，随后销毁节点。其运行库 SHA-256 为 `f02175da8dec0726756bb6aac77a41a9ec79f98d488d1edb10924a0be54ae08d`。这是该旧版本的文件分析，没有重复启动探测。两版完整 universal 启动程序大小分别为 `588160` / `586576` 字节，不能由签名 CodeDirectory 的哈希数量推断启动逻辑存在明显差异。
+
+此比较排除了“这份官网版天然无沙箱或保留已测试调试开关”的假设，但不能证明当前 `7.0.3` 的兼容性，也不能把版本差异归因于发行渠道。原始比较脚本首次按 UTF-8 读取归档入口失败，后改为保留字节；资源封存路径首次遗漏 `Resources/` 前缀，已在保留的 `v2` 结果中纠正，不能使用首份结果的缺失标记。证据保存在专用调查目录的 `official-700-*` 文件。挂载已成功卸载；没有安装、替换、修改或启动官网版。当前仍需寻找具体兼容入口，不能将第三方加载报告当成本机验证，也不能重复本机已失败的调试参数。
 
 ## 实现前仍需验证
 
 1. 兼容该 QQ 版本的进程内入口和 session 获取方式，以及可审阅的加载方案。
-2. `uploadSmartPttSlice` 两个参数的完整结构和返回值。
+2. 已恢复的 `uploadSmartPttSlice` 参数结构和无结果返回绑定，仍需真实任务验证合法值与运行行为。
 3. 任务 ID 来源、创建时机、切片顺序、结束标记、取消和超时行为。
 4. 音频编码、采样率、通道数、容器、切片长度。
 5. 两种回调的实际载荷、增量或累计文字语义、错误处理和监听释放。
 6. 从 VoicePort 调用时的本机鉴权、并发隔离和音频临时文件清理。
 
-当前阻塞是缺少经过验证的调用契约和外部入口。继续需要兼容的类型/调用点，或在 QQ 进程内进行受控验证。不能用猜测的请求结构编写“可用”适配器，也不能使用腾讯云 ASR 或其他识别引擎冒充 QQ 自带能力。
+当前已经静态恢复内部参数、AudioSDK 转换、回调合并及 QQ 自有 session 引用链，仍缺少经过运行验证的外部加载/调用入口和真实服务接受结果。renderer 消费者已定位到 `require(41386).audioSDKApi`，并确认该模块通过 `63198.Z(43145.Qe.AudioSDK)` 创建客户端；工厂的声明方法、`AudioSDKApi` 服务名与 RM 收发方向已恢复，底层模块 `10413` 的完整线格式已恢复，preload 普通分支已确认转发 Electron IPC，替代 provider 和主端配对仍待核对，实际可达性尚未验证；本地多实例路由的 POST 分发和 `websdk` 方法未显示可据以复用的通用 AudioSDK 入口，详见渲染端证据文档。继续需要验证兼容入口，之后才进入另行获准的最小音频任务。不能用猜测的请求结构编写“可用”适配器，也不能使用腾讯云 ASR 或其他识别引擎冒充 QQ 自带能力。
 
 ## 推荐的落地顺序
 
@@ -101,4 +139,4 @@ LiteLoader 历史 issue 中有 App Store QQ [6.9.19 的启动/退出问题](http
 
 ## 本轮操作范围
 
-只检查安装目录的程序资源和公开源码。没有修改或重启 QQ，没有安装桥接，没有读取聊天记录或 QQ 凭据，没有录音、上传音频或发送消息。没有运行 QQ 转写端到端测试；本轮不宣称已验证识别效果。
+最初只检查安装目录程序资源和公开源码。随后在用户授权下实际执行临时副本入口、原版预加载、原版主进程调试入口和原版渲染调试入口试验，并核对 QQ 的 `versions/config.json` 程序版本元数据；其基础版与当前版均为 `7.0.1-52892`。各次试验均未取得真实 session/服务报告，结束后恢复原 QQ，配置指纹与严格签名检查通过。本次还只读检查顶层菜单及 QQ/帮助菜单，未观察到开发者工具入口；未读取聊天窗口列表或正文。原生契约分析仅加载二进制文件反汇编，没有运行或附加 native 模块。没有读取聊天或 QQ 凭据，没有录音、上传音频、发送消息或执行转写端到端测试。
