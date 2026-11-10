@@ -241,9 +241,9 @@ python3 -I scripts/verify.py
 
 macOS 原生模块位于 `crates/voiceport-macos`：AppKit 界面、AVAudio 录音与设备端 Speech、Accessibility 与终端字符投递均由 Rust 实现。应用行为检查使用合成 PCM、隔离存储和模拟输入目标，不会自动启动真实录音或向你的输入框写字。旧 Swift 源码、测试及 SwiftPM 清单已从当前文件树移除，历史实现可通过 Git 历史查看。历史 Swift 检查结果不作为 Rust 新实现的验收。
 
-`verify.py` 本身假设依赖缓存已准备，缺少依赖时应先运行上面的 `cargo fetch --locked`。完整流程覆盖 Rust 测试、格式、严格 Clippy、release 构建、临时打包、CLI 离线行为、LoopTests 和完整 PackagingTests。可选的 `python3 -I scripts/verify.py --app-smoke` 会额外执行不录音、不联网的菜单启动与输入权限输出检查；直接运行权限诊断得到的输出不证明 Launch Services 下的有效 TCC 身份。这些检查与 `doctor` 分属不同入口，均不替代真实麦克风、账号转写或 Orca 接收验收，详见 [验证边界](docs/VALIDATION.md) 与 [打包说明](docs/PACKAGING.md)。
+`verify.py` 对同一 checkout 的完整检查加互斥锁，使用全新证据目录保存完整 stdout/stderr 和逐项进度报告；超时/正常中断会清理它创建的进程组并记录实际退出及清理状态，失败后不启动后续检查。锁不覆盖其他 checkout 或手工命令，详见 [Loop 执行、证据与资源](docs/LOOP_EXECUTION.md)。`verify.py` 本身假设依赖缓存已准备，缺少依赖时应先运行上面的 `cargo fetch --locked`。完整流程覆盖 Rust 测试、格式、严格 Clippy、release 构建、临时打包、CLI 离线行为、LoopTests 和完整 PackagingTests。可选的 `python3 -I scripts/verify.py --app-smoke` 会额外执行不录音、不联网的菜单启动与输入权限输出检查；直接运行权限诊断得到的输出不证明 Launch Services 下的有效 TCC 身份。这些检查与 `doctor` 分属不同入口，均不替代真实麦克风、账号转写或 Orca 接收验收，详见 [验证边界](docs/VALIDATION.md) 与 [打包说明](docs/PACKAGING.md)。
 
-[macOS CI](.github/workflows/ci.yml) 在 pull request 和 `main` push 时运行，使用 `macos-15` 与 Rust **1.95.0**。它先执行 `cargo fetch --locked` 准备锁定依赖，再设置 `CARGO_NET_OFFLINE=true`，依次运行 Rust 测试、格式和严格 Clippy、工作区 release 构建、LoopTests 与完整 PackagingTests。release 构建在 PackagingTests 之前完成，供真实临时应用包检查使用；CI 不进行真实登录、权限申请、录音或云端转写。
+[macOS CI](.github/workflows/ci.yml) 在 pull request 和 `main` push 时运行，使用 `macos-15` 与 Rust **1.95.0**。它先执行 `cargo fetch --locked` 准备锁定依赖，再设置 `CARGO_NET_OFFLINE=true`，依次运行 Rust 测试、格式和严格 Clippy、工作区 release 构建、LoopTests、会话轮换回归与完整 PackagingTests。release 构建在 PackagingTests 之前完成，供真实临时应用包检查使用；CI 不进行真实登录、权限申请、录音或云端转写。
 
 | 继续阅读 | 内容 |
 | --- | --- |

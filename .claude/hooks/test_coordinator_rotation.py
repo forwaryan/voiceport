@@ -15,14 +15,14 @@ r = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(r)
 
 
-def installed_launch_receipt(outcome='journaled'):
+def installed_launch_receipt(outcome='journaled', surface='terminal'):
     # Installed agentLaunchFixture/formatAgentLaunch use result.prompt directly.
-    # Journaled structured delivery alone is not proof of a terminal successor.
+    # The CLI rotation requests a terminal; keep structured as a negative fixture.
     receipt = {'id': 'req_launch', 'ok': True, 'result': {
-        'outcome': {'kind': 'structured', 'sessionId': 'codex_1', 'handle': 'agent_1'},
+        'outcome': {'kind': surface, 'handle': 'next-terminal' if surface == 'terminal' else 'agent_1'},
         'worktreeId': 'synthetic-worktree',
-        'receipt': {'mode': 'structured', 'preferred': 'structured', 'reason': 'user_default',
-                    'detail': 'Started a structured chat session, the default for new agent tabs in your settings.'},
+        'receipt': {'mode': surface, 'preferred': surface, 'reason': 'requested_surface',
+                    'detail': 'Synthetic installed envelope for the requested surface.'},
         'prompt': {'delivery': 'submit', 'outcome': outcome, 'messageId': 'msg_1'}},
         '_meta': {'runtimeId': 'runtime-1'}}
     if outcome == 'handed-to-terminal':
@@ -82,7 +82,7 @@ class RotationTests(unittest.TestCase):
     def stop(self):
         self.append({'sessionId': 'old', 'message': {'content': [
             {'type': 'tool_use', 'name': 'ScheduleWakeup', 'id': 'stop', 'input': {'stop': True}}]}})
-        self.append({'sessionId': 'old', 'message': {'content': [
+        self.append({'sessionId': 'old', 'toolUseResult': {'stopped': True, 'cancelledWakeups': 0}, 'message': {'content': [
             {'type': 'tool_result', 'tool_use_id': 'stop', 'content': 'Loop stopped'}]}})
 
     def test_completed_boundaries_deduplicate_across_both_hook_channels(self):
@@ -1389,7 +1389,7 @@ class RunRotationTests(unittest.TestCase):
         r.hook(self.root, self.payload(session='coord'))
         self.append({'sessionId': 'coord', 'message': {'content': [
             {'type': 'tool_use', 'name': 'ScheduleWakeup', 'id': 'stop', 'input': {'stop': True}}]}}, 'coord')
-        self.append({'sessionId': 'coord', 'message': {'content': [
+        self.append({'sessionId': 'coord', 'toolUseResult': {'stopped': True, 'cancelledWakeups': 0}, 'message': {'content': [
             {'type': 'tool_result', 'tool_use_id': 'stop', 'content': 'Loop stopped'}]}}, 'coord')
         return r.retire(self.root, 'coord', str(self.transcript_for('coord')), self.run)
 
@@ -1766,6 +1766,7 @@ class RunRotationTests(unittest.TestCase):
         self.retire()
         retired = copy.deepcopy(self.saved())
         cases = [
+            ('structured-success', installed_launch_receipt(surface='structured'), 'non-terminal'),
             ('nested-only', {'ok': True, 'result': {'launch': {'prompt': {'outcome': 'journaled'}}}}, 'missing'),
             ('missing', {'ok': True, 'result': {}}, 'missing'),
             ('missing-outcome', {'ok': True, 'result': {'prompt': {}}}, 'missing'),

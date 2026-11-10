@@ -53,5 +53,6 @@ jobs:
           bash scripts/test_rust.sh
           cargo build --workspace --release --locked
           python3 -I -m unittest discover -s Tests/LoopTests -v
+          python3 -I -m unittest discover -s .claude/hooks -p 'test_*rotation.py' -v
           # RealBundleTests packages release products into a fresh temporary bundle.
           python3 -I -m unittest discover -s Tests/PackagingTests -v
