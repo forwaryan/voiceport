@@ -163,6 +163,16 @@ def launch_delivery_status(receipt):
     return outcome if outcome in ('journaled', 'handed-to-terminal') else 'unknown'
 
 
+def terminal_launch_delivery_status(receipt):
+    status = launch_delivery_status(receipt)
+    if status in ('journaled', 'handed-to-terminal'):
+        outcome = receipt_field(receipt, 'result', 'outcome')
+        if (not isinstance(outcome, dict) or outcome.get('kind') != 'terminal'
+                or not isinstance(outcome.get('handle'), str) or not outcome['handle']):
+            return 'non-terminal'
+    return status
+
+
 def update_transfer(state, request_id, **updates):
     """Keep late launch/close receipts when the live request moves to the next epoch."""
     records = [state['request'], *state['history']]
@@ -271,6 +281,51 @@ def register(root, session, run_id, transcript, goal, loop_prompt, navigation):
     return value
 
 
+def upgrade_legacy(root, session, run_id):
+    """Carry an idle legacy lease into the verified per-Run lifecycle without reset."""
+    coordinator_path(root, run_id)
+    with transaction(root) as legacy:
+        require_owner(legacy, session)
+        validate_hook_accounting(legacy)
+        if legacy.get('run_id') != run_id or legacy['phase'] not in ('active', 'requested') or legacy.get('migrated_run'):
+            raise ValueError('legacy upgrade requires its current owner/Run and no attempted transfer')
+        with transaction(root, run_id) as existing:
+            if existing is not None:
+                raise ValueError('Run already has a lease; reconcile before legacy upgrade')
+            with session_transaction(root, session) as proof:
+                verified = authentic_session(root, session)
+                if proof.get('standalone') or proof.get('coordinator_run'):
+                    raise ValueError('session already has another lifecycle')
+                identity = coordinator_identity(root, run_id, proof['terminal'])
+                registry = load(root / '.voiceport/coordination.json')
+                ledger = load(root / '.voiceport/loop-state.json')
+                if registry.get('run_id') != run_id:
+                    raise ValueError('legacy navigation belongs to another Run')
+                running = [(key, task) for key, task in ledger['tasks'].items() if task['status'] == 'running']
+                if len(running) > 1:
+                    raise ValueError('legacy product lineage is ambiguous')
+                task, attempt = 'unbound', 'unbound'
+                if running:
+                    task, row = running[0]
+                    if not row.get('attempts') or not isinstance(row['attempts'][-1].get('id'), str):
+                        raise ValueError('legacy running product has no current attempt')
+                    attempt = row['attempts'][-1]['id']
+                navigation = f'.voiceport/handoffs/legacy-navigation-{session}.json'
+                if (root / navigation).exists() or (root / navigation).is_symlink():
+                    raise ValueError('legacy navigation already exists; inspect partial upgrade before retry')
+                atomic(root / navigation, {**registry, 'product_task_id': task, 'product_attempt_id': attempt})
+                value = {**legacy, 'terminal': proof['terminal'], 'identity_receipt': identity,
+                         'navigation': navigation, 'harness': proof['harness']}
+                value['boundaries'] = list(dict.fromkeys([*legacy['boundaries'], *verified['boundaries']]))
+                request_rotation(value)
+                # Save the new lease and legacy fence before publishing the marker.
+                atomic(coordinator_path(root, run_id), value)
+                legacy['migrated_run'] = run_id
+                atomic(coordinator_path(root), legacy)
+                proof['coordinator_run'] = run_id
+    return {'run': run_id, 'owner': session, 'phase': value['phase'], 'boundaries': value['boundaries']}
+
+
 def validate_run_state(root, state, run_id):
     validate_hook_accounting(state)
     try:
@@ -299,6 +354,8 @@ def validate_run_state(root, state, run_id):
 
 def require_coordinator(root, state, session, run_id):
     require_owner(state, session)
+    if state.get('migrated_run'):
+        raise ValueError('legacy lease was upgraded; use its per-Run lifecycle with --run')
     if run_id is not None:
         validate_run_state(root, state, run_id)
         proof = authentic_session(root, session)
@@ -334,6 +391,87 @@ def verify_transcript_prefix(stream, path, size, expected_digest):
         raise ValueError('transcript changed during scan; retry from its current contents')
 
 
+def copy_scheduler(state):
+    value = state.get('scheduler', {'owned': {}, 'deleted': {}, 'pending': {}, 'dynamic': {}})
+    if (not isinstance(value, dict) or set(value) not in ({'owned', 'deleted', 'pending'}, {'owned', 'deleted', 'pending', 'dynamic'})
+            or any(not isinstance(value[k], dict) for k in value)
+            or any(not isinstance(key, str) or not isinstance(row, dict)
+                   for rows in value.values() for key, row in rows.items())):
+        raise ValueError('invalid saved scheduler provenance')
+    if any(row.get('name') not in ('CronCreate', 'CronDelete') or not isinstance(row.get('input'), dict)
+           for row in value['pending'].values()):
+        raise ValueError('invalid saved scheduler mutation')
+    if state.get('owner') and any(row.get('owner') != state['owner'] for row in value['owned'].values()):
+        raise ValueError('saved scheduler belongs to another owner')
+    result = json.loads(json.dumps(value))
+    result.setdefault('dynamic', {})
+    if any(type(row.get('order')) is not int or row['order'] < 1 or type(row.get('stop')) is not bool
+           or (row.get('receipt') is not None and not isinstance(row['receipt'], dict))
+           or not isinstance(row.get('after', []), list)
+           or any(not isinstance(key, str) for key in row.get('after', []))
+           for row in result['dynamic'].values()):
+        raise ValueError('invalid saved dynamic scheduler provenance')
+    for row in result['dynamic'].values():
+        row.setdefault('after', [])
+        if row.get('timestamp') is not None:
+            validate_saved_timestamp(row['timestamp'])
+    return result
+
+
+def track_scheduler(scheduler, calls, row, session):
+    """Persist confirmed job ownership and unresolved mutations across truncation."""
+    if row.get('sessionId') != session:
+        return
+    content = row.get('message', {}).get('content', [])
+    if not isinstance(content, list):
+        return
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        name = item.get('name', '').split('.')[-1]
+        if item.get('type') == 'tool_use' and name == 'ScheduleWakeup':
+            dynamic = scheduler['dynamic']
+            seen = calls.setdefault('_dynamic_seen', [])
+            timestamp = row.get('timestamp')
+            if timestamp is not None:
+                validate_saved_timestamp(timestamp)
+            if item['id'] not in dynamic:
+                dynamic[item['id']] = {'order': max((v['order'] for v in dynamic.values()), default=0) + 1,
+                                       'stop': item.get('input', {}).get('stop') is True, 'receipt': None,
+                                       'timestamp': timestamp, 'after': []}
+            entry = dynamic[item['id']]
+            earlier = [key for key, value in dynamic.items() if timestamp and value.get('timestamp')
+                       and datetime.fromisoformat(value['timestamp']) < datetime.fromisoformat(timestamp)]
+            entry['after'] = sorted(set(entry['after']) | set(seen) | set(earlier))
+            seen.append(item['id'])
+        if item.get('type') == 'tool_result' and item.get('tool_use_id') in scheduler['dynamic']:
+            result = row.get('toolUseResult')
+            scheduler['dynamic'][item['tool_use_id']]['receipt'] = (result if not item.get('is_error') and isinstance(result, dict) else None)
+        if item.get('type') == 'tool_use' and name in ('CronCreate', 'CronDelete'):
+            value = {'name': name, 'input': item.get('input', {})}
+            calls[item['id']] = value
+            scheduler['pending'][item['id']] = value
+        call_id = item.get('tool_use_id')
+        call = calls.get(call_id) or scheduler['pending'].get(call_id)
+        if item.get('type') != 'tool_result' or not call:
+            continue
+        if item.get('is_error'):
+            scheduler['pending'].pop(call_id, None)
+            continue
+        result = row.get('toolUseResult')
+        if not isinstance(result, dict):
+            continue
+        data, name = call['input'], call['name']
+        job = result.get('id')
+        if name == 'CronCreate' and isinstance(job, str) and job:
+            scheduler['owned'][job] = {'owner': session, 'prompt': data.get('prompt'), 'cron': data.get('cron'),
+                                       'tool_use_id': call_id, 'receipt': result}
+            scheduler['pending'].pop(call_id, None)
+        elif name == 'CronDelete' and job == data.get('id') and job in scheduler['owned']:
+            scheduler['deleted'][job] = {'tool_use_id': call_id, 'receipt': result}
+            scheduler['pending'].pop(call_id, None)
+
+
 def scan(state, transcript):
     """Rescan a fixed byte snapshot of complete JSONL records on every hook.
 
@@ -350,6 +488,8 @@ def scan(state, transcript):
     verified = False
     started = state.get('transcript_started_at')
     offset = 0
+    scheduler_calls = {}
+    scheduler = copy_scheduler(state)
     with path.open('rb') as stream:
         before = os.fstat(stream.fileno())
         snapshot_digest = hashlib.sha256()
@@ -362,6 +502,7 @@ def scan(state, transcript):
             if not isinstance(record, dict):
                 raise ValueError('transcript record must be an object')
             identity = None
+            track_scheduler(scheduler, scheduler_calls, record, state['owner'])
             if state.get('harness') == 'codex':
                 native = record.get('payload')
                 if record.get('type') in ('session_meta', 'compacted') and not isinstance(native, dict):
@@ -408,6 +549,8 @@ def scan(state, transcript):
         required = 'session_meta' if state.get('harness') == 'codex' else 'sessionId'
         raise ValueError('transcript has no verified ' + required)
     state['boundaries'].extend(added)
+    if any(scheduler.values()) or 'scheduler' in state:
+        state['scheduler'] = scheduler
     if started is not None:
         state['transcript_started_at'] = started
     state['transcript_session_verified'] = True
@@ -425,30 +568,125 @@ def paused(root):
     return path.exists() and load(path).get('paused', False)
 
 
-def stop_receipt(transcript, session):
-    """Require a successful loop-stop after the last scheduling call in this session."""
-    calls = {}
-    last = None
-    success = None
-    with Path(transcript).open() as source:
-        for line in source:
-            record = json.loads(line)
-            if record.get('sessionId') != session:
+def scheduler_view(transcript, session, provenance=None):
+    """Correlate installed Claude toolUseResult receipts, never a submitted call alone.
+
+    Native Codex has no verified scheduler in the installed CLI. Do not guess its
+    function names or turn arbitrary function_call_output text into stop authority.
+    """
+    saved = copy_scheduler({'scheduler': provenance}) if provenance is not None else copy_scheduler({})
+    calls = {key: (row['name'], row['input'], -1) for key, row in saved['pending'].items()}
+    owned, deleted, pending = saved['owned'], saved['deleted'], set(saved['pending'])
+    dynamic, last_dynamic, last_list, mutation = None, None, None, 0
+    native = False
+    tracker_calls = {}
+    path = Path(transcript)
+    with path.open('rb') as stream:
+        size = os.fstat(stream.fileno()).st_size
+        raw = stream.read(size)
+        for index, line in enumerate(raw.splitlines(keepends=True)):
+            if not line.endswith(b'\n'):
                 continue
-            content = record.get('message', {}).get('content', [])
+            row = json.loads(line)
+            track_scheduler(saved, tracker_calls, row, session)
+            if row.get('type') == 'session_meta':
+                if row.get('payload', {}).get('id') != session:
+                    raise ValueError('scheduler transcript belongs to another session')
+                native = True
+            if row.get('sessionId') != session:
+                continue
+            content = row.get('message', {}).get('content', [])
             if not isinstance(content, list):
                 continue
             for item in content:
-                if item.get('type') == 'tool_use' and item.get('name', '').split('.')[-1] == 'ScheduleWakeup':
-                    last = item['id']
-                    calls[last] = item.get('input', {}).get('stop') is True
-                    success = None
-                if (item.get('type') == 'tool_result' and item.get('tool_use_id') == last
-                        and calls.get(last) and not item.get('is_error')):
-                    success = {'tool_use_id': last, 'result': item.get('content')}
-    if not success:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get('name', '').split('.')[-1]
+                if item.get('type') == 'tool_use' and name in ('ScheduleWakeup', 'CronCreate', 'CronDelete', 'CronList'):
+                    call_id, data = item['id'], item.get('input', {})
+                    calls[call_id] = (name, data, index)
+                    if name in ('CronCreate', 'CronDelete'):
+                        mutation = index
+                        pending.add(call_id)
+                    if name == 'ScheduleWakeup':
+                        last_dynamic, dynamic = call_id, None
+                    continue
+                call_id = item.get('tool_use_id')
+                if item.get('type') != 'tool_result' or call_id not in calls:
+                    continue
+                name, data, position = calls[call_id]
+                result = row.get('toolUseResult')
+                if item.get('is_error'):
+                    # A rejected create did not install anything; other failed or
+                    # uncertain mutations cannot serve as a shutdown receipt.
+                    if name in ('CronCreate', 'CronDelete'):
+                        pending.discard(call_id)
+                    continue
+                if not isinstance(result, dict):
+                    continue
+                if name == 'CronCreate' and isinstance(result.get('id'), str) and result['id']:
+                    owned[result['id']] = {'owner': session, 'prompt': data.get('prompt'),
+                                          'cron': data.get('cron'), 'tool_use_id': call_id, 'receipt': result}
+                    pending.discard(call_id)
+                elif name == 'CronDelete' and result.get('id') == data.get('id') and data.get('id') in owned:
+                    deleted[data['id']] = {'tool_use_id': call_id, 'receipt': result}
+                    pending.discard(call_id)
+                elif name == 'CronList' and isinstance(result.get('jobs'), list):
+                    jobs = result['jobs']
+                    if all(isinstance(j, dict) and isinstance(j.get('id'), str) for j in jobs):
+                        last_list = {'position': position, 'tool_use_id': call_id, 'receipt': result}
+                elif name == 'ScheduleWakeup' and call_id == last_dynamic and data.get('stop') is True and result.get('stopped') is True:
+                    dynamic = {'tool_use_id': call_id, 'receipt': result, 'position': position}
+        verify_transcript_prefix(stream, path, size, hashlib.sha256(raw).digest())
+    if saved['dynamic']:
+        last_dynamic = max(saved['dynamic'], key=lambda key: saved['dynamic'][key]['order'])
+        # Observation order is not transcript order after a prefix is restored.
+        # A stop must be proven later than every known call, by the same verified
+        # snapshot or actual UTC call timestamps, including pruned pending calls.
+        candidates = [(key, value) for key, value in saved['dynamic'].items()
+                      if value['stop'] and (value.get('receipt') or {}).get('stopped') is True
+                      and set(saved['dynamic']) - {key} <= set(value['after'])]
+        dynamic = None
+        if candidates:
+            key, value = max(candidates, key=lambda pair: pair[1]['order'])
+            dynamic = {'tool_use_id': key, 'receipt': value['receipt'], 'timestamp': value.get('timestamp')}
+    return {'owned': owned, 'deleted': deleted, 'pending': sorted(pending), 'dynamic': dynamic,
+            'last_dynamic': last_dynamic, 'list': last_list, 'mutation': mutation, 'native': native}
+
+
+def stop_receipt(transcript, session, provenance=None):
+    view = scheduler_view(transcript, session, provenance)
+    if view['native']:
+        raise ValueError('native Codex scheduler shutdown adapter is unverified; retirement blocked')
+    if view['last_dynamic'] and not view['dynamic']:
+        raise ValueError('call ScheduleWakeup(stop=true) successfully after latest scheduling call before retirement')
+    if view['pending'] or set(view['owned']) - set(view['deleted']):
+        raise ValueError('owned cron jobs have no confirmed CronDelete receipt; stop all before retirement')
+    if view['owned']:
+        listed = view['list']
+        if (not listed or listed['position'] <= view['mutation']
+                or set(view['owned']) & {j['id'] for j in listed['receipt']['jobs']}):
+            raise ValueError('CronList must confirm all owned jobs absent after the last cron mutation')
+    elif not view['dynamic']:
         raise ValueError('call ScheduleWakeup(stop=true) successfully before retirement')
-    return success
+    return {'kind': 'mixed' if view['owned'] and view['dynamic'] else 'cron' if view['owned'] else 'dynamic',
+            'dynamic': view['dynamic'], 'cron_jobs': view['owned'], 'cron_deleted': view['deleted'],
+            'cron_list': view['list']}
+
+
+def scheduler_shutdown(payload, state):
+    """Shutdown only; the host scopes dynamic stop/list to the actual caller."""
+    name, data = payload.get('tool_name', '').split('.')[-1], payload.get('tool_input', {})
+    if name == 'ScheduleWakeup':
+        return data == {'stop': True}
+    if name == 'CronList':
+        return data == {}
+    if name == 'CronDelete' and set(data) == {'id'} and isinstance(data['id'], str):
+        cursor = state.get('transcript_cursor') or {}
+        if cursor.get('path') and state.get('harness', 'claude') == 'claude':
+            owned = scheduler_view(cursor['path'], payload['session_id'], state.get('scheduler'))['owned']
+            return owned.get(data['id'], {}).get('owner') == payload['session_id']
+    return False
 
 
 def handoff_snapshot(root, state):
@@ -512,13 +750,13 @@ def adopt(root, session, run_id, transcript, threshold, goal, loop_prompt, retir
 
 
 def retire(root, session, transcript, run_id=None):
-    proof = stop_receipt(transcript, session)
     with transaction(root, run_id) as state:
         authority = require_coordinator(root, state, session, run_id)
         if run_id is not None:
             if Path(transcript).resolve() != Path(authority['transcript_cursor']['path']).resolve():
                 raise ValueError('retirement transcript differs from authentic session proof')
-            scan(state, transcript)
+        scan(state, transcript)
+        proof = stop_receipt(transcript, session, state.get('scheduler'))
         if state['phase'] not in ('requested', 'retired'):
             raise ValueError('rotation has not been requested')
         if state['phase'] == 'retired':
@@ -562,7 +800,7 @@ def launch(root, session, run_id=None):
                        'After claim and launch delivery verification, use close-retired with this Run, your session '
                        'and the exact retiring terminal in the request; never close another terminal. '
                        'Do not start product work or a loop before that verification and closure receipt.')
-        launch_argv = ['agent', 'launch', '--agent', 'claude',
+        launch_argv = ['agent', 'launch', '--agent', 'claude', '--surface', 'terminal',
                        '--worktree', 'path:' + str(root), '--prompt', prompt]
         state['request']['launch_argv'] = launch_argv
     try:
@@ -571,7 +809,7 @@ def launch(root, session, run_id=None):
         with transaction(root, run_id) as state:
             update_transfer(state, request['id'], launch_error=str(error), launch_failure=failure_observation(error))
         raise ValueError('launch outcome may be unknown; inspect Orca and use its replay ID, no fresh launch') from error
-    delivery_status = launch_delivery_status(receipt)
+    delivery_status = terminal_launch_delivery_status(receipt)
     delivered = delivery_status in ('journaled', 'handed-to-terminal')
     with transaction(root, run_id) as state:
         update_transfer(state, request['id'], launch_receipt=receipt,
@@ -614,6 +852,9 @@ def claim(root, session, token, run_id=None):
         if hashlib.sha256(packet.read_bytes()).hexdigest() != state['request']['packet_sha256']:
             raise ValueError('handoff packet changed')
         if proof:
+            if state['request'].get('launch_receipt') and (not state['request'].get('delivery_confirmed')
+                    or receipt_field(state['request']['launch_receipt'], 'result', 'outcome', 'handle') != proof['terminal']):
+                raise ValueError('claimant is not the verified launch target')
             generation = identity['run']['result']['run']['consumer_generation']
             prior_generation = state['identity_receipt']['run']['result']['run']['consumer_generation']
             if (proof['terminal'] == state['terminal'] or proof.get('coordinator_run') not in (None, scope)
@@ -631,6 +872,7 @@ def claim(root, session, token, run_id=None):
         state.update(owner=session, epoch=state['epoch'] + 1, phase='active',
                      boundaries=[], binding_receipt=binding)
         state.pop('transcript_cursor', None)
+        state.pop('scheduler', None)  # Scheduler ownership belongs to the retired session.
         # Keep launch request until its receipt is recorded; it is also in history.
         return {'owner': session, 'epoch': state['epoch'], 'paused': paused(root)}
 
@@ -644,7 +886,8 @@ def close_retired(root, session, run_id, terminal):
                 or state['successor_verified']['session'] != session
                 or not request.get('delivery_confirmed')
                 or not terminal or terminal != request.get('retiring_terminal')
-                or terminal == state['terminal'] or request.get('close_started_at')):
+                or terminal == state['terminal'] or request.get('close_started_at')
+                or receipt_field(request.get('launch_receipt'), 'result', 'outcome', 'handle') != state['terminal']):
             raise ValueError('close requires verified successor and exact retiring target; never retry unknown close')
         receipt = invoke(root, ['terminal', 'show', '--terminal', terminal])
         observed = receipt.get('result', {}).get('terminal') or {}
@@ -671,6 +914,11 @@ def close_retired(root, session, run_id, terminal):
 
 
 def rotation_hint(state):
+    if not state.get('navigation'):
+        return (f"Legacy coordinator {state['owner']} must first upgrade its existing Run without resetting counts: "
+                f"python3 -I {SCRIPT} upgrade-legacy --session {state['owner']} --run {state['run_id']}. "
+                "Then stop all owned schedulers and use the per-Run retire/launch/claim/close-retired flow. "
+                + FINAL_ROUND_POLICY)
     scope = f" --run {state['run_id']}" if state.get('navigation') else ''
     return (f"Coordinator entered context round {len(state['boundaries']) + 1}/{state['threshold']} "
             f"({len(state['boundaries'])} completed compactions); no further compaction is allowed. "
@@ -685,8 +933,8 @@ def allowed_during_rotation(payload, state):
     data = payload.get('tool_input', {})
     if name in ('Read', 'Skill'):
         return True
-    if name == 'ScheduleWakeup':
-        return data.get('stop') is True
+    if scheduler_shutdown(payload, state):
+        return True
     if name == 'Bash':
         try:
             argv = shlex.split(data.get('command', ''))
@@ -694,6 +942,8 @@ def allowed_during_rotation(payload, state):
             return False
         # Only a single helper command, with no shell operators/substitution.
         command = data.get('command', '')
+        if argv == ['python3', '-I', SCRIPT, 'upgrade-legacy', '--session', state['owner'], '--run', state['run_id']]:
+            return state['phase'] in ('active', 'requested')
         return (len(argv) >= 4 and argv[:3] == ['python3', '-I', SCRIPT]
                 and argv[3] in ('retire', 'launch', 'status')
                 and not any(c in command for c in (';', '\n', '`', '$', '|', '&', '>', '<')))
@@ -705,8 +955,8 @@ def scoped_admin(payload, state):
     data = payload.get('tool_input', {})
     if name == 'Read':
         return True
-    if name == 'ScheduleWakeup':
-        return data == {'stop': True}
+    if scheduler_shutdown(payload, state):
+        return True
     if name == 'exec_command':
         name, data = 'Bash', {'command': data.get('cmd', '')}
     if name != 'Bash':
@@ -772,6 +1022,14 @@ def registration_command(payload, session):
             and ('--loop-prompt-file' not in values or values['--loop-prompt-file'] == '.claude/loop.md'))
 
 
+def merge_session_proof(state, proof):
+    state['boundaries'] = list(dict.fromkeys([*state['boundaries'], *proof['boundaries']]))
+    for key in ('transcript_cursor', 'transcript_started_at', 'transcript_session_verified', 'scheduler'):
+        if key in proof:
+            state[key] = proof[key]
+    request_rotation(state)
+
+
 def run_hook(root, payload, run_id):
     # Keep independent authentic accounting and its immutable drift latch. The
     # Run lease changes the administrative gate, never the session identity/count.
@@ -791,7 +1049,7 @@ def run_hook(root, payload, run_id):
             raise ValueError('session is not a registered owner or retired predecessor')
         if session == state['owner']:
             require_terminal(state)
-            scan(state, proof['transcript_cursor']['path'])
+            merge_session_proof(state, proof)
         pending_close = (bool(state.get('successor_verified')) and bool(state['request'].get('launch_started_at'))
                          and not state['request'].get('close_confirmed'))
         if session not in retired and state['phase'] == 'active' and not pending_close:
@@ -804,7 +1062,7 @@ def run_hook(root, payload, run_id):
             return {'decision': 'block', 'reason': hint}
         allowed = scoped_admin(payload, state)
         if session != state['owner']:
-            allowed = payload.get('tool_name', '').split('.')[-1] == 'Read'
+            allowed = payload.get('tool_name', '').split('.')[-1] == 'Read' or scheduler_shutdown(payload, proof)
         if event == 'PreToolUse' and not allowed:
             return {'hookSpecificOutput': {'hookEventName': event, 'permissionDecision': 'deny',
                                           'permissionDecisionReason': hint}}
@@ -906,12 +1164,12 @@ def checkpoint_notes(root, session, text=None):
     return hashlib.sha256(raw).hexdigest()
 
 
-def writable_notes(root, session):
+def writable_notes(root, session, name=None):
     """Validate the permitted tool path without opening its file or creating dirs."""
     try:
         with handoff_directory(root) as directory:
             try:
-                notes_stat(directory, notes_path(root, session).name)
+                notes_stat(directory, name or notes_path(root, session).name)
             except FileNotFoundError:
                 pass
         return True
@@ -961,6 +1219,8 @@ def validate_hook_accounting(state):
             or any(not isinstance(b, str) or not b for b in boundaries)
             or len(set(boundaries)) != len(boundaries)):
         raise ValueError('invalid saved session boundaries; refuse to reset counts')
+    if 'scheduler' in state:
+        copy_scheduler(state)
 
 
 def validate_saved_timestamp(value):
@@ -981,7 +1241,7 @@ def validate_session_state(state, session):
     if (not {'schema_version', 'epoch', 'threshold', 'phase', 'boundaries',
              'terminal', 'created_at', 'request'}.issubset(state)
             or type(state.get('schema_version')) is not int or state['schema_version'] != 1
-            or state.get('phase') not in ('active', 'requested', 'notifying', 'handoff_ready')
+            or state.get('phase') not in ('active', 'requested', 'notifying', 'handoff_ready', 'retired', 'launching', 'claimed')
             or not isinstance(state.get('created_at'), str) or not state['created_at']
             or (state.get('terminal') is not None and not isinstance(state['terminal'], str))):
         raise ValueError('invalid saved session authority')
@@ -994,6 +1254,19 @@ def validate_session_state(state, session):
         raise ValueError('invalid saved session request')
     if 'checkpoint' in state and not isinstance(state['checkpoint'], dict):
         raise ValueError('invalid saved checkpoint')
+    if state['phase'] in ('retired', 'launching', 'claimed') and not state.get('standalone'):
+        raise ValueError('standalone phase without registered authority')
+    if 'standalone' in state:
+        standalone = state['standalone']
+        if (not isinstance(standalone, dict) or not isinstance(standalone.get('contract'), dict)
+                or not isinstance(standalone.get('identity'), dict)
+                or not isinstance(standalone.get('contract_sha256'), str)
+                or re.fullmatch(r'[0-9a-f]{64}', standalone['contract_sha256']) is None):
+            raise ValueError('invalid standalone authority')
+    if 'predecessor' in state:
+        session_path(Path('.'), state['predecessor'])
+        if state['predecessor'] == session or not state.get('standalone'):
+            raise ValueError('invalid standalone predecessor')
     validate_saved_timestamp(state['created_at'])
     if 'transcript_started_at' in state:
         validate_saved_timestamp(state['transcript_started_at'])
@@ -1039,14 +1312,357 @@ def session_transaction(root, session):
             atomic(path, state)
 
 
+def contract_path(root, session):
+    session_path(root, session)
+    return root / '.voiceport/handoffs' / ('session-contract-' + session + '.json')
+
+
+def read_handoff(root, relative):
+    path = root / relative
+    if path.parent != root / '.voiceport/handoffs' or path.is_symlink():
+        raise ValueError('handoff must be a direct regular private file')
+    with handoff_directory(root) as directory:
+        before = notes_stat(directory, path.name)
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        with os.fdopen(fd, 'rb') as source:
+            opened = os.fstat(source.fileno())
+            if not stat.S_ISREG(opened.st_mode) or file_signature(opened) != file_signature(before):
+                raise ValueError('handoff changed before read')
+            raw = source.read(48001)
+            after = os.fstat(source.fileno())
+        current = notes_stat(directory, path.name)
+        if (len(raw) != before.st_size or file_signature(before) != file_signature(after)
+                or file_signature(before) != file_signature(current)):
+            raise ValueError('handoff changed during read')
+    return json.loads(raw), hashlib.sha256(raw).hexdigest()
+
+
+def standalone_identity(root, proof):
+    """Missing local worker navigation never grants independent lifecycle authority."""
+    require_terminal(proof)
+    terminal = proof['terminal']
+    binding = invoke(root, ['orchestration', 'run-current', '--full'])
+    if 'run' not in binding['result'] or binding['result']['run'] is not None:
+        raise ValueError('bound Run requires its coordinator/worker lifecycle, not standalone rotation')
+    # Include context-only Dispatches and settled-but-retained workers. Pagination
+    # must exhaust the all-Run view; unknown/truncated membership fails closed.
+    cursor, pages, visited = None, [], set()
+    for _ in range(32):
+        argv = ['orchestration', 'worker-list', '--limit', '100', '--full']
+        if cursor:
+            argv += ['--cursor', cursor]
+        page = invoke(root, argv)
+        result = page['result']
+        if result.get('scope', {}).get('source') != 'all' or not isinstance(result.get('workers'), list):
+            raise ValueError('complete all-Run worker membership proof required')
+        rows = result['workers']
+        if any(not isinstance(row, dict) or 'agentTerminalHandle' not in row
+               or (row.get('resource') is not None and not isinstance(row['resource'], dict)) for row in rows):
+            raise ValueError('invalid full worker membership schema')
+        if any(terminal in (row.get('agentTerminalHandle'), (row.get('resource') or {}).get('terminalHandle'))
+               for row in rows):
+            raise ValueError('managed worker must checkpoint to its coordinator; standalone takeover refused')
+        pages.append({'sha256': hashlib.sha256(json.dumps(page, sort_keys=True).encode()).hexdigest(),
+                      'rows': len(rows), 'cursor': cursor})
+        pagination = result.get('page')
+        if (not isinstance(pagination, dict) or type(pagination.get('hasMore')) is not bool
+                or 'nextCursor' not in pagination
+                or pagination['hasMore'] != (pagination['nextCursor'] is not None)):
+            raise ValueError('worker membership pagination proof missing or inconsistent')
+        cursor = pagination['nextCursor']
+        if cursor is None:
+            break
+        if not isinstance(cursor, str) or not cursor or cursor in visited:
+            raise ValueError('invalid worker membership cursor')
+        visited.add(cursor)
+    else:
+        raise ValueError('worker membership exceeds bounded inspection; reconcile before rotation')
+    registry_path = root / '.voiceport/coordination.json'
+    if registry_path.exists():
+        registry = load(registry_path)
+        if any(row.get('terminal') == terminal for row in registry.get('workers', {}).values()):
+            raise ValueError('registered worker requires coordinator reconciliation')
+    receipt = invoke(root, ['terminal', 'show', '--terminal', terminal])
+    info = receipt['result'].get('terminal') or {}
+    if (info.get('handle') != terminal or info.get('worktreePath') != str(root.resolve())
+            or info.get('connected') is not True or info.get('orphaned') is not False
+            or not info.get('incarnationId') or info.get('agentIdentity') != proof['harness']):
+        raise ValueError('standalone terminal/worktree/agent identity mismatch')
+    return {'binding': binding, 'membership_pages': pages, 'terminal': receipt, 'at': now()}
+
+
+def session_register(root, session, contract):
+    expected = contract_path(root, session).relative_to(root).as_posix()
+    if contract != expected:
+        raise ValueError('contract must use this session exact private path')
+    value, digest = read_handoff(root, contract)
+    if (not isinstance(value, dict) or set(value) != {'goal', 'loop_prompt', 'authorization', 'paused', 'active_tools'}
+            or any(not isinstance(value.get(k), str) or not value[k].strip()
+                   for k in ('goal', 'loop_prompt', 'authorization'))
+            or type(value.get('paused')) is not bool or not isinstance(value.get('active_tools'), list)):
+        raise ValueError('contract requires goal, full loop_prompt, authorization, paused bool and active_tools list')
+    if value['active_tools']:
+        raise ValueError('settle active tools before registering an immutable rotation contract')
+    with session_transaction(root, session) as state:
+        proof = authentic_session(root, session)
+        if state.get('coordinator_run') or state['phase'] not in ('active', 'requested'):
+            raise ValueError('session already belongs to another lifecycle')
+        if state.get('standalone'):
+            if state['standalone']['contract_sha256'] != digest:
+                raise ValueError('registered rotation contract is immutable')
+            return state['standalone']
+        legacy = coordinator_path(root)
+        if legacy.exists() and load(legacy).get('owner') == session:
+            raise ValueError('legacy coordinator must use its existing lease')
+        identity = standalone_identity(root, proof)
+        state['standalone'] = {'contract': value, 'contract_sha256': digest, 'identity': identity}
+        state['boundaries'] = proof['boundaries']
+        request_rotation(state)
+        return state['standalone']
+
+
+def session_request(root, session, reason):
+    """Voluntary early handoff uses the normal lifecycle without changing accounting."""
+    if not isinstance(reason, str) or not reason.strip() or len(reason.encode()) > 2000:
+        raise ValueError('early handoff requires a nonempty reason of at most 2KB')
+    with session_transaction(root, session) as state:
+        proof = authentic_session(root, session)
+        if not state.get('standalone') or state.get('coordinator_run') or state['phase'] not in ('active', 'requested'):
+            raise ValueError('early handoff requires a registered active standalone session')
+        standalone_identity(root, proof)
+        if state.get('predecessor'):
+            previous = load(session_path(root, state['predecessor']))
+            if not (previous.get('request') or {}).get('close_confirmed'):
+                raise ValueError('close the prior predecessor before another rotation')
+        state['boundaries'] = proof['boundaries']
+        if state['phase'] == 'active':
+            state.update(phase='requested', request={
+                'id': 'rotation-' + uuid.uuid4().hex, 'requested_at': now(),
+                'from_session': session, 'trigger': 'voluntary', 'reason': reason,
+                'completed_compactions_at_request': len(proof['boundaries']),
+            })
+        return state['request']
+
+
+def session_retire(root, session):
+    with session_transaction(root, session) as state:
+        proof = authentic_session(root, session)
+        if not state.get('standalone') or state['phase'] not in ('requested', 'retired'):
+            raise ValueError('standalone rotation must be registered and requested')
+        if state['phase'] == 'retired':
+            return state['request']
+        if state.get('predecessor'):
+            predecessor = load(session_path(root, state['predecessor']))
+            if not (predecessor.get('request') or {}).get('close_confirmed'):
+                raise ValueError('close the prior predecessor before another rotation')
+        if state['standalone']['contract']['active_tools']:
+            raise ValueError('settle active tools and record actual outcomes in notes before retirement')
+        standalone_identity(root, proof)
+        digest = checkpoint_notes(root, session)
+        stop = stop_receipt(proof['transcript_cursor']['path'], session, proof.get('scheduler'))
+        packet = {'schema_version': 1, 'from_session': session, 'terminal': state['terminal'],
+                  'request_id': state['request']['id'], 'contract': state['standalone']['contract'],
+                  'paused': state['standalone']['contract']['paused'] or paused(root),
+                  'notes': notes_path(root, session).relative_to(root).as_posix(), 'notes_sha256': digest,
+                  'threshold': state['threshold'], 'loop_stop': stop, 'created_at': now()}
+        if len(json.dumps(packet, ensure_ascii=False).encode()) > 48000:
+            raise ValueError('standalone packet exceeds 48KB')
+        relative = f'.voiceport/handoffs/session-transfer-{session}.json'
+        atomic(root / relative, packet)
+        state['request'].update(packet=relative, packet_sha256=hashlib.sha256((root / relative).read_bytes()).hexdigest(),
+                                loop_stop=stop, retired_at=now())
+        state['phase'] = 'retired'
+        return state['request']
+
+
+def session_launch(root, session):
+    with session_transaction(root, session) as state:
+        proof = authentic_session(root, session)
+        if not state.get('standalone') or state['phase'] != 'retired' or state['request'].get('launch_started_at'):
+            raise ValueError('source must be retired; launch already attempted or unavailable')
+        identity = standalone_identity(root, proof)
+        request = state['request']
+        packet, digest = read_handoff(root, request['packet'])
+        if digest != request['packet_sha256'] or checkpoint_notes(root, session) != packet['notes_sha256']:
+            raise ValueError('standalone packet or notes changed before launch')
+        token = uuid.uuid4().hex
+        prompt = (f'You inherit a directly opened top-level task, not a coordinator/worker assignment. '
+                  f'Read .claude/COORDINATOR_ROTATION.md, {request["packet"]} and its notes. '
+                  f'Preserve the original goal, authorization, pause, unfinished work and evidence. '
+                  f'Obtain actual fresh session/terminal PreToolUse proof, then run python3 -I {SCRIPT} '
+                  f'session-claim --session YOUR_ACTUAL_NEW_SESSION_ID --source {session} --token {token}. '
+                  f'Then session-close --session YOUR_ACTUAL_NEW_SESSION_ID --source {session} '
+                  f'--terminal {state["terminal"]}. Closure may wait for the source launch receipt. '
+                  'Before successful exact predecessor PTY closure, do no product work and install no loop. '
+                  'After closure recheck packet pause and current pause; only if authorized and work remains '
+                  'restore exactly one loop using the full original contract.loop_prompt. '
+                  'Do not create a Run or adopt unrelated product coordination/Git authorization. '
+                  + FINAL_ROUND_POLICY)
+        argv = ['agent', 'launch', '--agent', proof['harness'], '--surface', 'terminal',
+                '--worktree', 'path:' + str(root), '--prompt', prompt]
+        request.update(token=token, launch_started_at=now(), launch_argv=argv, retiring_identity=identity)
+        state['phase'] = 'launching'
+    try:
+        receipt = invoke(root, argv)
+    except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+        with session_transaction(root, session) as state:
+            state['request'].update(launch_error=str(error), launch_failure=failure_observation(error))
+        raise ValueError('launch outcome unknown; inspect stored evidence, never fresh launch twice') from error
+    delivery = terminal_launch_delivery_status(receipt)
+    with session_transaction(root, session) as state:
+        state['request'].update(launch_receipt=receipt, delivery_status=delivery,
+                                delivery_confirmed=delivery in ('journaled', 'handed-to-terminal'))
+    if delivery not in ('journaled', 'handed-to-terminal'):
+        raise ValueError('launch receipt does not prove prompt delivery; do not launch again')
+    return receipt
+
+
+def session_claim(root, session, source, token):
+    if source == session:
+        raise ValueError('successor must be a different session')
+    # Always predecessor then successor lock order. Hooks never hold both locks.
+    with session_transaction(root, source) as old:
+        request = old['request'] or {}
+        if not old.get('standalone') or old['phase'] != 'launching' or request.get('token') != token:
+            raise ValueError('invalid/stale standalone transfer token or source')
+        proof = authentic_session(root, session, fresh_after=request['launch_started_at'])
+        if proof.get('standalone') or proof.get('coordinator_run') or proof['terminal'] == old['terminal']:
+            raise ValueError('successor already belongs to a lifecycle or terminal is not fresh')
+        if request.get('launch_receipt') and (not request.get('delivery_confirmed')
+                or receipt_field(request['launch_receipt'], 'result', 'outcome', 'handle') != proof['terminal']):
+            raise ValueError('claimant is not the verified launch target')
+        identity = standalone_identity(root, proof)
+        packet, digest = read_handoff(root, request['packet'])
+        if digest != request['packet_sha256'] or checkpoint_notes(root, source) != packet['notes_sha256']:
+            raise ValueError('standalone packet or notes changed')
+        with session_transaction(root, session) as successor:
+            successor.update(standalone=old['standalone'], predecessor=source, threshold=old['threshold'],
+                             inherited_pause=packet['paused'], startup_identity=identity)
+            # Persist the source fence before publishing the successor authority.
+            old['phase'] = 'claimed'
+            request.update(to_session=session, successor_terminal=proof['terminal'], claimed_at=now(),
+                           successor_identity=identity)
+            atomic(session_path(root, source), old)
+    return {'owner': session, 'source': source, 'paused': packet['paused'], 'close_required': True}
+
+
+def session_close(root, session, source, terminal):
+    proof = authentic_session(root, session)
+    if proof.get('predecessor') != source:
+        raise ValueError('caller is not this transfer successor')
+    with session_transaction(root, source) as old:
+        request = old['request'] or {}
+        if (old['phase'] != 'claimed' or request.get('to_session') != session
+                or request.get('successor_terminal') != proof['terminal'] or terminal != old['terminal']
+                or not request.get('delivery_confirmed') or request.get('close_started_at')
+                or receipt_field(request.get('launch_receipt'), 'result', 'outcome', 'handle') != proof['terminal']):
+            raise ValueError('close requires verified launch target and exact predecessor; never retry unknown close')
+        standalone_identity(root, proof)
+        expected = request['retiring_identity']['terminal']['result']['terminal']
+        receipt = invoke(root, ['terminal', 'show', '--terminal', terminal])
+        observed = receipt['result'].get('terminal') or {}
+        if any(observed.get(k) != expected.get(k) for k in ('handle', 'incarnationId', 'worktreePath')):
+            raise ValueError('predecessor terminal incarnation changed')
+        request.update(close_started_at=now(), close_target_receipt=receipt)
+    try:
+        receipt = invoke(root, ['terminal', 'close', '--terminal', terminal])
+    except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+        with session_transaction(root, source) as old:
+            old['request'].update(close_error=str(error), close_failure=failure_observation(error))
+        raise ValueError('close outcome unknown; inspect exact target, never blind retry') from error
+    confirmed = (receipt_field(receipt, 'result', 'close', 'handle') == terminal
+                 and receipt_field(receipt, 'result', 'close', 'ptyKilled') is True)
+    with session_transaction(root, source) as old:
+        old['request'].update(close_receipt=receipt, close_confirmed=confirmed)
+    if not confirmed:
+        raise ValueError('close receipt does not prove exact predecessor PTY exit')
+    return receipt
+
+
+def standalone_hint(state):
+    session = state['owner']
+    return (f'Top-level session {session} must hand off now. Save bounded notes at '
+            f'.voiceport/handoffs/session-rotation-{session}.md; stop all owned schedulers with confirmed receipts. '
+            f'Run python3 -I {SCRIPT} session-retire --session {session}, then '
+            f'python3 -I {SCRIPT} session-launch --session {session}; end this turn after delivery. '
+            'The fresh successor must session-claim and session-close the exact predecessor before work/loop. '
+            + FINAL_ROUND_POLICY)
+
+
 def worker_hint(root, state):
+    if state.get('standalone'):
+        return standalone_hint(state)
     notes = notes_path(root, state['owner']).relative_to(root).as_posix()
     return (f"Session {state['owner']} entered round {len(state['boundaries']) + 1}/5. "
             f"Stop new work. Write a bounded checkpoint to {notes}: actual task/dispatch, attempt/freeze, "
             "completed logs/exits, running tool handles, provisional findings and remaining work. "
             f"Then run python3 -I {SCRIPT} checkpoint --session {state['owner']}. "
             "End the turn; coordinator must stop the exact old worker and continue its role in a genuinely "
-            "new session. This is administrative rotation, not a product verdict. " + FINAL_ROUND_POLICY)
+            "new session. If this is a directly opened top-level session with no worker assignment, instead write "
+            f".voiceport/handoffs/session-contract-{state['owner']}.json with goal, full loop_prompt, authorization, "
+            "paused boolean and active_tools list; then run "
+            f"python3 -I {SCRIPT} session-register --session {state['owner']} "
+            f"--contract .voiceport/handoffs/session-contract-{state['owner']}.json. "
+            "Registration verifies real Orca membership; never fabricate a worker or take over a Run. "
+            "ScheduleWakeup(stop=true) and owned CronDelete remain available. "
+            "This is administrative rotation, not a product verdict. " + FINAL_ROUND_POLICY)
+
+
+def session_admin(root, payload, state):
+    name, data = payload.get('tool_name', '').split('.')[-1], payload.get('tool_input', {})
+    if name not in ('Bash', 'exec_command'):
+        return False
+    command = data.get('cmd' if name == 'exec_command' else 'command', '')
+    if len(command.encode()) > 48000 or any(c in command for c in (';', '\n', '\r', '\x00', '`', '$', '|', '&', '>', '<', '(', ')', '*', '?', '[', ']', '{', '}', '~')):
+        return False
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    if argv[:3] == ['orca', 'terminal', 'show']:
+        return len(argv) == 6 and argv[3] == '--terminal' and argv[5] == '--json' and re.fullmatch(r'term_[A-Za-z0-9_-]+', argv[4]) is not None
+    if argv == ['orca', 'terminal', 'list', '--worktree', 'path:' + str(root.resolve()), '--limit', '20', '--json']:
+        return True
+    if argv[:3] != ['python3', '-I', SCRIPT] or len(argv) < 4 or len(argv[4:]) % 2:
+        return False
+    flags = argv[4::2]
+    if len(flags) != len(set(flags)):
+        return False
+    values = dict(zip(flags, argv[5::2]))
+    expected = {'--session': state['owner']}
+    action = argv[3]
+    if action == 'session-status':
+        return values == expected or (state.get('predecessor') and values == {'--session': state['predecessor']})
+    if action == 'session-register' and state['phase'] in ('active', 'requested') and not state.get('standalone'):
+        return values == {**expected, '--contract': contract_path(root, state['owner']).relative_to(root).as_posix()}
+    if action == 'session-retire' and state.get('standalone') and state['phase'] == 'requested':
+        return values == expected
+    if action == 'session-launch' and state.get('standalone') and state['phase'] == 'retired':
+        return values == expected
+    if action == 'session-close' and state.get('predecessor'):
+        old = load(session_path(root, state['predecessor']))
+        return values == {**expected, '--source': state['predecessor'], '--terminal': old['terminal']}
+    return False
+
+
+def standalone_hook(root, payload):
+    result = worker_hook(root, payload)
+    state = load(session_path(root, payload['session_id']))
+    if state.get('terminal_drift') or not state.get('predecessor'):
+        return result
+    old = load(session_path(root, state['predecessor']))
+    request = old.get('request') or {}
+    if (old.get('phase') == 'claimed' and request.get('to_session') == state['owner']
+            and request.get('successor_terminal') == state['terminal'] and request.get('close_confirmed')):
+        return result
+    event = payload['hook_event_name']
+    hint = 'Successor must verify launch delivery and session-close the exact predecessor before work or loop.'
+    if event == 'PreCompact':
+        return {'decision': 'block', 'reason': hint}
+    if event == 'PreToolUse' and not (payload.get('tool_name', '').split('.')[-1] == 'Read'
+                                      or scheduler_shutdown(payload, state) or session_admin(root, payload, state)):
+        return {'hookSpecificOutput': {'hookEventName': event, 'permissionDecision': 'deny', 'permissionDecisionReason': hint}}
+    return result
 
 
 def allowed_worker_handoff(root, payload, state):
@@ -1054,14 +1670,20 @@ def allowed_worker_handoff(root, payload, state):
     data = payload.get('tool_input', {})
     if name == 'exec_command':
         name, data = 'Bash', {'command': data.get('cmd', '')}
+    if scheduler_shutdown(payload, state) or session_admin(root, payload, state):
+        return True
     if registration_command(payload, state['owner']):
         return True
     if name in ('Read', 'Skill'):
         return True
     if name in ('Write', 'Edit'):
-        return (state['phase'] == 'requested'
-                and data.get('file_path') == str(notes_path(root, state['owner']))
-                and writable_notes(root, state['owner']))
+        if state['phase'] != 'requested':
+            return False
+        if data.get('file_path') == str(notes_path(root, state['owner'])):
+            return writable_notes(root, state['owner'])
+        path = contract_path(root, state['owner'])
+        return (not state.get('standalone') and data.get('file_path') == str(path)
+                and writable_notes(root, state['owner'], path.name))
     if name == 'Bash':
         try:
             argv = shlex.split(data.get('command', ''))
@@ -1209,6 +1831,12 @@ def worker_hook(root, payload):
                 return {'hookSpecificOutput': {'hookEventName': event, 'additionalContext': hint}}
             return {}  # Ending the turn is recovery, including recursive/native Stop.
         if state['phase'] == 'active':
+            name = payload.get('tool_name', '').split('.')[-1]
+            scheduling = name == 'CronCreate' or (name == 'ScheduleWakeup' and payload.get('tool_input', {}).get('stop') is not True)
+            if (event == 'PreToolUse' and scheduling and not state.get('standalone')
+                    and not state.get('coordinator_run')):
+                return {'hookSpecificOutput': {'hookEventName': event, 'permissionDecision': 'deny',
+                        'permissionDecisionReason': 'Before starting a top-level loop, session-register its exact original prompt and authorization contract per .claude/COORDINATOR_ROTATION.md. Managed workers must use their coordinator, never install a loop.'}}
             return {}
         hint = worker_hint(root, state)
         if event == 'PreCompact':
@@ -1291,6 +1919,15 @@ def hook(root, payload):
     if payload.get('transcript_path') is not None and not isinstance(payload['transcript_path'], str):
         raise ValueError('invalid transcript path')
     saved_path = session_path(root, session)
+    transcript = payload.get('transcript_path')
+    if (event == 'SessionStart' and not saved_path.exists()
+            and (not transcript or not Path(transcript).exists())):
+        # The host can announce startup before creating its JSONL. This is not
+        # transcript authority: create no state/proof and require the first actual
+        # tool hook to verify identity, accounting and the current implementation.
+        return {'hookSpecificOutput': {'hookEventName': event, 'additionalContext':
+                'Rotation startup transcript is not yet available. Before work or loop, '
+                'the first real PreToolUse must verify actual session/terminal and context accounting.'}}
     if saved_path.exists():
         saved = load(saved_path)
         validate_session_state(saved, session)
@@ -1298,8 +1935,10 @@ def hook(root, payload):
             return run_hook(root, payload, saved['coordinator_run'])
     with transaction(root) as state:
         if state is None:
-            return worker_hook(root, payload)
+            return standalone_hook(root, payload)
         validate_hook_accounting(state)
+        if state.get('migrated_run') and session == state['owner']:
+            return run_hook(root, payload, state['migrated_run'])
         retired = state.get('retired_sessions')
         if (not isinstance(retired, list) or any(not isinstance(s, str) or not s for s in retired)
                 or state['phase'] not in ('active', 'requested', 'retired', 'launching')
@@ -1313,12 +1952,18 @@ def hook(root, payload):
                         'permissionDecisionReason': 'This coordinator retired. Do not write, dispatch, consume mail or restart its loop.'}}
             return {}
         if session != state['owner']:
-            return worker_hook(root, payload)  # Per-session counters never change the coordinator lease.
+            return standalone_hook(root, payload)  # Per-session counters never change the coordinator lease.
+        result = worker_hook(root, payload)  # Produce authentic proof for guarded legacy upgrade.
+        proof = load(session_path(root, session))
+        if proof.get('terminal_drift'):
+            return result
         transcript = payload.get('transcript_path')
         if not transcript and event in ('PreToolUse', 'PreCompact'):
             raise ValueError('transcript_path unavailable; cannot enforce coordinator context limit')
         if transcript:
-            scan(state, transcript)
+            # Reuse this hook's verified fixed snapshot. A second scan could
+            # consume an appended boundary inside the same tool permission check.
+            merge_session_proof(state, proof)
         if state['phase'] == 'active':
             return {}
         hint = rotation_hint(state)
@@ -1341,11 +1986,14 @@ def main():
     hook_cmd = sub.add_parser('hook')
     hook_cmd.add_argument('--harness', choices=('claude', 'codex'), default='claude')
     sub.add_parser('status').add_argument('--run')
-    for action in ('adopt', 'register', 'retire', 'launch', 'claim', 'close-retired', 'configure', 'checkpoint', 'session-status'):
+    for action in ('adopt', 'register', 'retire', 'launch', 'claim', 'close-retired', 'configure', 'checkpoint', 'session-status',
+                   'session-register', 'session-request', 'session-retire', 'session-launch', 'session-claim', 'session-close', 'upgrade-legacy'):
         cmd = sub.add_parser(action)
         cmd.add_argument('--session', required=True)
         if action in ('retire', 'launch', 'claim', 'configure'):
             cmd.add_argument('--run')
+        if action == 'upgrade-legacy':
+            cmd.add_argument('--run', required=True)
         if action == 'close-retired':
             cmd.add_argument('--run', required=True)
             cmd.add_argument('--terminal', required=True)
@@ -1364,6 +2012,16 @@ def main():
             cmd.add_argument('--goal', required=True)
             cmd.add_argument('--loop-prompt', required=True)
             cmd.add_argument('--retired-session', action='append', default=[])
+        if action == 'session-register':
+            cmd.add_argument('--contract', required=True)
+        if action == 'session-request':
+            cmd.add_argument('--reason', required=True)
+        if action in ('session-claim', 'session-close'):
+            cmd.add_argument('--source', required=True)
+        if action == 'session-claim':
+            cmd.add_argument('--token', required=True)
+        if action == 'session-close':
+            cmd.add_argument('--terminal', required=True)
         if action == 'checkpoint':
             cmd.add_argument('--notes-text', help='bounded single-line notes for native Codex exec_command')
         if action == 'configure':
@@ -1381,6 +2039,20 @@ def main():
             value = hook(args.root, payload)
             if args.harness == 'codex':
                 value = codex_output(payload, value)
+        elif args.action == 'upgrade-legacy':
+            value = upgrade_legacy(args.root, args.session, args.run)
+        elif args.action == 'session-register':
+            value = session_register(args.root, args.session, args.contract)
+        elif args.action == 'session-request':
+            value = session_request(args.root, args.session, args.reason)
+        elif args.action == 'session-retire':
+            value = session_retire(args.root, args.session)
+        elif args.action == 'session-launch':
+            value = session_launch(args.root, args.session)
+        elif args.action == 'session-claim':
+            value = session_claim(args.root, args.session, args.source, args.token)
+        elif args.action == 'session-close':
+            value = session_close(args.root, args.session, args.source, args.terminal)
         elif args.action == 'checkpoint':
             value = checkpoint(args.root, args.session, args.notes_text)
         elif args.action == 'session-status':

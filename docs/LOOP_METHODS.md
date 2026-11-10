@@ -1,6 +1,10 @@
 # VoicePort 多会话 Loop 契约
 
-本文件约定一个协调者怎样组织不同真实会话完成开发、独立验证和按需效果评估。角色入口见 [角色与交接](../automation/loops/README.md)。文档和模板可直接用于分派，但不是已部署的模型调度运行时。
+本文件约定一个协调者怎样组织不同真实会话完成开发、独立验证和按需效果评估。角色入口见 [角色与交接](../automation/loops/README.md)，顶层/Run/worker 的身份、命令与 gate 以 [全角色会话轮换](../.claude/COORDINATOR_ROTATION.md) 为准。文档和模板可直接用于分派，但不是已部署的模型调度运行时；hook 加模型交接程序也不是崩溃监督器。
+
+直接打开、无 Run 且非托管 worker 的顶层会话，安装 loop 前写精确 `.voiceport/handoffs/session-contract-ACTUAL_SESSION_ID.json`，仅含 goal、完整原文 loop_prompt、authorization、paused 布尔值、active_tools 列表，再执行 `python3 -I .claude/hooks/coordinator_rotation.py session-register --session ACTUAL_SESSION_ID --contract .voiceport/handoffs/session-contract-ACTUAL_SESSION_ID.json`。须真实 PreToolUse/helper/transcript/terminal 证明，并分页穷尽 all-Run worker-list、拒绝 worker/registry 匹配；未知身份失败关闭。登记前结算已有工具，active_tools 须真实为 []；契约冻结继承原始登记快照，退任前须另行检查并结算当前工具，将真实结果、最新用户约束及剩余工作写有界 notes，初始 [] 不代替检查。不新建 Run 或取得本契约中的产品协调/Git 权限。既有最终轮未注册者可补精确 contract/register，保留原计数与 requested。
+
+顶层 requested 后保存精简 notes、停止全部本人调度，再 session-retire/单次 session-launch；新实际 initial0 会话 `session-claim --session NEW --source OLD --token TOKEN`，再 `session-close --session NEW --source OLD --terminal EXACT_OLD`，确认精确旧 PTY 关闭后才恢复产品工作/一份原授权 loop，并重新核对暂停。全部命令单独调用，参数与证明见中央文档。托管 worker 继续 checkpoint 交协调者控制，不自行 launch 或安装 loop；以下产品账本、派发和 Git 职责仅适用于已有对应授权的真实协调者。
 
 参考已读取的 `../x-insight-hub/docs/LOOP_METHODS.md` 及其 `automation/loops/{PLAYBOOK,README,COMMON,coordinator,developer,verifier,advisor}.md`；只采用任务归属、原会话返修、冻结验收、有限恢复等机制，不继承其角色身份、SQLite 事件接口、PR/合并或外部消息授权。
 
@@ -16,7 +20,7 @@
 
 开发、独立验证必须来自不同真实会话；需要效果评估时再使用不同的评估会话。协调者统一任务和验收结论，开发者的测试始终标为自检，不能由协调者重述成独立验收。同一会话切换角色提示词不算独立验证。优先恢复原开发、原验证会话；没有可用会话时如实记录阻塞或替换原因及上下文交接，不能声称仍由原角色复核。
 
-当前脚本的任务状态为 `ready → running → done`，另有 `blocked`；暂停是全局 `paused` 标志。没有 `submit/review/due/cancel` 命令，也没有角色、版本、dispatch、修订预算的自动校验。`finish` 只校验当前 attempt 和证据文件存在，独立验收真实性由协调者核对。连 `status` 也会经过加锁、初始化与原子写回，因此账本 CLI 仅由协调者运行，worker 读取交接中的状态快照。协议中的“待验证、退回、冻结、取消”是私有交接事实，不虚构为脚本已支持的任务状态。
+当前脚本的任务状态为 `ready → running → done`，另有 `blocked`；暂停是全局 `paused` 标志。没有 `submit/review/due/cancel` 命令，也没有角色、版本、dispatch、修订预算的自动校验。`finish` 校验当前 attempt 与非空、稳定、普通证据快照（最多16 MiB），记录规范绝对路径、内容 SHA-256 与字节数；它不验证任意报告中的 CI 或独立验收真值。`status`、新增的 `audit` 为只读入口，不创建或写回状态；audit 重查所有已完成 attempts 的证据，历史无摘要记录保持 unknown/unsealed，缺失、变化、未完成或 done 缺完成 attempt 时返回非零，不补造历史证明。写入命令仍仅由原协调者执行，worker 可读取其交接状态或只读查询。完整接口与限制见 [执行、证据与资源](LOOP_EXECUTION.md)。协议中的“待验证、退回、冻结、取消”是私有交接事实，不虚构为脚本已支持的任务状态。
 
 ## 2. 运行身份与真实交接
 
@@ -51,7 +55,7 @@ worker 严格采用本次 preamble 的 from/task/dispatch；问题用 `ask` 后�
 
 用户于2026-11-09明确要求“把远端的CI也使用loop修复一下，让loop规则改一改，可以派个任务给多个agent，可以参考magpie具体是咋做的，完善一下我们自己”。执行为一个逻辑修复关联多个独立 Task/Dispatch；不新增“一个 Orca Task 同时多个 owner”或并行多个 running 产品故事的能力。每项 worker 使用自己的真实 preamble，协调者独占产品账本与角色关联。
 
-是否分派取决于独立问题：存在相异失败假设、跨平台环境、实现与独立审查冲突、必须查明的外部设计时才拆分；已知文件中的常规修正通常一个开发者加必要独立复核即可。默认最多3个活动 worker，协调者事前记录 CPU/内存/完整测试资源预算与结束条件；超出时须有具体独立工作及预算理由，用户/assignment 的更严限制优先。一个主机同一时刻只安排一个重型完整测试，由协调者分配时段；这是协议，未实现全局 suite lock，定向轻量测试是否并行按资源判断。
+是否分派取决于独立问题：存在相异失败假设、跨平台环境、实现与独立审查冲突、必须查明的外部设计时才拆分；已知文件中的常规修正通常一个开发者加必要独立复核即可。默认最多3个活动 worker，协调者事前记录 CPU/内存/完整测试资源预算与结束条件；超出时须有具体独立工作及预算理由，用户/assignment 的更严限制优先。一个主机同一时刻只安排一个重型完整测试，由协调者分配时段；`verify.py` 已对同一 checkout 的完整入口实现互斥锁，第二套明确拒绝启动。锁不是全主机全局锁，也不约束其他 checkout 或手工命令，跨工作区仍须协调资源；定向轻量测试是否并行按资源判断。
 
 按已安装版本的 orchestration guide 加载 `references/coordinator-loop.md`；只有确需 group 消息时加载 `references/messaging-and-gates.md`。可用 `task-create --spec-file <路径> --deps <JSON数组> --run <原Run>` 建不同任务，`task-list --ready --brief --run <原Run>` 发现已就绪任务，再逐一 `worker-start --task <该任务> --worktree <实际选择> --agent <已启用agent>`；这些是协调者动作，worker 无此授权不得自行派发。保存真实回执再关联角色。`--parent` 可表达上层逻辑任务关联，不能代替 `--deps` 或产品依赖；不把未实施的 group 共享所有权当能力。group 只用于有意广播给本 Run 的存活 worker，`worker_done` 与 heartbeat 不能发 group，结果仍逐 Task/Dispatch 结算。
 
@@ -85,7 +89,7 @@ worker 结束事件先核对身份、依赖和产物哈希，分别记录开发�
 
 ## 4. 独立验证与效果评估
 
-代码按变化运行针对性测试和反例；产品交付版本的完整离线入口为 `python3 -I scripts/verify.py`，需要无 I/O 菜单启动 smoke 时使用 `--app-smoke`。离线工具覆盖核心/控制器/状态测试、release 构建、CLI、bundle 和差异检查；无 I/O smoke 不等于真实录音。验证者自己读取实现并执行必要反例，可以引用同一版本可信的完整结果，但必须区分亲自执行与引用，说明无需重跑全套的依据。Bug 的旧实现须在预期行为断言处失败，依赖缺失、编译失败和 skip 不算复现。
+代码按变化运行针对性测试和反例；产品交付版本的完整离线入口为 `python3 -I scripts/verify.py`，需要无 I/O 菜单启动 smoke 时使用 `--app-smoke`。完整验证使用全新证据目录、同 checkout 排他锁、逐项落盘报告和完整 stdout/stderr；超时/正常终止信号清理自己启动的进程组，退出码与 timeout/cleanup 证明分开记录，失败后不启动后续检查。进程逃离组、SIGKILL/宿主崩溃和清理未知不能据此声称已清理，恢复先核对实际资源。详情见 [执行、证据与资源](LOOP_EXECUTION.md)。离线工具覆盖核心/控制器/状态测试、release 构建、CLI、bundle 和差异检查；无 I/O smoke 不等于真实录音。验证者自己读取实现并执行必要反例，可以引用同一版本可信的完整结果，但必须区分亲自执行与引用，说明无需重跑全套的依据。Bug 的旧实现须在预期行为断言处失败，依赖缺失、编译失败和 skip 不算复现。
 
 纯文档改动检查实际内容、相对链接、角色和命令接口、差异及隐私边界，无须重复产品构建。开发者自检不能替代独立验证；评估者也不能替代代码验收。
 
@@ -102,10 +106,11 @@ worker 结束事件先核对身份、依赖和产物哈希，分别记录开发�
 ## 5. 事件唤醒、暂停与恢复
 
 - 工作会话完成事件由 Orca 唤醒协调者；协调者收齐依赖后推进下一步，分派可独立工作后结束当前轮。不启动重复 `check`/watch/poll 脚本或每个角色自己的 `/loop`；脚本可能消费协调者邮箱。只有宿主唤醒明确要求 check 时执行该条命令。
-- 用户已授权持续 loop 时，仅协调者拥有恢复兜底。固定 CronCreate 与动态 ScheduleWakeup 是不同 scheduler；不暗增第二个循环。沿用已授权的固定20分钟兜底时记录其实际回执；其他必要兜底至少1200秒。worker 靠事件通知且不安装 timer。触发先查已有 dispatch/后台工具/回执/冻结，不重复派发；只有宿主明确要求才 check，不能用脚本消费邮箱。
+- 用户已授权持续 loop 时，原授权顶层会话或主协调者拥有恢复兜底。固定 CronCreate 与动态 ScheduleWakeup 是不同 scheduler；不暗增第二个循环。沿用已授权的固定20分钟兜底时记录其实际回执；其他必要兜底至少1200秒。worker 靠事件通知且不安装 timer。触发先查已有 dispatch/后台工具/回执/冻结，不重复派发；只有宿主明确要求才 check，不能用脚本消费邮箱。
 - 每个调度在私有交接记录 `scheduler_kind`、真实 `job_id`（无此字段时写不适用）、owner session/terminal、原始完整 prompt、cron/动态方式、建立及实际 next 时间、expiry、暂停状态、停止 tool ID/结果与核对证据。CronCreate 是 session-only，重复 job 7天到期，REPL idle 才触发且有偏移；next 用真实回执，不从 cron 字面推算保证。文档不安装 timer，宿主退出后不承诺继续执行；原 job 不自动迁移。
-- 完成、无可推进项或协调者退任前显式停止全部本人调度并保存回执。拥有 cron 的会话先 CronList 核对精确 job ID 与原 prompt，再 CronDelete 该 ID，再 CronList 确认本人 job 不再存在；不删其他任务。动态 ScheduleWakeup 使用 stop=true。停止失败/结果未知不能宣称停止，也不重建重复 job；暂停只由明确用户恢复指令解除。
-- **现有兼容缺口必须保留：** 当前 rotation helper 的 `stop_receipt` 只查 ScheduleWakeup(stop=true) 的成功配对结果，不检查 CronDelete/JobID；`allowed_during_rotation` 和 `scoped_admin` 的最终 gate 未允许 CronDelete。ScheduleWakeup stop 不能证明原生 cron 已停。采用原生 cron 时应在进入最终轮 fence 前停止并归档其删除/核对回执，另取 helper 要求的 ScheduleWakeup stop 回执，然后才按原 retire/launch/claim 顺序；该附加 stop 只满足现 helper，不把它当 cron 证据。应在第4轮安排预先停止，不续订 cron，进入第5轮直接交接。已 fence 而 cron 未删、无法核对或删除失败时升级、结束轮并保留阻塞，不能绕 gate、改 accounting 或假称自动迁移完成。需要的 hook/packet 适配另立实现与独立评审：验证 scheduler kind/owner/job/prompt、全部 job 的真实停止结果、最后调度之后的回执及最终 gate 的精确删除白名单；本规则没有修改 helper，cron 退任全流程仍未验证。
+- 完成、无可推进项或退任前显式停止全部本人调度并保存真实回执。动态须同 session 最后一次 ScheduleWakeup({stop:true}) 的配对结构化 `toolUseResult.stopped:true`；调用已提交或外层成功不够，stop 后再续订使旧证明失效。cron 所有权须同 session 成功 CronCreate 的返回 ID、原始完整 prompt、cron 和 tool-use ID 来源；先 CronList 核对，逐个 CronDelete 自有 ID，结果须配对成功并返回同 ID，最后在全部 cron mutation 之后 CronList 确认全部自有 ID 不存在。只看列表/手写 owner 不证明归属，不能删他人任务。
+- 最终轮 gate 已允许精确 ScheduleWakeup({stop:true})、CronList({})，以及仅含 `id` 且由同 session 成功 CronCreate 证明所属的 CronDelete。旧“只认动态 stop、gate 禁止 CronDelete”的缺口作为历史保留，不再要求第4轮预先删 cron。动态与 cron 并存须分别满足停止条件；有效的纯 cron 停止链不另强制动态 stop，没有可用 cron 停止链时 helper 仍要求动态 stop 证明。未决创建/删除、缺失 ownership、结果未知/失败、最后列表缺失或仍有自有 job 均失败关闭，不改 accounting、不新建重复 job、不越权删除。现有 PreToolUse transcript 重扫读取工具结果并持久保存动态调用/停止/未决结果、cron ownership/删除证明与未决 mutation；截断不清除任何已知调度义务，动态 stop 须证明晚于所有已知调用，恢复早期 stop 不覆盖较晚调度；停止复核合并持久来源，本轮不需改 hook 配置。原生 Codex 0.167 的 compaction 适配已支持，但没有 VERIFIED scheduler 接口，原生调度退任适配仍阻塞；不猜工具名或宣称原生完整生命周期已验收。
+- 已核查的 Codex 0.167 无原生 scheduler 停止接口；持续调度使用已验证 Claude 宿主，原生 Codex worker 由其原协调者轮换。Orca automation 的 `--fresh-session` 只保证每次实际派发新开上下文，不等待前次完成；禁用不证明在途任务结束，也不能绑定任意继任 terminal，因此不以它绕过停止与认领检查。原生独立 loop 当前明确不支持，不能声称所有前端均已通过真实验收。
 - 继任保留原 Run/attempt/角色沿革、后台 CI/watch 的实际句柄与已完成/未知结果、全部调度记录和原始 prompt。确认旧调度已停、真实 fresh initial0 claim 与精确旧 terminal 关闭后，未暂停且有可推进工作才显式恢复一份原授权兜底，记录新 job/回执与旧 ID 的 predecessor；不能宣称原 cron 自动迁移或7天后仍在运行。
 - 用户暂停持久写全局 flag，并通知活动会话停止新动作；暂停本身不证明进程已经退出。暂停跨重启保留，只能以明确用户恢复指令引用执行 resume。取消事实留私有交接；脚本没有 cancelled 状态，不能自行伪造。需要终止实际 worker 时按 Orca 的授权、身份和确认规则办理。
 - 重启或中断先核对账本 running attempt、实际工作区、角色存活、已收/已发送回执、冻结及已有外部操作。确属中断且已核对后才 `reopen --reason`，再 start 新 attempt；旧结果不能结束它。静默、超时或 unverifiable 不能证明 worker 已停，也不能据此自动新开替代会话。
@@ -121,8 +126,8 @@ worker 结束事件先核对身份、依赖和产物哈希，分别记录开发�
 2. 创建或更新 PR，列明具体行为、验证、已知失败和未测边界。先按第8节完成当前精确 HEAD 的远端 CI 与独立复核、review/merge queue 等条件，以 `--match-head-commit <已评审完整SHA>` 保护合并；工作进度已提交不等于产品已接受。已知缺陷按公开限定的开发 checkpoint 记录，不把 WIP 说成完成。保留独立返修链和失败证据。
 3. 合并后 fetch，确认没有活动 writer/冻结验证依赖当前 HEAD 或分支、工作区无未处理改动，再切换 main 并 `git pull --ff-only origin main`；核对本地 main 和 origin/main 相同。继续开发从最新 main 创建新的功能分支；冲突或保护条件按真实原因处理，不 force push、不 admin 绕过、不清空未提交内容。
 4. 协调者在私有运行记录保存 commit SHA、远端分支、PR URL、merge 回执和 main 同步状态；后续交接包携带未完成的 Git 操作，不能在换窗口后丢失交付步骤。
-5. 所有角色统一最多 **5 轮上下文 = 初始轮 + 最多 4 次已完成压缩**；进入最后一轮即保存交接并换窗口，禁止第 5 次压缩。不额外压测或强制压缩。Claude 与原生 Codex 分别使用正确的 PreCompact veto，独立计数并核对真实 hook 加载/信任；原生 Codex 定义未获信任时先报告阻塞，不能冒称生效。协调者按第5节在最终 fence 前停止全部本人调度并保存其各自回执，满足现 helper 的独立 stop 要求后退任/单次启动/claim；worker 保存精简 checkpoint、升级并结束 turn，由协调者确认旧 dispatch 已退出后创建真正的新上下文。实际 session ID 必须变化且首次计数为 0，新 terminal handle 或旧 dispatch follow-up 不等于新会话。原 Run、产品 attempt、逻辑角色及 Task/Dispatch 沿革、冻结和证据保持；行政轮换不伪造验收或重开产品 attempt。详见 [全角色会话轮换](../.claude/COORDINATOR_ROTATION.md)。
-6. 用户已明确授权未来正常自动轮换，无须用户手动开窗口或粘贴提示词；实际权限/信任拒绝仍阻塞，不能由其他会话或工具绕过。显式 per-Run register 核对真实 PreToolUse、actual terminal 和当前 Run coordinator_handle/generation，保留无关历史 lease；没有全局 lease 的 worker 仍独立计数。最后一轮保留必要行政操作，先持久记录再单次 launch；继任凭不同实际 session、initial0、晚于 launch 的真实 transcript 起始时间和递增 Run generation 接管/claim，验证后只关闭精确退任 terminal，确认其 PTY 停止才恢复产品/loop。未知启动、发送和关闭保存回执并有界检查，禁止盲目重复。helper 逻辑已有隔离 mock 检查及有限契约独立复核；一次实际协调者继任的绑定、claim、投递与精确旧 PTY 关闭已保留私有回执。该次记录不证明所有原生前端、最终 gate veto 或原生 cron 退役/迁移的完整自动生命周期；未覆盖路径仍未接受。旧全局 lease 的合法原接口保持兼容，不自动迁移。
+5. 所有会话最多 **5 轮上下文 = 初始轮 + 最多 4 次已完成压缩**；第5轮即保存交接并换新会话，禁止第5次压缩，不强制 compact 或额外压测。Claude PreCompact 使用正确的 `decision:block` / reason（或 exit2），无须修成 continue:false；原生 Codex PreCompact 为 `continue:false` / stopReason，PreToolUse 为 `decision:block`。分别核对真实 hook 加载/信任与单调计数，原生 scheduler 仍受第5节阻塞约束。顶层和 Run 协调者在 requested 后利用精确停止白名单停止全部自有调度，按各自生命周期退任；worker checkpoint/升级/结束 turn，由协调者确认精确旧 dispatch 已 exited/释放后开新上下文。实际 session ID 必须变化且首次计数0，新 terminal 或旧 dispatch follow-up 不足。保留实际适用的 Run、attempt、逻辑角色/Task/Dispatch lineage、冻结与证据，行政轮换不伪造验收或重开产品 attempt。详见 [全角色会话轮换](../.claude/COORDINATOR_ROTATION.md)。
+6. 用户已授权正常自动轮换，无须手动开窗或粘贴；实际权限/信任拒绝仍阻塞，不换工具/会话绕过。直接顶层按开头的 session-* 路径，继承冻结契约，不创建 Run 或扩大 Git 权限；Run 协调者 register 核对真实 PreToolUse、actual terminal 和 Run coordinator_handle/generation，保留无关历史 lease。CLI 窗口轮换先持久记录，单次 launch 显式 --surface terminal，不改全局 Chat/CLI 偏好，只接受 terminal outcome；继任以不同实际 session、initial0、晚于 launch 的 transcript/状态时间接管，Run 路径另要求递增 generation；对应 claim 与精确旧 PTY 关闭成功前不恢复产品/loop。未知启动、发送和关闭只保留原始回执并有界核对，不盲重发。历史单步私有回执仅按其 scope 引用，隔离 fixture/mock 不是实际完整自然压缩生命周期，结构化 launch 送达不是 PTY 证明；本轮实际验证由执行者另附，不据规则声称 smoke 成功。旧全局 lease 须在 retire 前由当前同一实际 owner/Run 执行 `python3 -I .claude/hooks/coordinator_rotation.py upgrade-legacy --session ACTUAL_SESSION --run ACTUAL_RUN`；仅 active/requested 且未尝试 transfer 可升级，核对 authentic proof、Run generation/incarnation，以同 Run registry/当前 attempt 建有界 legacy navigation，保留 epoch/单调计数/request/history/完整原 prompt/worker 冻结。旧 lease 标记 migrated_run，原 session 转 per-Run，后续变更必须带 --run，并完成精确 close-retired。已有 per-Run lease、transfer 已尝试或沿革不明失败关闭；隔离升级测试不证明真实迁移或完整生命周期已执行。
 7. 主协调者持续维护方案/账本，多个真实 Orca 开发、独立验证及按需支撑会话并行处理无冲突的工作；各 worker 不自行开 loop。配置和角色文档也是冻结输入，若轮换修正改变它们，先明确中断旧评审、保留快照/半成品原始证据，再建立新冻结继续；不能静默改变旧评审对象。
 
 ## 7. 授权、采用取舍与后续能力
@@ -189,6 +194,10 @@ watch 没有 `--attempt` 参数，结束后必须用 run view/API 重新核对�
 
 ## 9. Magpie 的已核实借鉴与本项目新增决策
 
+2026-11-10 追加核查固定提交 `86825005e26412ab05533de668b654942b226b98`：[handoff.go](https://github.com/yetone/magpie/blob/86825005e26412ab05533de668b654942b226b98/internal/handoff/handoff.go#L1-L12) 与 [AwaitAck/Ack](https://github.com/yetone/magpie/blob/86825005e26412ab05533de668b654942b226b98/internal/handoff/handoff_unix.go#L185-L202) 实现网关监听 socket 的进程交接；新进程实际提供服务后明确 ACK，旧进程才放手，缺失/超时则仍由旧进程服务。本项目采用“先证明继任就绪，再关闭精确前代”的顺序：真实 fresh session claim 是接管确认，launch 投递回执本身不足；只有继任实际目标核对和前代精确 PTY 退出回执满足后才允许工作/恢复一份原授权 loop。未知结果保留现场，不重复启动。这里没有移植 socket/FD，也不将 Magpie 称为模型上下文轮换器。
+
+同一提交的 [session relocation](https://github.com/yetone/magpie/blob/86825005e26412ab05533de668b654942b226b98/docs/session-relocation.md#L14-L19) 保留原 session ID；[loop_guard](https://github.com/yetone/magpie/blob/86825005e26412ab05533de668b654942b226b98/internal/gateway/loop_guard.go#L14-L31) 检测流式输出重复；`codex_compact_held.go` 诊断用户压缩配置。它们不提供新的任务上下文或 scheduler 交接。顶层可用中央文档的 `session-request --reason` 提前走正式交接，保留真实计数；有界演练与自然压缩到上限分别记录。
+
 核查 [yetone/magpie README](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/README.md#L5-L11) 固定提交 `b1e8eb15a668bbccfcd46977c75602ceaa4d66b3`（2026-11-08 UTC）：它是多个 coding agent 的本地模型网关/配置应用。没有因同名改用别的 Magpie 项目。[AGENTS.md](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/AGENTS.md#L3-L23) 要求读取子系统与 code standards/LESSONS；[CLAUDE.md](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/CLAUDE.md#L1-L2) 引用两份规则。LESSONS 开头自述由 agents 开发/评审/合并并每夜复盘；该自述不是已验证的调度程序。
 
 | 已核实来源与原意 | 本项目取舍 |
@@ -202,4 +211,4 @@ watch 没有 `--attempt` 参数，结束后必须用 run view/API 重新核对�
 
 检索了固定仓库完整文件树及 AGENTS/CLAUDE、LESSONS、code standards、contribution 文档、全部8个 workflow、Makefile、race-shards、相关 plugin/agent 文档的必要片段；未在该检查范围发现与 Orca Run/Task/Dispatch、自动 CI 返修 DAG、scheduler 交接相当的开发协调运行时。plugin lifecycle/model routing/tool loop 是产品机制，不据此声称它实现了多人拥有一个 Task；未安装/执行其代码，也未核查外部私有/服务端或其他仓库的 nightly 调度。第3.1节的角色/DAG/并发预算、第5节的双调度兼容措施、第8节的精确版本接受和单次基础设施重试是按用户要求与本机接口作的项目建议，不归因给 Magpie。
 
-四项现有 `Tests/LoopTests/test_loop_state.py` 仅验证依赖/过期 attempt、暂停持久化、中断新 attempt 和证据文件存在；`loop_state.py` 的 finish 不验证 CI 内容、required checks、角色独立性或文件写锁。本文也不新增可执行 gate。后续若实施 CI 接受校验，应以错误 head/base/run/attempt、漏 job、missing/skip/cancel、重试首次红、schema/权限未知、伪造独立角色及并发写冲突等行为反例验收；调度适配另测正确/错误 job owner、CronDelete 失败/未知、未停其他自有 job、stop 后又续订、最终 fence 与继任重复安装。用隔离 fixture/mock 验证逻辑并明确真实宿主覆盖，不添加只查文案词句的测试。纯规则交付检查内容/相对链接/已安装接口/差异，后续由协调者在旧冻结评审闭合后集成、重新冻结、委派独立规则评审，再走精确 HEAD 的正常 CI/Git 流程；旧快照与证据保留不变。
+本项目新增的可执行改进集中在 [执行、证据与资源](LOOP_EXECUTION.md)：账本 finish 的稳定非空证据摘要、只读 status/audit，以及验证 runner 的同 checkout 排他锁、逐步报告、磁盘完整日志、实际退出/超时/进程组清理。LoopTests 包含对应行为反例。`loop_state.py` 的 finish 仍不验证 CI 内容、required checks 或角色独立性；不能把字节完整性和进程组检查当作这些接受条件。后续 CI 接受校验应以错误 head/base/run/attempt、漏 job、missing/skip/cancel、重试首次红、schema/权限未知、伪造独立角色及并发写冲突等行为反例验收；轮换 helper 的调度停止与 ownership gate 按中央文档当前接口核对，验证关注错误 owner、失败/未知 CronDelete、遗漏自有 job、stop 后续订、最终 fence 与继任重复安装。隔离 fixture/mock 只证明对应逻辑，不据此声称实际完整压缩/原生调度生命周期，不添加只查文案词句的测试。纯规则交付检查内容/相对链接/接口/差异，本轮真实测试结果由实际执行者另附；旧冻结评审闭合后再集成、重冻、独立规则评审及正常精确 HEAD CI/Git，旧快照和失败证据保留。

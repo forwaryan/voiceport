@@ -7,7 +7,6 @@ import json
 import os
 import pathlib
 import platform
-import subprocess
 import sys
 import tempfile
 import uuid
@@ -15,6 +14,12 @@ import uuid
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from product_inventory import inventory
+from verification_run import deferred_termination, run_check, suite_lock, termination_signals, write_report
+
+
+def evidence_path(path):
+    path = pathlib.Path(path).absolute()
+    return str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path)
 
 
 def safe_inventory():
@@ -30,16 +35,54 @@ def main():
     parser.add_argument('--evidence-directory', type=pathlib.Path, help='new owned evidence directory; never reuse an existing path')
     parser.add_argument('--app-directory', type=pathlib.Path, help='new owned package path; default is a temporary bundle')
     args = parser.parse_args()
+    try:
+        with suite_lock(ROOT), termination_signals():
+            return verify(args)
+    except (ValueError, OSError) as error:
+        print('verification: ' + str(error), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+
+def verify(args):
     evidence = args.evidence_directory or ROOT / '.voiceport/evidence/vp012-revision-01' / ('verify-' + uuid.uuid4().hex)
     evidence = evidence.absolute()
     evidence.mkdir(parents=True, exist_ok=False)
-    before = safe_inventory()
-    (evidence / 'inputs-before.json').write_text(json.dumps(before, indent=2))
     report = {
         'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        'system': platform.platform(), 'checks': [], 'source_sha256': before['sha256'],
-        'evidence': str(evidence.relative_to(ROOT)),
+        'system': platform.platform(), 'checks': [], 'source_sha256': None,
+        'evidence': evidence_path(evidence), 'status': 'running', 'passed': False,
+        'active_check': None,
     }
+    try:
+        write_report(evidence / 'report.json', report)
+        verify_checks(args, evidence, report)
+    except KeyboardInterrupt:
+        report.update(interrupted=True, passed=False)
+    except Exception as error:
+        report.update(passed=False, verification_error={'type': type(error).__name__, 'detail': str(error)})
+    finally:
+        def save_interruption():
+            report.update(interrupted=True, passed=False, status='interrupted')
+            write_report(evidence / 'report.json', report)
+        with deferred_termination(save_interruption):
+            if report['active_check'] is not None:
+                # Preserve the unfinished command and log locations without inventing its exit.
+                report['incomplete_check'] = report['active_check']
+                report['active_check'] = None
+                report['passed'] = False
+            report['finished_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            report['status'] = 'interrupted' if report.get('interrupted') else 'passed' if report['passed'] else 'failed'
+            write_report(evidence / 'report.json', report)
+    print('Evidence:', evidence / 'report.json', flush=True)
+    return 130 if report.get('interrupted') else 0 if report['passed'] else 1
+
+
+def verify_checks(args, evidence, report):
+    before = safe_inventory()
+    report['source_sha256'] = before['sha256']
+    (evidence / 'inputs-before.json').write_text(json.dumps(before, indent=2))
     success = not before.get('error') and not before.get('missing')
     with tempfile.TemporaryDirectory(prefix='voiceport-verify-') as scope:
         temp = pathlib.Path(scope).resolve()
@@ -52,31 +95,33 @@ def main():
         differences = {key: env[key] for key in ['CARGO_NET_OFFLINE', 'CODEX_HOME', 'TMPDIR', 'PYTHONDONTWRITEBYTECODE', 'VOICEPORT_APP_DIRECTORY']}
         report['environment_overrides'] = differences
 
-        def run(cmd, expected=0, marker=None, timeout=600, cwd=ROOT, input=None):
+        def run(cmd, expected=0, marker=None, timeout=600, cwd=ROOT, input=None, read_stdout=False):
             nonlocal success
+            if not success:
+                return None  # A failure or interruption cannot launch later checks.
             argv = list(map(str, cmd))
             number = len(report['checks']) + 1
-            try:
-                result = subprocess.run(argv, cwd=cwd, env=env, input=input, capture_output=True, timeout=timeout)
-                out, err, code = result.stdout, result.stderr, result.returncode
-            except subprocess.TimeoutExpired as error:
-                out, err, code = error.stdout or b'', error.stderr or b'', 124
-            except OSError as error:
-                out, err, code = b'', str(error).encode(), 127
             stdout, stderr = evidence / f'{number:02d}.stdout.log', evidence / f'{number:02d}.stderr.log'
-            stdout.write_bytes(out)
-            stderr.write_bytes(err)
-            passed = code == expected and (marker is None or marker in (out + err).decode(errors='replace'))
-            report['checks'].append({
-                'argv': argv, 'command': argv, 'cwd': str(cwd), 'environment_overrides': differences,
-                'timeout_seconds': timeout, 'expected_exit_code': expected, 'exit_code': code,
-                'required_output': marker, 'passed': passed,
-                'stdout': str(stdout.relative_to(ROOT)), 'stderr': str(stderr.relative_to(ROOT)),
-                'stdout_sha256': hashlib.sha256(out).hexdigest(), 'stderr_sha256': hashlib.sha256(err).hexdigest(),
-            })
-            print(f'{number:02d} exit={code} expected={expected} {argv}', flush=True)
-            success = success and passed
-            return out if passed else None
+            report['active_check'] = {'argv': argv, 'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                                      'timeout_seconds': timeout, 'stdout': evidence_path(stdout),
+                                      'stderr': evidence_path(stderr)}
+            write_report(evidence / 'report.json', report)
+            check, out = run_check(argv, stdout, stderr, cwd=cwd, env=env, expected=expected,
+                                   marker=marker, timeout=timeout, input=input, read_stdout=read_stdout)
+            def save_interruption():
+                check.update(status='interrupted', interrupted=True, passed=False)
+                report['interrupted'] = True
+                write_report(evidence / 'report.json', report)
+            with deferred_termination(save_interruption):
+                check.update(environment_overrides=differences, stdout=evidence_path(stdout), stderr=evidence_path(stderr))
+                report['checks'].append(check)
+                report['active_check'] = None
+                if check['interrupted']:
+                    report['interrupted'] = True
+                write_report(evidence / 'report.json', report)
+            success = success and check['passed']
+            print(f'{number:02d} status={check["status"]} exit={check["exit_code"]} expected={expected} {argv}', flush=True)
+            return out if success else None
 
         checks = [
             (['cargo', 'test', '--workspace', '--all-targets', '--locked'], '0 failed'),
@@ -84,6 +129,7 @@ def main():
             (['cargo', 'clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings'], None),
             (['bash', str(ROOT / 'scripts/package_app.sh')], 'Built '),
             (['python3', '-I', '-m', 'unittest', 'discover', '-s', 'Tests/LoopTests', '-v'], 'OK'),
+            (['python3', '-I', '-m', 'unittest', 'discover', '-s', '.claude/hooks', '-p', 'test_*rotation.py', '-v'], 'OK'),
             (['python3', '-I', '-m', 'unittest', 'discover', '-s', 'Tests/PackagingTests', '-v'], 'OK'),
         ]
         for cmd, marker in checks:
@@ -93,7 +139,7 @@ def main():
                 break
         try:
             if success:
-                metadata = run(['cargo', 'metadata', '--offline', '--locked', '--no-deps', '--format-version', '1'])
+                metadata = run(['cargo', 'metadata', '--offline', '--locked', '--no-deps', '--format-version', '1'], read_stdout=True)
                 target = pathlib.Path(json.loads(metadata)['target_directory'])
                 rust, native = target / 'release/voiceport-rs', target / 'release/voiceport-macos'
                 cases = [
@@ -112,7 +158,7 @@ def main():
                 run([public_cli, '--json', '--socket', pathlib.Path('/private/tmp') / ('vp-absent-' + uuid.uuid4().hex) / 'control.sock', 'status'], 3, 'app_not_running', timeout=10)
                 run([public_cli, '--json', 'dictation', 'start'], 2, 'invalid_arguments', timeout=10)
                 wire = b'{"version":1,"action":"status","request_id":"q"}\n{"version":1,"action":"shutdown","request_id":"end"}\n'
-                out = run([rust, 'host', '--auth', str(home / 'auth.json')], marker='shutdown', input=wire, timeout=10)
+                out = run([rust, 'host', '--auth', str(home / 'auth.json')], marker='shutdown', input=wire, timeout=10, read_stdout=True)
                 (evidence / 'cli-host.stdin.jsonl').write_bytes(wire)
                 if out is not None:
                     success = success and [json.loads(line)['event'] for line in out.splitlines()] == ['ready', 'status', 'shutdown']
@@ -123,10 +169,10 @@ def main():
                     } for path in [rust, public_cli, native, app / 'Contents/MacOS/voiceport-app', app / 'Contents/MacOS/voiceport']
                 }
                 if args.app_smoke:
-                    out = run([app / 'Contents/MacOS/voiceport-app', '--smoke-test'], marker='menu ready', timeout=20)
+                    out = run([app / 'Contents/MacOS/voiceport-app', '--smoke-test'], marker='menu ready', timeout=20, read_stdout=True)
                     if out is not None:
                         success = success and out == b'VoicePort Rust app launched: menu ready, no recording or network\n'
-                    out = run([app / 'Contents/MacOS/voiceport-app', '--check-input-permission'], timeout=10)
+                    out = run([app / 'Contents/MacOS/voiceport-app', '--check-input-permission'], timeout=10, read_stdout=True)
                     if out is not None:
                         diagnostic = json.loads(out)
                         success = success and all(type(diagnostic.get(key)) is bool for key in ['accessibilityTrusted', 'secureInput'])
@@ -142,10 +188,7 @@ def main():
     after = safe_inventory()
     (evidence / 'inputs-after.json').write_text(json.dumps(after, indent=2))
     report.update(source_sha256_at_finish=after['sha256'], inputs_unchanged=before == after,
-                  passed=success and before == after, finished_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
-    (evidence / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
-    print('Evidence:', evidence / 'report.json', flush=True)
-    return 0 if report['passed'] else 1
+                  passed=success and before == after and not report.get('interrupted', False))
 
 
 if __name__ == '__main__':

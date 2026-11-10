@@ -1,6 +1,10 @@
 # 私有交接与验收模板
 
-本文件只保存结构；复制到 `.voiceport/handoffs/` 后填实际值。角色身份登记到 `.voiceport/roles.md`，报告放 `.voiceport/evidence/`；公开模板不得填现场句柄、真实消息、录音或凭据。未知填 `unknown`，不适用写明原因；不要保留会被误认为真实回执的示例 ID。
+本文件只保存结构；复制到 `.voiceport/handoffs/` 后填实际值。角色身份登记到 `.voiceport/roles.md`，报告放 `.voiceport/evidence/`；公开模板不得填现场句柄、真实消息、录音或凭据。未知填 `unknown`，不适用写明原因；不要保留会被误认为真实回执的示例 ID。身份、完整命令、调度停止 gate 以 [全角色会话轮换](../../../.claude/COORDINATOR_ROTATION.md) 为准。
+
+直接打开且无 Run、非托管 worker 的顶层会话，安装 loop 前另写精确 `.voiceport/handoffs/session-contract-ACTUAL_SESSION_ID.json`，仅含 goal、完整原文 loop_prompt、authorization、paused 布尔值、active_tools 列表，并 `python3 -I .claude/hooks/coordinator_rotation.py session-register --session ACTUAL_SESSION_ID --contract .voiceport/handoffs/session-contract-ACTUAL_SESSION_ID.json`。真实 PreToolUse/terminal/transcript 与穷尽 all-Run worker-list、registry 非 worker 证明缺一即阻塞；不能套用角色模板虚构 Run。既有最终轮可补精确 contract/register，计数不清零。登记前结算已有工具，active_tools 须真实为 []；冻结契约是原始登记快照，由继任继承，不扩大产品协调或 Git 权限。退任前另查并结算当前工具，真实结果、最新用户约束与剩余工作写有界 notes；初始 [] 不证明当前无活动工具。
+
+已登记独立顶层可用 `session-request --session ACTUAL_SESSION_ID --reason '实际原因'` 提前进入同一流程；记录 voluntary 原因和真实压缩数，不改阈值/计数，不覆盖自然上限请求；前代未关闭时拒绝。演练须分别记录真实开窗/认领/关闭/恢复调度与未执行的自然压缩。顶层 requested 后 notes/停止全部自有调度 → session-retire → 单次 session-launch → 新实际 initial0 会话 `session-claim --session NEW --source OLD --token TOKEN` → `session-close --session NEW --source OLD --terminal EXACT_OLD`。确认精确旧 PTY 退出后才按原授权/暂停恢复产品与一份完整原 prompt 的 loop。完整 helper 前缀和证明见中央文档，命令逐条调用。以下 Run/Task/Dispatch 字段只供实际协调者/worker 使用；托管 worker 不自行 launch 或装 loop。
 
 ## A. 协调者的私有角色注册
 
@@ -66,8 +70,11 @@ manifest_path: <相对路径、类型/必要模式、内容 SHA-256 与删除项
 snapshot_or_patch: <验证会话可读取的实际冻结文件或完整差异；含未跟踪内容>
 inventory_rule: <如何发现相关新增/删除项，列明排除构建/证据/私有敏感目录>
 source_sha256: <若引用 verify.py，给其真实摘要和报告路径>
-additional_document_hashes: <docs/README 等 source_sha256 未覆盖的实际文件摘要>
-self_checks: <开发自检的命令、退出码、输出/报告路径及运行版本>
+additional_document_hashes: <按实际输入清单补 `.claude/`、`.codex/`、根 planning、`.planning/` 等；schema 2 已含 docs/README，不重复宣称未覆盖>
+self_checks: <开发自检的命令、真实退出码、输出/报告路径及运行版本；取消/超时/未执行分开记录>
+verification_resources: <新证据目录、同 checkout suite lock owner、active_check、真实 PID/进程组及清理确认/未知；不清理他人资源>
+failure_history: <首次失败与全部 attempt 日志、诊断、责任人和剩余预算；后续绿色不覆盖首次失败>
+evidence_integrity: <finish 保存的报告路径/SHA-256/字节数；audit intact/changed/missing/unsealed；字节完整不等于独立验收>
 acceptance: <原验收标准、反例和必需真实场景>
 verifier_assignment: <指定的不同真实会话；启动后填写实际 run/task/dispatch>
 write_freeze_confirmed: <所有写者已停写相关输入的确认；检查开始与结束再核对>
@@ -117,13 +124,15 @@ ORCA orchestration send --from <本次from> --type worker_done --subject <准确
 
 ## F. 全角色上下文轮换
 
-协调者、开发、独立验证、协议支撑和效果评估统一最多 **5 轮上下文**：初始上下文加最多 **4 次已完成压缩**。进入最后一轮立即利用剩余空间保存交接；当前工具自然返回后不再开新工作，禁止第 5 次压缩，不强制 compact、不额外压测。实际接口与宿主边界见 [全角色会话轮换](../../../.claude/COORDINATOR_ROTATION.md)。
+所有会话（含直接顶层、协调者、开发、独立验证、协议支撑和效果评估）最多 **5 轮上下文 = 初始轮 + 最多 4 次已完成压缩**。进入最后一轮立即利用剩余空间保存交接；当前工具自然返回后不再开新工作，禁止第 5 次压缩，不强制 compact、不额外压测。实际接口与宿主边界见 [全角色会话轮换](../../../.claude/COORDINATOR_ROTATION.md)。旧全局 lease 的同一实际 owner/Run 须在 active/requested、未尝试 transfer 时，先 `python3 -I .claude/hooks/coordinator_rotation.py upgrade-legacy --session ACTUAL_SESSION --run ACTUAL_RUN`；保留 epoch/计数/原目标/完整 prompt/request/history/worker 冻结，转 per-Run 后带 --run 退任/接管/精确关闭。已有 Run lease、transfer 已尝试或沿革不明时阻塞，不手改状态。隔离测试不证明真实迁移已经执行。
 
-新角色接单前核对真正新 session，不能仅凭新 terminal：从真实 transcript 的起始身份/时间和已完成压缩记录，独立核对实际 hook 状态的 `owner`、`terminal`、`harness`、`boundaries=[]`、`hook_events` 中的 PreToolUse 及 `hook_implementation_sha256` 与指定版本一致。worker 状态在 `.voiceport/session-rotations/<actual-session>.json`；协调者另有 lease，不能把 worker 状态写入 owner lease。Claude 按 `compact_boundary` UUID 去重，Codex 按真实 `session_meta.payload.id` 验证身份并按 `compacted.payload.window_id` 去重；恢复旧 transcript 不清零。SessionStart 若未观察到须披露，真实 PreToolUse 加新 transcript 证明可满足启动条件，不能伪造状态、手动合成激活或把测试 stdin 当加载证明。原生 Codex 必须由用户在原生 UI 信任具体 hook 定义并证明当前进程实际加载，未证明则该前端阻塞；不写信任库或代发批准按键。Claude 支撑成功不替代失败/未执行的原生 Codex Task。Claude PreCompact veto 为 `decision:block`，Codex PreCompact 为 `continue:false`，Codex PreToolUse 为 `decision:block`；真实 veto 生命周期未执行要保留未测。
+退任前停止全部自有调度，私有记录须保留 scheduler kind、owner、ID、完整 prompt 与 tool-use/result 证据。动态须最后一次 ScheduleWakeup({stop:true}) 的结构化 stopped:true；cron 须同 session 成功 CronCreate 的 ID/prompt 来源、所有自有 ID 的配对成功 CronDelete 和最后 mutation 后 CronList 全部自有 ID 不存在。最终 gate 允许精确 stop、CronList({}) 与仅含已证明自有 id 的 CronDelete；未知/缺失 ownership 失败关闭，不删他人 job、不创建或续订。顶层冻结 active_tools 非空时当前 helper 阻止退任，无手改契约解锁接口。登记时须真实结算为 []，退任时另查当前工具并保存真实结果，不能以初始快照代替退出证明。scan 持久保存动态调用/停止/未决结果和 cron ownership/未决 mutation；截断不清除任何已知调度义务，动态 stop 须以同一快照先后关系或真实 UTC 时间证明晚于所有已知调用，恢复早期 stop 不覆盖较晚调度；停止仍须对应回执与最终列表，不手写状态充证明。
+
+新角色接单前核对真正新 session，不能仅凭新 terminal：从真实 transcript 起始身份/时间与完成压缩记录，核对 hook 状态的 `owner`、`terminal`、`harness`、`boundaries=[]`、PreToolUse 与当前 `hook_implementation_sha256`；继任还核对状态/起始时间均晚于 launch。普通 session 状态在 `.voiceport/session-rotations/<actual-session>.json`，Run 协调者另有 lease，不混写。Claude 按 `compact_boundary` UUID 去重；Codex 0.167 适配按 `session_meta.payload.id` 核验并以 `compacted.payload.window_id` 去重，恢复不清零。SessionStart 缺失如实披露，不伪造状态/事件或把测试 stdin 当加载证明。原生 Codex 具体 hook 须用户原生 UI 信任并证明当前进程加载，不写信任库或代批；历史失败 Task 不因 Claude 支撑成功而改变。Claude PreCompact 的 `decision:block` / reason（或 exit2）正确，无需改成 continue:false；Codex PreCompact 用 `continue:false`，PreToolUse 用 `decision:block`。原生 scheduler 尚无 VERIFIED 接口，退任适配仍阻塞。CLI 窗口轮换单次显式 --surface terminal，不改全局偏好，只接受 terminal outcome；hook 加模型程序不是崩溃监督器，隔离测试不是完整自然压缩生命周期，结构化 launch 送达不是 PTY 证明；未执行的实际 veto/全流程继续标未测。
 
 **先检查实际 terminal 绑定。** 同一 session 的实际 `ORCA_TERMINAL_HANDLE` 与 hook 保存 terminal 不一致或缺失时，即使计数 0、角色已结算后重开或 registry 已移到新 terminal，也立即停止普通工作与压缩。helper 锁存首个 `terminal_drift`，保留实际 session、旧 terminal、单调计数和旧笔记；返回原 terminal 仍 fence，checkpoint 不得冒用旧 caller 或宣称成功。worker 仅可 Read、精确 session-status、以当前真实 preamble 的 from/Task/Dispatch 发有界 escalation，然后结束 turn；不能 Write/Edit 笔记、执行 Skill 或任意 shell。escalation 命令只用 `orca orchestration send` 的六组参数 `--from ACTUAL_TERMINAL --type escalation --subject '简短主题' --body '简短事实与停止请求' --task-id ACTUAL_TASK --dispatch-id ACTUAL_DISPATCH`，不重复、不加参数，最多 48KB 且无 shell 元字符/换行/分号。Orca 校验真实 dispatch，不能借旧 registry 代发；Stop（含递归）允许结束，双宿主 veto 格式保持上述规则。
 
-协调者从真实 state/transcript 与保留工作采集行政 handoff，记录实际/保存 terminal、session、完成压缩数、原角色/Task/Dispatch 沿革、笔记/证据、活动工具和旧 checkpoint 未成功。依 recovery 停止精确 mismatched assignment，取得真实 exited/released 后启动 genuinely fresh session；spec/freeze 不变走同 Task retry/new-start，改变则建显式 successor，保留 Run/产品 attempt 和历史。验证新 ID、实际 terminal 与 hook 状态一致、真实 PreToolUse 当前 helper hash、bounded transcript 初始身份/时间与零计数；SessionStart 缺失如实写 startup addendum。旧会话持续 fence，不能重绑/清零/改信任或仅 send 恢复旧 transcript。此恢复不由 helper 自动 stop/launch；mock 恢复模型不代表真实生命周期接受。operational03 FAILED、policy03 旧九文档快照结论保留，修改后须重新固定相关输入独立复核；原生信任仍失败/未执行，Full VP-013/capture 仍 false。
+协调者从真实 state/transcript 与保留工作采集行政 handoff，记录实际/保存 terminal、session、完成压缩数、原角色/Task/Dispatch 沿革、笔记/证据、活动工具和旧 checkpoint 未成功。依 recovery 停止精确 mismatched assignment，取得真实 exited/released 后启动 genuinely fresh session；spec/freeze 不变走同 Task retry/new-start，改变则建显式 successor，保留 Run/产品 attempt 和历史。验证新 ID、实际 terminal 与 hook 状态一致、真实 PreToolUse 当前 helper hash、bounded transcript 初始身份/时间与零计数；SessionStart 缺失如实写 startup addendum。旧会话持续 fence，不能重绑/清零/改信任或仅 send 恢复旧 transcript。该 worker drift 恢复由协调者执行，helper 不自动 stop/launch worker；mock 恢复模型不代表真实生命周期接受。历史 operational03 FAILED、policy03 旧九文档快照和原生信任 Task 的失败/未执行结论保留，不用修订文档改写；当前输入须新冻结复核，Full VP-013/capture 未接受的范围保持。
 
 terminal 绑定一致且没有 drift 锁存的 worker 在 `.voiceport/handoffs/session-rotation-ACTUAL_SESSION_ID.md` 保存非空、最多 48KB 的精简笔记，使用真实身份，不填示例回执：
 
@@ -143,6 +152,6 @@ provisional_findings_and_remaining: <暂定发现、未做项、权限与证据�
 python3 -I .claude/hooks/coordinator_rotation.py checkpoint --session ACTUAL_SESSION_ID
 ```
 
-策略要求 helper 对照实际调用者的当前 terminal/session 与精确注册身份核验关联，只接受限定私有路径内的普通笔记文件（非符号链接），记录哈希并在通知后保持/复核笔记完整性，再发一次 escalation。首次操作实现独立评审失败，保存 7 个可复现缺陷；当前返修及完成后的新固定输入独立复核待办，不预判返修成败。上述身份、fail-closed 与笔记完整性是要求，尚非独立接受的保证；真实新会话 PreToolUse 已观察，SessionStart、实际 PreCompact 与完整自动生命周期未执行，原生信任/激活仍阻塞。未知送达先交协调者查实际回执，不能盲重发。checkpoint 只是行政交接，不结束未完成的产品工作，不伪造 worker_done；worker 随即结束当前轮，不启动其他 agent、worker 或循环，不接管主协调者 loop、账本或 Git。
+helper 对照实际 caller terminal/session 与精确注册身份，只接受限定私有路径内普通笔记文件（非符号链接），记录并复核哈希，再单次 escalation。首次操作评审的7个反例与 R1/D1 退回是历史证据，当前输入须新冻结独立复核，不用修订文档改写旧结论，也不把旧缺口继续当成当前实现描述。实际加载、未观察的 SessionStart、未执行的 PreCompact/完整生命周期和当前原生信任条件分别记录，不能外推通过。未知送达先交协调者查实际回执，不盲重发。checkpoint 只是行政交接，不结束未完成产品工作、不伪造 worker_done；worker 随即结束 turn，不启动其他 agent、worker 或循环，不接管主协调者 loop、账本或 Git。
 
 协调者核对交接和活动工具后，对精确旧 dispatch 依 Orca recovery 作 guarded stop，必须取得实际 exited/资源释放证明；取消请求、静默或未知存活都不是退出。之后用 `worker-start` 和真实 fresh-agent 回执续接，禁止把 send 恢复超限 transcript 当新上下文。原 Task/spec/freeze 未变可按实际 retry/new-start 恢复；已改变则建立显式 successor assignment，保留原角色/Task/Dispatch lineage、同一 Run/产品 attempt 和旧证据，新证据用新路径。修订冻结输入前须明确中断旧评审并建立新完整冻结，不能静默漂移，也不能把行政中断当产品通过或退回。协调者仍在原 loop 处理事件；自身轮换另依 lease 的停止调度、retire/launch/claim 流程，继任显式恢复已授权的 loop。普通工作真实完成时才按 E 节发送一次准确 outcome 的 worker_done。
