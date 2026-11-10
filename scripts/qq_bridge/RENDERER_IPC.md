@@ -187,6 +187,12 @@ preload 的适配已继续核对：模块 `298` / SFI `847` 在 `5`–`12` 导�
 
 该缓存严格解析为 2,970 对象 / 284 编译函数，5 字节允许 NOP，零校验/函数/指令警告和未解决图/forward/RO 引用；5 个辅助对象缺布局，producer typed layout 未验证、payload checksum 缺失。保持 10,000 对象上限、Node 512 MiB / 25 秒，只选 11 函数，解析与反汇编进程均退出 `0`。证据为 `voiceport-qq-main-adapter-extract-lo_lzjti/provenance.json`、`voiceport-qq-main-adapter-parse-zdHwrW/summary.json`、`voiceport-qq-disasm-88nFNs/579.txt` 和 `voiceport-qq-disasm-rZ4UBj/{589,595,601,626,636,643,650,657}.txt`。没有执行目标代码、注册真实监听、连接 IPC 或取得转写。
 
+最后的 provider 来源也已核对：复用文件偏移 `118606376`、长度 `71824`、SHA-256 `681bc65fba69907758f8efb6b4f3a4f6e9b3d7a2a09fde55f9c608b29df5fb8a` 的缓存，外层 `5` 将形参 `require` 存入 context slot `3`，`14` 在 `346`–`357` 将 `1414` 注册为模块 `72298`；`1414` 在 `0`–`12` 调用该 `require('electron')` 并赋给 `module.exports`。因此 `42261` 的 `ipcMain` / `BrowserWindow` 来源已由代码建立，不能再写成仅由属性名推断或来源未知。
+
+这补齐了已重建的静态路径：renderer `audioSDKApi` → 声明方法 Proxy → preload Electron `ipcRenderer` 适配 → `RM_IPCFROM_RENDERER + webContents ID` → 主端 Electron `ipcMain` 适配 → `AudioSDKApi` handler。它不证明这些 chunks 在实际窗口上已安装、服务已就绪、请求被接受或已经转写，也没有建立外部 VoicePort 调用入口。`hasLoadPreloadEx` 替代分支仍未验证。
+
+本轮无新提取，只选 4 个函数，严格解析/反汇编退出 `0`：1,991 对象 / 216 编译函数、6 字节允许 NOP、零校验/函数/指令警告及图/forward/RO 未解决引用；2 个辅助对象缺布局，producer typed layout 未验证、payload checksum 缺失。保持 10,000 对象、512 MiB / 25 秒限制。证据为 `voiceport-qq-login-extract-ecp6_85_/provenance.json`、`voiceport-qq-electron-provider-parse-fn4Zbr/{summary,matching-units}.json` 和 `voiceport-qq-disasm-BLrjFF/{5,14,1414}.txt`。该缓存与某个命名启动入口的整体对应关系仍未验证；模块定义及 require 绑定来自所列具体指令与 scope 元数据。没有运行 QQ 或发起 IPC/音频任务。
+
 主实现 `3812.emitStreamASRText` 在记录窗口存在且未销毁时，通过 `audioSDKApi.onStreamASRText(streamRecordWindow, eventPayload)` 将结果发回该窗口；否则使用只传 eventPayload 的广播分支，`eventPayload.isEnd` 时清空记录窗口。这是静态事件路由，不代表已取得真实文字或窗口状态。
 
 传输分析选择性读取 100 个函数，六次解析/反汇编子进程退出 `0`、零警告；上下文 hook 后续 11 + 1 个函数同样通过。保留匹配快照与 Windows x64 typed profile 限制。私有原始证据为 `voiceport-qq-disasm-{cAN8Ef,DnAuKb,7Aq2WD,an0y1R,cBV9wf}`，以及 getter/注册表证据 `nFbvEr` / `yJKzsl`。没有连接或调用真实 QQ IPC。
@@ -221,7 +227,7 @@ preload 的适配已继续核对：模块 `298` / SFI `847` 在 `5`–`12` 导�
 
 仍待解决：
 
-- renderer 模块 `41386`、工厂 `63198` 和枚举 `43145` 的调用链、`AudioSDKApi` 声明方法及 RM 收发方向已恢复；底层 `10413` 的 prefix/peer 拼接、调用/事件/响应线格式和清理行为也已恢复；preload 的普通 `ipcImpl` 分支已确认直接转发 Electron IPC；主端适配函数与 prefix 字面量配对也已恢复；仍需核对主端 `72298` 的 Electron 绑定、preload 替代 provider 和实际窗口可达的服务注册，尚未运行验证。
+- renderer 模块 `41386`、工厂 `63198` 和枚举 `43145` 的调用链、`AudioSDKApi` 声明方法及 RM 收发方向已恢复；底层 `10413` 的 prefix/peer 拼接、调用/事件/响应线格式和清理行为也已恢复；preload 的普通 `ipcImpl` 分支已确认直接转发 Electron IPC；主端适配函数与 prefix 字面量配对也已恢复；主端 `72298` 也已确认导出宿主 `require('electron')`；仍需验证实际 chunk 安装、preload 替代 provider 和窗口可达的服务注册，尚未运行验证。
 - 从实际 renderer 可达的调用入口及其权限/状态条件，不能由内部 facade 链直接推断。
 - 恢复出的任务、音频和回调约定在本机服务中的接受条件，以及取消/超时和完整错误行为。
 - 在当前签名 App Store 构建中可用的进程内加载方式；上述 pipe 候选尚未建立新启动路径。
