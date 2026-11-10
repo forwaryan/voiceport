@@ -4,7 +4,7 @@
 
 后续静态分析已恢复本机 `uploadSmartPttSlice` 的两个参数结构、六个准确对象键、两个回调的位置参数，以及部分任务生命周期。继续追踪还确认了 metadata 选择器直接对应 protobuf 字段号，以及桌面 `AudioFoundation.node` 流式采集模块的 SILK 分片头、长度/payload 记录和最终短帧补零路径；它与 SmartPtt 的准确调用衔接仍待验证。详见 [本机 SmartPtt 调用契约](../scripts/qq_bridge/SMARTPTT_CONTRACT.md)。本文的 GitHub 调查保留其证据边界；当前加载试验结果见 [诊断说明](../scripts/qq_bridge/README.md)。
 
-2026-11-10 继任验证又完成了一次渲染调试入口实验：QQ 正常运行但未观察到回环调试监听，未执行 IPC；随后静态追踪发现 QQNT 的参数处理路径结束时删除 `inspect` 和 `remote-debugging-port` 开关。主页面 URL、preload/RPC/AudioSDK 标识及通用请求/事件/响应封装已静态恢复；renderer 的 `audioSDKApi` 创建点已定位为 `63198.Z(43145.Qe.AudioSDK)`，工厂声明的调用/订阅方法、RM 收发方向及底层线格式也已恢复，preload 普通分支已确认原样转发 Electron IPC，替代 provider、主端配对和运行可达性仍未验证。可复现地址、二进制指纹及真实/夹具边界见 [渲染端 IPC 与调试入口证据](../scripts/qq_bridge/RENDERER_IPC.md)。
+2026-11-10 继任验证又完成了一次渲染调试入口实验：QQ 正常运行但未观察到回环调试监听，未执行 IPC；随后静态追踪发现 QQNT 的参数处理路径结束时删除 `inspect` 和 `remote-debugging-port` 开关。主页面 URL、preload/RPC/AudioSDK 标识及通用请求/事件/响应封装已静态恢复；renderer 的 `audioSDKApi` 创建点已定位为 `63198.Z(43145.Qe.AudioSDK)`，工厂声明的调用/订阅方法、RM 收发方向及底层线格式也已恢复，preload 普通分支已确认原样转发 Electron IPC，主端适配与 RM 字面量配对也已恢复；主端 provider 也已确认导出宿主 `require('electron')`，普通分支的静态链路已还原；实际 chunk 安装、preload 替代 provider 和运行可达性仍未验证。可复现地址、二进制指纹及真实/夹具边界见 [渲染端 IPC 与调试入口证据](../scripts/qq_bridge/RENDERER_IPC.md)。
 
 目标是复用 QQ 输入框工具栏的「语音输入文字」：VoicePort 提供录音，QQ 的识别能力返回文字。已有 QQ 语音消息的转文字接口不能替代这个目标。
 
@@ -123,7 +123,7 @@ https://qqdl.gtimg.cn/qqfile/QQNTV2/9.9.37/release/a8ffd03b/QQ_7.0.3_261103_01.d
 5. 两种回调的实际载荷、增量或累计文字语义、错误处理和监听释放。
 6. 从 VoicePort 调用时的本机鉴权、并发隔离和音频临时文件清理。
 
-当前已经静态恢复内部参数、AudioSDK 转换、回调合并及 QQ 自有 session 引用链，仍缺少经过运行验证的外部加载/调用入口和真实服务接受结果。renderer 消费者已定位到 `require(41386).audioSDKApi`，并确认该模块通过 `63198.Z(43145.Qe.AudioSDK)` 创建客户端；工厂的声明方法、`AudioSDKApi` 服务名与 RM 收发方向已恢复，底层模块 `10413` 的完整线格式已恢复，preload 普通分支已确认转发 Electron IPC，替代 provider 和主端配对仍待核对，实际可达性尚未验证；本地多实例路由的 POST 分发和 `websdk` 方法未显示可据以复用的通用 AudioSDK 入口，详见渲染端证据文档。继续需要验证兼容入口，之后才进入另行获准的最小音频任务。不能用猜测的请求结构编写“可用”适配器，也不能使用腾讯云 ASR 或其他识别引擎冒充 QQ 自带能力。
+当前已经静态恢复内部参数、AudioSDK 转换、回调合并及 QQ 自有 session 引用链，仍缺少经过运行验证的外部加载/调用入口和真实服务接受结果。renderer 消费者已定位到 `require(41386).audioSDKApi`，并确认该模块通过 `63198.Z(43145.Qe.AudioSDK)` 创建客户端；工厂的声明方法、`AudioSDKApi` 服务名与 RM 收发方向已恢复，底层模块 `10413` 的完整线格式已恢复，preload 普通分支已确认转发 Electron IPC，主端适配与 RM 字面量配对已确认，主端 provider 也已确认导出宿主 Electron；替代 preload 分支及实际 chunk 安装仍待验证，实际可达性尚未验证；本地多实例路由的 POST 分发和 `websdk` 方法未显示可据以复用的通用 AudioSDK 入口，详见渲染端证据文档。继续需要验证兼容入口，之后才进入另行获准的最小音频任务。不能用猜测的请求结构编写“可用”适配器，也不能使用腾讯云 ASR 或其他识别引擎冒充 QQ 自带能力。
 
 ## 推荐的落地顺序
 
