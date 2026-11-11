@@ -213,9 +213,24 @@ preload 的适配已继续核对：模块 `298` / SFI `847` 在 `5`–`12` 导�
 
 在本机已有程序缓存中，贴图编辑器模块 `23066` 的 `283.initHtmlEvent` 注册 document `keydown` listener；`265.handleKeydown` 在字节码 `87`–`110` 检查 `ctrlKey && shiftKey && code === 'KeyI'`，在 `112`–`125` 调用模块 `93757.Z.openDevtool()`。这是 **Control+Shift+I**。模块 `93757` 把 `openDevtool` 声明为 `send` 方法，并以 `screenshot` 作为 API 实例 channel；通用方法生成器 `104` / `110` 最终经 `77.send` 调用 `window.ipc.send('screenshot', 'openDevtool')`。它与前述 `window.ipcImpl` / RM_IPC 传输不同。
 
-主缓存模块 `82626` 已知通过自定义 dispatcher 的 `on('openDevtool', callback)` 注册 SFI `76970`，后者执行 `event.sender.openDevTools({mode: 'detach'})`。尚未恢复 `window.ipc` 的提供者及 dispatcher 的接收、准入逻辑，不能把这个 `on` 当作已确认的 `ipcMain.on`，也不能将上述两端画成已经连通的完整路径。现有选择性产物只保留 pin-manager 构造和 setup 方法的索引，缺少 `77059`、`77174`、`77196` 的函数体；因此对应窗口的 `devTools` 默认值、合并和覆盖仍未知，其他窗口的 `devTools: false` 不能套用到此处。
+后续用自写 Python 数据读取器恢复了此前缺失的函数体，静态候选链已补齐。主缓存模块 `82626` / SFI `76737` 的 `196`–`210` 将模块 `72298` 导入 context slot `11`，其宿主 Electron 来源见前文。`592`–`651` 的 class 动态参数顺序将构造、`on`、`init`、`handleSend` 分别关联到 `76758`、`76766`、`76813`、`76820`；`968`–`981` 注册 `on('openDevtool', 76970)`。
 
-两个小缓存的固定范围分别为偏移 `138267488` / 长度 `76768` / SHA-256 `351f749a8e22c8f1e09f099e912f96b0d471ad91157afe18fb199b81a48c9edd`，以及偏移 `200297096` / 长度 `19608` / SHA-256 `25e304c9b2ccdf73c34f6081f47a5c2579d39e8178d76d508e02644000c64249`。静态图校验、所选函数及反汇编无未解决引用或警告；仍保留 Windows x64 typed profile 与本机 arm64 producer 兼容性未验证、payload checksum 缺失的限制。私有产物为 `qq-local-entry-parse-{f8GsCG,wLk4mP,kY26eh}`、`voiceport-qq-disasm-{qaNJoq,qNYjhm,a32nTi}`。这些操作运行了静态解析库，没有执行 QQ 目标代码；后续核查只读取现有产物，没有再次解析主缓存。
+- `76758` 将 `channelName` 设为 `screenshot`，并调用 `init()`。
+- `76813` 的 `0`–`34` 注册 `ipcMain.on(this.channelName, this.handleSend.bind(this))`，`40`–`74` 另注册 invoke handler。
+- `76820` 的 `11`–`30` 将接收的 `(event, methodName, ...args)` 转为 `this.emitter.emit(methodName, event, ...args)`。
+- `76970` 的 `8`–`23` 执行 `event.sender.openDevTools({mode: 'detach'})`。所查转发和这个回调中没有额外 sender 比较；这不证明整条运行路径没有其他限制。
+
+提供者来自本机 `major.node` 偏移 `128985208`、长度 `2456`、SHA-256 `3ee0c38a0a707fd032b422e9dd952ea0431d05ac61f5790f1659112077308105` 的微型缓存。SFI `12` 导入 `electron`，经 `contextBridge.exposeInMainWorld` 暴露 `ipc` 对象；`27` 将 `send(channel, ...args)` 原样转给 Electron `ipcRenderer.send`，`38` / `45` 转发 `on` / `off`。`invoke` 是从 `ipcRenderer` 读取并交给 bridge 的函数，运行时 receiver 兼容性尚未测试。另行暴露的 `captureScreen` / SFI `52` 含屏幕捕获逻辑，本次没有调用它。
+
+主截图窗口 `78280.createWindow` 在 `108`–`158` 直接构造 `BrowserWindow`：`show: false`，preload 为 `preload_simple.js`，所查 `webPreferences` 有 `nodeIntegration: false`、`contextIsolation: true`、`sandbox: false`，没有显式 `devTools` 键。`77196.setupAuxWindow` 注册回调 `77202`；后者区分 `PinMenu`，两个分支都使用同一 preload，并通过 helper `Z` 合并辅助窗口配置，局部字面量也没有显式 `devTools` 键。不能由此推断 helper、全局 hook 或实际窗口的最终设置。
+
+`77857.init` 的 `1268`–`1285` 仅在 `cacheLiteWindowInFirstTime` 为真时预建隐藏截图窗口。`77243` 登记已创建的贴图窗口；`77165` 是已有贴图的保存对话框路径。这些函数尚未建立从外部提供图片、免屏幕捕获地进入编辑器的完整路径。另一个图像编辑器缓存的初始化仍包含截图组件，不能当作已找到独立文件编辑入口。
+
+新方法只执行自己编写的 Python 读取器，JSON profile / RO 表作为数据读取，没有再执行下载的解析库或 QQ 目标代码。微型 preload 完整读出 `77` 对象、`7` 个 SFI、`5` 字节允许 NOP，图引用全部在本块内解决；独立复现一致，本样本没有触发 forward-registration 分支。主截图局部段只有 `1992` 对象，明确标记 `partial_graph: true`、`external_refs_complete: false`，不能称为整个主缓存的严格解析验收。两个外部字符串引用 `12755 = screenshot`、`58391 = channelName` 分别经已保存 bytecode 锚点的有界读取定位，每次少于 `10000` 对象；`427` 个本地字符串与原始字节一致。其他沿用旧产物的标签不算独立验证。Windows x64 typed profile 与 arm64 producer 的兼容性、缺失 payload checksum 的限制保留。
+
+私有证据为 `qq-simple-preload-wv7ewlf1/`、`qq-local-pools-xbuuwfaq/`、`qq-recovered-listing-{1zehr2t0,550v7mq5}/`、`qq-reference-evidence-{yj24qdb6,thisl989}/provenance.json`。没有通过这条链发送真实 IPC、按快捷键、截屏、读取剪贴板或取得服务就绪报告，更没有真实转写。
+
+两个小缓存的固定范围分别为偏移 `138267488` / 长度 `76768` / SHA-256 `351f749a8e22c8f1e09f099e912f96b0d471ad91157afe18fb199b81a48c9edd`，以及偏移 `200297096` / 长度 `19608` / SHA-256 `25e304c9b2ccdf73c34f6081f47a5c2579d39e8178d76d508e02644000c64249`。静态图校验、所选函数及反汇编无未解决引用或警告；仍保留 Windows x64 typed profile 与本机 arm64 producer 兼容性未验证、payload checksum 缺失的限制。私有产物为 `qq-local-entry-parse-{f8GsCG,wLk4mP,kY26eh}`、`voiceport-qq-disasm-{qaNJoq,qNYjhm,a32nTi}`。这两块的初始操作运行了静态解析库，没有执行 QQ 目标代码；上面新增的缺失函数恢复使用自写有界读取器，没有再执行该解析库。
 
 据此为能力探针补上 `windowIpc` 及 `windowIpcSend` / `windowIpcInvoke` / `windowIpcOn`，分别只读取 `globalThis.ipc` 和其三个已知方法的类型。没有该对象时四项均为 `undefined`；存在该对象不等于传输已连接、服务已就绪或调用获准。新的离线夹具确认只有该桥接对象时仍可检测，且不调用方法、读取 document 或无关桥接字段。仍须先从外部证明 QQ 所属回环调试端点，保留 `throwOnSideEffect: true`；没有按快捷键、触发截图、打开 DevTools、发起真实 IPC 或重启 QQ，也没有取得服务就绪报告或转写。
 
@@ -229,7 +244,17 @@ preload 的适配已继续核对：模块 `298` / SFI `847` 在 `5`–`12` 导�
 
 模块 `47504` 的 `websdk`（SFI `100990`）依次调用 `getParamsError`、`translateToShareQQData`，有分享数据时进入 `urlSchema`，再返回固定 SUCCESS 或 REQUEST_BODY_ERROR。所查方法体没有 generic invoke/eval/AudioSDK 转发；不能因名称 `websdk` 就把它当作 ASR 桥。新增六个所选函数严格解码退出 `0`、无指令错误/警告，证据为 `voiceport-qq-disasm-{RJMb7n,pUiMHy}`。这排除了这些具体分发/分享方法作为已建立语音入口的说法，不是对程序全部路由的穷尽证明。
 
-这提供了一条区别于 renderer/CDP 的静态调查线索，尚未建立它暴露 AudioSDK、支持任意方法调用或可供 VoicePort 使用。所查 dispatcher 与分享方法没有建立服务路由到语音接口的关联。没有扫描端口、连接服务、调用端点、读取本地会话状态或追踪凭据处理。最初六个所选函数严格解析/反汇编退出 `0`、零警告，证据为 `voiceport-qq-disasm-{0h2QVi,FnUPmt}`；路由注册表与构造的另外五个函数同样通过，证据为 `voiceport-qq-disasm-{BnyOOK,zCxC5z}`。
+这提供了一条区别于 renderer/CDP 的静态调查线索，尚未建立它暴露 AudioSDK、支持任意方法调用或可供 VoicePort 使用。所查 dispatcher 与分享方法没有建立服务路由到语音接口的关联。该阶段没有扫描端口、连接服务、调用端点、读取本地会话状态或追踪凭据处理。最初六个所选函数严格解析/反汇编退出 `0`、零警告，证据为 `voiceport-qq-disasm-{0h2QVi,FnUPmt}`；路由注册表与构造的另外五个函数同样通过，证据为 `voiceport-qq-disasm-{BnyOOK,zCxC5z}`。
+
+### 外部协议与现有监听端口的有界复核
+
+本机应用元数据注册 `tencent:` 和 `mqqapi:`。自写读取器仅重建三个具体主缓存子树，分别为协议 listener（`272` 对象）、dispatcher（`1910` 对象）和默认配置（`389` 对象），均保持每次 `10000` 对象 / `256 KiB` 上限，没有完整重解析大型主缓存。它们是部分对象图；根据多个既有子函数长度、对象形状及属性名必须是字符串的约束排除不一致 hot-ring 状态，不能当作 producer typed layout 已获验证。
+
+`90539` 的 `429`–`452` 注册 macOS `open-url` 回调；`90521` 把合格 scheme 交给已初始化时的 `dispatchCacheUrlProtocolForMainWindow`。dispatcher `103881` 在 `168`–`278` 要求命令配置存在，并在 `505`–`550` 检查来源权限；`105137` 检查 `mqqapi` 命令白名单。默认配置模块 `80660` / `124711` 的 `OZ` getter `124737` 返回 context slot `5`，对应所查默认命令表；其中没有截图、图像编辑或调试命令。配置读取还会合并 `57390.Z.schemaConfig`；本次没有读取账号或热更新数据来检查运行时覆盖，不能断言实际命令表与默认表完全相同，也没有建立直接拼 URL 进入调试窗口的方案。
+
+另作一次当前进程的只读观察：QQ 所属回环监听端口包括 `9210`。只对该端口的固定 `/json/version` 路径作一次有界 GET，返回 HTTP `200`，但缺少 CDP version / debugger socket 字段。没有保留原始响应，也没有调用其他端口、协议命令、账号、分享或服务端点。结果只表示该端口未被确认是 CDP，不表示 AudioSDK 就绪，也不构成新的启动开关兼容性证据。
+
+私有证据为 `qq-protocol-subtree-{249g_tav,3948_st0,wmnr7md4}/` 和 `qq-protocol-listing-{zw3x8wzt,0m4ucpvk,eitapt1m}/`。新图像编辑器块 `qq-image-editor-static-bkid2114/` 为偏移 `167767296`、长度 `159160`、SHA-256 `18f0924f43c242bb4e08cc5b0bed4bb08666057a953c66d5daa343d9ff0a5834`，自写读取器读出 `3425` 对象 / `294` 编译函数 / `10` 字节 NOP；所查初始化包含截图组件，尚未建立独立的外部图片入口。没有因此截图、读剪贴板、调用 IPC、重启 QQ 或进行音频任务。
 
 ## 已解决与仍待验证的边界
 
