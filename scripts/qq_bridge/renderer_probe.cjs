@@ -2,7 +2,8 @@
 // Capability-only CDP probe. Never reads page text or invokes QQ IPC methods.
 const MAX_BYTES = 65536;
 const FLAGS = ['electron', 'ipcSend', 'ipcInvoke', 'ipcOn',
-  'directIpcSend', 'directIpcInvoke', 'directIpcOn', 'ipcImpl', 'waitForWindowTypeEnsure',
+  'directIpcSend', 'directIpcInvoke', 'directIpcOn',
+  'windowIpc', 'windowIpcSend', 'windowIpcInvoke', 'windowIpcOn', 'ipcImpl', 'waitForWindowTypeEnsure',
   'require', 'nativeBridge', 'qqnt', 'qqntApi', 'preloadApi', 'audioSDK', 'audioSDKApi', 'proxyInvoke'];
 const TYPES = new Set(['undefined', 'object', 'function', 'string', 'boolean', 'number', 'symbol', 'bigint']);
 const EXPRESSION = `(() => {
@@ -15,6 +16,10 @@ const EXPRESSION = `(() => {
     directIpcSend: typeof globalThis.ipcRenderer?.send,
     directIpcInvoke: typeof globalThis.ipcRenderer?.invoke,
     directIpcOn: typeof globalThis.ipcRenderer?.on,
+    windowIpc: typeof globalThis.ipc,
+    windowIpcSend: typeof globalThis.ipc?.send,
+    windowIpcInvoke: typeof globalThis.ipc?.invoke,
+    windowIpcOn: typeof globalThis.ipc?.on,
     ipcImpl: typeof globalThis.ipcImpl,
     waitForWindowTypeEnsure: typeof globalThis.waitForWindowTypeEnsure,
     require: typeof globalThis.require,

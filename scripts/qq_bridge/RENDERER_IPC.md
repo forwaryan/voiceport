@@ -209,6 +209,16 @@ preload 的适配已继续核对：模块 `298` / SFI `847` 在 `5`–`12` 导�
 
 因此，登录快捷键与这些条件调用都不足以支持新的运行试验。不能推广为主窗口入口，也没有尝试改变常量或窗口设置。另一个 `showDevtool` 条件属于 `DebugBuiltInBrowserWindow` 的嵌入浏览器，尚未建立适用于语音服务的外部触发链；内部 `openDevtool` 事件的派发/权限路径也未完整恢复。没有发送快捷键、打开登录页、登出、调用 IPC 或重启 QQ。
 
+### 截图贴图编辑器的独立 IPC 候选
+
+在本机已有程序缓存中，贴图编辑器模块 `23066` 的 `283.initHtmlEvent` 注册 document `keydown` listener；`265.handleKeydown` 在字节码 `87`–`110` 检查 `ctrlKey && shiftKey && code === 'KeyI'`，在 `112`–`125` 调用模块 `93757.Z.openDevtool()`。这是 **Control+Shift+I**。模块 `93757` 把 `openDevtool` 声明为 `send` 方法，并以 `screenshot` 作为 API 实例 channel；通用方法生成器 `104` / `110` 最终经 `77.send` 调用 `window.ipc.send('screenshot', 'openDevtool')`。它与前述 `window.ipcImpl` / RM_IPC 传输不同。
+
+主缓存模块 `82626` 已知通过自定义 dispatcher 的 `on('openDevtool', callback)` 注册 SFI `76970`，后者执行 `event.sender.openDevTools({mode: 'detach'})`。尚未恢复 `window.ipc` 的提供者及 dispatcher 的接收、准入逻辑，不能把这个 `on` 当作已确认的 `ipcMain.on`，也不能将上述两端画成已经连通的完整路径。现有选择性产物只保留 pin-manager 构造和 setup 方法的索引，缺少 `77059`、`77174`、`77196` 的函数体；因此对应窗口的 `devTools` 默认值、合并和覆盖仍未知，其他窗口的 `devTools: false` 不能套用到此处。
+
+两个小缓存的固定范围分别为偏移 `138267488` / 长度 `76768` / SHA-256 `351f749a8e22c8f1e09f099e912f96b0d471ad91157afe18fb199b81a48c9edd`，以及偏移 `200297096` / 长度 `19608` / SHA-256 `25e304c9b2ccdf73c34f6081f47a5c2579d39e8178d76d508e02644000c64249`。静态图校验、所选函数及反汇编无未解决引用或警告；仍保留 Windows x64 typed profile 与本机 arm64 producer 兼容性未验证、payload checksum 缺失的限制。私有产物为 `qq-local-entry-parse-{f8GsCG,wLk4mP,kY26eh}`、`voiceport-qq-disasm-{qaNJoq,qNYjhm,a32nTi}`。这些操作运行了静态解析库，没有执行 QQ 目标代码；后续核查只读取现有产物，没有再次解析主缓存。
+
+据此为能力探针补上 `windowIpc` 及 `windowIpcSend` / `windowIpcInvoke` / `windowIpcOn`，分别只读取 `globalThis.ipc` 和其三个已知方法的类型。没有该对象时四项均为 `undefined`；存在该对象不等于传输已连接、服务已就绪或调用获准。新的离线夹具确认只有该桥接对象时仍可检测，且不调用方法、读取 document 或无关桥接字段。仍须先从外部证明 QQ 所属回环调试端点，保留 `throwOnSideEffect: true`；没有按快捷键、触发截图、打开 DevTools、发起真实 IPC 或重启 QQ，也没有取得服务就绪报告或转写。
+
 另复核 `major.node` 的 `QQV8BytecodeDebug`：初始化仅在环境值精确为 `1` 时设标记；已检查分支调用 `getLogFilePath`，以 append 模式打开日志并输出路径/版本/flag hash。尚未找到由它开启任意模块加载或调试服务器的路径，没有设置环境变量或尝试启动。
 
 ## 本地多实例服务的后续候选
@@ -240,4 +250,4 @@ preload 的适配已继续核对：模块 `298` / SFI `847` 在 `5`–`12` 导�
 node --test Tests/QQBridgeTests/renderer_probe.test.cjs
 ```
 
-八项夹具测试覆盖目标/端点限制、流式正文大小上限、固定能力表达式不调用 IPC/读取页面、QQ 直接暴露的主世界能力、外部页面拒绝、异常和未知值脱敏、顶层 null 协议消息的结构化失败及目标数量限制。夹具使用本地 HTTP 和受控协议对象，**不等于真实 QQ CDP 已兼容**。
+九项夹具测试覆盖目标/端点限制、流式正文大小上限、固定能力表达式不调用 IPC/读取页面、QQ 直接暴露的主世界能力、独立截图 IPC 对象的检测及无关字段隔离、外部页面拒绝、异常和未知值脱敏、顶层 null 协议消息的结构化失败及目标数量限制。夹具使用本地 HTTP 和受控协议对象，**不等于真实 QQ CDP 已兼容**。

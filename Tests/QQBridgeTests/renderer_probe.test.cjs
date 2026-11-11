@@ -45,6 +45,7 @@ function socketFixture(t, respond) {
 
 const flags = { electron: 'object', ipcSend: 'function', ipcInvoke: 'function', ipcOn: 'function',
   directIpcSend: 'undefined', directIpcInvoke: 'undefined', directIpcOn: 'undefined',
+  windowIpc: 'undefined', windowIpcSend: 'undefined', windowIpcInvoke: 'undefined', windowIpcOn: 'undefined',
   ipcImpl: 'undefined', waitForWindowTypeEnsure: 'undefined',
   require: 'undefined', nativeBridge: 'undefined', qqnt: 'undefined', qqntApi: 'undefined',
   preloadApi: 'undefined', audioSDK: 'undefined', audioSDKApi: 'undefined', proxyInvoke: 'undefined' };
@@ -112,6 +113,29 @@ test('QQ preload globals are detected when the Electron namespace is absent', as
     directIpcSend: 'function', directIpcInvoke: 'function', directIpcOn: 'function',
     ipcImpl: 'object', waitForWindowTypeEnsure: 'function',
   }]);
+  assert.equal(result.transcription_verified, false);
+});
+
+test('screenshot IPC bridge is detected without Electron or direct ipcRenderer globals', async t => {
+  socketFixture(t, request => {
+    const forbidden = () => { throw new Error('screenshot IPC invoked'); };
+    const sandbox = { ipc: { send: forbidden, invoke: forbidden, on: forbidden } };
+    Object.defineProperty(sandbox, 'document', { get() { throw new Error('page content accessed'); } });
+    Object.defineProperty(sandbox.ipc, 'account', { get() { throw new Error('unrelated bridge field accessed'); } });
+    const value = vm.runInNewContext(request.params.expression, sandbox);
+    return { id: request.id, result: { result: { value } } };
+  });
+  const port = await endpoint(t, port => [target(port, {
+    url: 'file:///Applications/QQ.app/Contents/Resources/app/renderer/screenshot.html',
+  })]);
+  const result = await probe(port);
+  assert.equal(result.evaluated, true);
+  assert.equal(result.capabilities[0].windowIpc, 'object');
+  assert.equal(result.capabilities[0].windowIpcSend, 'function');
+  assert.equal(result.capabilities[0].windowIpcInvoke, 'function');
+  assert.equal(result.capabilities[0].windowIpcOn, 'function');
+  assert.equal(result.capabilities[0].electron, 'undefined');
+  assert.equal(result.capabilities[0].directIpcSend, 'undefined');
   assert.equal(result.transcription_verified, false);
 });
 

@@ -95,7 +95,7 @@ python3 -I -m unittest discover -s Tests/QQBridgeTests -p 'test_*.py' -v
 
 ### 2026-11-10 渲染端路径验证
 
-已新增固定表达式的 `renderer_probe.cjs`，并在原版签名 QQ 上实际尝试独立的渲染调试入口。QQ 在 20 秒观察期间正常运行，但没有观察到属于该进程的回环调试端口；没有执行页面表达式或 IPC。探测进程正常退出、普通 QQ 已恢复，配置指纹与严格签名验证保持。最初六项夹具测试验证目标/端点限制、正文上限、固定能力读取和输出脱敏。后续静态解码确认 QQ preload 将 `ipcRenderer` 直接暴露到主世界，因此补上了直接 `send/invoke/on`、`ipcImpl` 和 `waitForWindowTypeEnsure` 的类型检测；新增夹具确认没有 `electron` 命名空间时仍可检测且不调用方法或读取页面。完整 Node suite 当前 26 项通过，不能当作真实 QQ 兼容性证明。
+已新增固定表达式的 `renderer_probe.cjs`，并在原版签名 QQ 上实际尝试独立的渲染调试入口。QQ 在 20 秒观察期间正常运行，但没有观察到属于该进程的回环调试端口；没有执行页面表达式或 IPC。探测进程正常退出、普通 QQ 已恢复，配置指纹与严格签名验证保持。最初六项夹具测试验证目标/端点限制、正文上限、固定能力读取和输出脱敏。后续静态解码确认 QQ preload 将 `ipcRenderer` 直接暴露到主世界，因此补上了直接 `send/invoke/on`、`ipcImpl` 和 `waitForWindowTypeEnsure` 的类型检测；新增夹具确认没有 `electron` 命名空间时仍可检测且不调用方法或读取页面。随后在截图贴图编辑器的静态路径中找到独立的 `window.ipc` 通道，现补上该对象和 `send/invoke/on` 的类型检测，避免只有此对象时漏报能力；提供者、主端准入及窗口开发工具配置仍未知。新增夹具不调用桥接方法或读取页面，完整 Node suite 当前 33 项通过，不能当作真实 QQ 兼容性证明。
 
 进一步静态追踪在 QQNT 的命令行参数处理路径中发现：参数遍历结束后会删除 `inspect` 和 `remote-debugging-port` 键，和真实探测结果一致。这不解释此前 `--inspect-brk` 的具体退出原因，也不证明所有程序内部调试入口均不存在。QQ 当前顶层菜单及应用/帮助菜单中也未观察到开发者工具入口，未读取聊天窗口。完整可复现地址、二进制指纹、preload/RPC 标识和观察限制见 [渲染端 IPC 与调试入口证据](RENDERER_IPC.md)。
 
