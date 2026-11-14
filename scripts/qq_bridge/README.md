@@ -2,7 +2,7 @@
 
 2026-11-14 已在 macOS App Store QQ **7.0.1-52892** 的独立副本中取得真实 SmartPtt 文字，并通过 VoicePort 的生产 `execute_owned` 插件宿主返回。两段不同合成语音分别识别为「今天下午三点开会，请带上笔记本。」和「明天上午九点出发，记得检查天气。」；后者通过通用 WAV 编码器和正式 JSONL 适配器执行，宿主约 0.54 秒返回，进程组已释放。没有使用麦克风、已有语音消息、替代 ASR 或预设识别结果。
 
-这是当前版本的本机开发接入，未随 VoicePort App 打包。需要独立运行带桥接的 QQ 副本，并让 QQ 正常登录、联网；QQ 自己保管认证状态。原版 `/Applications/QQ.app` 保持原文件和签名。其他 QQ 版本、机器、真实麦克风和自动输入效果需各自验证。下方旧诊断记录保留当时的离线权限和失败事实，不代表最新状态。
+这是当前版本的本机开发接入，未随 VoicePort App 打包。需要独立运行带桥接的 QQ 副本，并让 QQ 正常登录、联网；QQ 自己保管认证状态。原版 `/Applications/QQ.app` 保持原文件和签名。其他 QQ 版本、机器、真实麦克风和自动输入效果需各自验证。当前单片长音频有已知失败：18.33 秒 / 67343 字节返回原生错误码 8，27.5 秒 / 101164 字节也失败；目前应视为短句开发接入，长音频分片尚待修复和验收。下方旧诊断记录保留当时的离线权限和失败事实，不代表最新状态。
 
 ## 准备和运行
 
@@ -48,7 +48,7 @@ Socket 路径取自生成的 `client-config.json`；不要使用示例占位路�
 
 ## 任务和数据边界
 
-`adapter.cjs` 接收 JSONL v1 的 PCM16 / mono / 16 kHz WAV，最多 180 秒。`codec.cjs` 验证 WAV 后加载固定编码器，将 SILK 字节通过 0700 目录中的 0600 Unix socket 发送给 `bridge.cjs`；客户端不能传任意文件路径。桥接一次处理一个任务，使用随机任务 ID，只有原生成功完成回调才能返回 `final`。识别正文只发给请求方，生产桥接不持久保存转写正文；临时 SILK 在结束后删除。
+`adapter.cjs` 接收 JSONL v1 的 PCM16 / mono / 16 kHz WAV，本地校验上限为 180 秒；这不代表当前单片长音频可用，上述长音频原生失败仍待解决。`codec.cjs` 验证 WAV 后加载固定编码器，将 SILK 字节通过 0700 目录中的 0600 Unix socket 发送给 `bridge.cjs`；客户端不能传任意文件路径。桥接一次处理一个任务，使用随机任务 ID，只有原生成功完成回调才能返回 `final`。识别正文只发给请求方，生产桥接不持久保存转写正文；临时 SILK 在结束后删除。
 
 转写密钥和管理密钥分开；转写客户端不能登录或停止 QQ。状态和 native attempt 日志只含计数、任务 ID、字节数和时间，不含音频、账号、认证值或文字。提交前的 attempt 必须落盘成功才允许调用原生任务。
 
@@ -61,7 +61,7 @@ node --test Tests/QQBridgeTests/*.test.cjs
 python3 -I -m unittest discover -s Tests/QQBridgeTests -p 'test_*.py'
 ```
 
-2026-11-14 离线检查：76 项 Node、13 项 Python 通过。覆盖 WAV/SILK、凭据和管理权限隔离、任务 ID、异常、收尾重入、断连后持有、并发拒绝、超时和临时文件/监听清理。
+2026-11-14 离线检查：76 项 Node、14 项 Python 通过。覆盖 WAV/SILK、凭据和管理权限隔离、任务 ID、异常、收尾重入、断连后持有、并发拒绝、超时和临时文件/监听清理。
 
 同日实际运行中的 VoicePort 已导入并选用「QQ 语音输入」，配对密钥通过来源事务写入 Keychain；App 的一秒静音测试得到原生空结果并进入 `ready`。首次放在 Desktop 项目目录的 App 测试在原生上传前失败，迁入 Application Support 并正常重启同一 App 后通过，未修改系统权限。另一次真实取消测试在原生提交后向适配器发 SIGTERM：子进程返回 `cancelled`、stderr 为空，桥接最终 `ready=true/busy=false/cleanup_failed=false`，abandoned 增加 1，临时任务目录为 0。原生任务本身仍正常完成，未声称服务端被硬取消。`plugin_process::tests::qq_smartptt_live_owned_process` 是默认忽略的真实宿主探针：仅在已经获得音频上传许可、桥接真实就绪且提供自有合成 WAV 时运行。它使用 `VOICEPORT_QQ_PROBE_MANIFEST`、`VOICEPORT_QQ_PROBE_CONFIG`、`VOICEPORT_QQ_PROBE_WAV`、`VOICEPORT_QQ_PROBE_RESULT`，可用 `VOICEPORT_QQ_PROBE_EXPECTED` 检查识别文字；不会启动 QQ、录音或自动登录，attempt/result 必须使用新文件。
 

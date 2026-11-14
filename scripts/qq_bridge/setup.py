@@ -22,6 +22,7 @@ import time
 import urllib.request
 
 HERE = Path(__file__).resolve().parent
+QQ_APP = Path('/Applications/QQ.app')
 PACKAGE_URL = 'https://registry.npmjs.org/silk-wasm/-/silk-wasm-3.7.1.tgz'
 INTEGRITY = 'mXPwLRtZxrYV3TZx41jMAeKc80wvmyrcXIcs8HctFxK15Ahz2OJQENYhNgEPeCEOdI6Mbx1NxQsqxzwc3DKerw=='
 ORIGINAL_FILES = {
@@ -105,7 +106,8 @@ def prepare(args):
     output = args.output
     require(sys.platform == 'darwin' and not output.exists(), 'prepare_requires_new_macos_directory')
     source = args.qq_app.resolve(strict=True)
-    require(source == Path('/Applications/QQ.app'), 'unsupported_qq_installation')
+    require(source == QQ_APP, 'unsupported_qq_installation')
+    require(not output.resolve().is_relative_to(source), 'output_must_be_outside_qq_installation')
     require(fingerprint(source) == ORIGINAL_FILES, 'unsupported_qq_version_expected_7_0_1_52892')
     signature(source)
     original_package = json.loads((source / 'Contents/Resources/app/package.json').read_bytes())

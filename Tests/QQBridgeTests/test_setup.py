@@ -33,6 +33,30 @@ def archive(extra=None):
 
 
 class SetupTests(unittest.TestCase):
+    def test_prepare_rejects_output_inside_original_before_any_side_effect(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root).resolve() / 'QQ.app'
+            source.mkdir()
+            marker = source / 'original-file'
+            marker.write_bytes(b'original signed installation fixture')
+            for relative in ('prepared', 'Contents/Resources/app/prepared'):
+                output = source / relative
+                with self.subTest(output=relative), patch.object(setup, 'QQ_APP', source), \
+                     patch.object(setup.sys, 'platform', 'darwin'), \
+                     patch.object(setup, 'fingerprint') as fingerprint, \
+                     patch.object(setup, 'signature') as signature, \
+                     patch.object(setup.subprocess, 'run') as run, \
+                     patch.object(setup, 'write_json') as write:
+                    with self.assertRaisesRegex(RuntimeError, 'output_must_be_outside_qq_installation'):
+                        setup.prepare(SimpleNamespace(output=output, qq_app=source))
+                    fingerprint.assert_not_called()
+                    signature.assert_not_called()
+                    run.assert_not_called()
+                    write.assert_not_called()
+                self.assertFalse(output.exists())
+                self.assertEqual(list(source.iterdir()), [marker])
+                self.assertEqual(marker.read_bytes(), b'original signed installation fixture')
+
     def test_encoder_rejects_unverified_archive_before_writing(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)

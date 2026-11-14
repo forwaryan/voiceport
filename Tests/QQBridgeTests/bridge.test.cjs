@@ -2,7 +2,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
 const { EventEmitter, once } = require('node:events');
@@ -12,7 +11,8 @@ const adminToken = 'b'.repeat(64);
 const silk = Buffer.concat([Buffer.from('\x02#!SILK_V3'), Buffer.from([2, 0, 17, 18])]);
 const request = () => ({ op: 'transcribe', token, silk_base64: silk.toString('base64') });
 async function fixture(t, options = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpqq-test-'));
+  // verify.py nests TMPDIR; Unix socket paths must still fit the platform limit.
+  const root = fs.mkdtempSync('/tmp/vpqq-test-');
   fs.chmodSync(root, 0o700);
   const tasks = path.join(root, 'tasks'); fs.mkdirSync(tasks, { mode: 0o700 });
   const socketPath = path.join(root, 'bridge.sock');
