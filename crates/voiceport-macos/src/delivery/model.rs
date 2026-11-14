@@ -458,6 +458,24 @@ impl<T: Target> OwnedSpan<T> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyboardPacing {
+    Chunked,
+    Scalar,
+}
+
+impl KeyboardPacing {
+    fn chunks(self, text: &str) -> Vec<&str> {
+        match self {
+            Self::Chunked => unicode_chunks(text),
+            Self::Scalar => text
+                .char_indices()
+                .map(|(byte, ch)| &text[byte..byte + ch.len_utf8()])
+                .collect(),
+        }
+    }
+}
+
 /// Final-only, bounded character input. Every chunk must be acknowledged before
 /// the next one is submitted; uncertain input is never repeated or undone.
 pub struct ChunkedInput<T: Target> {
@@ -468,10 +486,15 @@ pub struct ChunkedInput<T: Target> {
     submitted: bool,
     ended: bool,
     failure: Option<Failure>,
+    pacing: KeyboardPacing,
 }
 
 impl<T: Target> ChunkedInput<T> {
-    pub fn capture(mut target: T) -> Result<Self, Failure> {
+    pub fn capture(target: T) -> Result<Self, Failure> {
+        Self::capture_with_pacing(target, KeyboardPacing::Chunked)
+    }
+
+    pub fn capture_with_pacing(mut target: T, pacing: KeyboardPacing) -> Result<Self, Failure> {
         let expected = target.read()?;
         if expected.text.encode_utf16().count() > MAX_FIELD {
             return Err(Failure::Content);
@@ -485,6 +508,7 @@ impl<T: Target> ChunkedInput<T> {
             submitted: false,
             ended: false,
             failure: None,
+            pacing,
         })
     }
 
@@ -534,7 +558,7 @@ impl<T: Target> ChunkedInput<T> {
                 return Err(Failure::Content);
             }
             self.queue
-                .extend(unicode_chunks(&text).into_iter().map(str::to_owned));
+                .extend(self.pacing.chunks(&text).into_iter().map(str::to_owned));
             self.submitted = true;
             self.poll_inner().map(|_| ())
         })();

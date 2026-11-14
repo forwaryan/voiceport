@@ -5,8 +5,8 @@ use std::{cell::RefCell, rc::Rc};
 use voiceport_macos::delivery::{
     Delivery,
     model::{
-        ChunkedInput, EVENT_TAG, Failure, OwnedSpan, Snapshot, Target, Terminal, TerminalTarget,
-        TextRange, automatic, byte_range, invalidates_input, unicode_chunks,
+        ChunkedInput, EVENT_TAG, Failure, KeyboardPacing, OwnedSpan, Snapshot, Target, Terminal,
+        TerminalTarget, TextRange, automatic, byte_range, invalidates_input, unicode_chunks,
     },
 };
 
@@ -302,6 +302,33 @@ fn final_keyboard_input_waits_for_each_chunk_and_does_not_repeat_submission() {
     }
     assert_eq!(target.0.borrow().snapshot.text, format!("左{text}|右"));
     assert_eq!(target.0.borrow().writes, unicode_chunks(&text).len());
+}
+
+#[test]
+fn scalar_keyboard_pacing_waits_for_chinese_surrogates_and_combining_characters() {
+    let target = DeferredTarget::new();
+    let mut input =
+        ChunkedInput::capture_with_pacing(target.clone(), KeyboardPacing::Scalar).unwrap();
+    let text = "中🙂e\u{301}";
+    input.submit(text).unwrap();
+    let mut accepted = String::new();
+    for (index, ch) in text.chars().enumerate() {
+        accepted.push(ch);
+        assert_eq!(target.0.borrow().writes, index + 1);
+        assert_eq!(
+            target.0.borrow().submitted.as_ref().unwrap().text,
+            format!("左{accepted}|右")
+        );
+        assert!(!input.poll().unwrap());
+        assert_eq!(target.0.borrow().writes, index + 1);
+        target.settle();
+        input.poll().unwrap();
+    }
+    assert!(!input.has_pending());
+    assert_eq!(
+        target.0.borrow().snapshot,
+        state(&format!("左{text}|右"), 1 + text.encode_utf16().count(), 0)
+    );
 }
 
 #[test]

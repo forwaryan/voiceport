@@ -1,5 +1,5 @@
 //! Native boundary. Nothing here captures a target until `capture` is called.
-use super::model::{self, Failure, Snapshot, Target, TerminalTarget, TextRange};
+use super::model::{self, Failure, KeyboardPacing, Snapshot, Target, TerminalTarget, TextRange};
 use block2::RcBlock;
 use core_foundation::{
     base::{CFEqual, CFGetTypeID, CFRange, CFRelease, CFTypeID, CFTypeRef, TCFType},
@@ -292,8 +292,38 @@ pub(super) fn self_test_fixture_focused() -> bool {
 
 pub(super) enum Captured {
     Ordinary(Box<dyn Target>),
-    Keyboard(Box<dyn Target>),
+    Keyboard(Box<dyn Target>, KeyboardPacing),
     Terminal(Box<dyn TerminalTarget>),
+}
+
+fn keyboard_pacing(bundle: &str, role: &str, terminal: bool) -> Option<KeyboardPacing> {
+    if terminal {
+        return None;
+    }
+    match (bundle, role) {
+        (CODEX, _) => Some(KeyboardPacing::Chunked),
+        (ORCA, "AXTextArea") => Some(KeyboardPacing::Scalar),
+        _ => None,
+    }
+}
+
+fn normalize_composer_placeholder(mut snapshot: Snapshot, placeholder: &str) -> Snapshot {
+    // Orca's ProseMirror placeholder is CSS generated content: Chromium exposes
+    // it as AXValue while the actual editable document and caret are empty.
+    // Never select/delete that apparent text. Only normalize the empty caret;
+    // subsequent writes are ordinary key events and must still be acknowledged.
+    let visible = snapshot.text.strip_suffix('\n').unwrap_or(&snapshot.text);
+    if !placeholder.is_empty()
+        && visible == placeholder
+        && snapshot.selection
+            == (TextRange {
+                location: 0,
+                length: 0,
+            })
+    {
+        snapshot.text.clear();
+    }
+    snapshot
 }
 
 pub(super) fn capture(
@@ -316,15 +346,17 @@ pub(super) fn capture(
     let element = focused(pid)?;
     // An unreadable Orca description cannot safely distinguish an editor from
     // its hidden terminal transport, so never fall back to document writes.
-    let terminal = if bundle == ORCA {
-        attribute(element.0, "AXDescription")
-            .ok()
-            .and_then(|v| v.string(1_000))
-            .ok_or(Failure::Role)?
-            == "Terminal input"
+    let description = if bundle == ORCA {
+        Some(
+            attribute(element.0, "AXDescription")
+                .ok()
+                .and_then(|v| v.string(1_000))
+                .ok_or(Failure::Role)?,
+        )
     } else {
-        false
+        None
     };
+    let terminal = description.as_deref() == Some("Terminal input");
     let mut target = NativeTarget {
         pid,
         bundle,
@@ -338,24 +370,42 @@ pub(super) fn capture(
     if terminal {
         target.current()?;
         Ok(Captured::Terminal(Box::new(target)))
-    } else if target.bundle == CODEX {
-        Ok(Captured::Keyboard(Box::new(KeyboardTarget {
-            inner: target,
-            pending: None,
-        })))
     } else {
-        Ok(Captured::Ordinary(Box::new(target)))
+        let role = attribute(target.element.0, "AXRole")
+            .ok()
+            .and_then(|v| v.string(100))
+            .ok_or(Failure::Role)?;
+        match keyboard_pacing(&target.bundle, &role, false) {
+            Some(pacing) => Ok(Captured::Keyboard(
+                Box::new(KeyboardTarget {
+                    inner: target,
+                    pending: None,
+                    placeholder: if pacing == KeyboardPacing::Scalar {
+                        description
+                    } else {
+                        None
+                    },
+                }),
+                pacing,
+            )),
+            None => Ok(Captured::Ordinary(Box::new(target))),
+        }
     }
 }
 
 struct KeyboardTarget {
     inner: NativeTarget,
     pending: Option<PendingWrite>,
+    placeholder: Option<String>,
 }
 
 impl Target for KeyboardTarget {
     fn read(&mut self) -> Result<Snapshot, Failure> {
-        self.inner.read()
+        let snapshot = self.inner.read()?;
+        Ok(match self.placeholder.as_deref() {
+            Some(placeholder) => normalize_composer_placeholder(snapshot, placeholder),
+            None => snapshot,
+        })
     }
 
     fn replace(
@@ -871,6 +921,52 @@ mod tests {
             text: text.into(),
             selection: TextRange { location, length },
         }
+    }
+
+    #[test]
+    fn keyboard_compatibility_keeps_codex_and_orca_terminal_routes_separate() {
+        assert_eq!(
+            keyboard_pacing(CODEX, "AXTextArea", false),
+            Some(KeyboardPacing::Chunked)
+        );
+        assert_eq!(
+            keyboard_pacing(ORCA, "AXTextArea", false),
+            Some(KeyboardPacing::Scalar)
+        );
+        assert_eq!(keyboard_pacing(ORCA, "AXTextArea", true), None);
+        assert_eq!(keyboard_pacing(ORCA, "AXTextField", false), None);
+        assert_eq!(
+            keyboard_pacing("com.tencent.xinWeChat", "AXTextArea", false),
+            None
+        );
+        assert_eq!(keyboard_pacing("test.editor", "AXTextArea", false), None);
+    }
+
+    #[test]
+    fn composer_placeholder_is_empty_only_at_an_empty_caret() {
+        let placeholder = "随心输入，@ 引用文件，/ 使用命令";
+        for value in [placeholder.to_owned(), format!("{placeholder}\n")] {
+            assert_eq!(
+                normalize_composer_placeholder(snapshot(&value, 0, 0), placeholder),
+                snapshot("", 0, 0)
+            );
+        }
+        for original in [
+            snapshot(placeholder, 1, 0),
+            snapshot(placeholder, 0, 2),
+            snapshot(&format!("{placeholder}正文"), 0, 0),
+            snapshot(&format!("正文{placeholder}"), 0, 0),
+            snapshot("正文", 0, 0),
+        ] {
+            assert_eq!(
+                normalize_composer_placeholder(original.clone(), placeholder),
+                original
+            );
+        }
+        assert_eq!(
+            normalize_composer_placeholder(snapshot("\n", 0, 0), ""),
+            snapshot("\n", 0, 0)
+        );
     }
 
     #[test]

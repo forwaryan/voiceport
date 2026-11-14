@@ -71,9 +71,9 @@ impl Delivery {
                 self.method = Some("accessibility");
                 OwnedSpan::capture(target).map(Session::Ordinary)
             }
-            native::Captured::Keyboard(target) => {
+            native::Captured::Keyboard(target, pacing) => {
                 self.method = Some("keyboard_final");
-                ChunkedInput::capture(target).map(Session::Keyboard)
+                ChunkedInput::capture_with_pacing(target, pacing).map(Session::Keyboard)
             }
             native::Captured::Terminal(target) => {
                 self.method = Some("terminal");
