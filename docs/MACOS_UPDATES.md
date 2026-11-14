@@ -36,7 +36,7 @@ open "$HOME/Applications/VoicePort.app"
 "$HOME/Applications/VoicePort.app/Contents/MacOS/voiceport" --json app status
 ```
 
-安装器验证 bundle 身份和完整签名，在目标目录旁暂存完整新包。默认拒绝替换仍运行的 App；`--quit-idle` 只允许正常退出已确认空闲、无待处理任务的实例，不强制杀进程。旧包保存到同目录的 `.voiceport-backup-*/VoicePort.app`，替换失败则尝试恢复旧包。安装不会自动启动、录音、上传、清空听写或申请权限。
+安装器验证 bundle 身份和完整签名，在目标目录旁暂存完整新包。默认拒绝替换仍运行的 App；`--quit-idle` 只允许正常退出 `state=idle` 且无待处理任务的实例，不强制杀进程。已完成的文字或失败录音可能仍保留在内存中；`ready`、`failed` 或未知状态均中止安装，先保存结果、处理录音，再由用户明确退出。旧包保存到同目录的 `.voiceport-backup-*/VoicePort.app`，替换失败则尝试恢复旧包。安装不会自动启动、录音、上传、清空听写或申请权限。
 
 升级已有安装时，新包必须满足旧包的 DR；身份变化默认中止。首次从 ad-hoc 迁移到固定证书，或明确接受一次需要重新授权的本地 ad-hoc 更新时，可以显式传入 `--allow-signing-change`。它只允许这次文件替换，不授予任何系统权限，也不修改系统信任。后续正常更新应使用同一证书并省略该参数。
 

@@ -68,6 +68,8 @@ def stop_idle(cli, allow_quit):
         return
     if current['busy'] or current['pending'] or current['operation'] is not None or current.get('discovering'):
         raise ValueError('VoicePort has unfinished work; finish it before installing')
+    if current.get('state') != 'idle':
+        raise ValueError('VoicePort may retain a result or failed recording; save it and quit the App before installing')
     bundle_info(real_path(current['bundle_path']))
     if not allow_quit:
         raise ValueError('VoicePort is running; quit it or use --quit-idle')

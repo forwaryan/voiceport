@@ -33,6 +33,29 @@ class InstallTests(unittest.TestCase):
                 install_app.stop_idle(pathlib.Path('cli'), True)
             run.assert_not_called()
 
+    def test_retained_results_and_unknown_states_never_quit(self):
+        for state in ('failed', 'ready', 'unrecognized', None):
+            with self.subTest(state=state):
+                current = {'pid': 42, 'busy': False, 'pending': False, 'operation': None, 'state': state}
+                with patch.object(install_app, 'running_status', return_value=current), \
+                     patch.object(install_app.subprocess, 'check_output', return_value='42 /test/Contents/MacOS/voiceport-app\n'), \
+                     patch.object(install_app.subprocess, 'run') as run:
+                    with self.assertRaisesRegex(ValueError, 'may retain a result or failed recording'):
+                        install_app.stop_idle(pathlib.Path('cli'), True)
+                    run.assert_not_called()
+
+    def test_confirmed_idle_app_can_quit_gracefully(self):
+        current = {'pid': 42, 'busy': False, 'pending': False, 'operation': None,
+                   'state': 'idle', 'bundle_path': '/test/VoicePort.app'}
+        response = subprocess.CompletedProcess([], 0, stdout=json.dumps({'data': {'quitting': True}}))
+        with patch.object(install_app, 'running_status', return_value=current), \
+             patch.object(install_app.subprocess, 'check_output', return_value='42 /test/Contents/MacOS/voiceport-app\n'), \
+             patch.object(install_app, 'bundle_info'), \
+             patch.object(install_app.subprocess, 'run', return_value=response) as run, \
+             patch.object(install_app.os, 'kill', side_effect=ProcessLookupError):
+            install_app.stop_idle(pathlib.Path('cli'), True)
+            self.assertEqual(run.call_args.args[0], ['cli', '--json', 'app', 'quit'])
+
     def test_unobserved_process_blocks_install(self):
         with patch.object(install_app, 'running_status', return_value=None), \
              patch.object(install_app.subprocess, 'check_output', return_value='42 /test/Contents/MacOS/voiceport-app\n'):
