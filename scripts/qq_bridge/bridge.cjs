@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
 const crypto = require('node:crypto');
-const { inspectStreamChunks } = require('./stream_framing.cjs');
+const { inspectStreamChunks, splitStream } = require('./stream_framing.cjs');
 const { buildSmartPttRequest, createTranscriptState } = require('./smartptt_protocol.cjs');
 const MAX_REQUEST = 4000000;
 const MAX_SILK = 2 * 1024 * 1024;
@@ -53,8 +53,10 @@ function createBridge({ socketPath, token, adminToken, dataDirectory, onControl,
       try { Reflect.apply(task.service.removeKernelBdhUploadListener, task.service, [task.listener]); }
       catch { cleanupFailed = true; }
     }
-    try { fs.unlinkSync(task.file); fs.rmdirSync(task.directory); }
-    catch { cleanupFailed = true; }
+    for (const file of task.files) {
+      try { fs.unlinkSync(file); } catch { cleanupFailed = true; }
+    }
+    try { fs.rmdirSync(task.directory); } catch { cleanupFailed = true; }
   }
   function finish(task, result) {
     if (task.closed) return;
@@ -70,6 +72,7 @@ function createBridge({ socketPath, token, adminToken, dataDirectory, onControl,
     if (cleanupFailed) return reject(socket, 'qq_cleanup_failed');
     if (current) return reject(socket, 'qq_busy');
     let data;
+    let chunks;
     try {
       const encoded = request.silk_base64;
       if (typeof encoded !== 'string' || encoded.length > Math.ceil(MAX_SILK / 3) * 4 ||
@@ -78,25 +81,33 @@ function createBridge({ socketPath, token, adminToken, dataDirectory, onControl,
       if (data.length > MAX_SILK || data.toString('base64') !== encoded) throw new Error();
       const info = inspectStreamChunks([data]);
       if (info.frame_count > 180 * 50) throw new Error();
+      chunks = splitStream(data);
     } catch { return reject(socket, 'invalid_silk'); }
+    const files = [];
     let taskDirectory;
-    let file;
     try {
       taskDirectory = fs.mkdtempSync(path.join(dataDirectory, 'task-'));
       fs.chmodSync(taskDirectory, 0o700);
-      file = path.join(taskDirectory, 'input.silk');
-      fs.writeFileSync(file, data, { flag: 'wx', mode: 0o600 });
+      for (const [index, chunk] of chunks.entries()) {
+        const file = path.join(taskDirectory, `chunk_${String(index).padStart(4, '0')}.silk`);
+        files.push(file);
+        fs.writeFileSync(file, chunk, { flag: 'wx', mode: 0o600 });
+      }
     } catch {
       if (taskDirectory) {
-        try { if (file && fs.existsSync(file)) fs.unlinkSync(file); fs.rmdirSync(taskDirectory); } catch { cleanupFailed = true; }
+        for (const file of files) {
+          try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch { cleanupFailed = true; }
+        }
+        try { fs.rmdirSync(taskDirectory); } catch { cleanupFailed = true; }
       }
       publish();
       return reject(socket, 'qq_audio_storage_failed');
     }
     const id = crypto.randomBytes(15).toString('hex');
     const transcript = createTranscriptState(id);
-    const task = { socket, service, directory: taskDirectory, file, listener: null,
-      listenerAttempted: false, timer: null, closed: false, abandoned: false, responseBytes: 0 };
+    const task = { socket, service, directory: taskDirectory, files, listener: null,
+      listenerAttempted: false, timer: null, closed: false, abandoned: false, responseBytes: 0,
+      uploadAttempted: false, callFailed: false };
     current = task;
     task.listener = {
       onSmartPttUpdateText(callbackId, text, segFinished) {
@@ -116,6 +127,7 @@ function createBridge({ socketPath, token, adminToken, dataDirectory, onControl,
           const value = transcript.finish(callbackId, code, message);
           if (value.status === 'failed') return finish(task, { type: 'error', code: 'qq_smartptt_error', native_error_code: value.errorCode });
           if (value.status !== 'finished') return;
+          if (task.callFailed) return finish(task, { type: 'error', code: 'qq_smartptt_call_failed' });
           const result = { type: 'final', text: value.text };
           if (task.responseBytes + Buffer.byteLength(JSON.stringify(result)) + 1 > MAX_RESPONSE) {
             return finish(task, { type: 'error', code: 'qq_response_limit' });
@@ -131,16 +143,35 @@ function createBridge({ socketPath, token, adminToken, dataDirectory, onControl,
     });
     task.timer = setTimeout(() => finish(task, { type: 'error', code: 'qq_smartptt_timeout' }), timeoutMs);
     try {
-      beforeSubmit({ task_id: id, silk_bytes: data.length });
+      let offset = 0;
+      const requests = chunks.map((chunk, index) => {
+        const request = buildSmartPttRequest(id, { filePath: files[index], chunkIndex: index,
+          chunkOffsetBytes: offset, isLast: Number(index === chunks.length - 1) });
+        // Persist every slice intent before registering or calling native code.
+        // A later journal failure therefore cannot leave a half-submitted task.
+        beforeSubmit({ task_id: id, silk_bytes: chunk.length, slice_index: index,
+          voice_offset: offset, is_end: index === chunks.length - 1, slice_count: chunks.length });
+        offset += chunk.length;
+        return request;
+      });
       task.listenerAttempted = true;
       Reflect.apply(task.service.addKernelBdhUploadListener, task.service, [task.listener]);
       if (task.closed) return; // A native listener may synchronously finish the task.
-      const nativeRequest = buildSmartPttRequest(id, { filePath: file, chunkIndex: 0, chunkOffsetBytes: 0, isLast: 1 });
       counts.submitted++;
-      publish(); // Journal the attempt before calling the native upload.
-      Reflect.apply(task.service.uploadSmartPttSlice, task.service, [nativeRequest.taskId, nativeRequest.sliceParam]);
+      publish();
+      for (const request of requests) {
+        if (task.closed) break;
+        task.uploadAttempted = true;
+        Reflect.apply(task.service.uploadSmartPttSlice, task.service, [request.taskId, request.sliceParam]);
+      }
       if (!task.closed) send(socket, { type: 'accepted' });
-    } catch { finish(task, { type: 'error', code: 'qq_smartptt_call_failed' }); }
+    } catch {
+      if (task.uploadAttempted && !task.closed) {
+        // A thrown native call may already have submitted work. Keep the files
+        // and listener until its completion/deadline instead of dropping custody.
+        task.callFailed = true;
+      } else finish(task, { type: 'error', code: 'qq_smartptt_call_failed' });
+    }
   }
   const server = net.createServer(socket => {
     connections.add(socket);
