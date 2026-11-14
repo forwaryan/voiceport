@@ -60,4 +60,29 @@ function inspectStreamChunks(chunks) {
   };
 }
 
-module.exports = { inspectStreamChunks };
+// Keep each native upload small and frame-aligned. Only the first slice owns
+// the stream header; continuation offsets count all preceding encoded bytes.
+function splitStream(data) {
+  inspectStreamChunks([data]);
+  const chunks = [];
+  let start = 0;
+  let cursor = HEADER.length;
+  let frames = 0;
+  while (cursor < data.length) {
+    const next = cursor + 2 + data.readInt16LE(cursor);
+    if (frames && (frames === 200 || next - start > 16384)) {
+      chunks.push(data.subarray(start, cursor));
+      start = cursor;
+      frames = 0;
+    }
+    if (next - start > 16384) {
+      throw new RangeError('frame_exceeds_slice_budget');
+    }
+    cursor = next;
+    frames++;
+  }
+  chunks.push(data.subarray(start));
+  return chunks;
+}
+
+module.exports = { inspectStreamChunks, splitStream };

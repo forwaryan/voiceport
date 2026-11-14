@@ -77,6 +77,65 @@ test('native receiver, exact arguments, task isolation, one final and owned clea
   assert.equal(f.native.removed, 1); assert.deepEqual(fs.readdirSync(f.tasks), []);
   assert.deepEqual(f.bridge.snapshot(), { ready: true, busy: false, cleanup_failed: false, submitted: 1, completed: 1, failed: 0, abandoned: 0 });
 });
+test('long input uses ordered frame-aligned slices with encoded offsets and one final', async t => {
+  const intents = [];
+  const f = await fixture(t, { beforeSubmit(value) { intents.push(value); } });
+  const frame = Buffer.concat([Buffer.from([100, 0]), Buffer.alloc(100, 17)]);
+  const data = Buffer.concat([Buffer.from('\x02#!SILK_V3'), ...Array(450).fill(frame)]);
+  const c = await client(f.socketPath, { ...request(), silk_base64: data.toString('base64') });
+  await c.next('accepted');
+  assert.ok(f.native.calls.length > 1);
+  const chunks = f.native.calls.map(({ slice }) => fs.readFileSync(slice.filePath));
+  assert.deepEqual(Buffer.concat(chunks), data);
+  let offset = 0;
+  for (const [index, { id, slice }] of f.native.calls.entries()) {
+    assert.equal(id, f.native.calls[0].id);
+    assert.equal(slice.sliceIndex, index);
+    assert.equal(slice.voiceOffset, offset);
+    assert.equal(slice.isEnd, index === chunks.length - 1);
+    assert.equal(chunks[index].length <= 16384, true);
+    assert.equal(fs.statSync(slice.filePath).mode & 0o777, 0o600);
+    assert.equal(intents[index].voice_offset, offset);
+    offset += chunks[index].length;
+  }
+  const { inspectStreamChunks } = require('../../scripts/qq_bridge/stream_framing.cjs');
+  assert.equal(inspectStreamChunks(chunks).frame_count, 450);
+  assert.equal(f.bridge.snapshot().submitted, 1);
+  const id = f.native.calls[0].id;
+  f.native.listener.onSmartPttUpdateText(id, '完整长语音', true);
+  f.native.listener.onSmartPttTranslateFinished(id, 0, '');
+  assert.deepEqual((await c.done).filter(x => x.type === 'final'), [{ type: 'final', text: '完整长语音' }]);
+  assert.deepEqual(fs.readdirSync(f.tasks), []);
+});
+test('later slice journal failure prevents every upload and cleans every file', async t => {
+  const f = await fixture(t, { beforeSubmit(value) { if (value.slice_index === 1) throw new Error('disk full'); } });
+  const data = Buffer.concat([Buffer.from('\x02#!SILK_V3'), ...Array(201).fill(Buffer.from([1, 0, 17]))]);
+  const c = await client(f.socketPath, { ...request(), silk_base64: data.toString('base64') });
+  assert.equal((await c.done)[0].code, 'qq_smartptt_call_failed');
+  assert.equal(f.native.listener, null);
+  assert.equal(f.native.calls.length, 0);
+  assert.deepEqual(fs.readdirSync(f.tasks), []);
+});
+test('native exception after a slice preserves custody until its native completion', async t => {
+  const f = await fixture(t);
+  f.native.uploadSmartPttSlice = function(id, slice) {
+    this.calls.push({ id, slice });
+    if (slice.sliceIndex === 1) throw new Error('possibly submitted');
+  };
+  const data = Buffer.concat([Buffer.from('\x02#!SILK_V3'), ...Array(401).fill(Buffer.from([1, 0, 17]))]);
+  const c = await client(f.socketPath, { ...request(), silk_base64: data.toString('base64') });
+  // A separate status request is processed only after transcribe returns.
+  const status = await (await client(f.socketPath, { op: 'status', token })).done;
+  assert.equal(status[0].busy, true);
+  assert.equal(f.native.calls.length, 2);
+  assert.equal(fs.readdirSync(f.tasks).length, 1);
+  const id = f.native.calls[0].id;
+  f.native.listener.onSmartPttUpdateText(id, 'unfinished', true);
+  f.native.listener.onSmartPttTranslateFinished(id, 0, '');
+  assert.equal((await c.done).at(-1).code, 'qq_smartptt_call_failed');
+  assert.deepEqual(fs.readdirSync(f.tasks), []);
+  assert.equal(f.native.removed, 1);
+});
 test('not ready and incomplete service never invokes native upload', async t => {
   const f = await fixture(t); f.bridge.setService({ uploadSmartPttSlice() { throw new Error('must not call'); } });
   assert.deepEqual(await (await client(f.socketPath, request())).done, [{ type: 'error', code: 'qq_not_ready' }]);

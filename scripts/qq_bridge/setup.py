@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import secrets
 import shutil
 import signal
@@ -345,7 +346,8 @@ def stop(args, plan, config):
     for directory in tasks.iterdir() if tasks.exists() else []:
         require(directory.name.startswith('task-') and directory.is_dir() and not directory.is_symlink(), 'unexpected_task_storage')
         files = list(directory.iterdir())
-        require(all(item.name == 'input.silk' and item.is_file() and not item.is_symlink() for item in files), 'unexpected_task_file')
+        require(all((item.name == 'input.silk' or re.fullmatch(r'chunk_[0-9]{4}\.silk', item.name))
+                    and item.is_file() and not item.is_symlink() for item in files), 'unexpected_task_file')
         journal(output, 'dead_owned_task_cleanup_attempt', directory=directory.name)
         for item in files:
             item.unlink()
