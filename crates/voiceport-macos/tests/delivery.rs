@@ -5,8 +5,8 @@ use std::{cell::RefCell, rc::Rc};
 use voiceport_macos::delivery::{
     Delivery,
     model::{
-        EVENT_TAG, Failure, OwnedSpan, Snapshot, Target, Terminal, TerminalTarget, TextRange,
-        automatic, byte_range, invalidates_input, unicode_chunks,
+        ChunkedInput, EVENT_TAG, Failure, OwnedSpan, Snapshot, Target, Terminal, TerminalTarget,
+        TextRange, automatic, byte_range, invalidates_input, unicode_chunks,
     },
 };
 
@@ -79,6 +79,287 @@ impl Target for FakeTarget {
         field.writes += 1;
         Ok(())
     }
+}
+
+struct DeferredField {
+    snapshot: Snapshot,
+    before: Option<Snapshot>,
+    submitted: Option<Snapshot>,
+    writes: usize,
+    timed_out: bool,
+    failure: Option<Failure>,
+}
+
+#[derive(Clone)]
+struct DeferredTarget(Rc<RefCell<DeferredField>>);
+
+impl DeferredTarget {
+    fn new() -> Self {
+        Self(Rc::new(RefCell::new(DeferredField {
+            snapshot: state("左|右", 1, 0),
+            before: None,
+            submitted: None,
+            writes: 0,
+            timed_out: false,
+            failure: None,
+        })))
+    }
+    fn settle(&self) {
+        let mut field = self.0.borrow_mut();
+        field.snapshot = field.submitted.clone().expect("submitted write");
+    }
+}
+
+impl Target for DeferredTarget {
+    fn read(&mut self) -> Result<Snapshot, Failure> {
+        let field = self.0.borrow();
+        if let Some(failure) = field.failure {
+            return Err(failure);
+        }
+        Ok(field.snapshot.clone())
+    }
+    fn replace(&mut self, span: TextRange, text: &str, expected: &Snapshot) -> Result<(), Failure> {
+        let mut field = self.0.borrow_mut();
+        assert!(
+            field.submitted.is_none(),
+            "must confirm before another write"
+        );
+        if field.snapshot != *expected {
+            return Err(Failure::Ownership);
+        }
+        let mut next = expected.clone();
+        let bytes = byte_range(&next.text, span).ok_or(Failure::Selection)?;
+        next.text.replace_range(bytes, text);
+        next.selection = range(span.location + text.encode_utf16().count(), 0);
+        field.before = Some(expected.clone());
+        field.submitted = Some(next);
+        field.writes += 1;
+        Ok(())
+    }
+    fn confirm(&mut self, expected: &Snapshot) -> Result<bool, Failure> {
+        let snapshot = self.read()?;
+        let mut field = self.0.borrow_mut();
+        if snapshot == *expected {
+            field.submitted = None;
+            field.before = None;
+            Ok(true)
+        } else if field.before.as_ref() != Some(&snapshot) {
+            Err(Failure::Ownership)
+        } else if field.timed_out {
+            Err(Failure::ReadbackTimeout)
+        } else {
+            Ok(false)
+        }
+    }
+    fn abandon(&mut self) {
+        let mut field = self.0.borrow_mut();
+        field.submitted = None;
+        field.before = None;
+    }
+}
+
+#[test]
+fn delayed_readback_confirms_once_and_coalesces_preview_into_final() {
+    let target = DeferredTarget::new();
+    // Exercise Box forwarding too: production holds a boxed native target.
+    let mut span = OwnedSpan::capture(Box::new(target.clone()) as Box<dyn Target>).unwrap();
+    span.update("预览", false).unwrap();
+    span.update("过时预览", false).unwrap();
+    span.update("最终🙂", true).unwrap();
+    assert!(span.has_pending());
+    assert_eq!(target.0.borrow().writes, 1);
+    for _ in 0..3 {
+        assert!(!span.poll().unwrap());
+    }
+    assert_eq!(target.0.borrow().writes, 1);
+    target.settle();
+    assert!(!span.poll().unwrap());
+    assert_eq!(target.0.borrow().writes, 2);
+    target.settle();
+    assert!(span.poll().unwrap());
+    assert!(!span.has_pending());
+    assert_eq!(target.0.borrow().snapshot, state("左最终🙂|右", 5, 0));
+}
+
+#[test]
+fn delayed_readback_does_not_accept_real_edits_or_later_recovery() {
+    for failure in [
+        None,
+        Some(Failure::FocusApplicationChanged),
+        Some(Failure::UserInput),
+        Some(Failure::Accessibility),
+    ] {
+        let target = DeferredTarget::new();
+        let mut span = OwnedSpan::capture(target.clone()).unwrap();
+        span.update("预览", false).unwrap();
+        span.update("最终", true).unwrap();
+        let expected_failure = failure.unwrap_or(Failure::Ownership);
+        if let Some(failure) = failure {
+            target.0.borrow_mut().failure = Some(failure);
+        } else {
+            target.0.borrow_mut().snapshot = state("用户修改", 4, 0);
+        }
+        assert_eq!(span.poll(), Err(expected_failure));
+        target.0.borrow_mut().failure = None;
+        assert!(!span.has_pending());
+        assert_eq!(span.update("不应重发", true), Err(expected_failure));
+        assert_eq!(target.0.borrow().writes, 1);
+    }
+}
+
+#[test]
+fn delayed_readback_timeout_does_not_retry_an_uncertain_write() {
+    let target = DeferredTarget::new();
+    let mut span = OwnedSpan::capture(target.clone()).unwrap();
+    span.update("结果", true).unwrap();
+    target.0.borrow_mut().timed_out = true;
+    assert_eq!(span.poll(), Err(Failure::ReadbackTimeout));
+    assert!(!span.has_pending());
+    assert_eq!(span.update("结果", true), Err(Failure::ReadbackTimeout));
+    assert_eq!(target.0.borrow().writes, 1);
+}
+
+#[test]
+fn delayed_final_result_cannot_be_replaced_by_a_late_partial() {
+    let target = DeferredTarget::new();
+    let mut span = OwnedSpan::capture(target.clone()).unwrap();
+    span.update("最终", true).unwrap();
+    span.update("迟到预览", false).unwrap();
+    span.update("重复最终", true).unwrap();
+    target.settle();
+    assert!(span.poll().unwrap());
+    assert!(!span.has_pending());
+    assert_eq!(target.0.borrow().writes, 1);
+    assert_eq!(target.0.borrow().snapshot.text, "左最终|右");
+}
+
+#[test]
+fn cancellation_discards_queued_text_and_restores_only_confirmed_preview() {
+    let target = DeferredTarget::new();
+    let mut span = OwnedSpan::capture(target.clone()).unwrap();
+    span.update("预览", false).unwrap();
+    span.update("排队结果", true).unwrap();
+    span.cancel().unwrap();
+    assert!(!span.has_pending());
+    assert!(span.poll().unwrap());
+    assert_eq!(target.0.borrow().writes, 1);
+
+    let target = DeferredTarget::new();
+    let mut span = OwnedSpan::capture(target.clone()).unwrap();
+    span.update("预览", false).unwrap();
+    target.settle();
+    assert!(!span.poll().unwrap());
+    span.cancel().unwrap();
+    span.cancel().unwrap();
+    assert!(span.has_pending());
+    assert_eq!(target.0.borrow().writes, 2);
+    target.settle();
+    assert!(span.poll().unwrap());
+    assert_eq!(target.0.borrow().snapshot.text, "左|右");
+}
+
+#[test]
+fn sealing_keeps_last_accepted_preview_until_confirmation() {
+    let target = DeferredTarget::new();
+    let mut span = OwnedSpan::capture(target.clone()).unwrap();
+    span.update("第一版", false).unwrap();
+    span.update("最后预览", false).unwrap();
+    span.seal();
+    target.settle();
+    assert!(!span.poll().unwrap());
+    target.settle();
+    assert!(span.poll().unwrap());
+    assert_eq!(target.0.borrow().snapshot.text, "左最后预览|右");
+}
+
+#[test]
+fn empty_initial_preview_does_not_edit_an_unchanged_field() {
+    let target = FakeTarget::new(state("", 0, 0));
+    target.0.borrow_mut().reject = true;
+    let mut span = OwnedSpan::capture(target.clone()).unwrap();
+    span.update("", false).unwrap();
+    assert_eq!(target.writes(), 0);
+}
+
+#[test]
+fn final_keyboard_input_waits_for_each_chunk_and_does_not_repeat_submission() {
+    let target = DeferredTarget::new();
+    let mut input = ChunkedInput::capture(Box::new(target.clone()) as Box<dyn Target>).unwrap();
+    for _ in 0..3 {
+        input.verify().unwrap();
+    }
+    assert_eq!(target.0.borrow().writes, 0);
+    let text = "中文🙂".repeat(18);
+    input.submit(&text).unwrap();
+    assert_eq!(input.submit("late"), Err(Failure::Ended));
+    for _ in 0..3 {
+        assert!(!input.poll().unwrap());
+    }
+    assert_eq!(target.0.borrow().writes, 1);
+    while input.has_pending() {
+        target.settle();
+        input.poll().unwrap();
+    }
+    assert_eq!(target.0.borrow().snapshot.text, format!("左{text}|右"));
+    assert_eq!(target.0.borrow().writes, unicode_chunks(&text).len());
+}
+
+#[test]
+fn final_keyboard_input_rejects_edits_before_sending_any_text() {
+    let target = DeferredTarget::new();
+    let mut input = ChunkedInput::capture(target.clone()).unwrap();
+    target.0.borrow_mut().snapshot = state("用户修改", 4, 0);
+    assert_eq!(input.submit("speech"), Err(Failure::Ownership));
+    target.0.borrow_mut().snapshot = state("左|右", 1, 0);
+    assert_eq!(input.submit("retry"), Err(Failure::Ownership));
+    assert_eq!(target.0.borrow().writes, 0);
+}
+
+#[test]
+fn final_keyboard_input_timeout_and_real_input_stop_every_remaining_chunk() {
+    for failure in [
+        None,
+        Some(Failure::UserInput),
+        Some(Failure::FocusElementChanged),
+    ] {
+        let target = DeferredTarget::new();
+        let mut input = ChunkedInput::capture(target.clone()).unwrap();
+        input.submit(&"长文本".repeat(20)).unwrap();
+        if let Some(failure) = failure {
+            target.0.borrow_mut().failure = Some(failure);
+        } else {
+            target.0.borrow_mut().timed_out = true;
+        }
+        let expected = failure.unwrap_or(Failure::ReadbackTimeout);
+        assert_eq!(input.poll(), Err(expected));
+        assert!(!input.has_pending());
+        target.0.borrow_mut().failure = None;
+        assert_eq!(input.poll(), Err(expected));
+        assert_eq!(target.0.borrow().writes, 1);
+    }
+}
+
+#[test]
+fn final_keyboard_cancellation_never_undoes_an_already_posted_chunk() {
+    let target = DeferredTarget::new();
+    let mut input = ChunkedInput::capture(target.clone()).unwrap();
+    input.submit(&"固定文本".repeat(20)).unwrap();
+    let posted = target.0.borrow().submitted.clone().unwrap();
+    input.end();
+    target.0.borrow_mut().snapshot = posted.clone();
+    assert!(input.poll().unwrap());
+    assert_eq!(target.0.borrow().snapshot, posted);
+    assert_eq!(target.0.borrow().writes, 1);
+}
+
+#[test]
+fn final_keyboard_replaces_only_the_initial_selection_and_sanitizes_controls() {
+    let target = FakeTarget::new(state("leftOLDright", 4, 3));
+    let mut input = ChunkedInput::capture(target.clone()).unwrap();
+    input.submit("你好\n🙂").unwrap();
+    assert!(input.poll().unwrap());
+    assert_eq!(target.snapshot(), state("left你好 🙂right", 9, 0));
+    assert_eq!(target.writes(), 1);
 }
 
 #[test]

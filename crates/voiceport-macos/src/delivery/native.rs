@@ -20,6 +20,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 // AXUIElement / AXValue are CF objects. These declarations deliberately keep
@@ -58,6 +59,7 @@ const AX_CF_RANGE: u32 = 4;
 const AX_UNSUPPORTED: i32 = -25205;
 const AX_NO_VALUE: i32 = -25212;
 const ORCA: &str = "com.stablyai.orca";
+const CODEX: &str = "com.openai.codex";
 
 struct OwnedCf(CFTypeRef);
 impl OwnedCf {
@@ -290,10 +292,13 @@ pub(super) fn self_test_fixture_focused() -> bool {
 
 pub(super) enum Captured {
     Ordinary(Box<dyn Target>),
+    Keyboard(Box<dyn Target>),
     Terminal(Box<dyn TerminalTarget>),
 }
 
-pub(super) fn capture() -> Result<Captured, Failure> {
+pub(super) fn capture(
+    expected: Option<&crate::delivery::model::ApplicationTarget>,
+) -> Result<Captured, Failure> {
     if !main_thread() {
         return Err(Failure::MainThread);
     }
@@ -304,6 +309,9 @@ pub(super) fn capture() -> Result<Captured, Failure> {
         return Err(Failure::SecureInput);
     }
     let (pid, bundle) = frontmost()?;
+    if expected.is_some_and(|target| target.pid != pid || target.bundle != bundle) {
+        return Err(Failure::FocusApplicationChanged);
+    }
     // Do not toggle AXManualAccessibility or any frontend permission/state.
     let element = focused(pid)?;
     // An unreadable Orca description cannot safely distinguish an editor from
@@ -322,16 +330,95 @@ pub(super) fn capture() -> Result<Captured, Failure> {
         bundle,
         element,
         terminal,
-        monitor: None,
+        monitor: Some(UserMonitor::start()?),
+        pending: None,
         _main_only: std::marker::PhantomData,
     };
     target.read()?;
     if terminal {
-        target.monitor = Some(UserMonitor::start()?);
         target.current()?;
         Ok(Captured::Terminal(Box::new(target)))
+    } else if target.bundle == CODEX {
+        Ok(Captured::Keyboard(Box::new(KeyboardTarget {
+            inner: target,
+            pending: None,
+        })))
     } else {
         Ok(Captured::Ordinary(Box::new(target)))
+    }
+}
+
+struct KeyboardTarget {
+    inner: NativeTarget,
+    pending: Option<PendingWrite>,
+}
+
+impl Target for KeyboardTarget {
+    fn read(&mut self) -> Result<Snapshot, Failure> {
+        self.inner.read()
+    }
+
+    fn replace(
+        &mut self,
+        range: TextRange,
+        text: &str,
+        expected: &Snapshot,
+    ) -> Result<(), Failure> {
+        if self.pending.is_some() || range != expected.selection {
+            return Err(Failure::Write);
+        }
+        if self.read()? != *expected {
+            return Err(Failure::Ownership);
+        }
+        let bytes = model::byte_range(&expected.text, range).ok_or(Failure::Selection)?;
+        let mut next = expected.clone();
+        next.text.replace_range(bytes, text);
+        next.selection = TextRange {
+            location: range.location + text.encode_utf16().count(),
+            length: 0,
+        };
+        let (_source, down, up) = unicode_events(text)?;
+        // Recheck immediately before the paired key events. No AX text setter,
+        // clipboard, Delete or Return is used for this known application.
+        if self.read()? != *expected {
+            return Err(Failure::Ownership);
+        }
+        unsafe {
+            CGEventPostToPid(self.inner.pid, down.0);
+            CGEventPostToPid(self.inner.pid, up.0);
+        }
+        self.pending = Some(PendingWrite {
+            step: WriteStep::Text {
+                before: expected.clone(),
+            },
+            next,
+            deadline: Instant::now() + READBACK_TIMEOUT,
+        });
+        Ok(())
+    }
+
+    fn confirm(&mut self, expected: &Snapshot) -> Result<bool, Failure> {
+        let Some(pending) = self.pending.take() else {
+            return Err(Failure::Write);
+        };
+        if &pending.next != expected {
+            return Err(Failure::Ownership);
+        }
+        let current = self.read()?;
+        match pending.observe(&current, Instant::now())? {
+            ConfirmationAction::Done => Ok(true),
+            ConfirmationAction::Wait | ConfirmationAction::SetCaret => {
+                // Normal typing owns caret movement too. Observe it; never
+                // repair a rich editor with an AX selection write.
+                self.pending = Some(pending);
+                Ok(false)
+            }
+            ConfirmationAction::SubmitText => Err(Failure::Write),
+        }
+    }
+
+    fn abandon(&mut self) {
+        self.pending = None;
     }
 }
 
@@ -341,8 +428,66 @@ struct NativeTarget {
     element: OwnedCf,
     terminal: bool,
     monitor: Option<UserMonitor>,
+    pending: Option<PendingWrite>,
     // AX/AppKit work and destruction stay on the main thread.
     _main_only: std::marker::PhantomData<Rc<()>>,
+}
+
+const READBACK_TIMEOUT: Duration = Duration::from_millis(800);
+
+enum WriteStep {
+    Selection {
+        before: Snapshot,
+        selected: Snapshot,
+        text: String,
+    },
+    Text {
+        before: Snapshot,
+    },
+    Caret {
+        before: Snapshot,
+    },
+}
+
+struct PendingWrite {
+    step: WriteStep,
+    next: Snapshot,
+    deadline: Instant,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ConfirmationAction {
+    Done,
+    Wait,
+    SubmitText,
+    SetCaret,
+}
+
+impl PendingWrite {
+    fn observe(&self, current: &Snapshot, now: Instant) -> Result<ConfirmationAction, Failure> {
+        if current == &self.next {
+            return Ok(ConfirmationAction::Done);
+        }
+        let action = match &self.step {
+            WriteStep::Selection { selected, .. } if current == selected => {
+                ConfirmationAction::SubmitText
+            }
+            WriteStep::Selection { before, .. } if current == before => ConfirmationAction::Wait,
+            WriteStep::Text { before } | WriteStep::Caret { before } if current == before => {
+                ConfirmationAction::Wait
+            }
+            WriteStep::Text { before }
+                if current.text == self.next.text && current.selection == before.selection =>
+            {
+                ConfirmationAction::SetCaret
+            }
+            _ => return Err(Failure::Ownership),
+        };
+        if now >= self.deadline {
+            return Err(Failure::ReadbackTimeout);
+        }
+        Ok(action)
+    }
 }
 
 impl NativeTarget {
@@ -364,6 +509,9 @@ impl NativeTarget {
         }
         if secure_input() {
             return Err(Failure::SecureInput);
+        }
+        if let Some(monitor) = &self.monitor {
+            monitor.check()?;
         }
         let (pid, bundle) = frontmost()?;
         if pid != self.pid || bundle != self.bundle {
@@ -463,6 +611,9 @@ impl Target for NativeTarget {
         text: &str,
         expected: &Snapshot,
     ) -> Result<(), Failure> {
+        if self.pending.is_some() {
+            return Err(Failure::Write);
+        }
         if self.read()? != *expected {
             return Err(Failure::Ownership);
         }
@@ -473,15 +624,29 @@ impl Target for NativeTarget {
             location: range.location + text.encode_utf16().count(),
             length: 0,
         };
-        let intermediate;
+        let next = Snapshot {
+            text: next_text,
+            selection: caret,
+        };
+        let deadline = Instant::now() + READBACK_TIMEOUT;
         if settable(self.element.0, "AXSelectedText")? {
-            // Don't select anything after an observable intervening edit.
-            self.select(range)?;
-            intermediate = Snapshot {
-                text: expected.text.clone(),
-                selection: range,
-            };
-            if self.read()? != intermediate {
+            if expected.selection != range {
+                self.select(range)?;
+                self.pending = Some(PendingWrite {
+                    step: WriteStep::Selection {
+                        before: expected.clone(),
+                        selected: Snapshot {
+                            text: expected.text.clone(),
+                            selection: range,
+                        },
+                        text: text.to_owned(),
+                    },
+                    next,
+                    deadline,
+                });
+                return Ok(());
+            }
+            if self.read()? != *expected {
                 return Err(Failure::Ownership);
             }
             set(
@@ -496,38 +661,90 @@ impl Target for NativeTarget {
             if self.read()? != *expected {
                 return Err(Failure::Ownership);
             }
-            intermediate = expected.clone();
             set(
                 self.element.0,
                 "AXValue",
-                CFString::new(&next_text).as_CFTypeRef(),
+                CFString::new(&next.text).as_CFTypeRef(),
             )?;
         }
-        let after = self.read()?;
-        if after.text != next_text {
-            return Err(Failure::Ownership);
-        }
-        // AXSelectedText usually moves the caret. AXValue may preserve it.
-        // Accept only these known positions before setting our final caret.
-        if after.selection != caret {
-            if after.selection != intermediate.selection {
-                return Err(Failure::Ownership);
-            }
-            if self.read()? != after {
-                return Err(Failure::Ownership);
-            }
-            self.select(caret)?;
-        }
-        if self.read()?
-            != (Snapshot {
-                text: next_text,
-                selection: caret,
-            })
-        {
-            return Err(Failure::Ownership);
-        }
+        self.pending = Some(PendingWrite {
+            step: WriteStep::Text {
+                before: expected.clone(),
+            },
+            next,
+            deadline,
+        });
         Ok(())
     }
+
+    fn confirm(&mut self, expected: &Snapshot) -> Result<bool, Failure> {
+        let Some(mut pending) = self.pending.take() else {
+            return if self.read()? == *expected {
+                Ok(true)
+            } else {
+                Err(Failure::Ownership)
+            };
+        };
+        if pending.next != *expected {
+            return Err(Failure::Ownership);
+        }
+        // Poll on a subsequent AppKit timer turn; no sleep, nested run loop,
+        // repeated text submission or silent acceptance of unrelated changes.
+        let current = self.read()?;
+        match pending.observe(&current, Instant::now())? {
+            ConfirmationAction::Done => return Ok(true),
+            ConfirmationAction::Wait => {}
+            ConfirmationAction::SubmitText => {
+                let WriteStep::Selection { text, .. } = &pending.step else {
+                    return Err(Failure::Write);
+                };
+                if self.read()? != current {
+                    return Err(Failure::Ownership);
+                }
+                set(
+                    self.element.0,
+                    "AXSelectedText",
+                    CFString::new(text).as_CFTypeRef(),
+                )?;
+                pending.step = WriteStep::Text { before: current };
+            }
+            ConfirmationAction::SetCaret => {
+                if self.read()? != current {
+                    return Err(Failure::Ownership);
+                }
+                self.select(pending.next.selection)?;
+                pending.step = WriteStep::Caret { before: current };
+            }
+        }
+        self.pending = Some(pending);
+        Ok(false)
+    }
+
+    fn abandon(&mut self) {
+        self.pending = None;
+    }
+}
+
+fn unicode_events(raw: &str) -> Result<(OwnedCf, OwnedCf, OwnedCf), Failure> {
+    let units: Vec<u16> = raw.encode_utf16().collect();
+    if units.is_empty() || units.len() > 20 || model::automatic(raw) != raw {
+        return Err(Failure::Event);
+    }
+    // kCGEventSourceStatePrivate = -1. The direct C ABI avoids the Rust
+    // wrapper's optional OS-version feature gate for CGEventPostToPid.
+    let source = OwnedCf::new(unsafe { CGEventSourceCreate(-1) }).ok_or(Failure::Event)?;
+    let down = OwnedCf::new(unsafe { CGEventCreateKeyboardEvent(source.0, 0, true) })
+        .ok_or(Failure::Event)?;
+    let up = OwnedCf::new(unsafe { CGEventCreateKeyboardEvent(source.0, 0, false) })
+        .ok_or(Failure::Event)?;
+    for event in [&down, &up] {
+        unsafe {
+            CGEventKeyboardSetUnicodeString(event.0, units.len(), units.as_ptr());
+            CGEventSetFlags(event.0, 0);
+            CGEventSetIntegerValueField(event.0, 42, model::EVENT_TAG);
+        }
+    }
+    Ok((source, down, up))
 }
 
 impl TerminalTarget for NativeTarget {
@@ -542,24 +759,7 @@ impl TerminalTarget for NativeTarget {
 
     fn post(&mut self, raw: &str) -> Result<(), Failure> {
         self.current()?;
-        let units: Vec<u16> = raw.encode_utf16().collect();
-        if units.is_empty() || units.len() > 20 || model::automatic(raw) != raw {
-            return Err(Failure::Event);
-        }
-        // kCGEventSourceStatePrivate = -1. The direct C ABI avoids the Rust
-        // wrapper's optional OS-version feature gate for CGEventPostToPid.
-        let source = OwnedCf::new(unsafe { CGEventSourceCreate(-1) }).ok_or(Failure::Event)?;
-        let down = OwnedCf::new(unsafe { CGEventCreateKeyboardEvent(source.0, 0, true) })
-            .ok_or(Failure::Event)?;
-        let up = OwnedCf::new(unsafe { CGEventCreateKeyboardEvent(source.0, 0, false) })
-            .ok_or(Failure::Event)?;
-        for event in [&down, &up] {
-            unsafe {
-                CGEventKeyboardSetUnicodeString(event.0, units.len(), units.as_ptr());
-                CGEventSetFlags(event.0, 0);
-                CGEventSetIntegerValueField(event.0, 42, model::EVENT_TAG);
-            }
-        }
+        let (_source, down, up) = unicode_events(raw)?;
         // Construct both events before posting either; key-up must pair a
         // posted key-down even if a later validation would fail. The next
         // chunk waits for another main run-loop turn and monitor callbacks.
@@ -665,6 +865,79 @@ impl Drop for UserMonitor {
 mod tests {
     use super::*;
     use core_foundation::{base::kCFAllocatorDefault, string::CFStringCreateWithCharacters};
+
+    fn snapshot(text: &str, location: usize, length: usize) -> Snapshot {
+        Snapshot {
+            text: text.into(),
+            selection: TextRange { location, length },
+        }
+    }
+
+    #[test]
+    fn readback_observation_waits_for_each_step_without_repeating_text() {
+        let now = Instant::now();
+        let before = snapshot("abc", 3, 0);
+        let selected = snapshot("abc", 1, 1);
+        let next = snapshot("a新c", 2, 0);
+        let mut pending = PendingWrite {
+            step: WriteStep::Selection {
+                before: before.clone(),
+                selected: selected.clone(),
+                text: "新".into(),
+            },
+            next: next.clone(),
+            deadline: now + READBACK_TIMEOUT,
+        };
+        assert_eq!(pending.observe(&before, now), Ok(ConfirmationAction::Wait));
+        assert_eq!(
+            pending.observe(&selected, now),
+            Ok(ConfirmationAction::SubmitText)
+        );
+        pending.step = WriteStep::Text {
+            before: selected.clone(),
+        };
+        assert_eq!(
+            pending.observe(&selected, now),
+            Ok(ConfirmationAction::Wait)
+        );
+        let text_updated = snapshot("a新c", 1, 1);
+        assert_eq!(
+            pending.observe(&text_updated, now),
+            Ok(ConfirmationAction::SetCaret)
+        );
+        pending.step = WriteStep::Caret {
+            before: text_updated.clone(),
+        };
+        assert_eq!(
+            pending.observe(&text_updated, now),
+            Ok(ConfirmationAction::Wait)
+        );
+        assert_eq!(pending.observe(&next, now), Ok(ConfirmationAction::Done));
+    }
+
+    #[test]
+    fn readback_observation_rejects_foreign_changes_and_times_out_without_a_write() {
+        let now = Instant::now();
+        let before = snapshot("abc", 0, 0);
+        let next = snapshot("新abc", 1, 0);
+        let pending = PendingWrite {
+            step: WriteStep::Text {
+                before: before.clone(),
+            },
+            next: next.clone(),
+            deadline: now,
+        };
+        assert_eq!(pending.observe(&before, now), Err(Failure::ReadbackTimeout));
+        assert_eq!(
+            pending.observe(&snapshot("用户编辑", 4, 0), now),
+            Err(Failure::Ownership)
+        );
+        assert_eq!(
+            pending.observe(&snapshot("新abc", 3, 0), now),
+            Err(Failure::Ownership)
+        );
+        assert_eq!(pending.observe(&next, now), Ok(ConfirmationAction::Done));
+    }
 
     #[test]
     fn terminal_monitor_allows_scroll_but_still_observes_typing_and_clicks() {
