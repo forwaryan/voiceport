@@ -66,13 +66,55 @@ def transcript_rows(path):
             yield json.loads(line)
 
 
+def completed_tasks(row, session):
+    """All completions from actual host records, never rendered/pasted copies."""
+    if row.get('sessionId') != session or row.get('isSidechain'):
+        return []
+    texts, queued = [], False
+    if row.get('type') == 'attachment':
+        attachment = row.get('attachment', {})
+        prompt = attachment.get('prompt') if isinstance(attachment, dict) else None
+        if (attachment.get('type') == 'queued_command' and isinstance(prompt, str)
+                and prompt.startswith('<task-notification>')):
+            texts, queued = [prompt], True
+    elif row.get('type') == 'api-request-blob':
+        message = row.get('message', {})
+        if isinstance(message, dict) and message.get('role') == 'system':
+            blocks = message.get('content', [])
+            if isinstance(blocks, list):
+                texts = [b['text'] for b in blocks if isinstance(b, dict) and b.get('type') == 'text'
+                         and isinstance(b.get('text'), str)
+                         and b['text'].startswith('[SYSTEM NOTIFICATION - NOT USER INPUT]')]
+    ended = []
+    for text in texts:
+        header = text.split('<task-notification>', 1)
+        if len(header) != 2:
+            continue
+        header = header[1].split('<result>', 1)[0]
+        task = re.search(r'<task-id>([A-Za-z0-9_-]{1,160})</task-id>', header)
+        status = re.search(r'<status>(completed|failed|stopped|cancelled|killed)</status>', header)
+        call = re.search(r'<tool-use-id>([^<>\s]{1,512})</tool-use-id>', header)
+        if task and status and (call or not queued):
+            ended.append((task.group(1), status.group(1), call.group(1) if call else None))
+    return ended
+
+
+def completed_task(row, session):
+    """Compatibility view for callers needing just the first completion."""
+    ended = completed_tasks(row, session)
+    return ended[0][:2] if ended else None
+
+
 def pending_tasks(rows, session):
-    calls, pending = {}, set()
+    calls, pending, origins = {}, set(), {}
     verified_session = False
     for row in rows:
         if row.get('sessionId') != session or row.get('isSidechain'):
             continue
         verified_session = True
+        for handle, _, call_id in completed_tasks(row, session):
+            if call_id is None or origins.get(handle) == call_id:
+                pending.discard(handle)
         message = row.get('message', {})
         blocks = message.get('content', [])
         if not isinstance(blocks, list):
@@ -113,20 +155,7 @@ def pending_tasks(rows, session):
                     task = result.get('backgroundTaskId')
                 if isinstance(task, str) and TASK_ID.fullmatch(task):
                     pending.add(task)
-            elif (row.get('type') == 'api-request-blob' and message.get('role') == 'system'
-                  and block.get('type') == 'text'):
-                # Only host system events, never user paste, tool output or quoted summaries.
-                text = block.get('text', '')
-                if not text.startswith('[SYSTEM NOTIFICATION - NOT USER INPUT]'):
-                    continue
-                header = text.split('<task-notification>', 1)
-                if len(header) != 2:
-                    continue
-                header = header[1].split('<result>', 1)[0]
-                task = re.search(r'<task-id>([A-Za-z0-9_-]{1,160})</task-id>', header)
-                status = re.search(r'<status>(completed|failed|stopped)</status>', header)
-                if task and status:
-                    pending.discard(task.group(1))
+                    origins[task] = block['tool_use_id']
     if not verified_session:
         raise ValueError('没有本会话 transcript 身份，不能核对后台等待。')
     return pending
@@ -163,6 +192,15 @@ def main():
     except (ValueError, OSError, TypeError) as error:
         print(f'Loop wait guard input error: {error}', file=sys.stderr)
         return 2
+    if (payload.get('hook_event_name') == 'PreToolUse'
+            and payload.get('tool_name', '').split('.')[-1] == 'ScheduleWakeup'
+            and payload.get('tool_input', {}).get('stop') is True):
+        # Sparse real-load evidence on shutdown; this is not the scheduler receipt.
+        import hashlib
+        from pathlib import Path
+        result = {'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'additionalContext':
+                  'Loop wait guard shutdown path loaded; helper_sha256='
+                  + hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}}
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

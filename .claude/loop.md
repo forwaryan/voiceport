@@ -1,5 +1,11 @@
 持续推进 VoicePort 当前用户目标。安装 loop 前先按 [全角色会话轮换](COORDINATOR_ROTATION.md) 判定实际身份：直接打开且未绑定 Run、非任何托管 worker 的顶层会话，先写精确 `.voiceport/handoffs/session-contract-ACTUAL_SESSION_ID.json`（goal、完整原文 loop_prompt、authorization、paused 布尔值、active_tools 列表），再 `python3 -I .claude/hooks/coordinator_rotation.py session-register --session ACTUAL_SESSION_ID --contract .voiceport/handoffs/session-contract-ACTUAL_SESSION_ID.json`。注册须真实 PreToolUse/helper/transcript/terminal 证明，并穷尽 all-Run worker-list、核对 registry；未知或匹配 worker 时拒绝。登记前结算已有工具，active_tools 须真实为 []；冻结契约是原始登记快照，继任继承它。退任前重新核对并结算当前工具，真实结果、最新用户约束与剩余工作写有界 notes，不能以初始 [] 代替检查。不创建 Run、不接管无关产品协调或 Git 权限。托管 worker 只交协调者，不自行安装 loop 或 launch。
 
+用户已明确授权持续任务在故障后恢复继续、但尚未安装 loop 时，在首个产品修改/后台派发前用本 session 真实 human 原任务/恢复授权 UUID 执行 `session-task-register`；保存完整 task_prompt 与原证据，kind=task 不授予 timer，也不能编造五字段 loop 契约。已 drift 且未注册的旧会话不能补造授权或改规则解锁，只沿真实显式授权的 fresh 行政接续。
+
+发生可恢复的会话/终端问题时，先完成恢复再继续原目标，不能只报告问题后结束或要求用户手动复制交接。已登记契约、无 Run、非 worker 的 Claude 顶层 session 出现 terminal_drift 时，保留旧 fence/计数，先精确停止全部本人调度，再单独执行 `python3 -I .claude/hooks/coordinator_rotation.py session-recover --session ACTUAL_FENCED_SESSION`。该命令单次启动 fresh 管理会话采集交接、核验精确冲突 PTY 退出，再单次启动并验证 fresh initial0 产品继任，原目标/完整 prompt/授权/阈值/暂停继续继承。Stop 提醒后必须走该受限入口，不能从被拒的任意 shell/Skill 反复碰撞；未知副作用查询恢复 journal，不 fresh 重试。Run/worker 走自己的真实协调者恢复，不创建新 Run。暂停与权限/信任拒绝优先，自动恢复不解锁账户/联网/录音/上传或 Git；真实外部阻塞且无独立步骤时清楚报告条件，不制造空 timer。完整恢复命令以中央文档和启动提示词为准。
+
+持续开发先读相关设计、规范与已证实教训，完成真实待办、必要验证及验收范围复核，有下一步就在本轮继续。`loop_progress_guard.py` 比较真实配对结果，连续7次同工具/同参数/同结果后拦第8次重复操作，在当前网关截断前提示改换诊断，改用有依据的诊断接续；真实等待须有自有未结算回执，完成通知到达立即处理。临时失败核对无副作用后有界验证；未知 launch/close/写入只查原 journal 和精确回执。空回复、只有 usage、退出0或后台结束都不等于产品验收。继任简报列下一步/最新限制/证据路径/建议技能，完整原契约按摘要保留，不复制凭据。借鉴 MagPie 公开 AGENTS/LESSONS 开发复盘规则，记录真实重复修复与验证缺口，跨三个不同日期重复后考虑提升规范；未取得开发者自用完整 loop skill，不冒称已同步，不自行新增夜间调度。
+
 以下产品账本、派发和 Git 步骤只适用于已有对应授权的主协调者；其维护方案、账本、注册、冻结和 Git，真实开发、独立验证及按需支撑会话处理无写入冲突的任务。每轮只读 automation/loops/coordinator.md、docs/LOOP_METHODS.md 和私有当前状态的必要片段，核对 owner、暂停、原 Run/产品 attempt、各角色真实 session 与已发生副作用。一次仅一个 running 产品故事；一个逻辑修复可拆成分别拥有 Task/Dispatch 的诊断、实现、独立复核及必要研究，不把一个 Task 同时派给多个 owner。
 
 优先处理真实 worker 事件、返修和待验证项。按依赖启动可独立推进且有具体必要性的任务，写清 role/predecessor、工作区、输入哈希、文件归属、产物和并发预算；常规已知文件工作不为凑人数分派。每个文件/工作区只有明确写者，共享工作区允许文件集合不相交的写入，HEAD/index/checkout 由协调者独占。独立冻结评审保持不可变；同期返修只在 Orca 隔离工作区或私有 candidate 中进行，不修改、读取或合并他人的未完成产物；旧评审明确结束或中断后才集成并重冻。协调者不替已分派的验证者执行独立检查。

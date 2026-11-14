@@ -599,17 +599,23 @@ fn observe(event: &NSEvent, invalidated: &AtomicBool) {
     }
 }
 
+fn user_input_event_mask() -> NSEventMask {
+    // Scrolling a transcript does not edit the terminal's pending input. If a
+    // scroll does change focus, content or selection, current() still rejects
+    // that target before posting any more text.
+    NSEventMask::KeyDown
+        | NSEventMask::LeftMouseDown
+        | NSEventMask::RightMouseDown
+        | NSEventMask::OtherMouseDown
+}
+
 impl UserMonitor {
     fn start() -> Result<Self, Failure> {
         if !main_thread() {
             return Err(Failure::MainThread);
         }
         let invalidated = Arc::new(AtomicBool::new(false));
-        let mask = NSEventMask::KeyDown
-            | NSEventMask::LeftMouseDown
-            | NSEventMask::RightMouseDown
-            | NSEventMask::OtherMouseDown
-            | NSEventMask::ScrollWheel;
+        let mask = user_input_event_mask();
         let global_flag = invalidated.clone();
         let global_block = RcBlock::new(move |event: NonNull<NSEvent>| {
             observe(unsafe { event.as_ref() }, &global_flag);
@@ -659,6 +665,20 @@ impl Drop for UserMonitor {
 mod tests {
     use super::*;
     use core_foundation::{base::kCFAllocatorDefault, string::CFStringCreateWithCharacters};
+
+    #[test]
+    fn terminal_monitor_allows_scroll_but_still_observes_typing_and_clicks() {
+        let mask = user_input_event_mask();
+        assert!(!mask.contains(NSEventMask::ScrollWheel));
+        for event in [
+            NSEventMask::KeyDown,
+            NSEventMask::LeftMouseDown,
+            NSEventMask::RightMouseDown,
+            NSEventMask::OtherMouseDown,
+        ] {
+            assert!(mask.contains(event));
+        }
+    }
 
     #[test]
     fn capability_transport_failures_are_unknown_but_unsupported_is_known_false() {
