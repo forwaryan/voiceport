@@ -1,0 +1,8 @@
+{
+  "name": "qq-smartptt-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local QQ SmartPtt transcription adapter",
+  "engines": {"node": ">=22"},
+  "dependencies": {"silk-wasm": "3.7.1"}
+}

@@ -1,8 +1,75 @@
-# QQ 语音输入诊断桥接
+# QQ SmartPtt 本机桥接
 
-这是 VoicePort 接入 QQ「语音输入文字」的诊断实现，**还不是可用的 QQ 转写来源**，没有随 VoicePort App 打包。2026-11-11，在用户单独授权的临时 QQ 副本实验中，已验证自有主入口、QQ 的 simple-preload 导出及 QQ 自己创建的原生 session；离线业务启动尚未观察到 session 初始化回调或服务就绪。原版安装包未修改，各次副本探测进程已退出。2026-11-10 的失败加载记录保留在下方。
+2026-11-14 已在 macOS App Store QQ **7.0.1-52892** 的独立副本中取得真实 SmartPtt 文字，并通过 VoicePort 的生产 `execute_owned` 插件宿主返回。两段不同合成语音分别识别为「今天下午三点开会，请带上笔记本。」和「明天上午九点出发，记得检查天气。」；后者通过通用 WAV 编码器和正式 JSONL 适配器执行，宿主约 0.54 秒返回，进程组已释放。没有使用麦克风、已有语音消息、替代 ASR 或预设识别结果。
 
-当前功能：
+这是当前版本的本机开发接入，未随 VoicePort App 打包。需要独立运行带桥接的 QQ 副本，并让 QQ 正常登录、联网；QQ 自己保管认证状态。原版 `/Applications/QQ.app` 保持原文件和签名。其他 QQ 版本、机器、真实麦克风和自动输入效果需各自验证。下方旧诊断记录保留当时的离线权限和失败事实，不代表最新状态。
+
+## 准备和运行
+
+需要 macOS、Python 3、Node.js 22+，以及上述精确版本的原版 QQ。以下命令在仓库根目录执行；`--output` 使用新的规范绝对路径，示例目录可替换。长期使用建议放在 `~/Library/Application Support/VoicePort/QQSmartPtt`，避免 Desktop/Downloads 的访问限制和仓库移动；临时目录示例仅用于开发。`prepare` 只准备副本、签名和插件，不启动 QQ。它下载固定 `silk-wasm@3.7.1` 并校验 SHA-512，只提取 CJS、WASM、包元数据和 MIT 许可证，不运行 npm 安装脚本；可用 `--encoder-tgz /absolute/silk-wasm-3.7.1.tgz` 指定相同归档的离线副本。
+
+```sh
+python3 -I scripts/qq_bridge/setup.py --output /private/tmp/my-qq-bridge prepare
+python3 -I scripts/qq_bridge/setup.py --output /private/tmp/my-qq-bridge start --replace-qq
+python3 -I scripts/qq_bridge/setup.py --output /private/tmp/my-qq-bridge login
+python3 -I scripts/qq_bridge/setup.py --output /private/tmp/my-qq-bridge status
+```
+
+`start --replace-qq` 正常退出原 QQ，然后启动独立副本，避免两个主进程同时使用 QQ 管理的资料目录。`login` 仅点击一次正常登录页上的「登录」，不读取登录字段、修改自动登录偏好或手动初始化 native session。如果 QQ 要求扫码或确认，应在 QQ 窗口正常完成。只有状态中的 `bridge.ready=true` 才可以提交语音。副本保留正常 QQ 窗口；不要同时打开原 QQ。没有开机自启或自动重启。
+
+停止副本、恢复原 QQ：
+
+```sh
+python3 -I scripts/qq_bridge/setup.py --output /private/tmp/my-qq-bridge stop --restore-qq
+```
+
+准备后也可用输出目录中的 `manage.py` 执行 `start/login/status/stop`，参数与 `setup.py` 相同，后续管理不依赖仓库位置。每次重新启动桥接都要检查就绪状态；退出、崩溃或重启电脑后，先 `status` / `stop` 结算旧启动，再 `start`，必要时正常登录。系统清空临时目录后，启动命令会重建相同 socket 路径的私有父目录，配对密钥仍来自持久安装配置。
+
+启动、停止和准备均先写私有回执。失败或超时后先执行 `status` 并核对 `launch.json` / `lifecycle.jsonl`，不要重复未决启动。`stop` 只处理该安装目录的副本进程；证明退出后才清理其残留 socket/临时音频并允许新启动。它不退出无关 QQ 安装，不清理系统账号或授权。
+
+## 连接 VoicePort
+
+导入输出目录中的 `qq-smartptt.json`，配置 `socket_path` 和配对密钥；`client-config.json` 是该安装的私有配置文件，权限 0600。配对密钥是本机桥接的随机密钥，不是 QQ 凭据。应通过来源管理的密钥字段或 CLI stdin 存入 VoicePort Keychain，避免复制到命令行参数、日志或普通来源配置。
+
+CLI 示例（先查看生成清单中的绝对 Node/适配器路径）：
+
+```sh
+voiceport --json plugins import /private/tmp/my-qq-bridge/qq-smartptt.json --accept-program
+python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["pairing_token"])' \
+  /private/tmp/my-qq-bridge/client-config.json | \
+  voiceport --json sources add qq-smartptt --plugin qq.smartptt \
+    --name 'QQ 语音输入' --enabled true \
+    --set socket_path=/private/tmp/REPLACE_WITH_GENERATED_RUNTIME/bridge.sock \
+    --secret-stdin pairing_token
+voiceport --json sources select qq-smartptt
+```
+
+Socket 路径取自生成的 `client-config.json`；不要使用示例占位路径。也可在「设置 → 管理来源」中导入、配置、启用，然后从主窗口选择「QQ 语音输入」。适配器只连接已经运行的桥接，VoicePort 不会替它启动 QQ。QQ 退出、未登录或网络不可用时会明确报错，不切换到其他识别来源。
+
+## 任务和数据边界
+
+`adapter.cjs` 接收 JSONL v1 的 PCM16 / mono / 16 kHz WAV，最多 180 秒。`codec.cjs` 验证 WAV 后加载固定编码器，将 SILK 字节通过 0700 目录中的 0600 Unix socket 发送给 `bridge.cjs`；客户端不能传任意文件路径。桥接一次处理一个任务，使用随机任务 ID，只有原生成功完成回调才能返回 `final`。识别正文只发给请求方，生产桥接不持久保存转写正文；临时 SILK 在结束后删除。
+
+转写密钥和管理密钥分开；转写客户端不能登录或停止 QQ。状态和 native attempt 日志只含计数、任务 ID、字节数和时间，不含音频、账号、认证值或文字。提交前的 attempt 必须落盘成功才允许调用原生任务。
+
+尚未验证原生硬取消 API。VoicePort 取消后终止、回收适配器进程组并断开 socket；桥接继续持有已提交任务，到原生完成或 70 秒期限时撤除监听、删除临时音频，期间拒绝新任务。这里的取消不承诺撤回 QQ 已收到的音频。适配器总期限 90 秒，宿主 110 秒。清理异常会锁住后续提交，需检查状态并正常停止/重启。
+
+## 验证
+
+```sh
+node --test Tests/QQBridgeTests/*.test.cjs
+python3 -I -m unittest discover -s Tests/QQBridgeTests -p 'test_*.py'
+```
+
+2026-11-14 离线检查：76 项 Node、13 项 Python 通过。覆盖 WAV/SILK、凭据和管理权限隔离、任务 ID、异常、收尾重入、断连后持有、并发拒绝、超时和临时文件/监听清理。
+
+同日实际运行中的 VoicePort 已导入并选用「QQ 语音输入」，配对密钥通过来源事务写入 Keychain；App 的一秒静音测试得到原生空结果并进入 `ready`。首次放在 Desktop 项目目录的 App 测试在原生上传前失败，迁入 Application Support 并正常重启同一 App 后通过，未修改系统权限。另一次真实取消测试在原生提交后向适配器发 SIGTERM：子进程返回 `cancelled`、stderr 为空，桥接最终 `ready=true/busy=false/cleanup_failed=false`，abandoned 增加 1，临时任务目录为 0。原生任务本身仍正常完成，未声称服务端被硬取消。`plugin_process::tests::qq_smartptt_live_owned_process` 是默认忽略的真实宿主探针：仅在已经获得音频上传许可、桥接真实就绪且提供自有合成 WAV 时运行。它使用 `VOICEPORT_QQ_PROBE_MANIFEST`、`VOICEPORT_QQ_PROBE_CONFIG`、`VOICEPORT_QQ_PROBE_WAV`、`VOICEPORT_QQ_PROBE_RESULT`，可用 `VOICEPORT_QQ_PROBE_EXPECTED` 检查识别文字；不会启动 QQ、录音或自动登录，attempt/result 必须使用新文件。
+
+## 旧诊断工具与历史记录
+
+以下内容描述 2026-11-10 至 2026-11-12 的诊断阶段。`diagnose.py` 和 `preload.cjs` 仍只做诊断，不会调用转写；新的运行入口是 `runtime_bootstrap.cjs`，新的安装和生命周期入口是 `setup.py`。
+
+旧诊断功能：
 
 - 检查 QQ 安装目录和真实 `package.json` 入口，支持读取 ASAR 中的启动脚本，计算配置与入口指纹；不执行其中代码。
 - 在全新的私有目录准备三个诊断文件、原配置备份、建议配置和带 SHA-256 的安装计划；不写 QQ 安装目录、不启动 QQ。
