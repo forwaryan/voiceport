@@ -1,5 +1,8 @@
 //! Native boundary. Nothing here captures a target until `capture` is called.
-use super::model::{self, Failure, KeyboardPacing, Snapshot, Target, TerminalTarget, TextRange};
+use super::model::{
+    self, Failure, KeyboardPacing, PasteTarget, Snapshot, Target, TerminalTarget, TextRange,
+};
+mod wechat;
 use block2::RcBlock;
 use core_foundation::{
     base::{CFEqual, CFGetTypeID, CFRange, CFRelease, CFTypeID, CFTypeRef, TCFType},
@@ -38,6 +41,8 @@ unsafe extern "C" {
     ) -> i32;
     fn AXUIElementIsAttributeSettable(element: CFTypeRef, key: CFTypeRef, result: *mut u8) -> i32;
     fn AXUIElementSetAttributeValue(element: CFTypeRef, key: CFTypeRef, value: CFTypeRef) -> i32;
+    fn AXUIElementPerformAction(element: CFTypeRef, action: CFTypeRef) -> i32;
+    fn AXUIElementSetMessagingTimeout(element: CFTypeRef, seconds: f32) -> i32;
     fn AXValueGetTypeID() -> CFTypeID;
     fn AXValueGetType(value: CFTypeRef) -> u32;
     fn AXValueGetValue(value: CFTypeRef, kind: u32, result: *mut c_void) -> bool;
@@ -60,6 +65,7 @@ const AX_UNSUPPORTED: i32 = -25205;
 const AX_NO_VALUE: i32 = -25212;
 const ORCA: &str = "com.stablyai.orca";
 const CODEX: &str = "com.openai.codex";
+const WECHAT: &str = "com.tencent.xinWeChat";
 
 struct OwnedCf(CFTypeRef);
 impl OwnedCf {
@@ -294,6 +300,7 @@ pub(super) enum Captured {
     Ordinary(Box<dyn Target>),
     Keyboard(Box<dyn Target>, KeyboardPacing),
     Terminal(Box<dyn TerminalTarget>),
+    MenuPaste(Box<dyn PasteTarget>),
 }
 
 fn keyboard_pacing(bundle: &str, role: &str, terminal: bool) -> Option<KeyboardPacing> {
@@ -305,6 +312,14 @@ fn keyboard_pacing(bundle: &str, role: &str, terminal: bool) -> Option<KeyboardP
         (ORCA, "AXTextArea") => Some(KeyboardPacing::Scalar),
         _ => None,
     }
+}
+
+fn wechat_menu_fallback(bundle: &str, failure: Failure) -> bool {
+    bundle == WECHAT
+        && matches!(
+            failure,
+            Failure::FocusRead(AX_NO_VALUE | AX_UNSUPPORTED | -25208)
+        )
 }
 
 fn normalize_composer_placeholder(mut snapshot: Snapshot, placeholder: &str) -> Snapshot {
@@ -343,7 +358,14 @@ pub(super) fn capture(
         return Err(Failure::FocusApplicationChanged);
     }
     // Do not toggle AXManualAccessibility or any frontend permission/state.
-    let element = focused(pid)?;
+    let element = match focused(pid) {
+        Ok(element) => element,
+        Err(failure) if wechat_menu_fallback(&bundle, failure) => {
+            return wechat::WechatMenuTarget::capture(pid)
+                .map(|target| Captured::MenuPaste(Box::new(target)));
+        }
+        Err(failure) => return Err(failure),
+    };
     // An unreadable Orca description cannot safely distinguish an editor from
     // its hidden terminal transport, so never fall back to document writes.
     let description = if bundle == ORCA {
@@ -940,6 +962,24 @@ mod tests {
             None
         );
         assert_eq!(keyboard_pacing("test.editor", "AXTextArea", false), None);
+    }
+
+    #[test]
+    fn menu_fallback_only_handles_known_wechat_missing_focus_support() {
+        for status in [AX_NO_VALUE, AX_UNSUPPORTED, -25208] {
+            assert!(wechat_menu_fallback(WECHAT, Failure::FocusRead(status)));
+            assert!(!wechat_menu_fallback(CODEX, Failure::FocusRead(status)));
+        }
+        for failure in [
+            Failure::Accessibility,
+            Failure::SecureInput,
+            Failure::Sensitive,
+            Failure::FocusRead(-25204),
+            Failure::FocusRead(-25211),
+            Failure::FocusElementChanged,
+        ] {
+            assert!(!wechat_menu_fallback(WECHAT, failure));
+        }
     }
 
     #[test]

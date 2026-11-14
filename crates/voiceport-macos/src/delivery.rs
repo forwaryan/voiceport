@@ -1,19 +1,23 @@
 //! Focused macOS text delivery. Construction is inert; `begin` captures the
 //! target only after the user starts dictation. Call every operation on the
-//! application main thread. No helper process, clipboard paste, or Return key is
-//! used for automatic delivery.
+//! application main thread. WeChat's unreadable main window has a guarded
+//! clipboard/native-menu path; no helper process or Return key is used.
 #[doc(hidden)]
 pub mod model;
 mod native;
 
-use model::{ChunkedInput, Failure, OwnedSpan, Target, Terminal, TerminalTarget};
+use model::{
+    ChunkedInput, Failure, MenuPaste, OwnedSpan, PasteTarget, Target, Terminal, TerminalTarget,
+};
 
 const RETAINED: &str = "无法确认原输入框支持安全写入，文字保留在面板。";
+const WECHAT_REQUESTED: &str = "已请求微信原生粘贴，请检查输入框；最终文字已复制。";
 
 enum Session {
     Ordinary(OwnedSpan<Box<dyn Target>>),
     Keyboard(ChunkedInput<Box<dyn Target>>),
     Terminal(Terminal<Box<dyn TerminalTarget>>),
+    MenuPaste(MenuPaste<Box<dyn PasteTarget>>),
 }
 
 /// Holds text only for the currently captured field and never logs its content.
@@ -78,6 +82,10 @@ impl Delivery {
             native::Captured::Terminal(target) => {
                 self.method = Some("terminal");
                 Terminal::capture(target).map(Session::Terminal)
+            }
+            native::Captured::MenuPaste(target) => {
+                self.method = Some("wechat_menu_paste");
+                MenuPaste::capture(target).map(Session::MenuPaste)
             }
         });
         match result {
@@ -147,6 +155,10 @@ impl Delivery {
             Some(Session::Keyboard(input)) => {
                 (input.verify(), "实时预览保留在面板；停录后输入最终文字。")
             }
+            Some(Session::MenuPaste(paste)) => (
+                paste.verify(),
+                "微信兼容听写：停录后复制最终文字并请求原生粘贴。",
+            ),
             None => return self.retained(),
         };
         self.result_message(result, success)
@@ -167,6 +179,10 @@ impl Delivery {
         match session {
             Session::Ordinary(_) => "已保留原输入框中的实时文字。".to_owned(),
             Session::Keyboard(_) => "正在等待最终转写，完成后输入原光标。".into(),
+            Session::MenuPaste(paste) => {
+                let result = paste.verify();
+                self.result_message(result, "正在等待最终文字，完成后复制并请求微信粘贴。")
+            }
             Session::Terminal(terminal) => {
                 let result = terminal.flush();
                 self.result_message(
@@ -215,6 +231,15 @@ impl Delivery {
                     self.result_message(result, "已在原输入框输入最终文字，请检查后自行发送。")
                 }
             }
+            Session::MenuPaste(paste) => {
+                let result = paste.submit(text);
+                if result.is_ok() && paste.has_pending() {
+                    self.session = Some(session);
+                    "最终文字已复制，正在请求微信原生粘贴。".into()
+                } else {
+                    self.result_message(result, "没有可粘贴的文字。")
+                }
+            }
             Session::Terminal(terminal) => {
                 let result = terminal.update(text, true);
                 match result {
@@ -244,6 +269,7 @@ impl Delivery {
             Some(Session::Ordinary(span)) => span.has_pending(),
             Some(Session::Keyboard(input)) => input.has_pending(),
             Some(Session::Terminal(terminal)) => terminal.has_pending(),
+            Some(Session::MenuPaste(paste)) => paste.has_pending(),
             None => false,
         }
     }
@@ -256,6 +282,7 @@ impl Delivery {
             None => return None,
             Some(Session::Ordinary(span)) if !span.has_pending() => return None,
             Some(Session::Keyboard(input)) if !input.has_pending() => return None,
+            Some(Session::MenuPaste(paste)) if !paste.has_pending() => return None,
             _ => {}
         }
         if let Err(failure) = self.on_main() {
@@ -299,6 +326,25 @@ impl Delivery {
                 }
             };
         }
+        if let Some(Session::MenuPaste(paste)) = self.session.as_mut() {
+            return match paste.poll() {
+                Ok(true) => {
+                    let requested = paste.requested();
+                    self.session = None;
+                    Some(if requested {
+                        WECHAT_REQUESTED.into()
+                    } else {
+                        "没有请求微信粘贴。".into()
+                    })
+                }
+                Ok(false) => Some("最终文字已复制，正在等待微信原生粘贴入口。".into()),
+                Err(failure) => {
+                    self.failure = Some(failure);
+                    self.session = None;
+                    Some(failure.message())
+                }
+            };
+        }
         let Some(Session::Terminal(terminal)) = self.session.as_mut() else {
             return None;
         };
@@ -335,6 +381,7 @@ impl Delivery {
                 Some(Session::Ordinary(span)) => span.seal(),
                 Some(Session::Terminal(terminal)) => terminal.seal(),
                 Some(Session::Keyboard(_)) => {}
+                Some(Session::MenuPaste(paste)) => paste.end(),
                 None => {}
             }
             if self.has_pending() {
@@ -361,6 +408,7 @@ impl Delivery {
                 }
                 Session::Terminal(terminal) => terminal.end(),
                 Session::Keyboard(input) => input.end(),
+                Session::MenuPaste(paste) => paste.end(),
             }
         }
     }

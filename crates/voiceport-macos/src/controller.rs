@@ -729,7 +729,13 @@ impl Controller {
                                 self.submit_input(Some(incoming));
                             }
                             if self.state.phase == Phase::Recording {
-                                self.message = "正在录音；再次按快捷键停止。".into();
+                                self.message =
+                                    if self.delivery.method() == Some("wechat_menu_paste") {
+                                        "微信兼容听写中；停止后会复制最终文字并请求菜单粘贴。"
+                                    } else {
+                                        "正在录音；再次按快捷键停止。"
+                                    }
+                                    .into();
                             }
                             self.preview_status = if self.recorded_source.streaming() {
                                 "Paraformer 本地流式识别（模型在后台载入）"
@@ -874,6 +880,12 @@ impl Controller {
                         self.delivery_status =
                             self.delivery.deliver(&self.transcript, self.allow_delivery);
                         self.message = if self.testing { if self.transcript.is_empty() { "样例接口已响应：没有识别到语音（内置样例为一秒静音）；未验证识别质量。" } else { "样例接口已响应，返回文字见面板；静音样例不能证明识别质量。" } } else if self.transcript.is_empty() { "没有识别到语音。" } else { "最终转写完成。" }.into();
+                        if self.allow_delivery
+                            && !self.transcript.is_empty()
+                            && self.delivery.method() == Some("wechat_menu_paste")
+                        {
+                            self.message = self.delivery_status.clone();
+                        }
                         self.recorder.finish();
                         self.recording = None;
                     }
@@ -888,6 +900,9 @@ impl Controller {
         self.wait_for_delivery();
         if let Some(status) = self.delivery.poll() {
             self.delivery_status = status;
+            if self.delivery.method() == Some("wechat_menu_paste") {
+                self.message = self.delivery_status.clone();
+            }
         }
         if self.state.phase == Phase::Delivering && !self.delivery.has_pending() {
             self.state.phase = self.delivery_settle.take().unwrap_or(Phase::Ready);
