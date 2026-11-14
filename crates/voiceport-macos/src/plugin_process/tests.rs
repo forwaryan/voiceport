@@ -31,6 +31,69 @@ fn run(script: &str) -> Result<String, Failure> {
         Duration::from_secs(3),
     )
 }
+/// Opt-in live QQ verification. Inputs must be owned synthetic speech; never
+/// starts QQ, logs in, records a microphone, or runs in the normal test suite.
+#[test]
+#[ignore = "requires explicit QQ bridge, synthetic WAV, and upload authorization"]
+fn qq_smartptt_live_owned_process() {
+    use std::os::unix::fs::OpenOptionsExt;
+    let input = |name: &str| std::path::PathBuf::from(std::env::var(name).expect(name));
+    let manifest = read_manifest(&input("VOICEPORT_QQ_PROBE_MANIFEST")).unwrap();
+    assert_eq!(manifest.id, "qq.smartptt");
+    manifest.validate_program().unwrap();
+    let config: BTreeMap<String, String> =
+        serde_json::from_slice(&std::fs::read(input("VOICEPORT_QQ_PROBE_CONFIG")).unwrap())
+            .unwrap();
+    let wav = std::fs::read(input("VOICEPORT_QQ_PROBE_WAV")).unwrap();
+    let result_path = input("VOICEPORT_QQ_PROBE_RESULT");
+    let mut attempt = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(result_path.with_extension("attempt.json"))
+        .unwrap();
+    attempt
+        .write_all(b"{\"operation\":\"live_qq_host_execute_owned\",\"synthetic_audio\":true}\n")
+        .unwrap();
+    attempt.sync_all().unwrap();
+    let custody = Custody::default();
+    let started = Instant::now();
+    let result = execute_owned(
+        &manifest,
+        &config,
+        &wav,
+        "zh",
+        &CancellationToken::new(),
+        Duration::from_secs(110),
+        &custody,
+    );
+    let report = serde_json::json!({
+        "elapsed_ms": started.elapsed().as_millis(),
+        "custody_unresolved": custody.unresolved(),
+        "text": result.as_ref().ok(),
+        "error": result.as_ref().err().map(ToString::to_string),
+    });
+    let mut output = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(result_path)
+        .unwrap();
+    output
+        .write_all(&serde_json::to_vec_pretty(&report).unwrap())
+        .unwrap();
+    output.sync_all().unwrap();
+    let text = result.unwrap();
+    assert!(!text.trim().is_empty());
+    if let Ok(expected) = std::env::var("VOICEPORT_QQ_PROBE_EXPECTED") {
+        assert!(text.contains(&expected), "unexpected native recognition");
+    }
+    assert!(
+        !custody.unresolved(),
+        "adapter process group must be released"
+    );
+}
+
 #[test]
 fn jsonl_audio_config_and_environment_are_real() {
     let script = r#"import json,sys,os,base64,struct

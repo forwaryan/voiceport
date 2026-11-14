@@ -205,9 +205,25 @@ class RealBundleTests(unittest.TestCase):
             cls.scope = tempfile.TemporaryDirectory(prefix='voiceport-packaging-tests-')
             cls.addClassCleanup(cls.scope.cleanup)
             cls.app = pathlib.Path(cls.scope.name).resolve() / 'VoicePort.app'
-            subprocess.run(['bash', str(ROOT / 'scripts/package_app.sh'), '--skip-build'], cwd=cls.scope.name,
-                           env=dict(os.environ, VOICEPORT_APP_DIRECTORY=str(cls.app), CARGO_NET_OFFLINE='true'),
+            result = subprocess.run(['bash', str(ROOT / 'scripts/package_app.sh'), '--skip-build'], cwd=cls.scope.name,
+                                    env=dict(os.environ, VOICEPORT_APP_DIRECTORY=str(cls.app), CARGO_NET_OFFLINE='true'),
+                                    capture_output=True, text=True)
+            if result.returncode:
+                raise AssertionError(f'package fixture failed (exit {result.returncode}):\n{result.stdout}\n{result.stderr}')
+
+    def test_bundle_correspondence_normalizes_distribution_signature_metadata(self):
+        # Real codesign exercises runtime/entitlements/CLI identifier differences,
+        # without a certificate, timestamp network request, or system permission.
+        with tempfile.TemporaryDirectory() as temp:
+            app = pathlib.Path(temp) / 'VoicePort.app'
+            shutil.copytree(self.app, app)
+            subprocess.run(['codesign', '--force', '--sign', '-', '--options', 'runtime', '--timestamp=none',
+                            '--identifier', 'io.github.forwaryan.voiceport.cli', str(app / 'Contents/MacOS/voiceport')],
                            check=True, capture_output=True)
+            subprocess.run(['codesign', '--force', '--sign', '-', '--options', 'runtime', '--timestamp=none',
+                            '--entitlements', str(ROOT / 'resources/VoicePort.entitlements'), str(app)],
+                           check=True, capture_output=True)
+            self.assertTrue(validate(app, self.native)['signed_copy_matches'])
 
     def test_bundle_contains_rust_main_without_helper(self):
         self.assertTrue(validate(self.app, self.native)['main_signed_copy_matches'])

@@ -1,6 +1,22 @@
 # 验证记录
 
-更新：2026-11-08。本文件记录实际执行范围；历史 loop 任务执行状态以本机 .voiceport/loop-state.json 为准。
+更新：2026-11-14。本文件记录实际执行范围；历史 loop 任务执行状态以本机 .voiceport/loop-state.json 为准。
+
+## 正式 macOS 发布流程（2026-11-14）
+
+新增 Developer ID 发布模式、公证 prepare/submit/resume 与手动 GitHub 构建工作流。完整 PackagingTests 本轮 64 项通过（103.260 秒，exit 0），涵盖持久身份、Developer ID/Team ID 约束、无证书拒绝、公证未知回执防重交、原 UUID 恢复、非 Accepted/错误 ID/Gatekeeper 拒绝不生成发行包，以及现有安装保护和产物对应检查。
+
+真实临时 ad-hoc 包启用 hardened runtime、主程序 entitlements 和独立 CLI identifier 后，仍通过代码对应检查；该测试不访问时间戳服务。归一化仅修改校验器拥有的临时副本，原包实际签名另行验证。首次完整回归发现 `codesign --options none` 无效，并发现旧签名元数据导致字节差异；已改为临时副本清除旧签名后用数值 0 重置 flags，真实夹具与完整回归通过。
+
+真实 release prepare 入口在显式 ad-hoc 身份下 exit 1，拒绝发生在输出目录创建和构建之前。Python、shell、workflow YAML 和内嵌 Python 语法检查通过。本机缺有效 Apple 代码签名身份，尚未执行 Developer ID 实签、Apple 时间戳/公证、GitHub 发布构建、正式包下模型推理或跨版本 TCC 连续性实测；不将这些离线/临时签名结果扩大为正式分发验收。未替换日常 App、录音、上传音频或向目标输入文字。
+
+## 辅助功能焦点惰性初始化（2026-11-14）
+
+本机 Orca（Electron 43.8.6）实际返回 AXFocusedUIElement/-25212，但辅助功能授权有效。原生只读实验先读取应用 AXRole，100 毫秒后焦点元素即可读取；生产修复采用此标准读取，并由主循环最多异步等待 2 秒。准备前固定原应用/窗口并监测用户操作，变更即终止；不设置 AXManualAccessibility 或 AXEnhancedUserInterface。生产捕获探针实际识别到 Orca 的 AXTextField / Terminal input，未提交文字；该次捕获时树已就绪，异步分支另由原生惰性初始化实验与离线状态测试支持，不能合称完整语音验收。
+
+macOS 测试通过：112 项库测试、12 项录音存储测试、23 项投递测试及独立主线程 stop_failure 用例；1 项既有人工模型推理忽略。本轮新增 9 项回归覆盖准备期间的最终结果、迟到预览、取消/焦点失败、UTF-16 上限、等待期限，以及投递失败/复制状态展示。严格 Clippy、格式与 release 验包通过。未启动麦克风或上传音频，未向用户输入框写测试内容；真实听写端到端仍需用户主动操作。
+
+修复版安装到固定路径后，实际进程报告辅助功能未授权、麦克风/系统语音权限未确定。此本机 ad-hoc 更新仍需系统重新确认权限，不将终端诊断的信任用于替代 App 自身权限；当前实例保持空闲，旧结果及旧包已私有备份。
 
 ## 光标输入与应用入口（2026-11-08）
 
