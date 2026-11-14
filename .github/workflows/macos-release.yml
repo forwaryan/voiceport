@@ -1,0 +1,145 @@
+name: Signed macOS package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-macos-package
+  cancel-in-progress: false
+
+jobs:
+  package:
+    if: github.ref == 'refs/heads/main'
+    environment: macos-release
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSTUP_TOOLCHAIN: 1.95.0
+      PYTHONDONTWRITEBYTECODE: '1'
+      VOICEPORT_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      VOICEPORT_CODESIGN_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Check release variables and runner architecture
+        run: |
+          test "$(uname -m)" = arm64
+          if [[ "$GITHUB_RUN_ATTEMPT" != 1 ]]; then
+            printf 'Do not rerun a potentially submitted release; recover its saved submission ID.\n' >&2
+            exit 1
+          fi
+          python3 -I -c 'import os,re; assert re.fullmatch(r"[A-Z0-9]{10}", os.environ["VOICEPORT_TEAM_ID"]), "Set APPLE_TEAM_ID"; assert re.fullmatch(r"[A-Fa-f0-9]{40}", os.environ["VOICEPORT_CODESIGN_IDENTITY"]), "Set MACOS_SIGNING_IDENTITY to the Developer ID SHA1"'
+
+      - name: Install Rust
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+
+      - name: Build and check release products before importing credentials
+        run: |
+          cargo fetch --locked
+          CARGO_NET_OFFLINE=true bash scripts/test_rust.sh
+          CARGO_NET_OFFLINE=true cargo build --workspace --release --locked
+          env -u VOICEPORT_CODESIGN_IDENTITY -u VOICEPORT_TEAM_ID CARGO_NET_OFFLINE=true python3 -I -m unittest discover -s Tests/PackagingTests -v
+
+      - name: Import release credentials into an ephemeral Keychain
+        env:
+          CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_PRIVATE_KEY: ${{ secrets.APPSTORE_CONNECT_PRIVATE_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPSTORE_CONNECT_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPSTORE_CONNECT_ISSUER_ID }}
+        run: |
+          python3 -I - <<'PY'
+          import base64, os, pathlib, secrets, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          keychain = root / 'voiceport-release.keychain-db'
+          certificate = root / 'voiceport-certificate.p12'
+          notary_key = root / 'voiceport-notary-key.p8'
+          required = ['CERTIFICATE_P12', 'CERTIFICATE_PASSWORD', 'NOTARY_PRIVATE_KEY', 'NOTARY_KEY_ID', 'NOTARY_ISSUER_ID']
+          if not all(os.environ.get(name) for name in required):
+              raise SystemExit('Configure all macos-release environment secrets before signing')
+          password = secrets.token_urlsafe(32)
+          def run(argv):
+              result = subprocess.run(argv, capture_output=True)
+              if result.returncode:
+                  raise SystemExit('Credential setup failed; sensitive command arguments and output suppressed')
+          try:
+              for path, content in [(certificate, base64.b64decode(os.environ['CERTIFICATE_P12'], validate=True)),
+                                    (notary_key, os.environ['NOTARY_PRIVATE_KEY'].encode())]:
+                  descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                  with os.fdopen(descriptor, 'wb') as target:
+                      target.write(content)
+              run(['security', 'create-keychain', '-p', password, str(keychain)])
+              run(['security', 'set-keychain-settings', '-lut', '3600', str(keychain)])
+              run(['security', 'unlock-keychain', '-p', password, str(keychain)])
+              run(['security', 'import', str(certificate), '-k', str(keychain), '-P', os.environ['CERTIFICATE_PASSWORD'], '-T', '/usr/bin/codesign'])
+              run(['security', 'set-key-partition-list', '-S', 'apple-tool:,apple:,codesign:', '-s', '-k', password, str(keychain)])
+              # This is an ephemeral GitHub-hosted runner, never a user's login Keychain.
+              run(['security', 'list-keychains', '-d', 'user', '-s', str(keychain), str(pathlib.Path.home() / 'Library/Keychains/login.keychain-db')])
+              run(['xcrun', 'notarytool', 'store-credentials', 'voiceport-release', '--key', str(notary_key),
+                   '--key-id', os.environ['NOTARY_KEY_ID'], '--issuer', os.environ['NOTARY_ISSUER_ID'], '--keychain', str(keychain)])
+              with open(os.environ['GITHUB_ENV'], 'a') as output:
+                  output.write('VOICEPORT_NOTARY_KEYCHAIN=' + str(keychain) + '\n')
+          finally:
+              certificate.unlink(missing_ok=True)
+              notary_key.unlink(missing_ok=True)
+          PY
+
+      - name: Prepare Developer ID package
+        run: python3 -I scripts/release_macos.py prepare dist/macos-release --team-id "$VOICEPORT_TEAM_ID" --skip-build
+
+      - name: Submit once, staple and assess
+        run: python3 -I scripts/release_macos.py submit dist/macos-release --notary-profile voiceport-release --keychain "$VOICEPORT_NOTARY_KEYCHAIN"
+
+      # Upload only accepted, stapled artifacts. No automatic public GitHub release.
+      - name: Retain verified release package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: VoicePort-macos-arm64
+          path: |
+            dist/macos-release/VoicePort-macos-arm64.zip
+            dist/macos-release/release.json
+          if-no-files-found: error
+
+      - name: Retain submission receipts for recovery
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-notarization-receipts
+          path: |
+            dist/macos-release/*.json
+            dist/macos-release/journal.jsonl
+          if-no-files-found: ignore
+
+      # This candidate is solely for resuming the original submission, never a release.
+      - name: Retain original signed candidate after failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-recovery-candidate-not-for-distribution
+          path: dist/macos-release/notarization-upload.zip
+          if-no-files-found: ignore
+
+      - name: Remove ephemeral signing credentials
+        if: always()
+        run: |
+          python3 -I - <<'PY'
+          import os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          keychain = root / 'voiceport-release.keychain-db'
+          failed = False
+          if keychain.exists():
+              failed = subprocess.run(['security', 'delete-keychain', str(keychain)], capture_output=True).returncode != 0
+          for name in ['voiceport-certificate.p12', 'voiceport-notary-key.p8']:
+              (root / name).unlink(missing_ok=True)
+          if failed:
+              raise SystemExit('Ephemeral Keychain cleanup failed')
+          PY

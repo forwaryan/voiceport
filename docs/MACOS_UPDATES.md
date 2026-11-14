@@ -6,7 +6,7 @@
 
 macOS 通过代码签名要求（designated requirement，DR）识别程序是否属于同一个应用。Apple TN2206 说明，新版本应该满足旧版本的 DR。固定 bundle ID 或目录名称本身不能证明签名身份连续。
 
-默认 ad-hoc 签名不使用持久证书，DR 可能绑定会随构建改变的代码哈希。系统设置中的开关即使显示开启，实际运行进程也可能未获辅助功能权限。更换签名证书、在本地构建与正式发行版之间切换，也可能需要重新授权。不能以固定路径或签名检查通过承诺所有系统版本永久免授权。
+未配置持久身份时使用的 ad-hoc 签名不使用持久证书，DR 可能绑定会随构建改变的代码哈希。系统设置中的开关即使显示开启，实际运行进程也可能未获辅助功能权限。更换签名证书、在本地构建与正式发行版之间切换，也可能需要重新授权。不能以固定路径或签名检查通过承诺所有系统版本永久免授权。
 
 ## 使用固定签名身份打包
 
@@ -16,7 +16,7 @@ macOS 通过代码签名要求（designated requirement，DR）识别程序是�
 security find-identity -v -p codesigning
 ```
 
-选定一个长期复用的 Apple Development 或 Developer ID Application 身份，使用其指纹打包；不要每次创建新证书。私钥保留在 Keychain，不放入源码、环境配置文件或 GitHub。正式对外分发还需要按 Apple 流程配置 Developer ID、hardened runtime 和公证；本脚本的证书签名支持本身不等于已公证的发行包。
+正式分发应使用 Apple Developer 账号的 Developer ID Application 身份，保持 Team ID、bundle ID 和签名要求连续，并按 Apple 流程配置 hardened runtime 和公证。选定身份后长期复用，不要每次创建新证书。Apple Development 可用于本机开发，但不能替代正式分发流程。私钥保留在 Keychain，不放入源码、环境配置文件或 GitHub；本脚本的证书签名支持本身不等于已公证的发行包。
 
 ```sh
 VOICEPORT_CODESIGN_IDENTITY='证书指纹' \
@@ -24,9 +24,88 @@ VOICEPORT_APP_DIRECTORY="$PWD/dist/release/VoicePort.app" \
 bash scripts/package_app.sh
 ```
 
-已有 release 编译结果时加 `--skip-build`。签名身份由调用方明确选择；指定身份不可用会直接失败，不会静默降级成 ad-hoc。未指定时仍允许无开发者账号的本地构建，但会明确警告权限可能需要重授。
+已有 release 编译结果时加 `--skip-build`。为了让后续打包默认复用同一身份，可以在获得可用证书后，将公开 SHA1 指纹保存为当前用户固定路径 `~/.config/voiceport/signing.json` 的普通 JSON 文件（路径及父目录不能是符号链接）：
 
-自签名证书在部分本机开发场景也可提供持久签名身份，但适用性取决于系统子策略和信任配置；这里不自动生成证书、信任新根证书、更改 Keychain 搜索列表或修改 TCC 数据库。没有有效身份时，先获得可用签名证书，再接入上面的参数。
+```json
+{"schema_version": 1, "identity": "0123456789ABCDEF0123456789ABCDEF01234567"}
+```
+
+上面的指纹仅为格式示例，须替换成 `security find-identity -v -p codesigning` 列出的真实 40 位十六进制 SHA1。文件只接受 `schema_version` 和 `identity` 两个字段，不存放私钥、密码或可执行配置。脚本只读取此固定用户路径，不执行或 source 配置，也不写入实际配置或 Keychain。
+
+`VOICEPORT_CODESIGN_IDENTITY` 显式选择优先于保存的身份；环境变量支持 SHA1 指纹或完整且唯一的证书名称，最终传给 `codesign` 的是核验后的指纹。无显式选择时读取保存的指纹。打包在编译或暂存前通过 `security find-identity -v -p codesigning` 核验所选身份；不可用、名称不唯一或查询失败都会中止，不会降级。保存配置无效、无法读取或含符号链接时，即使有环境变量覆盖也会明确失败，须先修正配置。已保存身份时拒绝显式 `VOICEPORT_CODESIGN_IDENTITY=-`，避免意外切回 ad-hoc 导致权限身份变化。
+
+只有没有保存配置、也没有选择证书时，才保留本地 ad-hoc 构建行为并明确警告权限可能需要重授；此时也可显式选择 `-`。固定签名身份用于保持后续更新的身份连续性，不保证所有 macOS 版本永远无需重新授权。这里不自动生成或信任自签名证书、更改 Keychain 搜索列表或修改 TCC 数据库；自签名不能替代上述正式发行流程。
+
+## 成熟项目的实际做法
+
+以下按固定提交核对，区分开发包、CI 产物与正式发布：
+
+| 项目 | 已核对的实现 | 对本项目的启示 |
+| --- | --- | --- |
+| [AltTab 正式 CI](https://github.com/lwouis/alt-tab-macos/blob/ec4f94a8b98a5b9df152af64f74aa4f9f811dd18/scripts/codesign/setup_ci_master.sh) / [公证打包](https://github.com/lwouis/alt-tab-macos/blob/ec4f94a8b98a5b9df152af64f74aa4f9f811dd18/scripts/package_and_notarize_release.sh) | 从受保护配置导入证书，公证必须得到 Accepted，再 staple；[本机 setup](https://github.com/lwouis/alt-tab-macos/blob/ec4f94a8b98a5b9df152af64f74aa4f9f811dd18/scripts/codesign/setup_local.sh) 单独生成自签名证书 | 本机开发签名与正式发布分开；不能从开发脚本推断发行包身份 |
+| [VS Code 签名](https://github.com/microsoft/vscode/blob/d53b9e1def17b1919021ee08c87a5b9453207fe2/build/darwin/sign.ts) / [发布公证](https://github.com/microsoft/vscode/blob/d53b9e1def17b1919021ee08c87a5b9453207fe2/build/azure-pipelines/darwin/codesign.ts) | 从构建配置读取签名身份与专用 Keychain，启用 hardened runtime，发布执行签名和公证 | 使用明确身份与受保护凭据；证书不可用时中止发布 |
+| [GitHub CLI 发布说明](https://github.com/cli/cli/blob/3d5a9e355a837f2f5ee78d7484c118cc1342ad1a/docs/release-process-deep-dive.md#signing) | production 导入 Developer ID Application，使用 `--timestamp --options=runtime`，通过 Keychain profile 调用 notarytool | 正式发布需要开发者证书和独立公证资格；GitHub 托管代码不会自动提供 Apple 签名 |
+| [Rectangle 项目设置](https://github.com/rxhanson/Rectangle/blob/875182d2690e4b8fdf485467b31a3233d630581f/Rectangle.xcodeproj/project.pbxproj) / [公开构建 CI](https://github.com/rxhanson/Rectangle/blob/875182d2690e4b8fdf485467b31a3233d630581f/.github/workflows/build.yml) | 固定 Team ID，开发/正式 bundle ID 分开，Release 启用 hardened runtime，使用 Sparkle；公开 CI 显式 ad-hoc | CI 构建成功不等于正式发行；自动更新框架与 TCC 身份连续是不同层次 |
+
+VoicePort 的推荐流程是：取得可用的 Developer ID Application 身份并固定 Team ID/bundle ID，保存公开指纹，构建时复用身份；正式发行还要启用 hardened runtime、时间戳、公证及 staple，验收后再分发。首次从 ad-hoc 迁移只做一次正常系统授权；后续每个包继续满足已安装版本的 DR，并以实际运行进程核验权限。公证解决 Gatekeeper 分发检查，不代替用户授予辅助功能、麦克风或语音识别权限。
+
+**当前实现范围：** `package_app.sh --distribution` 已支持 Developer ID、hardened runtime 和安全时间戳，`release_macos.py` 管理公证、staple、Gatekeeper 与最终 ZIP；`install_app.py` 验证更新签名连续性。没有真实证书时不能把本地包称为已正式签名或已实现跨更新保留权限。证书续期也应核验 DR 连续性，不能仅因 SHA1 改变就断言必须重新授权。
+
+## 正式发布与首次配置
+
+需要 Apple Developer Program 成员资格、Keychain 中包含私钥的 Developer ID Application 证书，以及 Apple 公证凭据。GitHub 仓库、免费构建额度或普通 Apple ID 不会自动提供这些资格。由有权限的团队成员在 [Apple 开发者账户](https://developer.apple.com/account/)中创建或管理证书；不要将私钥、密码、`.p12` 或 `.p8` 发进聊天或提交到 Git。当前脚本不会创建开发者账号、购买资格、导出私钥或修改本机信任。
+
+选择该证书的真实 SHA1，并按上文保存 `signing.json`；Team ID 是该证书所属团队的 10 位标识。正式打包显式核验这两个条件，不能用 Apple Development、自签名或 ad-hoc 替代：
+
+```sh
+export VOICEPORT_TEAM_ID='你的10位TeamID'
+# 已保存指纹时不必再设置 VOICEPORT_CODESIGN_IDENTITY。
+VOICEPORT_APP_DIRECTORY="$PWD/dist/signed/VoicePort.app" \
+  bash scripts/package_app.sh --distribution --skip-build
+```
+
+GUI 与 CLI 均带 hardened runtime 和安全时间戳。主程序仅带 `audio-input` 与 `disable-library-validation` 两项 entitlement：前者用于麦克风，后者用于现有本地模型后端加载单独安装在 Orca 中、由其他身份签名的 sherpa/onnx 动态库。CLI 不带这两项权限；不启用 JIT、调试或不受限可执行内存。依据：[Apple hardened runtime](https://developer.apple.com/documentation/xcode/configuring-the-hardened-runtime)、[audio-input](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.device.audio-input)、[library validation](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.cs.disable-library-validation)。这些 entitlement 不自动授予 TCC 权限。
+
+完整发行使用以下三个入口；输出目录必须尚不存在：
+
+```sh
+python3 -I scripts/release_macos.py prepare dist/release-0.3.3 \
+  --team-id "$VOICEPORT_TEAM_ID" --skip-build
+# 在本机交互配置公证凭据；按工具提示在终端输入，不写进命令或源码。
+xcrun notarytool store-credentials voiceport-notary
+python3 -I scripts/release_macos.py submit dist/release-0.3.3 \
+  --notary-profile voiceport-notary
+```
+
+`prepare` 只构建/签名并生成提交候选；代码签名的安全时间戳会访问 Apple，尚不会上传 App 公证。`submit` 将该候选提交 Apple，记录原始回执与 submission UUID，再等待 Accepted，执行 staple、票据校验和 Gatekeeper assessment。全部通过后才生成 `VoicePort-macos-arm64.zip` 与带 SHA256 的 `release.json`，供人工检查及分发。`notarization-upload.zip` 是恢复候选，不能当成已验收发行包。流程不会安装、退出或启动日常 App，也不录音、不上传音频或触发输入。
+
+中断后从原目录按已保存 ID 恢复，不重新提交：
+
+```sh
+python3 -I scripts/release_macos.py resume dist/release-0.3.3 \
+  --notary-profile voiceport-notary
+```
+
+每次命令调用前将意图 fsync 到 `journal.jsonl`，随后保存独立结果。已有 submit intent 会阻止再次上传；`resume` 可从成功上传的原始回执恢复 UUID，包括回执已保存但 completed 事件尚未写入的中断。如果上传回执确实未知且无 UUID，先核查原 journal 和 Apple 公证历史，不能新建目录盲目重发。遗留 `.release-lock` 表示需确认原进程已退出和所有未知副作用；脚本不自动删除锁或接管仍运行流程。公证未 Accepted、文件变化、票据校验或 Gatekeeper 失败均不会产生可分发 ZIP。
+
+## GitHub 手动发布构建
+
+[Signed macOS package](../.github/workflows/macos-release.yml) 只允许在 `main` 手动触发，使用独立 `macos-release` environment；应在 GitHub 设置中为该 environment 配置 required reviewers 和 main 部署限制。它不在 PR 中读取签名凭据，不自动创建公开 Release。当前工作流文件不代表这些仓库设置或 secrets 已经配置。
+
+在该 environment 中配置：
+
+| 类型 | 名称 | 内容 |
+| --- | --- | --- |
+| Variable | `APPLE_TEAM_ID` | 真实 10 位团队标识 |
+| Variable | `MACOS_SIGNING_IDENTITY` | Developer ID Application 的 40 位 SHA1 |
+| Secret | `MACOS_CERTIFICATE_P12_BASE64` | 通过团队正常流程准备的证书及私钥导出，base64 编码 |
+| Secret | `MACOS_CERTIFICATE_PASSWORD` | 导出文件密码 |
+| Secret | `APPSTORE_CONNECT_PRIVATE_KEY` | Apple 公证 API 的 `.p8` 内容 |
+| Secret | `APPSTORE_CONNECT_KEY_ID` / `APPSTORE_CONNECT_ISSUER_ID` | 该 API key 的标识与 issuer |
+
+这些值仅在 GitHub secrets UI/团队已有凭据管理流程中设置，不能写入源码。CI 在导入凭据前构建并验证产品；在临时 Keychain 导入证书、保存公证 profile，随后移除明文临时文件，always 步骤清理 Keychain。签名身份必须匹配预期指纹与 Team ID，缺失不降级。正式产物 artifact 只含已验收 ZIP 和 manifest。
+
+失败时另保存公证回执，以及清楚标注不可分发的原始提交候选。不要直接 Re-run jobs：工作流会拒绝同一 run 的重跑，避免对未知提交重复上传。恢复时将原始候选与 receipts 下载到新的独立目录，先以团队预期 Team ID 核验包；用 `ditto -x -k notarization-upload.zip 恢复目录` 还原 `VoicePort.app`、保留原 prepared/journal/receipts，并运行 `resume`。CI 的临时 Keychain 不可恢复，需要在本机配置自己的公证 profile。没有已确认 UUID 时仍按上文核对 Apple 历史，不自动重交。首次运行还需实际验证 GitHub runner 为 arm64、证书链和公证资格；本地模拟测试不能证明真实 Apple/CI 发布成功。
 
 ## 安装到同一个位置
 
