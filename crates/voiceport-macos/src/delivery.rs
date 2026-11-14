@@ -87,9 +87,9 @@ impl Delivery {
                 self.method = Some("accessibility");
                 Session::Ordinary(OwnedSpan::capture(target)?)
             }
-            native::Captured::Keyboard(target) => {
+            native::Captured::Keyboard(target, pacing) => {
                 self.method = Some("keyboard_final");
-                Session::Keyboard(ChunkedInput::capture(target)?)
+                Session::Keyboard(ChunkedInput::capture_with_pacing(target, pacing)?)
             }
             native::Captured::Terminal(target) => {
                 self.method = Some("terminal");
@@ -561,7 +561,7 @@ mod preparation_tests {
             }
             Ok((self.polls.get() > 1).then(|| {
                 if self.keyboard {
-                    native::Captured::Keyboard(Box::new(Field))
+                    native::Captured::Keyboard(Box::new(Field), model::KeyboardPacing::Chunked)
                 } else {
                     native::Captured::Ordinary(Box::new(Field))
                 }
@@ -610,6 +610,68 @@ mod preparation_tests {
                 Some(&("final🙂".into(), true))
             );
             assert_eq!(delivery.failure_stage(), None);
+        }
+    }
+
+    #[test]
+    fn keyboard_pacing_survives_direct_and_delayed_capture() {
+        use std::cell::RefCell;
+
+        struct RecordingField(Rc<RefCell<Vec<String>>>);
+        impl Target for RecordingField {
+            fn read(&mut self) -> Result<model::Snapshot, Failure> {
+                Ok(model::Snapshot {
+                    text: String::new(),
+                    selection: model::TextRange {
+                        location: 0,
+                        length: 0,
+                    },
+                })
+            }
+            fn replace(
+                &mut self,
+                _: model::TextRange,
+                text: &str,
+                _: &model::Snapshot,
+            ) -> Result<(), Failure> {
+                self.0.borrow_mut().push(text.to_owned());
+                Ok(())
+            }
+        }
+        struct Ready(Option<native::Captured>);
+        impl native::Preparation for Ready {
+            fn poll(&mut self) -> Result<Option<native::Captured>, Failure> {
+                Ok(self.0.take())
+            }
+        }
+
+        for (pacing, first) in [
+            (model::KeyboardPacing::Chunked, "中文🙂"),
+            (model::KeyboardPacing::Scalar, "中"),
+        ] {
+            for delayed in [false, true] {
+                let writes = Rc::new(RefCell::new(Vec::new()));
+                let captured =
+                    native::Captured::Keyboard(Box::new(RecordingField(writes.clone())), pacing);
+                let mut delivery = Delivery::new();
+                if delayed {
+                    delivery
+                        .accept_capture(native::Captured::Preparing(Box::new(Ready(Some(
+                            captured,
+                        )))))
+                        .unwrap();
+                    delivery.queue_prepared_text("中文🙂", true);
+                    assert!(delivery.advance_preparation().unwrap());
+                } else {
+                    delivery.accept_capture(captured).unwrap();
+                }
+                assert!(writes.borrow().is_empty());
+                let Some(Session::Keyboard(input)) = delivery.session.as_mut() else {
+                    panic!("keyboard capture must retain its delivery path");
+                };
+                input.submit("中文🙂").unwrap();
+                assert_eq!(&*writes.borrow(), &[first.to_owned()]);
+            }
         }
     }
 
