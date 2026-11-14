@@ -74,9 +74,22 @@ def validate(app, target):
         normalized = pathlib.Path(temp) / 'normalized' / app.name
         normalized.parent.mkdir()
         shutil.copytree(app, normalized)
+        empty_entitlements = pathlib.Path(temp) / 'empty-entitlements.plist'
+        empty_entitlements.write_bytes(plistlib.dumps({}))
         for candidate in [twin, normalized]:
-            subprocess.run(['codesign', '--force', '--sign', '-', str(candidate / 'Contents/MacOS/voiceport')], check=True, capture_output=True)
-            subprocess.run(['codesign', '--force', '--sign', '-', str(candidate)], check=True, capture_output=True)
+            # Clear inherited signature metadata (including linker-signed versus
+            # certificate/ad-hoc allocation) in these disposable copies first.
+            subprocess.run(['codesign', '--remove-signature', str(candidate / 'Contents/MacOS/voiceport')],
+                           check=True, capture_output=True)
+            subprocess.run(['codesign', '--remove-signature', str(candidate)], check=True, capture_output=True)
+            # Normalize distribution runtime flags, entitlements and CLI identity
+            # as well as the certificate, so only executable correspondence remains.
+            options = ['codesign', '--force', '--sign', '-', '--options', '0',
+                       '--timestamp=none', '--entitlements', str(empty_entitlements)]
+            subprocess.run(options + ['--identifier', 'voiceport', str(candidate / 'Contents/MacOS/voiceport')],
+                           check=True, capture_output=True)
+            subprocess.run(options + ['--identifier', 'io.github.forwaryan.voiceport', str(candidate)],
+                           check=True, capture_output=True)
         assert sha(twin / 'Contents/MacOS/voiceport') == sha(normalized / 'Contents/MacOS/voiceport'), 'CLI does not match current Rust build plus signature'
         assert sha(twin / 'Contents/MacOS/voiceport-app') == sha(normalized / 'Contents/MacOS/voiceport-app'), 'main does not match this Rust voiceport-macos build plus bundle signature'
     return {

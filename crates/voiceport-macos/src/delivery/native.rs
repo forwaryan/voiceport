@@ -294,6 +294,104 @@ pub(super) enum Captured {
     Ordinary(Box<dyn Target>),
     Keyboard(Box<dyn Target>, KeyboardPacing),
     Terminal(Box<dyn TerminalTarget>),
+    Preparing(Box<dyn Preparation>),
+}
+
+pub(super) trait Preparation {
+    fn poll(&mut self) -> Result<Option<Captured>, Failure>;
+}
+
+/// Electron can build its native accessibility tree asynchronously after an
+/// assistive client first reads the application role. Bind the original window
+/// and observe user activity BEFORE that request; never adopt a later focus.
+struct FocusPreparation {
+    pid: libc::pid_t,
+    bundle: String,
+    window: OwnedCf,
+    monitor: Option<UserMonitor>,
+    started: Instant,
+    _main_only: std::marker::PhantomData<Rc<()>>,
+}
+
+fn application_window(pid: libc::pid_t) -> Result<OwnedCf, Failure> {
+    let app = OwnedCf::new(unsafe { AXUIElementCreateApplication(pid) }).ok_or(Failure::Focus)?;
+    let window = attribute(app.0, "AXFocusedWindow").map_err(Failure::FocusRead)?;
+    if unsafe { CFGetTypeID(window.0) != AXUIElementGetTypeID() } {
+        return Err(Failure::Focus);
+    }
+    Ok(window)
+}
+
+impl FocusPreparation {
+    fn start(pid: libc::pid_t, bundle: String) -> Result<Self, Failure> {
+        let monitor = UserMonitor::start()?;
+        let window = application_window(pid)?;
+        let preparation = Self {
+            pid,
+            bundle,
+            window,
+            monitor: Some(monitor),
+            started: Instant::now(),
+            _main_only: std::marker::PhantomData,
+        };
+        preparation.check()?;
+        let app =
+            OwnedCf::new(unsafe { AXUIElementCreateApplication(pid) }).ok_or(Failure::Focus)?;
+        // A standard read, not AXManualAccessibility / AXEnhancedUserInterface
+        // setters. Electron enables native APIs when an assistive client asks
+        // for its application role. Do this once, only on explicit dictation.
+        if attribute(app.0, "AXRole")
+            .ok()
+            .and_then(|value| value.string(100))
+            .as_deref()
+            != Some("AXApplication")
+        {
+            return Err(Failure::Role);
+        }
+        preparation.check()?;
+        Ok(preparation)
+    }
+
+    fn check(&self) -> Result<(), Failure> {
+        if !main_thread() {
+            return Err(Failure::MainThread);
+        }
+        if !trusted() {
+            return Err(Failure::Accessibility);
+        }
+        if secure_input() {
+            return Err(Failure::SecureInput);
+        }
+        self.monitor.as_ref().ok_or(Failure::Monitor)?.check()?;
+        let (pid, bundle) = frontmost()?;
+        if pid != self.pid || bundle != self.bundle {
+            return Err(Failure::FocusApplicationChanged);
+        }
+        let window = application_window(pid)?;
+        if unsafe { CFEqual(window.0, self.window.0) } == 0 {
+            return Err(Failure::FocusElementChanged);
+        }
+        Ok(())
+    }
+}
+
+fn waiting_for_focus(failure: Failure, elapsed: Duration) -> bool {
+    failure == Failure::FocusRead(AX_NO_VALUE) && elapsed < Duration::from_secs(2)
+}
+
+impl Preparation for FocusPreparation {
+    fn poll(&mut self) -> Result<Option<Captured>, Failure> {
+        self.check()?;
+        let element = match focused(self.pid) {
+            Ok(element) => element,
+            Err(failure) if waiting_for_focus(failure, self.started.elapsed()) => {
+                return Ok(None);
+            }
+            Err(failure) => return Err(failure),
+        };
+        self.check()?;
+        captured_target(self.pid, self.bundle.clone(), element, self.monitor.take()).map(Some)
+    }
 }
 
 fn keyboard_pacing(bundle: &str, role: &str, terminal: bool) -> Option<KeyboardPacing> {
@@ -339,11 +437,27 @@ pub(super) fn capture(
         return Err(Failure::SecureInput);
     }
     let (pid, bundle) = frontmost()?;
+    // Reject a changed shortcut target before any asynchronous preparation.
     if expected.is_some_and(|target| target.pid != pid || target.bundle != bundle) {
         return Err(Failure::FocusApplicationChanged);
     }
-    // Do not toggle AXManualAccessibility or any frontend permission/state.
-    let element = focused(pid)?;
+    let element = match focused(pid) {
+        Ok(element) => element,
+        Err(Failure::FocusRead(AX_NO_VALUE)) => {
+            return FocusPreparation::start(pid, bundle)
+                .map(|preparation| Captured::Preparing(Box::new(preparation)));
+        }
+        Err(failure) => return Err(failure),
+    };
+    captured_target(pid, bundle, element, None)
+}
+
+fn captured_target(
+    pid: libc::pid_t,
+    bundle: String,
+    element: OwnedCf,
+    monitor: Option<UserMonitor>,
+) -> Result<Captured, Failure> {
     // An unreadable Orca description cannot safely distinguish an editor from
     // its hidden terminal transport, so never fall back to document writes.
     let description = if bundle == ORCA {
@@ -362,7 +476,12 @@ pub(super) fn capture(
         bundle,
         element,
         terminal,
-        monitor: Some(UserMonitor::start()?),
+        // All targets are monitored before the first snapshot. Reuse the
+        // preparation monitor without restarting it or losing invalidation.
+        monitor: Some(match monitor {
+            Some(monitor) => monitor,
+            None => UserMonitor::start()?,
+        }),
         pending: None,
         _main_only: std::marker::PhantomData,
     };
@@ -1033,6 +1152,25 @@ mod tests {
             Err(Failure::Ownership)
         );
         assert_eq!(pending.observe(&next, now), Ok(ConfirmationAction::Done));
+    }
+
+    #[test]
+    fn preparation_waits_only_for_missing_focus_within_its_deadline() {
+        let missing = Failure::FocusRead(AX_NO_VALUE);
+        assert!(waiting_for_focus(missing, Duration::ZERO));
+        assert!(waiting_for_focus(missing, Duration::from_millis(1999)));
+        assert!(!waiting_for_focus(missing, Duration::from_secs(2)));
+        for failure in [
+            Failure::FocusRead(-25204),
+            Failure::FocusRead(-25211),
+            Failure::Accessibility,
+            Failure::SecureInput,
+            Failure::UserInput,
+            Failure::FocusApplicationChanged,
+            Failure::FocusElementChanged,
+        ] {
+            assert!(!waiting_for_focus(failure, Duration::ZERO));
+        }
     }
 
     #[test]

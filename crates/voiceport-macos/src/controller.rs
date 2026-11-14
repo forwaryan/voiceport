@@ -267,6 +267,12 @@ impl Controller {
         self.state.retry_available = false;
         self.message = format!("{message} 本轮未开始录音，已有文字保留在结果区。");
     }
+    /// Delivery feedback belongs only to the current automatic session.
+    pub(crate) fn delivery_failure_stage(&self) -> Option<&'static str> {
+        (self.allow_delivery && !self.testing)
+            .then(|| self.delivery.failure_stage())
+            .flatten()
+    }
     pub fn toggle(&mut self) {
         if self.state.phase == Phase::Recording {
             self.stop();
