@@ -8,7 +8,8 @@ const SERVICE_METHODS = Object.freeze([
   'removeKernelBdhUploadListener',
 ]);
 
-function install({ processObject = process, publish = () => {}, cachedModules = [] } = {}) {
+function install({ processObject = process, publish = () => {}, cachedModules = [],
+  onReady, onSession } = {}) {
   if (active.has(processObject)) return active.get(processObject);
   const restorers = [];
   const factories = new WeakSet();
@@ -36,6 +37,13 @@ function install({ processObject = process, publish = () => {}, cachedModules = 
     if (!stopped) {
       try { publish(snapshot()); } catch { /* Reporting must not break QQ. */ }
     }
+  }
+  function notify(callback, handles) {
+    if (stopped || typeof callback !== 'function') return;
+    try {
+      const result = callback(handles);
+      if (result && typeof result.then === 'function') Promise.resolve(result).catch(() => {});
+    } catch { /* Private callback failures must not break QQ or enter reports. */ }
   }
   function note(code) {
     if (!state.notes.includes(code) && state.notes.length < 16) {
@@ -88,6 +96,8 @@ function install({ processObject = process, publish = () => {}, cachedModules = 
     }
     state.stage = 'service_observed';
     emit();
+    // Runtime handles go only to this private callback, never diagnostic state.
+    notify(onReady, { session, service });
   }
   function observeListener(listener, session) {
     if (!listener || (typeof listener !== 'object' && typeof listener !== 'function')) return;
@@ -120,6 +130,7 @@ function install({ processObject = process, publish = () => {}, cachedModules = 
     sessions.add(session);
     state.observed.session_created = true;
     state.stage = 'session_observed';
+    notify(onSession, { session });
     const original = session.init;
     if (typeof original !== 'function') {
       note('session_init_missing');
