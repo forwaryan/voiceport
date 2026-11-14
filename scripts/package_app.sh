@@ -3,12 +3,14 @@ set -euo pipefail
 project_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_directory"
 skip_build=false
-if [[ $# -eq 1 && "${1:-}" == "--skip-build" ]]; then
-    skip_build=true
-elif [[ $# -ne 0 ]]; then
-    printf 'Usage: bash scripts/package_app.sh [--skip-build]\n' >&2
-    exit 2
-fi
+distribution=false
+for argument in "$@"; do
+    case "$argument" in
+        --skip-build) [[ "$skip_build" == false ]] || exit 2; skip_build=true ;;
+        --distribution) [[ "$distribution" == false ]] || exit 2; distribution=true ;;
+        *) printf 'Usage: bash scripts/package_app.sh [--skip-build] [--distribution]\n' >&2; exit 2 ;;
+    esac
+done
 app_directory="${VOICEPORT_APP_DIRECTORY:-$project_directory/dist/VoicePort.app}"
 app_directory="$(python3 -I -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$app_directory")"
 # Never replace a bundle that might be running. Verification uses an owned,
@@ -16,6 +18,12 @@ app_directory="$(python3 -I -c 'import os,sys; print(os.path.abspath(sys.argv[1]
 if [[ -e "$app_directory" || -L "$app_directory" ]]; then
     printf 'App destination already exists; choose an unused VOICEPORT_APP_DIRECTORY: %s\n' "$app_directory" >&2
     exit 1
+fi
+# Resolve and validate before building or staging; errors never fall back to ad-hoc.
+if [[ "$distribution" == true ]]; then
+    signing_identity="$(python3 -I scripts/signing_identity.py --distribution)"
+else
+    signing_identity="$(python3 -I scripts/signing_identity.py)"
 fi
 if [[ "$skip_build" == false ]]; then
     cargo build --workspace --release --locked
@@ -40,14 +48,17 @@ install -m 644 resources/AppIcon.icns "$staged_app/Contents/Resources/AppIcon.ic
 install -m 644 THIRD_PARTY_NOTICES.md "$staged_app/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp -R resources/third-party "$staged_app/Contents/Resources/third-party"
 plutil -lint "$staged_app/Contents/Info.plist"
-# Reuse one certificate across builds for a stable designated requirement.
-# Never silently fall back to ad-hoc signing when a chosen identity fails.
-signing_identity="${VOICEPORT_CODESIGN_IDENTITY:--}"
-if [[ "$signing_identity" == "-" ]]; then
-    printf 'Using ad-hoc signing; macOS permissions may require approval after updates.\n' >&2
+# Use the verified identity selected before the build for both signatures.
+if [[ "$distribution" == true ]]; then
+    codesign --force --sign "$signing_identity" --options runtime --timestamp \
+        --identifier io.github.forwaryan.voiceport.cli "$staged_app/Contents/MacOS/voiceport"
+    codesign --force --sign "$signing_identity" --options runtime --timestamp \
+        --entitlements resources/VoicePort.entitlements "$staged_app"
+    python3 -I scripts/distribution_signing.py "$staged_app" --team-id "$VOICEPORT_TEAM_ID"
+else
+    codesign --force --sign "$signing_identity" "$staged_app/Contents/MacOS/voiceport"
+    codesign --force --sign "$signing_identity" "$staged_app"
 fi
-codesign --force --sign "$signing_identity" "$staged_app/Contents/MacOS/voiceport"
-codesign --force --sign "$signing_identity" "$staged_app"
 python3 -I scripts/check_bundle.py "$staged_app" "$rust_main"
 # Reserve the destination exclusively, including against another packaging run.
 mkdir "$app_directory"

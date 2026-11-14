@@ -9,6 +9,7 @@ mod native;
 use model::{ChunkedInput, Failure, OwnedSpan, Target, Terminal, TerminalTarget};
 
 const RETAINED: &str = "无法确认原输入框支持安全写入，文字保留在面板。";
+const PREPARING: &str = "正在准备原输入框，请保持当前输入位置。";
 
 enum Session {
     Ordinary(OwnedSpan<Box<dyn Target>>),
@@ -21,6 +22,8 @@ enum Session {
 pub struct Delivery {
     session: Option<Session>,
     failure: Option<Failure>,
+    preparing: Option<Box<dyn native::Preparation>>,
+    prepared_text: Option<(String, bool)>,
     method: Option<&'static str>,
 }
 
@@ -35,6 +38,8 @@ impl Delivery {
         Self {
             session: None,
             failure: None,
+            preparing: None,
+            prepared_text: None,
             method: None,
         }
     }
@@ -66,30 +71,78 @@ impl Delivery {
         }
         self.failure = None;
         self.method = None;
-        let result = native::capture(target).and_then(|capture| match capture {
-            native::Captured::Ordinary(target) => {
-                self.method = Some("accessibility");
-                OwnedSpan::capture(target).map(Session::Ordinary)
-            }
-            native::Captured::Keyboard(target) => {
-                self.method = Some("keyboard_final");
-                ChunkedInput::capture(target).map(Session::Keyboard)
-            }
-            native::Captured::Terminal(target) => {
-                self.method = Some("terminal");
-                Terminal::capture(target).map(Session::Terminal)
-            }
-        });
+        let result = native::capture(target).and_then(|capture| self.accept_capture(capture));
         match result {
-            Ok(session) => {
-                self.session = Some(session);
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(failure) => {
                 self.failure = Some(failure);
                 Err(failure.message())
             }
         }
+    }
+
+    fn accept_capture(&mut self, capture: native::Captured) -> Result<(), Failure> {
+        self.session = Some(match capture {
+            native::Captured::Ordinary(target) => {
+                self.method = Some("accessibility");
+                Session::Ordinary(OwnedSpan::capture(target)?)
+            }
+            native::Captured::Keyboard(target) => {
+                self.method = Some("keyboard_final");
+                Session::Keyboard(ChunkedInput::capture(target)?)
+            }
+            native::Captured::Terminal(target) => {
+                self.method = Some("terminal");
+                Session::Terminal(Terminal::capture(target)?)
+            }
+            native::Captured::Preparing(preparation) => {
+                self.preparing = Some(preparation);
+                return Ok(());
+            }
+        });
+        Ok(())
+    }
+
+    fn queue_prepared_text(&mut self, text: &str, final_text: bool) -> String {
+        if text.encode_utf16().count() > model::MAX_TEXT {
+            self.discard_preparation();
+            self.failure = Some(Failure::Content);
+            return self.retained();
+        }
+        // A late preview cannot replace an already completed transcription.
+        if !self
+            .prepared_text
+            .as_ref()
+            .is_some_and(|(_, final_text)| *final_text)
+        {
+            self.prepared_text = Some((text.to_owned(), final_text));
+        }
+        PREPARING.to_owned()
+    }
+
+    /// Returns true once the bounded native preparation has completed or failed.
+    fn advance_preparation(&mut self) -> Result<bool, Failure> {
+        let Some(mut preparation) = self.preparing.take() else {
+            return Ok(true);
+        };
+        let result = match preparation.poll() {
+            Ok(Some(capture)) => self.accept_capture(capture).map(|()| true),
+            Ok(None) => {
+                self.preparing = Some(preparation);
+                Ok(false)
+            }
+            Err(failure) => Err(failure),
+        };
+        if let Err(failure) = result {
+            self.discard_preparation();
+            self.failure = Some(failure);
+        }
+        result
+    }
+
+    fn discard_preparation(&mut self) {
+        self.preparing = None;
+        self.prepared_text = None;
     }
 
     pub fn blocks_recording(&self) -> bool {
@@ -128,6 +181,9 @@ impl Delivery {
         if self.failure.is_some() {
             return self.retained();
         }
+        if self.preparing.is_some() {
+            return self.queue_prepared_text(text, false);
+        }
         let (result, success) = match self.session.as_mut() {
             Some(Session::Ordinary(span)) => {
                 let result = span.update(text, false);
@@ -161,6 +217,9 @@ impl Delivery {
         if self.failure.is_some() {
             return self.retained();
         }
+        if self.preparing.is_some() {
+            return PREPARING.to_owned();
+        }
         let Some(session) = self.session.as_mut() else {
             return self.retained();
         };
@@ -188,6 +247,9 @@ impl Delivery {
         if self.failure.is_some() {
             self.retain_preview();
             return self.retained();
+        }
+        if self.preparing.is_some() {
+            return self.queue_prepared_text(text, true);
         }
         let Some(mut session) = self.session.take() else {
             return self.retained();
@@ -239,19 +301,52 @@ impl Delivery {
         }
     }
 
+    /// Whether the original target is still preparing its accessibility tree.
+    pub fn preparing_input(&self) -> bool {
+        self.preparing.is_some()
+    }
+
     pub fn has_pending(&self) -> bool {
-        match self.session.as_ref() {
-            Some(Session::Ordinary(span)) => span.has_pending(),
-            Some(Session::Keyboard(input)) => input.has_pending(),
-            Some(Session::Terminal(terminal)) => terminal.has_pending(),
-            None => false,
-        }
+        (self.preparing.is_some()
+            && self
+                .prepared_text
+                .as_ref()
+                .is_some_and(|(_, final_text)| *final_text))
+            || match self.session.as_ref() {
+                Some(Session::Ordinary(span)) => span.has_pending(),
+                Some(Session::Keyboard(input)) => input.has_pending(),
+                Some(Session::Terminal(terminal)) => terminal.has_pending(),
+                None => false,
+            }
     }
 
     /// Call once from each main run-loop timer turn. One bounded chunk gives
     /// AppKit a turn to deliver real user-input monitor callbacks before more
     /// Unicode events are posted. The returned status replaces delivery UI text.
     pub fn poll(&mut self) -> Option<String> {
+        if self.preparing.is_some() {
+            if let Err(failure) = self.on_main() {
+                return Some(failure.message());
+            }
+            match self.advance_preparation() {
+                Ok(false) => return None,
+                Ok(true) => {
+                    if let Some((text, final_text)) = self.prepared_text.take() {
+                        return Some(if final_text {
+                            self.deliver(&text, true)
+                        } else {
+                            self.preview(&text)
+                        });
+                    }
+                    return Some("原输入框已准备好。".to_owned());
+                }
+                Err(failure) => {
+                    self.prepared_text = None;
+                    self.failure = Some(failure);
+                    return Some(failure.message());
+                }
+            }
+        }
         match self.session.as_ref() {
             None => return None,
             Some(Session::Ordinary(span)) if !span.has_pending() => return None,
@@ -330,6 +425,7 @@ impl Delivery {
         if self.on_main().is_err() {
             return;
         }
+        self.discard_preparation();
         if self.failure.is_none() {
             match self.session.as_mut() {
                 Some(Session::Ordinary(span)) => span.seal(),
@@ -350,6 +446,7 @@ impl Delivery {
         if self.on_main().is_err() {
             return;
         }
+        self.discard_preparation();
         if let Some(mut session) = self.session.take() {
             match &mut session {
                 Session::Ordinary(span) => {
@@ -423,5 +520,136 @@ impl Delivery {
     /// Use only in response to an explicit user permission-button click.
     pub fn request_accessibility() {
         native::request_accessibility();
+    }
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+    use std::{cell::Cell, rc::Rc};
+
+    struct Field;
+    impl Target for Field {
+        fn read(&mut self) -> Result<model::Snapshot, Failure> {
+            Ok(model::Snapshot {
+                text: "left|right".into(),
+                selection: model::TextRange {
+                    location: 4,
+                    length: 1,
+                },
+            })
+        }
+        fn replace(
+            &mut self,
+            _: model::TextRange,
+            _: &str,
+            _: &model::Snapshot,
+        ) -> Result<(), Failure> {
+            panic!("preparation must not write text")
+        }
+    }
+    struct Delayed {
+        polls: Rc<Cell<usize>>,
+        failure: Option<Failure>,
+        keyboard: bool,
+    }
+    impl native::Preparation for Delayed {
+        fn poll(&mut self) -> Result<Option<native::Captured>, Failure> {
+            self.polls.set(self.polls.get() + 1);
+            if let Some(failure) = self.failure {
+                return Err(failure);
+            }
+            Ok((self.polls.get() > 1).then(|| {
+                if self.keyboard {
+                    native::Captured::Keyboard(Box::new(Field))
+                } else {
+                    native::Captured::Ordinary(Box::new(Field))
+                }
+            }))
+        }
+    }
+    fn pending(failure: Option<Failure>) -> (Delivery, Rc<Cell<usize>>) {
+        pending_for_method(failure, false)
+    }
+    fn pending_for_method(failure: Option<Failure>, keyboard: bool) -> (Delivery, Rc<Cell<usize>>) {
+        let polls = Rc::new(Cell::new(0));
+        let mut delivery = Delivery::new();
+        delivery
+            .accept_capture(native::Captured::Preparing(Box::new(Delayed {
+                polls: polls.clone(),
+                failure,
+                keyboard,
+            })))
+            .unwrap();
+        (delivery, polls)
+    }
+
+    #[test]
+    fn final_result_waits_for_capture_and_survives_late_preview() {
+        for keyboard in [false, true] {
+            let (mut delivery, _) = pending_for_method(None, keyboard);
+            delivery.queue_prepared_text("preview", false);
+            assert!(!delivery.has_pending());
+            delivery.queue_prepared_text("final🙂", true);
+            delivery.queue_prepared_text("late preview", false);
+            assert!(delivery.has_pending());
+            assert!(!delivery.advance_preparation().unwrap());
+            assert!(delivery.session.is_none());
+            assert!(delivery.advance_preparation().unwrap());
+            assert!(delivery.session.is_some());
+            assert_eq!(
+                delivery.method(),
+                Some(if keyboard {
+                    "keyboard_final"
+                } else {
+                    "accessibility"
+                })
+            );
+            assert_eq!(
+                delivery.prepared_text.as_ref(),
+                Some(&("final🙂".into(), true))
+            );
+            assert_eq!(delivery.failure_stage(), None);
+        }
+    }
+
+    #[test]
+    fn failed_focus_preparation_discards_text_and_never_rebinds() {
+        for failure in [
+            Failure::UserInput,
+            Failure::FocusApplicationChanged,
+            Failure::FocusElementChanged,
+            Failure::SecureInput,
+            Failure::FocusRead(-25212),
+        ] {
+            let (mut delivery, polls) = pending(Some(failure));
+            delivery.queue_prepared_text("final", true);
+            assert_eq!(delivery.advance_preparation(), Err(failure));
+            assert_eq!(delivery.failure_stage(), Some(failure.stage()));
+            assert!(!delivery.has_pending());
+            assert!(delivery.session.is_none() && delivery.prepared_text.is_none());
+            assert!(delivery.advance_preparation().unwrap());
+            assert_eq!(polls.get(), 1);
+        }
+    }
+
+    #[test]
+    fn cancellation_discards_preparation_without_polling_or_writing() {
+        let (mut delivery, polls) = pending(None);
+        delivery.queue_prepared_text("final", true);
+        delivery.discard_preparation();
+        assert!(delivery.advance_preparation().unwrap());
+        assert!(!delivery.has_pending());
+        assert!(delivery.session.is_none() && delivery.prepared_text.is_none());
+        assert_eq!(polls.get(), 0);
+    }
+
+    #[test]
+    fn pending_text_is_bounded_by_utf16_units() {
+        let (mut delivery, _) = pending(None);
+        delivery.queue_prepared_text(&"🙂".repeat(model::MAX_TEXT / 2 + 1), true);
+        assert_eq!(delivery.failure_stage(), Some("content"));
+        assert!(!delivery.has_pending());
+        assert!(delivery.prepared_text.is_none());
     }
 }

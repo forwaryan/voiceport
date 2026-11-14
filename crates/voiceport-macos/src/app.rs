@@ -18,6 +18,107 @@ mod picker;
 mod quick_panel;
 mod source_manager;
 
+const COPY_SUCCESS: &str = "文字已复制。";
+const COPY_FAILURE: &str = "复制失败，请选中文字手动复制。";
+
+/// Only a completed, nonempty transcription can have a delivery warning.
+/// The stage comes from the session policy, never from diagnostic text.
+fn completed_delivery_failure(
+    phase: Phase,
+    has_transcript: bool,
+    failure_stage: Option<&str>,
+) -> Option<&'static str> {
+    if phase != Phase::Ready || !has_transcript {
+        return None;
+    }
+    Some(match failure_stage? {
+        "accessibility" => "辅助功能授权未生效，请在设置中重新授权。",
+        "secureInput" | "sensitive" => "当前为安全输入或密码框，无法自动输入。",
+        "application" => "开始时未选中目标应用，请回到目标输入框。",
+        "focus" => "无法确认原输入框；下次请先点好输入位置。",
+        "role" | "disabled" | "writable" => "原控件无法安全写入，请使用可编辑输入框。",
+        "content" | "selection" => "无法确认原文字或光标位置，请重新定位光标。",
+        "monitor" => "无法监测终端输入，请重新聚焦后再开始。",
+        "ownership" | "userInput" | "revision" => "输入内容或光标已改变，请检查目标输入框。",
+        "write" | "event" => "未能向原输入框完成写入，请检查已有文字。",
+        "ended" => "本次自动输入已停止，请检查目标输入框。",
+        _ => "自动输入未能完成，请查看详情后重新开始。",
+    })
+}
+
+fn delivery_failure_description(reason: &str, message: &str) -> String {
+    let action = match message {
+        COPY_SUCCESS => "文字已复制，可回到输入框手动粘贴。",
+        COPY_FAILURE => COPY_FAILURE,
+        _ => "结果保留在面板，可复制后手动粘贴。",
+    };
+    format!("{reason}\n{action}")
+}
+
+#[cfg(test)]
+mod delivery_feedback_tests {
+    use super::*;
+
+    #[test]
+    fn warning_requires_completed_text_and_a_session_failure() {
+        for phase in [
+            Phase::Idle,
+            Phase::Permissions,
+            Phase::Recording,
+            Phase::Transcribing,
+            Phase::Delivering,
+            Phase::Stopping,
+            Phase::Failed,
+        ] {
+            assert_eq!(completed_delivery_failure(phase, true, Some("focus")), None);
+        }
+        assert_eq!(
+            completed_delivery_failure(Phase::Ready, false, Some("focus")),
+            None
+        );
+        // The controller supplies None for success, disabled automatic input,
+        // sample tests, and manual transcription retries.
+        assert_eq!(completed_delivery_failure(Phase::Ready, true, None), None);
+    }
+
+    #[test]
+    fn focus_failure_explains_recovery_without_exposing_diagnostics() {
+        let reason = completed_delivery_failure(Phase::Ready, true, Some("focus")).unwrap();
+        let description =
+            delivery_failure_description(reason, "[focus] 目标应用没有提供焦点输入框（AX -25212）");
+        assert!(description.contains("先点好输入位置"));
+        assert!(description.contains("结果保留在面板，可复制后手动粘贴"));
+        assert!(!description.contains("[focus]"));
+        assert!(!description.contains("AX"));
+        assert!(!description.contains("-25212"));
+        assert_eq!(description.lines().count(), 2);
+    }
+
+    #[test]
+    fn copying_preserves_failure_reason_and_reports_copy_result() {
+        let reason = completed_delivery_failure(Phase::Ready, true, Some("focus")).unwrap();
+        for feedback in [COPY_SUCCESS, COPY_FAILURE] {
+            let description = delivery_failure_description(reason, feedback);
+            assert!(description.starts_with(reason));
+            assert!(description.contains(if feedback == COPY_SUCCESS {
+                "文字已复制，可回到输入框手动粘贴"
+            } else {
+                COPY_FAILURE
+            }));
+        }
+    }
+
+    #[test]
+    fn changed_input_and_unknown_failures_keep_a_safe_recovery_path() {
+        let changed = completed_delivery_failure(Phase::Ready, true, Some("ownership")).unwrap();
+        assert!(changed.contains("输入内容或光标已改变"));
+        let unknown = completed_delivery_failure(Phase::Ready, true, Some("futureStage")).unwrap();
+        assert!(unknown.contains("查看详情"));
+        assert!(!unknown.contains("futureStage"));
+        assert!(delivery_failure_description(unknown, "最终转写完成。").contains("手动粘贴"));
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StatusAppearance {
     Ready,
@@ -177,7 +278,7 @@ define_class!(
         }
         #[unsafe(method(copyText:))]
         fn copy_action(&self, _sender: Option<&AnyObject>) {
-            self.with_controller(|c| { c.message = if Delivery::copy(&c.transcript) { "文字已复制。" } else { "复制失败，请选中文字手动复制。" }.into(); }); self.refresh();
+            self.with_controller(|c| { c.message = if Delivery::copy(&c.transcript) { COPY_SUCCESS } else { COPY_FAILURE }.into(); }); self.refresh();
         }
         #[unsafe(method(showQuickPanel:))]
         fn quick_panel_action(&self, _sender: Option<&AnyObject>) { self.toggle_quick_panel(); }
@@ -202,8 +303,12 @@ define_class!(
         }
         #[unsafe(method(resolveNotice:))]
         fn notice_action(&self, _sender: Option<&AnyObject>) {
-            let idle = self.ivars().controller.borrow().as_ref().is_some_and(|c| !c.busy());
-            if idle && self.ivars().hotkey_error.borrow().is_some() {
+            let (idle, delivery_failed) = self.ivars().controller.borrow().as_ref().map_or((false, false), |c| {
+                (!c.busy(), completed_delivery_failure(c.state.phase, !c.transcript.is_empty(), c.delivery_failure_stage()).is_some())
+            });
+            if delivery_failed {
+                self.show_details();
+            } else if idle && self.ivars().hotkey_error.borrow().is_some() {
                 self.select_page(true);
             } else if idle && !Delivery::trusted() && self.ivars().controller.borrow().as_ref().is_some_and(|c| c.automatic) {
                 Delivery::request_accessibility();
@@ -917,6 +1022,11 @@ impl Delegate {
             "⌃⌥空格"
         };
         let hotkey_failed = self.ivars().hotkey_error.borrow().is_some();
+        let delivery_failure = completed_delivery_failure(
+            c.state.phase,
+            !c.transcript.is_empty(),
+            c.delivery_failure_stage(),
+        );
         let (appearance, state_text) = match c.state.phase {
             Phase::Recording => (StatusAppearance::Recording, "正在听写"),
             Phase::Permissions => (StatusAppearance::Working, "正在准备权限"),
@@ -925,6 +1035,9 @@ impl Delegate {
             Phase::Stopping => (StatusAppearance::Working, "正在停止"),
             _ if preparing_permissions => (StatusAppearance::Working, "正在准备权限"),
             _ if returning_to_input => (StatusAppearance::Working, "正在返回输入位置"),
+            Phase::Ready if delivery_failure.is_some() => {
+                (StatusAppearance::Attention, "转写完成 · 自动输入未完成")
+            }
             _ if hotkey_failed => (StatusAppearance::Attention, "快捷键需要设置"),
             _ if c.automatic && !trusted => (StatusAppearance::Attention, "需要辅助功能授权"),
             Phase::Failed => (StatusAppearance::Attention, "需要处理 · 打开查看"),
@@ -1026,7 +1139,9 @@ impl Delegate {
             label.setStringValue(&NSString::from_str(state_text));
             label.setToolTip(Some(&full_details));
         }
-        let description = if idle && hotkey_failed {
+        let description = if let Some(reason) = delivery_failure {
+            delivery_failure_description(reason, &c.message)
+        } else if idle && hotkey_failed {
             "当前快捷键不可用，请到设置里换一组。".into()
         } else if idle && c.automatic && !trusted {
             "在系统设置中重新允许当前版本，即可输入到其他应用。".into()
@@ -1049,7 +1164,9 @@ impl Delegate {
             label.setToolTip(Some(&full_details));
         }
         if let Some(button) = self.ivars().notice_action.get() {
-            button.setTitle(&NSString::from_str(if idle && hotkey_failed {
+            button.setTitle(&NSString::from_str(if delivery_failure.is_some() {
+                "查看详情"
+            } else if idle && hotkey_failed {
                 "设置快捷键"
             } else if idle && c.automatic && !trusted {
                 "前往授权"
