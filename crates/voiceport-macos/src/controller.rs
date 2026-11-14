@@ -251,7 +251,21 @@ impl Controller {
         self.started.map(|s| s.elapsed().as_secs()).unwrap_or(0)
     }
     pub fn busy(&self) -> bool {
-        !self.state.can_start()
+        !self.state.can_start() || self.delivery.has_pending()
+    }
+    pub(crate) fn input_failure_stage(&self) -> Option<&'static str> {
+        self.delivery.failure_stage()
+    }
+    pub(crate) fn input_method(&self) -> Option<&'static str> {
+        self.delivery.method()
+    }
+    pub(crate) fn reject_start(&mut self, message: &str) {
+        if self.busy() {
+            return;
+        }
+        self.state.phase = Phase::Failed;
+        self.state.retry_available = false;
+        self.message = format!("{message} 本轮未开始录音，已有文字保留在结果区。");
     }
     pub fn toggle(&mut self) {
         if self.state.phase == Phase::Recording {
@@ -261,6 +275,18 @@ impl Controller {
         }
     }
     pub fn start(&mut self) {
+        self.start_for_application(None);
+    }
+    pub(crate) fn start_in_application(
+        &mut self,
+        target: &crate::delivery::model::ApplicationTarget,
+    ) {
+        self.start_for_application(Some(target));
+    }
+    fn start_for_application(
+        &mut self,
+        target: Option<&crate::delivery::model::ApplicationTarget>,
+    ) {
         if !self.state.can_start() {
             return;
         }
@@ -277,7 +303,15 @@ impl Controller {
                 return;
             }
         };
-        self.start_pinned(source, self.language.clone(), self.automatic);
+        if let Some((generation, use_speech)) =
+            self.prepare_start_in_application(source, self.language.clone(), self.automatic, target)
+        {
+            Recorder::request_permissions_for_source(
+                generation,
+                self.events_tx.clone(),
+                use_speech,
+            );
+        }
     }
     /// Prepared on a background thread; never changes GUI source/language/preferences.
     pub(crate) fn start_pinned(
@@ -300,14 +334,28 @@ impl Controller {
         language: String,
         automatic: bool,
     ) -> Option<(u64, bool)> {
+        self.prepare_start_in_application(source, language, automatic, None)
+    }
+    fn prepare_start_in_application(
+        &mut self,
+        source: SessionSource,
+        language: String,
+        automatic: bool,
+        target: Option<&crate::delivery::model::ApplicationTarget>,
+    ) -> Option<(u64, bool)> {
         if self.busy() {
             return None;
         }
         self.delivery.clear();
-        if automatic && let Err(message) = self.delivery.begin() {
+        if self.delivery.has_pending() {
+            self.wait_for_delivery();
+            self.message = "正在确认上一轮输入，请稍后重新开始。".into();
+            return None;
+        }
+        if automatic && let Err(message) = self.delivery.begin_in_application(target) {
             self.delivery_status = message.clone();
             if self.delivery.blocks_recording() {
-                self.message = message;
+                self.reject_start(&message);
                 return None;
             }
         }
@@ -488,7 +536,9 @@ impl Controller {
         }
     }
     fn wait_for_delivery(&mut self) {
-        if self.delivery.has_pending() && matches!(self.state.phase, Phase::Ready | Phase::Failed) {
+        if self.delivery.has_pending()
+            && matches!(self.state.phase, Phase::Idle | Phase::Ready | Phase::Failed)
+        {
             self.delivery_settle = Some(self.state.phase);
             self.state.phase = Phase::Delivering;
         }
@@ -616,6 +666,7 @@ impl Controller {
             self.recording = None;
             self.message = "听写已取消。".into();
         }
+        self.wait_for_delivery();
     }
     pub fn poll(&mut self) {
         self.poll_cleanup_observation();
@@ -1659,6 +1710,23 @@ mod tests {
         assert_eq!(c.state.phase, Phase::Recording);
         assert_eq!(c.message, "current recording");
         assert_eq!(c.delivery.failure_stage(), None);
+    }
+
+    #[test]
+    fn rejected_start_keeps_previous_text_but_cannot_look_like_completed_recording() {
+        let mut c = Controller::new();
+        c.state.phase = Phase::Ready;
+        c.state.retry_available = true;
+        c.transcript = "previous synthetic result".into();
+        let generation = c.state.generation();
+        c.reject_start("目标应用发生变化。");
+        assert_eq!(c.state.phase, Phase::Failed);
+        assert!(!c.state.retry_available);
+        assert_eq!(c.state.generation(), generation);
+        assert_eq!(c.transcript, "previous synthetic result");
+        assert!(c.message.contains("本轮未开始录音"));
+        assert!(c.active.is_none());
+        assert!(c.recording.is_none());
     }
 
     // Real Controller/Job/Custody and a real synthetic Recording/flock. Only the

@@ -23,6 +23,7 @@ pub enum Failure {
     Content,
     Selection,
     Ownership,
+    ReadbackTimeout,
     Write,
     Monitor,
     UserInput,
@@ -49,6 +50,7 @@ impl Failure {
             Self::Content => "content",
             Self::Selection => "selection",
             Self::Ownership => "ownership",
+            Self::ReadbackTimeout => "readback",
             Self::Write => "write",
             Self::Monitor => "monitor",
             Self::UserInput => "userInput",
@@ -65,7 +67,10 @@ impl Failure {
     pub fn message(self) -> String {
         if let Self::FocusRead(status) = self {
             let reason = match status {
-                -25212 => "目标应用没有提供焦点输入框，请点好输入框后重新开始",
+                -25212 => {
+                    "系统未返回目标输入框；光标已在输入框内时，可能是目标应用的输入接口未就绪"
+                }
+                -25208 => "目标应用未实现系统输入接口，当前控件无法确认自动写入能力",
                 -25204 => "目标应用的辅助功能接口暂未响应，请稍后重新开始",
                 -25211 => "目标应用的辅助功能接口不可用，请检查授权",
                 _ => "读取目标输入框失败，请重新定位输入光标后开始",
@@ -90,7 +95,10 @@ impl Failure {
             Self::Content | Self::Selection => {
                 "无法安全读取原输入框的文字或光标位置；结果保留在面板。"
             }
-            Self::Monitor => "无法监测终端中的用户输入，已停止自动输入；结果保留在面板。",
+            Self::Monitor => "无法监测用户输入，已停止自动输入；结果保留在面板。",
+            Self::ReadbackTimeout => {
+                "目标输入框未及时确认本次文字更新，已停止后续输入；请检查输入框和结果面板。"
+            }
             _ => "原输入框、光标、文字或终端输入已改变，已停止自动写入；结果保留在面板。",
         };
         format!("[{}] {}", self.stage(), detail)
@@ -107,6 +115,13 @@ pub struct TextRange {
 pub struct Snapshot {
     pub text: String,
     pub selection: TextRange,
+}
+
+/// Application metadata bound at an explicit start action, never field contents.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApplicationTarget {
+    pub pid: i32,
+    pub bundle: String,
 }
 
 /// Offsets are UTF-16, but returned offsets are UTF-8 scalar boundaries. Reject
@@ -169,6 +184,17 @@ pub trait Target {
     /// write is never retried, because it may have partially succeeded.
     fn replace(&mut self, range: TextRange, text: &str, expected: &Snapshot)
     -> Result<(), Failure>;
+    /// Observe the one submitted replacement. False means it is still settling;
+    /// implementations must bound that wait and never resubmit an uncertain write.
+    fn confirm(&mut self, expected: &Snapshot) -> Result<bool, Failure> {
+        if self.read()? == *expected {
+            Ok(true)
+        } else {
+            Err(Failure::Ownership)
+        }
+    }
+    /// Discard unfinished follow-up steps without writing or retrying.
+    fn abandon(&mut self) {}
 }
 
 impl<T: Target + ?Sized> Target for Box<T> {
@@ -183,6 +209,18 @@ impl<T: Target + ?Sized> Target for Box<T> {
     ) -> Result<(), Failure> {
         (**self).replace(range, text, expected)
     }
+    fn confirm(&mut self, expected: &Snapshot) -> Result<bool, Failure> {
+        (**self).confirm(expected)
+    }
+    fn abandon(&mut self) {
+        (**self).abandon();
+    }
+}
+
+struct PendingSpan {
+    next: Snapshot,
+    owned: TextRange,
+    final_text: bool,
 }
 
 pub struct OwnedSpan<T: Target> {
@@ -193,6 +231,9 @@ pub struct OwnedSpan<T: Target> {
     changed: bool,
     ended: bool,
     failure: Option<Failure>,
+    pending: Option<PendingSpan>,
+    queued: Option<(String, bool)>,
+    cancel_requested: bool,
 }
 
 impl<T: Target> OwnedSpan<T> {
@@ -211,6 +252,9 @@ impl<T: Target> OwnedSpan<T> {
             changed: false,
             ended: false,
             failure: None,
+            pending: None,
+            queued: None,
+            cancel_requested: false,
         })
     }
 
@@ -228,9 +272,37 @@ impl<T: Target> OwnedSpan<T> {
     }
 
     pub fn update(&mut self, raw: &str, final_text: bool) -> Result<(), Failure> {
-        let result = self.update_inner(raw, final_text);
+        let result = (|| {
+            if raw.encode_utf16().count() > MAX_TEXT {
+                return Err(Failure::Content);
+            }
+            if let Some(failure) = self.failure {
+                return Err(failure);
+            }
+            if self.ended || self.cancel_requested {
+                return Err(Failure::Ended);
+            }
+            if self
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.final_text)
+                || (!final_text && self.queued.as_ref().is_some_and(|(_, final_)| *final_))
+            {
+                return Ok(());
+            }
+            if self.pending.is_some() {
+                self.poll_inner()?;
+                if self.pending.is_some() {
+                    if !self.queued.as_ref().is_some_and(|(_, final_)| *final_) || final_text {
+                        self.queued = Some((raw.to_owned(), final_text));
+                    }
+                    return Ok(());
+                }
+            }
+            self.update_inner(raw, final_text)
+        })();
         if let Err(failure) = result {
-            self.failure = Some(failure);
+            self.fail(failure);
         }
         result
     }
@@ -263,31 +335,271 @@ impl<T: Target> OwnedSpan<T> {
                 length: 0,
             },
         };
-        self.target.replace(self.owned, &text, &self.expected)?;
-        if self.target.read()? != next {
-            return Err(Failure::Ownership);
+        // An empty initial preview must not send a synthetic edit to an editor.
+        if next == self.expected {
+            self.owned = owned;
+            self.ended = final_text;
+            return Ok(());
         }
-        self.expected = next;
-        self.owned = owned;
-        self.changed = true;
-        self.ended = final_text;
+        self.target.replace(self.owned, &text, &self.expected)?;
+        self.pending = Some(PendingSpan {
+            next,
+            owned,
+            final_text,
+        });
+        self.poll_inner()?;
         Ok(())
     }
 
+    fn fail(&mut self, failure: Failure) {
+        self.failure = Some(failure);
+        self.pending = None;
+        self.queued = None;
+        self.target.abandon();
+    }
+
+    fn poll_inner(&mut self) -> Result<bool, Failure> {
+        if let Some(failure) = self.failure {
+            return Err(failure);
+        }
+        if let Some(pending) = &self.pending {
+            if !self.target.confirm(&pending.next)? {
+                return Ok(false);
+            }
+            let pending = self.pending.take().expect("confirmed pending span");
+            self.expected = pending.next;
+            self.owned = pending.owned;
+            self.changed = true;
+            self.ended = pending.final_text;
+            if self.ended {
+                self.queued = None;
+            }
+        }
+        if !self.ended
+            && let Some((text, final_text)) = self.queued.take()
+        {
+            self.update_inner(&text, final_text)?;
+        }
+        Ok(self.ended && !self.has_pending())
+    }
+
+    pub fn poll(&mut self) -> Result<bool, Failure> {
+        let result = self.poll_inner();
+        if let Err(failure) = result {
+            self.fail(failure);
+        }
+        result
+    }
+
+    pub fn has_pending(&self) -> bool {
+        self.pending.is_some() || self.queued.is_some()
+    }
+
+    pub fn is_restoring(&self) -> bool {
+        self.cancel_requested
+    }
+
+    /// Finish accepted preview work after transcription failure, without taking
+    /// another source of text or restoring any unconfirmed editor contents.
+    pub fn seal(&mut self) {
+        if let Some((_, final_text)) = &mut self.queued {
+            *final_text = true;
+        } else if let Some(pending) = &mut self.pending {
+            pending.final_text = true;
+        } else {
+            self.ended = true;
+        }
+    }
+
     pub fn cancel(&mut self) -> Result<(), Failure> {
+        if self.cancel_requested {
+            return Ok(());
+        }
+        self.cancel_requested = true;
+        if self.has_pending() {
+            // The submitted edit may already have taken effect. Stop follow-up
+            // writes and preserve it rather than guessing what to undo.
+            self.target.abandon();
+            self.pending = None;
+            self.queued = None;
+            self.ended = true;
+            return Ok(());
+        }
         if !self.changed || self.ended {
             self.ended = true;
             return Ok(());
         }
         let result = self.check().and_then(|()| {
+            let bytes = byte_range(&self.expected.text, self.owned).ok_or(Failure::Selection)?;
+            let mut next = self.expected.clone();
+            next.text.replace_range(bytes, &self.original);
+            let owned = TextRange {
+                location: self.owned.location,
+                length: self.original.encode_utf16().count(),
+            };
+            next.selection = TextRange {
+                location: owned.location + owned.length,
+                length: 0,
+            };
             self.target
-                .replace(self.owned, &self.original, &self.expected)
+                .replace(self.owned, &self.original, &self.expected)?;
+            self.pending = Some(PendingSpan {
+                next,
+                owned,
+                final_text: true,
+            });
+            self.poll_inner().map(|_| ())
         });
-        self.ended = true;
         if let Err(failure) = result {
-            self.failure = Some(failure);
+            self.ended = true;
+            self.fail(failure);
         }
         result
+    }
+}
+
+/// Final-only, bounded character input. Every chunk must be acknowledged before
+/// the next one is submitted; uncertain input is never repeated or undone.
+pub struct ChunkedInput<T: Target> {
+    target: T,
+    expected: Snapshot,
+    pending: Option<Snapshot>,
+    queue: std::collections::VecDeque<String>,
+    submitted: bool,
+    ended: bool,
+    failure: Option<Failure>,
+}
+
+impl<T: Target> ChunkedInput<T> {
+    pub fn capture(mut target: T) -> Result<Self, Failure> {
+        let expected = target.read()?;
+        if expected.text.encode_utf16().count() > MAX_FIELD {
+            return Err(Failure::Content);
+        }
+        byte_range(&expected.text, expected.selection).ok_or(Failure::Selection)?;
+        Ok(Self {
+            target,
+            expected,
+            pending: None,
+            queue: Default::default(),
+            submitted: false,
+            ended: false,
+            failure: None,
+        })
+    }
+
+    fn check(&mut self) -> Result<(), Failure> {
+        if let Some(failure) = self.failure {
+            return Err(failure);
+        }
+        if self.ended {
+            return Err(Failure::Ended);
+        }
+        if self.target.read()? != self.expected {
+            return Err(Failure::Ownership);
+        }
+        Ok(())
+    }
+
+    pub fn verify(&mut self) -> Result<(), Failure> {
+        if self.submitted {
+            return Err(self.failure.unwrap_or(Failure::Ended));
+        }
+        let result = self.check();
+        if let Err(failure) = result {
+            self.fail(failure);
+        }
+        result
+    }
+
+    pub fn submit(&mut self, raw: &str) -> Result<(), Failure> {
+        if self.submitted || self.ended {
+            return Err(self.failure.unwrap_or(Failure::Ended));
+        }
+        let result = (|| {
+            if raw.encode_utf16().count() > MAX_TEXT {
+                return Err(Failure::Content);
+            }
+            self.verify()?;
+            let text = automatic(raw);
+            let total = self
+                .expected
+                .text
+                .encode_utf16()
+                .count()
+                .checked_sub(self.expected.selection.length)
+                .and_then(|n| n.checked_add(text.encode_utf16().count()))
+                .ok_or(Failure::Content)?;
+            if total > MAX_FIELD {
+                return Err(Failure::Content);
+            }
+            self.queue
+                .extend(unicode_chunks(&text).into_iter().map(str::to_owned));
+            self.submitted = true;
+            self.poll_inner().map(|_| ())
+        })();
+        if let Err(failure) = result {
+            self.fail(failure);
+        }
+        result
+    }
+
+    fn fail(&mut self, failure: Failure) {
+        self.failure = Some(failure);
+        self.end();
+    }
+
+    fn poll_inner(&mut self) -> Result<bool, Failure> {
+        if let Some(failure) = self.failure {
+            return Err(failure);
+        }
+        if self.ended {
+            return Ok(true);
+        }
+        if !self.submitted {
+            return Ok(false);
+        }
+        if let Some(next) = &self.pending {
+            if !self.target.confirm(next)? {
+                return Ok(false);
+            }
+            self.expected = self.pending.take().expect("confirmed chunk");
+        }
+        let Some(chunk) = self.queue.pop_front() else {
+            self.ended = true;
+            return Ok(true);
+        };
+        self.check()?;
+        let selection = self.expected.selection;
+        let bytes = byte_range(&self.expected.text, selection).ok_or(Failure::Selection)?;
+        let mut next = self.expected.clone();
+        next.text.replace_range(bytes, &chunk);
+        next.selection = TextRange {
+            location: selection.location + chunk.encode_utf16().count(),
+            length: 0,
+        };
+        self.target.replace(selection, &chunk, &self.expected)?;
+        self.pending = Some(next);
+        Ok(false)
+    }
+
+    pub fn poll(&mut self) -> Result<bool, Failure> {
+        let result = self.poll_inner();
+        if let Err(failure) = result {
+            self.fail(failure);
+        }
+        result
+    }
+
+    pub fn has_pending(&self) -> bool {
+        self.submitted && !self.ended && self.failure.is_none()
+    }
+
+    pub fn end(&mut self) {
+        self.target.abandon();
+        self.pending = None;
+        self.queue.clear();
+        self.ended = true;
     }
 }
 

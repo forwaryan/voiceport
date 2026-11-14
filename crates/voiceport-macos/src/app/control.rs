@@ -120,7 +120,7 @@ impl Delegate {
                     } else {
                         let mut reply = busy();
                         self.with_controller(|c| {
-                            if c.busy() || self.ivars().quitting.get() { return; }
+                            if c.busy() || self.ivars().quitting.get() || self.ivars().pending_hotkey.borrow().is_some() { return; }
                             let plugin = matches!(source, SessionSource::Plugin(_));
                             if sample { c.test_pinned(source, language); }
                             else { c.start_pinned(source, language, false); }
@@ -155,13 +155,14 @@ impl Delegate {
         };
         let locked = self.ivars().quitting.get()
             || self.ivars().permission_rx.borrow().is_some()
+            || self.ivars().pending_hotkey.borrow().is_some()
             || self.ivars().managing_sources.get()
             || control.background.is_some();
         let response = match action {
             Action::Status => {
                 let (microphone, speech) = crate::audio::Recorder::permission_status();
                 Response::ok(
-                    json!({"state":phase(c.state.phase),"busy":c.busy()||locked,"pending":c.state.phase==Phase::Stopping,"warning":if c.state.phase==Phase::Stopping {Some("cancellation_pending")} else {None},"discovering":c.discovering(),"source":c.source_id,"language":c.language,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"bundle_path":NSBundle::mainBundle().bundlePath().to_string(),"socket":voiceport_control::transport::path_from_env().ok(),"permissions":{"microphone":microphone,"speech":speech,"accessibility":Delivery::trusted()},"operation":control.operation.as_ref().filter(|o|o.result.is_none()).map(|o|&o.id)}),
+                    json!({"state":phase(c.state.phase),"busy":c.busy()||locked,"pending":c.state.phase==Phase::Stopping,"warning":if c.state.phase==Phase::Stopping {Some("cancellation_pending")} else {None},"discovering":c.discovering(),"source":c.source_id,"language":c.language,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"bundle_path":NSBundle::mainBundle().bundlePath().to_string(),"socket":voiceport_control::transport::path_from_env().ok(),"permissions":{"microphone":microphone,"speech":speech,"accessibility":Delivery::trusted()},"input":{"automatic":c.automatic,"method":c.input_method(),"failure_stage":c.input_failure_stage(),"start":self.ivars().last_start_trace.borrow().as_ref()},"operation":control.operation.as_ref().filter(|o|o.result.is_none()).map(|o|&o.id)}),
                 )
             }
             Action::Result { operation } => match &control.operation {

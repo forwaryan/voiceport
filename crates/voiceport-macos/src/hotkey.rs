@@ -1,4 +1,7 @@
 //! Carbon global shortcut registration. Construction never installs a handler.
+use crate::delivery::model::ApplicationTarget;
+use objc2::rc::Retained;
+use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 use std::{
     ffi::c_void,
     marker::PhantomData,
@@ -8,6 +11,7 @@ use std::{
         atomic::{AtomicU32, Ordering},
         mpsc::Sender,
     },
+    time::Instant,
 };
 
 const EVENT_NOT_HANDLED: i32 = -9874;
@@ -66,8 +70,34 @@ unsafe extern "C" {
 }
 
 struct Context {
-    sender: Sender<()>,
+    sender: Sender<HotKeyEvent>,
     id: u32,
+}
+
+pub(crate) struct HotKeyEvent {
+    pub at: Instant,
+    pub application: Option<Retained<NSRunningApplication>>,
+    pub target: Option<ApplicationTarget>,
+}
+
+impl HotKeyEvent {
+    fn capture() -> Self {
+        let at = Instant::now();
+        let application = (unsafe { libc::pthread_main_np() } == 1)
+            .then(|| NSWorkspace::sharedWorkspace().frontmostApplication())
+            .flatten();
+        let target = application.as_ref().and_then(|app| {
+            Some(ApplicationTarget {
+                pid: app.processIdentifier(),
+                bundle: app.bundleIdentifier()?.to_string(),
+            })
+        });
+        Self {
+            at,
+            application,
+            target,
+        }
+    }
 }
 
 /// Register, unregister and drop on the main thread. The stable boxed context
@@ -80,7 +110,7 @@ pub struct GlobalHotKey {
 }
 
 impl GlobalHotKey {
-    pub fn new(sender: Sender<()>) -> Self {
+    pub fn new(sender: Sender<HotKeyEvent>) -> Self {
         Self {
             reference: ptr::null_mut(),
             handler: ptr::null_mut(),
@@ -181,6 +211,8 @@ unsafe extern "C" fn pressed(_: NativeRef, event: NativeRef, context: *mut c_voi
     if status != 0 || identity.signature != SIGNATURE || identity.id != context.id {
         return EVENT_NOT_HANDLED;
     }
-    let _ = context.sender.send(());
+    // Bind the application here, before the AppKit timer may process a later
+    // activation. No field contents or Accessibility target are read here.
+    let _ = context.sender.send(HotKeyEvent::capture());
     0
 }
