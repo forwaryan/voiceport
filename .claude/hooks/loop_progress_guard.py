@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Redirect repeated tool exchanges without ending the task or granting authority.
 
-Read only a bounded transcript tail. Eight identical paired results block only
-another identical call; a different diagnostic action remains available. Unknown
+Read only a bounded transcript tail. Seven identical paired results block only
+another identical call, before the observed gateway stops after eight results;
+a different diagnostic action remains available. Unknown
 history cannot prove stagnation. Rotation, permission and wait guards stay in force.
 """
 import hashlib
@@ -14,7 +15,7 @@ import re
 import stat
 import sys
 
-REPEATS = 8
+REPEATS = 7
 TAIL_BYTES = 2 * 1024 * 1024
 MAX_ROWS = 512
 NOISE = (
@@ -22,7 +23,7 @@ NOISE = (
     (re.compile(r'(?m)^(Chunk ID: )\S+'), r'\1#'),
 )
 POLICY = (
-    '同一工具、相同参数已连续8次得到相同结果；本次只阻止重复操作，不结束原任务。'
+    '同一工具、相同参数已连续7次得到相同结果；本次在网关8次截断前只阻止重复操作，不结束原任务。'
     '核对已有证据与实际副作用，立即选择有新依据的诊断或替代路径继续。'
     '不要仅改耗时、调用ID、包装命令或解析上限来绕过。真实后台等待交给完成通知；'
     '未知 launch/close/写入结果先查已有 journal/精确回执，不重新发起副作用。'

@@ -4,7 +4,9 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 import uuid
@@ -17,6 +19,15 @@ spec.loader.exec_module(observer)
 
 class ObserverTests(unittest.TestCase):
     def setUp(self):
+        # websocket-client is optional. Keep the offline suite independent of
+        # site-packages, and fail closed if a test forgets to stub a connection.
+        websocket = types.ModuleType("websocket")
+        websocket.create_connection = mock.Mock(side_effect=AssertionError("unexpected connection"))
+        websocket.WebSocketBadStatusException = type("WebSocketBadStatusException", (Exception,), {})
+        websocket.WebSocketTimeoutException = type("WebSocketTimeoutException", (Exception,), {})
+        module_patch = mock.patch.dict(sys.modules, {"websocket": websocket})
+        module_patch.start()
+        self.addCleanup(module_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -31,6 +42,15 @@ class ObserverTests(unittest.TestCase):
         with mock.patch.object(observer, "observe", side_effect=AssertionError), contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(observer.main([]), 0)
         self.assertFalse(json.loads(out.getvalue())["network"])
+
+    def test_missing_optional_dependency_is_reported_before_credentials(self):
+        with mock.patch.dict(sys.modules, {"websocket": None}), \
+                mock.patch.object(observer.probe, "proxy_url", return_value=None), \
+                mock.patch.object(observer.probe, "credentials", side_effect=AssertionError) as credentials:
+            report = observer.observe(self.reference, self.output, self.auth)
+        self.assertEqual(report["classification"], "websocket_dependency_unavailable")
+        self.assertEqual(report["request_count"], 0)
+        credentials.assert_not_called()
 
     def test_observer_uses_fixed_url_and_sends_no_application_messages(self):
         ws = mock.Mock()

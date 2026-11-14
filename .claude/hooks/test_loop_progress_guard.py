@@ -54,6 +54,16 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(self.evaluate(alternative), {})
         self.assertEqual(self.evaluate({**self.payload, 'tool_name': 'Bash', 'tool_input': {'command': 'git diff'}}), {})
 
+    def test_redirects_before_observed_gateway_eight_result_cutoff(self):
+        # The real gateway ends the turn after eight equal results. Redirect on
+        # the eighth call so its different denial result reaches the model.
+        for i in range(7):
+            self.assertEqual(self.evaluate(), {})
+            self.call(i)
+        self.denied()
+        self.call('local-redirect', result='Loop progress guard: choose evidence', error=True)
+        self.assertEqual(self.evaluate(), {})
+
     def test_threshold_real_result_change_and_new_diagnostic_break_streak(self):
         for i in range(g.REPEATS - 1):
             self.call(i)
