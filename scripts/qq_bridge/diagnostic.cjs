@@ -145,6 +145,7 @@ function install({ processObject = process, publish = () => {}, cachedModules = 
     factories.add(factory);
     let proxy = factory;
     const methods = new Map();
+    const readonly = new Map();
     for (const name of ['create', 'getNTWrapperSession']) {
       observe(() => {
         const original = factory[name];
@@ -156,8 +157,41 @@ function install({ processObject = process, publish = () => {}, cachedModules = 
         }
         if (replace(factory, name, getSession)) {
           methods.set(name, { original, wrapped: getSession });
-        } else note('readonly_session_factory');
+        } else {
+          readonly.set(name, { original, wrapped: getSession });
+          note('readonly_session_factory');
+        }
       });
+    }
+    if (readonly.size) {
+      // A proxy over a native object's immutable method cannot return a wrapper:
+      // that violates Proxy invariants. Use an independent, extensible target.
+      // No native descriptor changes; all calls still use the original receiver.
+      const target = typeof factory === 'function'
+        ? function() {}.bind(null) : Object.create(Object.getPrototypeOf(factory));
+      proxy = new Proxy(target, {
+        get(_target, key) {
+          const value = Reflect.get(factory, key, factory);
+          const fixed = readonly.get(key);
+          if (fixed && value === fixed.original) return fixed.wrapped;
+          const method = methods.get(key);
+          if (stopped && method && value === method.original) return method.wrapped;
+          return value;
+        },
+        construct(_target, args, newTarget) {
+          const result = Reflect.construct(factory, args, newTarget === proxy ? factory : newTarget);
+          observe(() => capture(result));
+          return result;
+        },
+        apply(_target, receiver, args) {
+          const result = Reflect.apply(factory, receiver === proxy ? factory : receiver, args);
+          observe(() => capture(result));
+          return result;
+        },
+      });
+      factories.add(proxy);
+      note('readonly_factory_facade');
+      return proxy;
     }
     if (typeof factory === 'function') {
       proxy = new Proxy(factory, {

@@ -1391,6 +1391,91 @@ def standalone_identity(root, proof):
     return {'binding': binding, 'membership_pages': pages, 'terminal': receipt, 'at': now()}
 
 
+def task_message(transcript, session, message_uuid):
+    """Read an exact human input, never a pasted system event or agent report."""
+    found = []
+    path = Path(transcript)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('task evidence must use a regular authentic transcript')
+    with path.open('rb') as stream:
+        size = os.fstat(stream.fileno()).st_size
+        raw = stream.read(size)
+        for line in raw.splitlines(keepends=True):
+            if not line.endswith(b'\n'):
+                continue
+            row = json.loads(line)
+            if row.get('uuid') != message_uuid:
+                continue
+            text = row.get('message', {}).get('content')
+            if (row.get('sessionId') != session or row.get('isSidechain')
+                    or row.get('type') != 'user' or row.get('origin', {}).get('kind') != 'human'
+                    or row.get('message', {}).get('role') != 'user'
+                    or not isinstance(text, str) or not text.strip()):
+                raise ValueError('task/authorization UUID must identify actual human text in this session')
+            validate_saved_timestamp(row.get('timestamp'))
+            found.append((text, {'session': session, 'transcript': str(path), 'uuid': message_uuid,
+                                'timestamp': row['timestamp'], 'sha256': hashlib.sha256(line).hexdigest()}))
+        verify_transcript_prefix(stream, path, size, hashlib.sha256(raw).digest())
+    if len(found) != 1:
+        raise ValueError('task/authorization evidence missing or duplicated')
+    return found[0]
+
+
+def validate_task_authority(authority):
+    contract = authority.get('contract', {})
+    if (set(contract) != {'goal', 'task_prompt', 'authorization', 'paused', 'active_tools'}
+            or any(not isinstance(contract.get(k), str) or not contract[k].strip()
+                   for k in ('goal', 'task_prompt', 'authorization'))
+            or type(contract.get('paused')) is not bool or contract.get('active_tools') != []):
+        raise ValueError('invalid task-only recovery authority; no loop prompt may be invented')
+    evidence = authority.get('evidence', {})
+    if set(evidence) != {'task', 'authorization'}:
+        raise ValueError('task and recovery authorization evidence required')
+    for key, field in (('task', 'task_prompt'), ('authorization', 'authorization')):
+        pin = evidence[key]
+        text, observed = task_message(pin['transcript'], pin['session'], pin['uuid'])
+        if observed != pin or text != contract[field]:
+            raise ValueError('original task/authorization transcript evidence changed')
+    digest = hashlib.sha256(json.dumps(contract, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    if digest != authority.get('contract_sha256'):
+        raise ValueError('task recovery authority digest changed')
+    return contract
+
+
+def session_task_register(root, session, task_uuid, authorization_uuid, goal):
+    """Proactive task-only rescue basis. Never available to a drift-fenced caller.
+
+    UUIDs pin the exact original task and the user's explicit recovery authorization.
+    Their meaning/scope must be read by management; registration grants no scheduler.
+    """
+    if not isinstance(goal, str) or not goal.strip() or len(goal.encode()) > 2000:
+        raise ValueError('task goal must be nonempty and at most 2KB')
+    with session_transaction(root, session) as state:
+        proof = authentic_session(root, session)  # includes require_terminal/fence check
+        if (state.get('coordinator_run') or state['phase'] != 'active'
+                or state.get('standalone') or state.get('predecessor')
+                or state.get('administrative_predecessor') or proof.get('harness') != 'claude'):
+            raise ValueError('task recovery registration requires an unregistered active Claude top-level session')
+        legacy = coordinator_path(root)
+        if legacy.exists() and load(legacy).get('owner') == session:
+            raise ValueError('legacy coordinator must use its existing lease')
+        transcript = proof['transcript_cursor']['path']
+        task, task_pin = task_message(transcript, session, task_uuid)
+        authorization, auth_pin = task_message(transcript, session, authorization_uuid)
+        contract = {'goal': goal, 'task_prompt': task, 'authorization': authorization,
+                    'paused': bool(paused(root) or state.get('inherited_pause')), 'active_tools': []}
+        authority = {'kind': 'task', 'contract': contract,
+                     'contract_sha256': hashlib.sha256(json.dumps(contract, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
+                     'evidence': {'task': task_pin, 'authorization': auth_pin}}
+        if len(json.dumps(authority, ensure_ascii=False).encode()) > 24000:
+            raise ValueError('task recovery evidence exceeds bounded handoff budget')
+        authority['identity'] = standalone_identity(root, proof)
+        state['standalone'] = authority
+        state['boundaries'] = proof['boundaries']
+        request_rotation(state)
+        return authority
+
+
 def session_register(root, session, contract):
     expected = contract_path(root, session).relative_to(root).as_posix()
     if contract != expected:
@@ -1495,7 +1580,8 @@ def session_launch(root, session):
                   f'--terminal {state["terminal"]}. Closure may wait for the source launch receipt. '
                   'Before successful exact predecessor PTY closure, do no product work and install no loop. '
                   'After closure recheck packet pause and current pause; only if authorized and work remains '
-                  'restore exactly one loop using the full original contract.loop_prompt. '
+                  'continue the remaining task. For kind=task, task_prompt is the original task, with no scheduling authority. '
+                  'Only an original authorized loop contract with a full loop_prompt permits restoring one loop. '
                   'Do not create a Run or adopt unrelated product coordination/Git authorization. '
                   + FINAL_ROUND_POLICY)
         argv = ['agent', 'launch', '--agent', proof['harness'], '--surface', 'terminal',
@@ -1699,7 +1785,35 @@ def allowed_worker_handoff(root, payload, state):
     return False
 
 
+def standalone_recovery_candidate(state):
+    """Eligibility hint only; the recovery entry rechecks live Orca authority."""
+    return (bool(state.get('standalone')) and not state.get('coordinator_run')
+            and state.get('harness') == 'claude' and bool(state.get('terminal_drift'))
+            and bool(os.environ.get('ORCA_TERMINAL_HANDLE'))
+            and os.environ.get('ORCA_TERMINAL_HANDLE') == state['terminal_drift'].get('actual_terminal'))
+
+
+def session_recover(root, session, rotation=None):
+    """Use a separate administrative lifecycle; never unlock the drifted owner."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('session_recovery', Path(__file__).with_name('session_recovery.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.start(root, session, rotation=rotation or sys.modules.get(__name__))
+
+
 def terminal_drift_hint(state):
+    if standalone_recovery_candidate(state):
+        return (f"Session {state['owner']} is fenced for terminal drift. Do not continue product work, "
+                "rebind the old session, or reset its counts. Stop all owned schedulers using exact "
+                "ScheduleWakeup(stop=true), CronList and proven-owned CronDelete receipts, then run "
+                f"python3 -I {SCRIPT} session-recover --session {state['owner']}. "
+                "This narrowly allowed entry starts one fresh management session, which collects the "
+                "administrative handoff, verifies exact conflict PTY closure, then starts and verifies "
+                "a fresh product successor with the original contract. After confirmed recovery prompt "
+                "delivery, end this old turn; do not ask the user to copy a prompt or open a terminal. "
+                "For an unknown launch, inspect the saved recovery receipt without fresh retry. "
+                + FINAL_ROUND_POLICY)
     return (f"Session {state['owner']} is fenced for terminal drift: stored terminal={state.get('terminal')!r}, "
             f"actual ORCA_TERMINAL_HANDLE={os.environ.get('ORCA_TERMINAL_HANDLE')!r}; "
             f"first mismatch={state['terminal_drift']!r}. Stop ordinary work and compaction; "
@@ -1713,13 +1827,13 @@ def terminal_drift_hint(state):
 
 
 def allowed_terminal_recovery(payload, state):
-    """Read/status or one exact actual-caller escalation, never arbitrary shell/notes/skills."""
+    """Read, owned shutdown, exact rescue, or worker escalation; no product authority."""
     tool = payload.get('tool_name', '')
     data = payload.get('tool_input', {})
     if not isinstance(tool, str) or not isinstance(data, dict):
         return False
     name = tool.split('.')[-1]
-    if name == 'Read':
+    if name == 'Read' or scheduler_shutdown(payload, state):
         return True
     if name == 'exec_command':
         name, data = 'Bash', {'command': data.get('cmd', '')}
@@ -1736,6 +1850,9 @@ def allowed_terminal_recovery(payload, state):
     except ValueError:
         return False
     if argv == ['python3', '-I', SCRIPT, 'session-status', '--session', state['owner']]:
+        return True
+    if (standalone_recovery_candidate(state)
+            and argv == ['python3', '-I', SCRIPT, 'session-recover', '--session', state['owner']]):
         return True
     flags = {'--from', '--type', '--subject', '--body', '--task-id', '--dispatch-id'}
     if (argv[:3] != ['orca', 'orchestration', 'send'] or len(argv) != 15
@@ -1829,12 +1946,18 @@ def worker_hook(root, payload):
                                               'permissionDecisionReason': hint}}
             if event == 'SessionStart':
                 return {'hookSpecificOutput': {'hookEventName': event, 'additionalContext': hint}}
-            return {}  # Ending the turn is recovery, including recursive/native Stop.
+            if (event == 'Stop' and standalone_recovery_candidate(state)
+                    and not payload.get('stop_hook_active') and not paused(root)
+                    and not state.get('inherited_pause')
+                    and not state['standalone']['contract'].get('paused')
+                    and not (root / '.voiceport/session-recoveries' / (state['owner'] + '.json')).exists()):
+                return {'decision': 'block', 'reason': hint}
+            return {}  # Workers, paused tasks, attempted rescue and recursive Stop may end.
         if state['phase'] == 'active':
             name = payload.get('tool_name', '').split('.')[-1]
             scheduling = name == 'CronCreate' or (name == 'ScheduleWakeup' and payload.get('tool_input', {}).get('stop') is not True)
-            if (event == 'PreToolUse' and scheduling and not state.get('standalone')
-                    and not state.get('coordinator_run')):
+            if (event == 'PreToolUse' and scheduling and not state.get('coordinator_run')
+                    and (not state.get('standalone') or state['standalone'].get('kind') == 'task')):
                 return {'hookSpecificOutput': {'hookEventName': event, 'permissionDecision': 'deny',
                         'permissionDecisionReason': 'Before starting a top-level loop, session-register its exact original prompt and authorization contract per .claude/COORDINATOR_ROTATION.md. Managed workers must use their coordinator, never install a loop.'}}
             return {}
@@ -1987,7 +2110,7 @@ def main():
     hook_cmd.add_argument('--harness', choices=('claude', 'codex'), default='claude')
     sub.add_parser('status').add_argument('--run')
     for action in ('adopt', 'register', 'retire', 'launch', 'claim', 'close-retired', 'configure', 'checkpoint', 'session-status',
-                   'session-register', 'session-request', 'session-retire', 'session-launch', 'session-claim', 'session-close', 'upgrade-legacy'):
+                   'session-register', 'session-task-register', 'session-request', 'session-retire', 'session-launch', 'session-claim', 'session-close', 'session-recover', 'upgrade-legacy'):
         cmd = sub.add_parser(action)
         cmd.add_argument('--session', required=True)
         if action in ('retire', 'launch', 'claim', 'configure'):
@@ -2012,6 +2135,10 @@ def main():
             cmd.add_argument('--goal', required=True)
             cmd.add_argument('--loop-prompt', required=True)
             cmd.add_argument('--retired-session', action='append', default=[])
+        if action == 'session-task-register':
+            cmd.add_argument('--task-uuid', required=True)
+            cmd.add_argument('--authorization-uuid', required=True)
+            cmd.add_argument('--goal', required=True)
         if action == 'session-register':
             cmd.add_argument('--contract', required=True)
         if action == 'session-request':
@@ -2041,10 +2168,14 @@ def main():
                 value = codex_output(payload, value)
         elif args.action == 'upgrade-legacy':
             value = upgrade_legacy(args.root, args.session, args.run)
+        elif args.action == 'session-task-register':
+            value = session_task_register(args.root, args.session, args.task_uuid, args.authorization_uuid, args.goal)
         elif args.action == 'session-register':
             value = session_register(args.root, args.session, args.contract)
         elif args.action == 'session-request':
             value = session_request(args.root, args.session, args.reason)
+        elif args.action == 'session-recover':
+            value = session_recover(args.root, args.session)
         elif args.action == 'session-retire':
             value = session_retire(args.root, args.session)
         elif args.action == 'session-launch':

@@ -116,6 +116,66 @@ test('constructor and inherited constructors preserve instance/prototype identit
   f.control.stop();
 });
 
+test('immutable native factories remain callable and observable without changing their descriptors', () => {
+  for (const callable of [false, true]) {
+    const marker = {};
+    let factory;
+    class Session {
+      static #marker = marker;
+      constructor(value) { assert.equal(value, marker); this.value = value; }
+      init() { return this.value; }
+      static create(value) { assert.equal(this.#marker, marker); return new Session(value); }
+      static getNTWrapperSession(value) { return this.create(value); }
+    }
+    factory = callable ? Session : {
+      create(value) { assert.equal(this, factory); return new Session(value); },
+      getNTWrapperSession(value) { assert.equal(this, factory); return this.create(value); },
+    };
+    Object.freeze(factory);
+    const descriptors = Object.getOwnPropertyDescriptors(factory);
+    const f = fixture({ NodeIQQNTWrapperSession: factory });
+    const observed = f.load().NodeIQQNTWrapperSession;
+    assert.equal(f.control.snapshot().observed.session_created, false);
+    assert.notEqual(observed, factory);
+    for (const name of ['create', 'getNTWrapperSession']) {
+      const session = observed[name](marker);
+      assert.ok(session instanceof Session);
+      assert.equal(session.init(), marker);
+    }
+    if (callable) {
+      assert.equal(Object.getPrototypeOf(new observed(marker)), Session.prototype);
+      class Derived extends observed {}
+      const derived = new Derived(marker);
+      assert.ok(derived instanceof Derived);
+      assert.ok(derived instanceof Session);
+    }
+    assert.equal(f.control.snapshot().observed.session_created, true);
+    assert.deepEqual(Object.getOwnPropertyDescriptors(factory), descriptors);
+    f.control.stop();
+    const snapshot = f.control.snapshot();
+    for (const name of ['create', 'getNTWrapperSession']) {
+      const session = observed[name](marker);
+      assert.equal(session.init(), marker);
+      assert.equal(Object.hasOwn(session, 'init'), false);
+    }
+    assert.deepEqual(f.control.snapshot(), snapshot);
+    assert.equal(f.module.exports.NodeIQQNTWrapperSession, factory);
+    assert.deepEqual(Object.getOwnPropertyDescriptors(factory), descriptors);
+  }
+});
+
+test('an immutable factory export reports the observation limit without changing native behavior', () => {
+  const session = { init() {} };
+  const factory = Object.freeze({ create() { assert.equal(this, factory); return session; } });
+  const exports = Object.freeze({ NodeIQQNTWrapperSession: factory });
+  const f = fixture(exports);
+  assert.equal(f.load(), exports);
+  assert.equal(exports.NodeIQQNTWrapperSession.create(), session);
+  assert.equal(f.control.snapshot().observed.session_created, false);
+  assert.ok(f.control.snapshot().notes.includes('readonly_session_export'));
+  f.control.stop();
+});
+
 test('callback throws and native dlopen throws retain the exact original error', () => {
   const originalError = new Error('PRIVATE_CALLBACK_ERROR');
   const listener = { onOpentelemetryInit() { throw originalError; } };

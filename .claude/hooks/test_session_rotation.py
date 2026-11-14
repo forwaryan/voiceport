@@ -120,6 +120,72 @@ class SessionRotationTests(unittest.TestCase):
         self.boot('next', 'term_next')
         return r.session_claim(self.root, 'next', self.source, token)
 
+    def test_standalone_drift_opens_only_exact_recovery_and_owned_shutdown(self):
+        self.enroll()
+        self.tool('CronCreate', {'cron': '0 * * * *', 'prompt': 'original task'}, {'id': 'owned'})
+        os.environ['ORCA_TERMINAL_HANDLE'] = 'term_conflict'
+        r.hook(self.root, self.payload('Edit'))
+        before = self.saved()
+        command = f'python3 -I {r.SCRIPT} session-recover --session direct'
+        allowed = [('Bash', {'command': command}), ('exec_command', {'cmd': command}),
+                   ('ScheduleWakeup', {'stop': True}), ('CronList', {}), ('CronDelete', {'id': 'owned'})]
+        for name, data in allowed:
+            self.assertEqual(r.hook(self.root, self.payload(name, data)), {}, (name, data))
+        for bad in (command + '; cargo test', command + ' --root /tmp', command.replace('direct', 'other'),
+                    command + ' --session direct', 'orca agent launch --agent claude --json'):
+            result = r.hook(self.root, self.payload('Bash', {'command': bad}))
+            self.assertEqual(result['hookSpecificOutput']['permissionDecision'], 'deny', bad)
+        for name, data in [('CronCreate', {'cron': '* * * * *'}), ('CronDelete', {'id': 'foreign'}),
+                           ('ScheduleWakeup', {'stop': True, 'delaySeconds': 1200}), ('Skill', {'skill': 'orca-cli'})]:
+            self.assertEqual(r.hook(self.root, self.payload(name, data))['hookSpecificOutput']['permissionDecision'], 'deny')
+        after = self.saved()
+        for key in ('terminal', 'boundaries', 'terminal_drift', 'standalone'):
+            self.assertEqual(after[key], before[key])
+        self.assertIn('session-recover --session direct', r.terminal_drift_hint(after))
+
+    def test_recovery_gate_does_not_grant_workers_or_returned_terminal_a_rescue(self):
+        command = f'python3 -I {r.SCRIPT} session-recover --session direct'
+        os.environ['ORCA_TERMINAL_HANDLE'] = 'term_conflict'
+        self.assertEqual(r.hook(self.root, self.payload('Bash', {'command': command}))['hookSpecificOutput']['permissionDecision'], 'deny')
+        proof = self.saved()
+        proof['standalone'] = {'contract': self.contract}
+        self.assertTrue(r.standalone_recovery_candidate(proof))
+        proof['coordinator_run'] = 'run_existing'
+        self.assertFalse(r.standalone_recovery_candidate(proof))
+        del proof['coordinator_run']
+        proof['harness'] = 'codex'
+        self.assertFalse(r.standalone_recovery_candidate(proof))
+        proof['harness'] = 'claude'
+        os.environ['ORCA_TERMINAL_HANDLE'] = 'term_direct'
+        self.assertFalse(r.standalone_recovery_candidate(proof))
+
+    def test_recovery_entry_rejects_healthy_session_without_external_mutations(self):
+        before = self.saved()
+        self.calls.clear()
+        with self.assertRaises(ValueError):
+            r.session_recover(self.root, self.source, rotation=r)
+        self.assertFalse(self.calls)
+        self.assertEqual(self.saved(), before)
+
+    def test_drift_stop_reminds_once_only_when_unpaused_and_rescue_not_attempted(self):
+        self.enroll()
+        r.atomic(self.root / '.voiceport/loop-state.json', {'paused': False})
+        os.environ['ORCA_TERMINAL_HANDLE'] = 'term_conflict'
+        r.hook(self.root, self.payload('Edit'))
+        stop = self.payload(event='Stop')
+        self.assertEqual(r.hook(self.root, stop)['decision'], 'block')
+        self.assertEqual(r.hook(self.root, {**stop, 'stop_hook_active': True}), {})
+        r.atomic(self.root / '.voiceport/loop-state.json', {'paused': True})
+        self.assertEqual(r.hook(self.root, stop), {})
+        r.atomic(self.root / '.voiceport/loop-state.json', {'paused': False})
+        with r.session_transaction(self.root, self.source) as state:
+            state['inherited_pause'] = True
+        self.assertEqual(r.hook(self.root, stop), {})
+        with r.session_transaction(self.root, self.source) as state:
+            state['inherited_pause'] = False
+        r.atomic(self.root / '.voiceport/session-recoveries/direct.json', {'management_launch_started_at': r.now()})
+        self.assertEqual(r.hook(self.root, stop), {})
+
     def test_startup_before_transcript_defers_without_manufacturing_proof(self):
         session = 'not-yet-written'
         path = self.root / (session + '.jsonl')

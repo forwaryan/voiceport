@@ -39,6 +39,18 @@ transcript scan 持久保存动态调用 ID、停止/未决结果，以及已确
 
 ## 直接打开的顶层会话
 
+### 持续任务在 drift 前登记恢复依据
+
+用户已明确授权持续完成任务并在会话故障后恢复继续时，在第一个产品修改或后台派发前登记。尚未安装 loop 的任务使用单独的任务登记，不编造五字段 loop 契约。先读本会话真实 transcript，找到完整原任务和明确恢复授权的 human 输入 UUID（可为同一条），结算已有工具后单独运行：
+
+```sh
+python3 -I .claude/hooks/coordinator_rotation.py session-task-register --session ACTUAL_SESSION_ID --task-uuid ACTUAL_TASK_HUMAN_UUID --authorization-uuid ACTUAL_RECOVERY_HUMAN_UUID --goal '实际目标'
+```
+
+入口要求当前真实 PreToolUse、同 terminal、Claude、active、无 Run/worker/既有 authority，固定完整任务/授权原文、来源 session/transcript/UUID/UTC/原行 SHA、当前暂停和计数；写入 `standalone.kind=task`。来源必须是本 session 的真实 human 文本，不能用 system 通知、sidechain 或助手报告。语义授权仍由模型读取原文核对；UUID 存在本身不授权账户、联网、Git、录音或关闭其他终端。管理阶段重读原证据并核对 hash；新限制继续收紧原边界。
+
+任务登记只提供恢复依据，不授予 timer 权限；`CronCreate` 与非 stop 的 `ScheduleWakeup` 仍被拒绝。任务后续有 drift 时使用同一个 `session-recover` 管理/精确关闭/产品继任链，保留 `task_prompt`，不伪造 `loop_prompt`。已冻结的未注册旧会话不能补登记、写规则或解锁自己；只有真实用户明确授权的 fresh 行政接续可采集旧证据，本次实例不冒充正常 claim。无恢复授权、Run/worker 或权限拒绝时保留原限制。
+
 ### 安装 loop 前登记原契约
 
 先有真实 PreToolUse/session 证明，再写精确私有普通 JSON 文件 `.voiceport/handoffs/session-contract-ACTUAL_SESSION_ID.json`（无符号链接、最多 48KB）。**仅含以下五个字段**，全部值须来自实际用户任务；这里是结构占位，不是授权或回执：
@@ -143,9 +155,25 @@ python3 -I .claude/hooks/coordinator_rotation.py checkpoint --session ACTUAL_SES
 
 协调者核对交接和活动工具，依 Orca recovery guarded stop 精确旧 dispatch；须真实 exited/资源释放后才用 `worker-start` 与 fresh-agent 回执继续。Task/spec/freeze 未变可走同 Task retry/new-start；改变则显式 successor assignment，保留 role/Task/Dispatch lineage、同一 Run/产品 attempt 与旧证据，新证据用新路径。行政中断不等于产品退回/通过，修改冻结输入前明确中断旧评审并重新完整冻结。send 恢复旧超限 transcript、新 terminal handle、取消请求、静默和超时都不能证明新上下文或旧进程退出。
 
-同一 session 的实际 `ORCA_TERMINAL_HANDLE` 缺失或不等于保存 terminal 时立即锁存首个 `terminal_drift`，即使计数 0、角色已结算或 registry 已改到新 terminal 也停止普通工作与压缩。保留 owner、旧 terminal、单调计数与笔记；返回原 terminal 不解除 fence，checkpoint 不得冒用旧 caller。此时只允许 Read、精确 `session-status --session ACTUAL_SESSION_ID` 和一条有界 escalation：`orca orchestration send --from ACTUAL_TERMINAL --type escalation --subject '简短主题' --body '简短事实与停止请求' --task-id ACTUAL_TASK --dispatch-id ACTUAL_DISPATCH`。六组参数不重复、不增项，身份来自实际 preamble，由 Orca 校验；最多 48KB、无换行/分号/命令替换等 shell 元字符。禁止 Write/Edit、Skill 和任意 shell；Stop 含递归 Stop 可结束。
+同一 session 的实际 `ORCA_TERMINAL_HANDLE` 缺失或不等于保存 terminal 时立即锁存首个 `terminal_drift`，即使计数 0、角色已结算或 registry 已改到新 terminal 也停止普通工作与压缩。保留 owner、旧 terminal、单调计数与笔记；返回原 terminal 不解除 fence，checkpoint 不得冒用旧 caller。此时允许 Read、精确 `session-status --session ACTUAL_SESSION_ID`、本人调度的精确停止接口（`ScheduleWakeup({stop:true})`、`CronList({})`、仅含已证明自有 ID 的 `CronDelete`），以及一条有界 escalation：`orca orchestration send --from ACTUAL_TERMINAL --type escalation --subject '简短主题' --body '简短事实与停止请求' --task-id ACTUAL_TASK --dispatch-id ACTUAL_DISPATCH`。六组参数不重复、不增项，身份来自实际 preamble，由 Orca 校验；最多 48KB、无换行/分号/命令替换等 shell 元字符。禁止 Write/Edit、Skill 和任意 shell；独立顶层另开放下节唯一恢复入口。worker、暂停任务、已有恢复 attempt 及递归 Stop 可以结束；未暂停且尚未尝试恢复的合格独立顶层在非递归 Stop 收到一次恢复提醒，须执行恢复入口。
 
 协调者从实际 state/transcript 与保留工作采集行政 handoff，记录实际/保存 terminal、session、计数、原 lineage、工具与旧 checkpoint 未成功。确认精确 mismatched assignment exited/released 后再开 fresh session，按前述新会话证明接续；旧 session 保持 fence。不改绑定/清零/信任，不把协调者采集说成 worker checkpoint 成功。此 drift 恢复仍由协调者执行，helper 不自动 stop/launch worker。
+
+### 独立顶层的 terminal drift 自动行政恢复
+
+已登记原始五字段契约、无 Run、非 worker、Claude 宿主的直接顶层会话发生 drift 时，**执行恢复后接续原任务**。不要仅报告冻结、要求用户手开窗口或复制提示词。旧身份继续 fence，原 terminal、压缩数、契约及暂停不可更改。先通过上节精确接口停止全部自有调度，保留实际配对回执，然后单独执行唯一开放的命令：
+
+```sh
+python3 -I .claude/hooks/coordinator_rotation.py session-recover --session ACTUAL_FENCED_SESSION
+```
+
+入口重新核验 authentic hook/transcript、原契约、实际冲突 terminal、无 Run/worker/registry 身份和已停止调度；`session-status` 之外不开放其他任意 shell。它先在 `.voiceport/session-recoveries/<OLD>.json` 保存恢复 token、来源快照和启动 attempt，再单次启动 fresh **管理会话**。真实送达后旧会话结束 turn，不能重复开窗。管理会话按真实 PreToolUse、不同 session/terminal、晚于启动的 transcript/状态与 initial0 核验身份，读取原 transcript/已保留证据，把当前工具的结束回执、最新约束和剩余事项保存到自己的精确 `session-rotation-ADMIN.md`，明确标注为管理采集，不冒称旧 checkpoint 成功。随后按启动提示词执行 `session_recovery.py manage`。该管理 notes 使用 JSON 正文（文件名仍为 `.md`），仅在实际采集并结算后填写：`schema_version:1`、`source:OLD`、`manager:ADMIN`、真实 `token`、原 `source_contract_sha256`、真实 `transcript_path`、`tools_collected:true`、`settled:true`、`active_tools:[]`、`unknown_tools:[]`、`settled_tools`（无后台句柄时为空列表；有句柄时逐项保存 `handle/status/evidence_tool_use_id` 和实际配对结束回执）、与原契约逐字相同的 `authorizations`、非空 `remaining_work`、保留证据路径列表 `retained_materials`、真实 `paused` 布尔值。未知或仍运行的工具不能填已结算，模块还会检查原 transcript 中的未返回调用与可识别后台句柄。
+
+后台 Bash 的实际 `backgroundTaskId` 和 Agent 的 `agentId` 必须关联已配对启动结果。结束若来自真实同 session transcript 的宿主 system task-notification，相应 `settled_tools` 项另含精确通知记录的 `evidence_event_sha256`，`evidence_tool_use_id` 仍指向配对句柄回执；用户粘贴、工具输出或总结中的通知不算证明。完成事件只证明工具结束，不证明产品验收。管理 `remaining_work` 写精简启动简报、下一步、最新用户限制和证据路径；建议读取 loop-recovery 及原范围所需技能。长篇产物引用原件，完整原契约保留在私有 journal 并按摘要核验，不把凭据复制进 launch prompt。
+
+管理入口核对精确冲突 handle/incarnation/工作区，先持久保存关闭 attempt，再关闭旧 terminal；只有精确 `result.close.handle` 和 `ptyKilled:true` 才允许单次启动 fresh **产品会话**。继任按启动提示词执行 `session_recovery.py claim`，重新核验真实 initial0、启动目标、来源契约/笔记哈希和当前暂停，继承目标、完整原 prompt、授权、阈值及暂停。行政 lineage 单独保存，不伪造旧 `retire`、正常 claim token 或已成功的旧交接，也不修改旧会话计数/绑定。claim 后连续推进依赖满足的原任务；仅在有真实等待对象且仍适用时恢复一份原 prompt 调度。
+
+每个 launch/close 都先 journal，超时、错误或送达不明保留原始观察，不 fresh 重发；`session_recovery.py status --source OLD` 只读查询恢复记录。已确认关闭可以从下一阶段接续，但未知关闭不能当成成功。未注册契约、Run/worker、原生 Codex 未验证 scheduler、缺失真实身份、暂停或权限/信任拒绝分别保留阻塞，不能借新会话扩权；worker 仍由自己的协调者执行原 guarded stop/retry。用户暂停优先于自动恢复。该入口处理会话管理故障，不为无输入的产品阻塞制造 timer，也不绕过录音、账户、联网等原授权限制。
 
 ## 未知结果、历史与验证边界
 

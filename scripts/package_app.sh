@@ -40,8 +40,14 @@ install -m 644 resources/AppIcon.icns "$staged_app/Contents/Resources/AppIcon.ic
 install -m 644 THIRD_PARTY_NOTICES.md "$staged_app/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp -R resources/third-party "$staged_app/Contents/Resources/third-party"
 plutil -lint "$staged_app/Contents/Info.plist"
-codesign --force --sign - "$staged_app/Contents/MacOS/voiceport"
-codesign --force --sign - "$staged_app"
+# Reuse one certificate across builds for a stable designated requirement.
+# Never silently fall back to ad-hoc signing when a chosen identity fails.
+signing_identity="${VOICEPORT_CODESIGN_IDENTITY:--}"
+if [[ "$signing_identity" == "-" ]]; then
+    printf 'Using ad-hoc signing; macOS permissions may require approval after updates.\n' >&2
+fi
+codesign --force --sign "$signing_identity" "$staged_app/Contents/MacOS/voiceport"
+codesign --force --sign "$signing_identity" "$staged_app"
 python3 -I scripts/check_bundle.py "$staged_app" "$rust_main"
 # Reserve the destination exclusively, including against another packaging run.
 mkdir "$app_directory"

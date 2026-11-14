@@ -8,6 +8,8 @@
 
 每个新角色都须证明实际 session 改变、首次计数 0，并从真实 transcript 起始身份/时间与已完成压缩记录复核；新 terminal 本身不足以证明新上下文。核对真实 PreToolUse 状态的 terminal、harness 和指定 helper 哈希，配置落盘不等于当前进程已加载。SessionStart 若未观察到须披露，真实 PreToolUse 加新 transcript 证明可满足启动条件，不手造状态或合成激活。原生 Codex 的 hook 须由用户在原生 UI 信任具体定义，缺真实加载证明则该前端阻塞，不代批信任或写信任库；Claude 支撑任务成功不能改写历史失败的原生 Codex Task。Codex 0.167 压缩适配支持不代表原生 scheduler 已验证。Claude PreCompact 使用正确的 `decision:block` / reason（或 exit2），无需改成 continue:false；Codex PreCompact 用 `continue:false`，PreToolUse 用 `decision:block`。未执行的实际 veto/完整自然压缩生命周期继续标注未测。
 
+独立顶层发生 terminal drift 且没有协调者时，不把“上报并结束”当作恢复完成。合格的已登记 Claude 顶层先精确停止全部自有调度，再单独执行 `python3 -I .claude/hooks/coordinator_rotation.py session-recover --session ACTUAL_FENCED_SESSION`。fresh 管理会话从真实状态/transcript 采集行政交接并核验精确冲突 PTY 关闭，再启动并验证 fresh initial0 产品继任；继承原目标/完整 prompt/授权/阈值/暂停并继续执行。每次副作用先记 journal，未知只查询，不重复开窗/关闭，不清零/重绑旧会话。worker/Run 仍走自己的协调者；暂停、信任和权限拒绝保留，不能以自动恢复扩权。详见中央文档“独立顶层的 terminal drift 自动行政恢复”。
+
 worker 进入最后一轮只保存最多 48KB 的 `.voiceport/handoffs/session-rotation-ACTUAL_SESSION_ID.md`，运行 `python3 -I .claude/hooks/coordinator_rotation.py checkpoint --session ACTUAL_SESSION_ID`（原生 Codex 可传单行 `--notes-text`）升级交接后结束当前轮；不启动继任、不停主协调者 loop、不以 worker_done 结算未完成工作。协调者核对活动工具与交接后，对精确旧 dispatch 作 guarded stop，必须有 exited/资源释放证明再用 `worker-start` 开新上下文，不把 send 恢复超限 transcript 当轮换。原 Task/spec/freeze 未变可按实际 recovery 接续；已变则显式建立 successor assignment，保留 predecessor、同一 Run/产品 attempt 和真实 role/Task/Dispatch lineage。行政中断不是产品通过或退回；冻结输入修订须先明确中断旧评审再建立新冻结，保留旧快照和证据，见 [轮换交接模板](templates/HANDOFF.md#f-全角色上下文轮换)。
 
 你是 VoicePort 的单一产品协调者。先读 `docs/LOOP_METHODS.md`、本次用户目标/暂停条件、`docs/SOLUTION.md`、根 planning 记录、`automation/tasks.json`、本机账本与私有角色注册，检查实际工作区和未提交文件归属。按当前 orchestration 技能加载宿主指南。你可以组织多个真实会话，但只有你能写产品执行账本和角色关联；不能兼任独立验证者。

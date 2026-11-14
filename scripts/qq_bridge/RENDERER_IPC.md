@@ -1,6 +1,6 @@
 # QQ 渲染端 IPC 与调试入口证据
 
-2026-11-10，本机 App Store QQ `7.0.1-52892`。本文区分静态字符串、静态控制流和实际探测。SmartPtt 的内部参数转换、回调和 session 来源已静态恢复，见 [本机 SmartPtt 静态调用契约](SMARTPTT_CONTRACT.md)；**没有验证外部可调用的渲染端入口，也没有完成真实转写**。
+更新至 2026-11-12，本机 App Store QQ `7.0.1-52892`。本文区分静态字符串、静态控制流和实际探测。SmartPtt 的内部参数转换、回调和 session 来源已静态恢复，见 [本机 SmartPtt 静态调用契约](SMARTPTT_CONTRACT.md)；**尚未完成真实服务调用或转写**。后续单独获准的临时副本实验已验证自有主入口、隐藏 renderer 中 QQ simple-preload 的原始桥接导出成功返回，以及 QQ 自己创建原生 session。它们没有建立原版签名 QQ 的无修改外部调用入口，也没有证明 AudioSDK 就绪，完整阶段与失败回执见 [诊断说明](README.md#2026-11-11-临时副本的实际进展)。以下旧探测及静态分析保留发生时的范围。
 
 ## 实际探测
 
@@ -19,6 +19,59 @@
 这是渲染端调试的新机制探测，区别于此前主进程 `--inspect-brk` 尝试。本次观察不能反推此前主进程尝试的退出原因。
 
 原始结果：私有调查目录 `/private/tmp/voiceport-qq-diagnostic.2drUlB/renderer-runtime-result-74e2cd8f.json`。该目录还保留本次有界启动/恢复脚本 `run_renderer_probe.py`。运行脚本只投影固定引擎错误分类，不保存 QQ 原始 stderr。
+
+## session 初始化触发证据
+
+2026-11-12，用自写读取器从同一 `major.node` 继续恢复 QQ 自己的调度。以下小缓存偏移均为 universal 文件起点的十进制字节偏移；读取程序只处理序列化数据，没有执行 QQ 字节码。
+
+| 缓存 | 文件偏移 / 长度 | SHA-256 | 完整读取结果 |
+| --- | --- | --- | --- |
+| 初始化组件所在 chunk | `131625448` / `36376` | `f247b759d416c23d52286dde3fca9d2f715c1514d035b493d503b22bc6b4709b` | 1,020 对象、128 编译函数、0 forward registrations、9 字节 NOP 尾部。 |
+| router 所在 chunk | `158677312` / `24304` | `b5c35aa1b283aaba0f6136adac067ad9ca9ea9595f66d3866bbe2e742a756b1c` | 636 对象、65 编译函数、0 forward registrations、5 字节 NOP 尾部。 |
+
+组件 chunk 的 SFI `5` 在 `570`–`581` 将模块 `33913` 绑定到 SFI `862`。其 class boilerplate `876` 将 `created`、`listenNTSessionInitComplete`、`createNTSession`、`jumpToMainPage` 分别映射到 `913`、`920`、`939`、`949`。`913` 按顺序先安装监听，再请求创建；`920` 向 `ntApi.nodeIKernelSessionListener.onSessionInitComplete` 注册回调 `929`。`939` 在 `14`–`32` 调用 `ntApi.nodeIKernelLoginService.startWrapper()`，没有参数。回调 `929` 调用 `jumpToMainPage`，`949` 向 router 推入固定 `{path: '/main'}`。
+
+router chunk 的模块 `23823` / SFI `16` 在路由数组下标 `1` 放入 `{path: '/loading', component: closure50}`；`50` 等待 28 个 chunk 加载请求后动态导入模块 `33913`。路由数组下标 `0` 是 `{path: '/', redirect: '/loading'}`。`16` 在 `138`–`178` 检查 `window.meta?.windowName === JV.ChatWindow`，成立则使用空路由数组，否则使用上述数组。这建立了组件与路由的静态关联，没有证明离线实验的 `login.html` 使用了这个 router，或实际组件已经创建。
+
+主缓存的局部子树另外确认：业务 facade 模块 `72421` / SFI `50824` 在 `369`–`381` 导入 `51179` 到 context slot `10`；其 `startWrapper` 闭包 `50886` 转发到该模块的 `j.startWrapper()`。登录服务 `51179` 的 SFI `22905` 经 `60629` 的包装对象调用 `startSession`；该包装方法 `52610` 通过 `require(96414).g` 转发。wrapper 的 `53246.startSession` 在防重复检查后准备参数，并于 `182`–`206` 对存在的 `sessionNt` 调用 `init`。原先局部图中的外部字符串引用 `94` 已独立读取为 `init`：从主缓存序列化偏移 `32` 开始，读取 95 对象后立即停在 `7356`，字符串位于 `7340`–`7356`。它不是全主缓存重新解析，也没有调用 session 工厂或 native init。
+
+`initWrapper` 创建 session 与 `startSession` 初始化 session 是两个阶段。另一个已恢复的 QR 登录成功回调 `24249` 也调用 `startSession`；该分支不能证明所有启动都必须先登录。主端子树每次仍限制 10,000 对象 / 256 KiB，hot-state 结构及属性名检查分别唯一选出 facade 的 phase `0`、登录服务的 phase `1` 和包装模块的 phase `2`。外部引用未全部解决，不能把这组局部结果称为整个主缓存验证。两块完整小缓存和这些子树都保留 producer typed layout 未验证、payload checksum 缺失的限制。
+
+私有证据为 `qq-image-editor-static-7whpmcg1`、`qq-image-editor-static-n_nqb3yl`、`voiceport-qq-service-isolation-2oFRcs` 下的 `session-upstream-jcy0e_57`、`session-functions-p_jzlxta`、`session-caller-listings-wr45_nw6`，以及 `qq-init-name-prefix-hkk5ad6_/provenance.json`。同范围的后续被动路由实测为 PID `97183`、退出 `2`、外层未超时：唯一 renderer 为 `login.html` 根路由，DOM 和加载完成，没有观察到 `/loading` 或 `/main` 导航；加载错误码为空、preload/renderer error 计数均为 `0`、无 renderer 退出。session 已创建，init/ready/BDH 仍未观察到；8 个 xhr 被阻止。回执 `voiceport-qq-service-isolation-2oFRcs/service-route-evidence/result.json` 确认无剩余副本进程、原版指纹保持及深度严格签名通过。观察器只记录固定元数据，没有页面求值、强制导航或 IPC/session/init 方法调用，没有联网、登录或音频验证。
+
+后续恢复了登录管理父模块 `10254` / SFI `23490`：主缓存序列化偏移 `1093140`–`1154266`、1,344 对象、2,336 字节 bytecode，代码 SHA-256 为 `7206408b11e0fd48c62d86ce7415addbde304070e42c77ca665aa1c4029cabea`。有限候选搜索从 128 扩至 256 个 header，每次解析仍遵守上述对象/字节限制；结构及属性名检查仅保留 phase `5`。这也解决了先前单独恢复子函数时的常量歧义，`24270` 的末尾错误标签可确定为 `sessionResult`，没有靠名称猜测分支。
+
+该父模块进一步建立以下静态关系：
+
+- 构造函数 `24206` 在 `69`–`74` 将 `sessionInited` 设为 false；`24459.start` 据此调用 `openLoginWindow()`，仅在它为 true 时调用 `showWindowsRoOpenMainWin()`。
+- `24424.registerNTListener` 向业务 facade `72421` 的 session listener 分别注册 `handleNTSessionCreated` 和 `handleSessionInitComplete`，并向登录 listener 的 `onQRCodeLoginSucceed` 注册 `24249`。两个 session 回调没有混作一个阶段。
+- `24220` 的成功分支注入 wrapper 业务服务并调用 `46301.nG()`；`24270` 的成功分支设置 `sessionInited=true`、初始化 app session/window pool，调用 `46301.EE()`，随后触发 `onSessionInitComplete`，后续异步路径再触发 `onMainWindowOpen`。事件名由独立的 548 对象 / 27 KiB 主缓存前缀确认；完整窗口创建 handler 仍未恢复。
+- 父模块 context slot `10` 明确导入 `46301`。该辅助模块 `49950` 的 95 对象子树仅 phase `7` 通过检查；导出 getter `50027` / `50017` 分别返回 `49969` / `49976`。两者只更新本地阶段并用固定 `done` 完成对应 Promise，没有调用 `startWrapper`、`startSession` 或 native init。
+- 父模块 context slot `21` 明确导入 `60629`。`24249` 是一条具体的 QR 登录成功路径：先调用 `setAuthData`，再于 `84`–`99` 调用 `60629.ntWrapper.startSession()`。这是一个初始化触发点，不能推出所有启动都必须登录或联网。
+
+登录窗口 provider 的导入也已绑定到 `66869` / SFI `57`。从相同的 548 对象前缀解码可见，`200.init` 调用 `setup`，正常分支再调用 `showLoginWindowIfNeeded`；`307` 的 `--hide-login-window` 检查只控制 `show` / 首次显示报告。`262.setup` 注册 IPC、发送固定 `loginReady` 并安装窗口事件回调；其 `--from-installer` 分支调用 `60629.ntWrapper.readyToShow()`，没有直接调用 `startSession`。包装层 `53268.readyToShow` 仅转发到 native engine 的同名方法，其 native 内部行为没有由这段 JavaScript 解析建立；不能把它当作 session 初始化已完成。`212.load` 将 provider `21679.gW()` 的返回值交给 `loadURL`。继续核对既有完整 `background.js` 缓存：SFI `14` 在 `92`–`101` 注册 `21679 → 622`；`622` 的导出 getter `652` 返回 context slot `3` 中的 `677`，后者直接返回固定 `app://./renderer/login.html`，没有 hash。`670`、`684` 分别返回独立的 `index.html`、`newLogin.html` URL。缓存仍是上述已保存的 71,824 字节 / 1,991 对象结果，没有新的 QQ 执行。
+
+随后用自写 ASAR 数据读取器核对安装包中的 `renderer/login.html` 和 `renderer/newLogin.html`，分别为 27,776 / 30,432 字节；实际 SHA-256 与归档各自声明的 SHA256 完整性值一致。对应 SHA-256 为 `49b2f760d3614012b224fc1d5e353d81cb3ee9ccbf9ff643c370c1268d2caac8`、`5ddce3f635314bfaeb8eb170d554cb46b3c42b9563643042bc7aba1d786b1149`，回执 `qq-login-html-static-u_iufvkr/result.json`。原始资源不能严格解码为 UTF-8；下述静态原生追踪及自写数据解码已恢复可读页面。
+
+已安装 QQNT 的完整 SHA-256 仍为 `089a9ce1825e2e5d0ff2327b3ee8f24e0c329b1b90d5b0d71f18653d248170cc`。其内嵌 `asar-fs-wrapper.ts` 将绑定设为 `process._linkedBinding('electron_common_asar')`，在资源完整性检查后对 `application.asar` 数据调用 `getPlain`。自写 Mach-O 引用扫描与仅文件 LLDB 反汇编确认：arm64 中模块导出回调为 `0x2a167bc`，Archive 方法回调为 `0x2a17b7c`，经 `0x2a3ac14` / `0x2a3ac18`、`0x56d2a44` 到 `0x56d26e0`。算法描述表的 NID 为 `427`，block/key/IV 长度为 `16/32/16`，mode flags 为 `2`；初始化函数带有 BoringSSL `e_aes.cc.inc` 源文件标记。控制流取资源前 16 字节作 IV，使用静态程序资源常量中的 32 字节密钥解码余下字节；该入口保留默认填充。由此确定 AES-256-CBC / PKCS#7，区别于先前没有资源调用关联的通用 AES-128-ECB 工具。地址由指令和数据配对确认，没有沿用 LLDB 最近导出符号的名称作函数归属。
+
+自写脚本只用 Node 内置 crypto 处理数据，未调用 QQ 绑定或执行 HTML；两份输出均通过填充校验、严格 UTF-8、doctype/head/html 结构检查。`login.html` 明文为 27,748 字节 / SHA-256 `687186ff3a7281f3f58dff1f45e9f5a314c472ca717ac0d1a73de7c42773f9b2`；`newLogin.html` 为 30,407 字节 / `4d815b81283ec5eacda57ec794f5fccd165a7f50bf660723061ddba35e277a59`。私有证据为 `qq-getplain-static-drapwg92` 和 `qq-login-html-decoded-iVkSXB/result.json`。两页分别有 25 / 22 个 script 标签，最后通过零延迟定时器调度 `window.electron.load('r_login')` / `r_newLogin`。本机原生缓存表分别将名称配对到 universal 文件偏移 `215469160` / `34968` 字节和 `215504128` / `37120` 字节；自写完整小缓存读取分别得到 790 对象 / 82 编译函数及 849 对象 / 88 编译函数，均无 forward registrations。缓存 SHA-256 分别为 `7805ab4c01594eb2a4d7b82306ffe41991737443ca5514d41681ec30ce8462af`、`bc8e4fab4f770bb6f36a2a23c95e3c6903315092fbf9ad94035afc656a3f86dd`。这是实际页面入口的静态绑定，未证明 native session 初始化、AudioSDK 就绪或转写成功。两个缓存继续保留 typed profile 未验证、payload checksum 缺失的限制。
+
+### 登录页面的 UI 就绪与事件响应
+
+`r_login` 的 SFI `50` 先检查 `window.isLoginReady`；已有真值则设置组件标志，否则注册 DOM `loginReady` 回调 `57`。渲染函数 `88` 仅在组件标志为真时渲染 `Login`，否则返回 `v-if` 占位。相应 `preload_login` 的 `2304` 注册 `ipcRenderer.once('loginReady', 2325)`；`2325` 先加载模块 `597`，再通过 `contextBridge.exposeInMainWorld('isLoginReady', true)` 暴露标志，最后派发 DOM `CustomEvent('loginReady')`。结合主端 `262.setup` 的发送点，这建立了主端、preload、DOM 和组件显示条件的静态链。`loginReady` 表示这里的 UI 显示条件，不等于 native session 已初始化；离线实测没有记录这个标志或事件，不能据此认定事件漏发。
+
+为继续追踪 `r_login` 的动态导入模块 `17571`，只读取候选登录业务缓存的原顺序前缀：候选总长 `264312` 字节 / SHA-256 `23bec83ae545bbd51a318d06fd2f2fae00f51e78713318bb8c38e17a79942fe4`；解析从 `32` 到 `240873` 停止，见到 5,687 对象，仅保留 5,673 个已闭合对象，14 个未闭合祖先明确排除。没有放宽每次 10,000 对象 / 256 KiB 限制，也没有分段补齐全缓存。原始模块号附近呈注册指令形态，但父函数没有闭合，因此模块 `17571` 的完整归属与父级调用顺序仍待核对。以下仅描述已闭合函数的局部行为：
+
+- 已闭合的 Store 类工厂 `248` 在 `218`–`229` 导入模块 `41386` 到 context slot `10`。其 class boilerplate `262` / 实例表 `265` 将 `bindPushEvent` 放在方法参数 `43`；工厂于 `732` 创建闭包 `918`，写入寄存器 `r52`，并在 `1101` 的 104 参数类创建调用中使用该位置。这建立了 `bindPushEvent → 918` 的指令绑定。`918` 使用上述 provider 的 `ntApi`，按顺序订阅登录事件，再订阅 `onSessionInitComplete` 和文件系统检查事件，保存各自 disposer；这个函数安装监听，没有发起 session 初始化。
+- `1954.handleLoginConnected` 完成 `waitForLoginConnected`，再按模式分支：`SCAN` 设置 PENDING 并调用 `invokeGetQrcodeImg`；`AUTO` 仅在 `!isUserLogin && isAutoLogin && canAutoLogin` 时调用 `doAutoLogin` 并清除 `canAutoLogin`；其他模式更新 CONNECTED 状态。`969` 的二维码路径设置 LOADING/NONE 后等待 `getQRCodePicture()`。
+- `2042.handleSessionInitComplete` 按 `result === 0` 分支：失败时报告、显示对话框并设置 FAILED，其中 `-10121` 使用特殊内容；成功时调用成功报告及 `report(account)`。这个处理函数没有调用 `startWrapper`、`startSession` 或 native init。分析只读取程序字段和指令，没有读取实际账号或回调参数。
+
+另有已闭合函数 `4873` 的自身 ScopeInfo 明确命名为 `mounted`，在 `22` 调用 `this.loginStore.bindPushEvent()`；`4896` 命名为 `unmounted`，在 `10` 调用 `unbindPushEvent()` 并处理登录注册回调的清理。`4858.created` 先调用 `initLoginAegisService`，再调用 `initializeLoginPanel`；后者 `4913` 等待登录列表并处理页面显示、预览自动登录与预填。这些名称分别由自身 scope 和函数体支持。不过，UI 父函数 `2945` / bytecode `2946` 没有闭合，尚不能核对这些闭包实际安装到类 `4790` 的指令、其 context slot `8` 的 provider 赋值，以及 `loginStore` 的实际注入。构造器 `4810` 仅给 `loginStore` 设置 undefined 默认值，不能据此断言注入失败。登录统计服务的 `init` 也不是 native session init。
+
+局部证据为 `qq-login-implementation-prefix-6a0vd7lm`、`qq-saved-function-listings-w3xz8w13` 和 `qq-selected-cache-listing-owxigcno`；UI 标志链见 `qq-selected-cache-listing-r179pyoh` 与 `qq-selected-cache-listing-njjxk0qw`。新增类绑定/生命周期指令见 `qq-selected-cache-listing-hq_u5mzy`，本会话对选定索引、寄存器和导入的自检回执为 `qq-login-closed-bindings-x50r0ibt/result.json`，绑定输入图 SHA-256 `82463043a3a58b2b0c3b9c0d5c7021af0bec4dcdc10647bee6d0c6ba489791c9`。这些事件响应不能解释全部初始化调度，也不证明运行中已收到连接、二维码或初始化事件。
+
+新增私有证据为 `session-functions-0l4riekj`、`session-functions-kynm99h0`、`qq-login-callback-listings-x4vrqw45`、`qq-login-callback-listings-63p4fex_`、`qq-login-callback-listings-ykauw1i0`、`qq-session-prefix-names-mfkwoyqs` 及其选定函数 listings。它们解释了已恢复的创建、初始化和窗口分支，未证明离线登录页已执行某条初始化路径。没有读取回调的实际账号/session 参数，没有复用登录态、调用 IPC、强制路由或补造 native 配置；真实初始化与服务就绪仍是下一项运行验收条件。
 
 ## 运行库中的开关删除逻辑
 
@@ -265,9 +318,10 @@ preload 的适配已继续核对：模块 `298` / SFI `847` 在 `5`–`12` 导�
 - renderer 模块 `41386`、工厂 `63198` 和枚举 `43145` 的调用链、`AudioSDKApi` 声明方法及 RM 收发方向已恢复；底层 `10413` 的 prefix/peer 拼接、调用/事件/响应线格式和清理行为也已恢复；preload 的普通 `ipcImpl` 分支已确认直接转发 Electron IPC；主端适配函数与 prefix 字面量配对也已恢复；主端 `72298` 也已确认导出宿主 `require('electron')`；仍需验证实际 chunk 安装、preload 替代 provider 和窗口可达的服务注册，尚未运行验证。
 - 从实际 renderer 可达的调用入口及其权限/状态条件，不能由内部 facade 链直接推断。
 - 恢复出的任务、音频和回调约定在本机服务中的接受条件，以及取消/超时和完整错误行为。
-- 在当前签名 App Store 构建中可用的进程内加载方式；上述 pipe 候选尚未建立新启动路径。
+- 临时副本已观察到 session 创建和普通 RM renderer listener 注册，但离线启动尚未观察到 session 初始化回调、BDH 或 AudioSDK 就绪；隐藏本地登录页加载完成不证明登录或网络是唯一前提。
+- 在原版签名 App Store 构建中可用的无修改进程内加载方式；上述 pipe 候选尚未建立新启动路径。
 
-因此当前不能提供可工作的 QQ JSONL 适配器或可导入的 QQ 来源。需要先取得兼容且可调试的运行环境，或解出/验证当前客户端本身支持的加载入口；有了这些证据才进入服务和获准音频样例验证。
+因此当前不能提供可工作的 QQ JSONL 适配器或可导入的 QQ 来源。下一步查明并验证 QQ 自有 session 的启动和服务就绪条件，再进入单独获准的音频样例验证；副本入口成功不能代替真实服务接受或识别结果。
 
 ## 本地检查
 

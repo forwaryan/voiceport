@@ -68,10 +68,17 @@ def validate(app, target):
         (twin / 'Contents/MacOS/voiceport-app').chmod(0o755)
         shutil.copyfile(cli_target, twin / 'Contents/MacOS/voiceport')
         (twin / 'Contents/MacOS/voiceport').chmod(0o755)
-        subprocess.run(['codesign', '--force', '--sign', '-', str(twin / 'Contents/MacOS/voiceport')], check=True, capture_output=True)
-        subprocess.run(['codesign', '--force', '--sign', '-', str(twin)], check=True, capture_output=True)
-        assert sha(twin / 'Contents/MacOS/voiceport') == sha(cli), 'CLI does not match current Rust build plus signature'
-        assert sha(twin / 'Contents/MacOS/voiceport-app') == sha(main), 'main does not match this Rust voiceport-macos build plus bundle signature'
+        # Certificate signatures contain timestamps/identity data. Normalize both
+        # copies to ad-hoc signatures before comparing their exact signed bytes;
+        # the original bundle's actual signature was verified above.
+        normalized = pathlib.Path(temp) / 'normalized' / app.name
+        normalized.parent.mkdir()
+        shutil.copytree(app, normalized)
+        for candidate in [twin, normalized]:
+            subprocess.run(['codesign', '--force', '--sign', '-', str(candidate / 'Contents/MacOS/voiceport')], check=True, capture_output=True)
+            subprocess.run(['codesign', '--force', '--sign', '-', str(candidate)], check=True, capture_output=True)
+        assert sha(twin / 'Contents/MacOS/voiceport') == sha(normalized / 'Contents/MacOS/voiceport'), 'CLI does not match current Rust build plus signature'
+        assert sha(twin / 'Contents/MacOS/voiceport-app') == sha(normalized / 'Contents/MacOS/voiceport-app'), 'main does not match this Rust voiceport-macos build plus bundle signature'
     return {
         'main_sha256': sha(main),
         'cargo_product_sha256': sha(target),

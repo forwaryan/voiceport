@@ -87,6 +87,22 @@ class LoopWaitGuardTests(unittest.TestCase):
         self.assertFalse(self.denied(result))
         self.assertNotIn('permissionDecision', result['hookSpecificOutput'])
 
+    def test_batched_host_completions_settle_every_task(self):
+        event = self.completed()
+        event['message']['content'] += self.completed('agent-2')['message']['content']
+        rows = self.launch() + self.launch('agent-2', 'call-2') + [event]
+        self.assertEqual(guard.pending_tasks(rows, self.session), set())
+
+    def test_actual_queued_command_completion_requires_correlated_call(self):
+        event = {'type': 'attachment', 'sessionId': self.session, 'attachment': {
+            'type': 'queued_command', 'prompt': '<task-notification><task-id>agent-1</task-id>'
+            '<tool-use-id>call-1</tool-use-id><status>completed</status><result>data</result></task-notification>'}}
+        self.assertEqual(guard.pending_tasks(self.launch() + [event], self.session), set())
+        event['attachment']['prompt'] = event['attachment']['prompt'].replace('call-1', 'unrelated')
+        self.assertEqual(guard.pending_tasks(self.launch() + [event], self.session), {'agent-1'})
+        event['type'] = 'user'
+        self.assertEqual(guard.pending_tasks(self.launch() + [event], self.session), {'agent-1'})
+
     def test_completed_task_cannot_back_fallback(self):
         self.assertTrue(self.denied(self.check_rows(self.launch() + [self.completed()])))
 
