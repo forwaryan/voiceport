@@ -6,13 +6,14 @@
 pub mod model;
 mod native;
 
-use model::{Failure, OwnedSpan, Target, Terminal, TerminalTarget};
+use model::{ChunkedInput, Failure, OwnedSpan, Target, Terminal, TerminalTarget};
 
 const RETAINED: &str = "无法确认原输入框支持安全写入，文字保留在面板。";
 const PREPARING: &str = "正在准备原输入框，请保持当前输入位置。";
 
 enum Session {
     Ordinary(OwnedSpan<Box<dyn Target>>),
+    Keyboard(ChunkedInput<Box<dyn Target>>),
     Terminal(Terminal<Box<dyn TerminalTarget>>),
 }
 
@@ -23,6 +24,7 @@ pub struct Delivery {
     failure: Option<Failure>,
     preparing: Option<Box<dyn native::Preparation>>,
     prepared_text: Option<(String, bool)>,
+    method: Option<&'static str>,
 }
 
 impl Default for Delivery {
@@ -38,6 +40,7 @@ impl Delivery {
             failure: None,
             preparing: None,
             prepared_text: None,
+            method: None,
         }
     }
 
@@ -54,10 +57,21 @@ impl Delivery {
     /// frontend's permission state. Only Accessibility and our own frontmost
     /// application block recording; other failures allow panel-only dictation.
     pub fn begin(&mut self) -> Result<(), String> {
+        self.begin_in_application(None)
+    }
+    #[doc(hidden)]
+    pub fn begin_in_application(
+        &mut self,
+        target: Option<&crate::delivery::model::ApplicationTarget>,
+    ) -> Result<(), String> {
         self.on_main().map_err(Failure::message)?;
         self.clear();
+        if self.has_pending() {
+            return Err("正在确认上一轮输入，请稍后重新开始。".into());
+        }
         self.failure = None;
-        let result = native::capture().and_then(|capture| self.accept_capture(capture));
+        self.method = None;
+        let result = native::capture(target).and_then(|capture| self.accept_capture(capture));
         match result {
             Ok(()) => Ok(()),
             Err(failure) => {
@@ -69,8 +83,18 @@ impl Delivery {
 
     fn accept_capture(&mut self, capture: native::Captured) -> Result<(), Failure> {
         self.session = Some(match capture {
-            native::Captured::Ordinary(target) => Session::Ordinary(OwnedSpan::capture(target)?),
-            native::Captured::Terminal(target) => Session::Terminal(Terminal::capture(target)?),
+            native::Captured::Ordinary(target) => {
+                self.method = Some("accessibility");
+                Session::Ordinary(OwnedSpan::capture(target)?)
+            }
+            native::Captured::Keyboard(target) => {
+                self.method = Some("keyboard_final");
+                Session::Keyboard(ChunkedInput::capture(target)?)
+            }
+            native::Captured::Terminal(target) => {
+                self.method = Some("terminal");
+                Session::Terminal(Terminal::capture(target)?)
+            }
             native::Captured::Preparing(preparation) => {
                 self.preparing = Some(preparation);
                 return Ok(());
@@ -122,12 +146,16 @@ impl Delivery {
     }
 
     pub fn blocks_recording(&self) -> bool {
-        self.failure.is_some_and(Failure::blocks_recording)
+        self.has_pending() || self.failure.is_some_and(Failure::blocks_recording)
     }
 
     /// A content-free failure stage is useful for permission/status UI.
     pub fn failure_stage(&self) -> Option<&'static str> {
         self.failure.map(Failure::stage)
+    }
+    #[doc(hidden)]
+    pub fn method(&self) -> Option<&'static str> {
+        self.method
     }
 
     fn result_message(&mut self, result: Result<(), Failure>, success: &str) -> String {
@@ -157,14 +185,24 @@ impl Delivery {
             return self.queue_prepared_text(text, false);
         }
         let (result, success) = match self.session.as_mut() {
-            Some(Session::Ordinary(span)) => (
-                span.update(text, false),
-                "正在原输入框实时听写；停录后校正。",
-            ),
+            Some(Session::Ordinary(span)) => {
+                let result = span.update(text, false);
+                (
+                    result,
+                    if span.has_pending() {
+                        "正在等待原输入框确认文字更新。"
+                    } else {
+                        "正在原输入框实时听写；停录后校正。"
+                    },
+                )
+            }
             Some(Session::Terminal(terminal)) => (
                 terminal.update(text, false),
                 "正在向原 Orca 终端追加稳定文字；不会删除内容或自动发送。",
             ),
+            Some(Session::Keyboard(input)) => {
+                (input.verify(), "实时预览保留在面板；停录后输入最终文字。")
+            }
             None => return self.retained(),
         };
         self.result_message(result, success)
@@ -187,6 +225,7 @@ impl Delivery {
         };
         match session {
             Session::Ordinary(_) => "已保留原输入框中的实时文字。".to_owned(),
+            Session::Keyboard(_) => "正在等待最终转写，完成后输入原光标。".into(),
             Session::Terminal(terminal) => {
                 let result = terminal.flush();
                 self.result_message(
@@ -218,7 +257,25 @@ impl Delivery {
         match &mut session {
             Session::Ordinary(span) => {
                 let result = span.update(text, true);
-                self.result_message(result, "已在原输入框完成听写和最终校正，请检查后自行发送。")
+                match result {
+                    Ok(()) if span.has_pending() => {
+                        self.session = Some(session);
+                        "正在确认原输入框中的最终文字，请等待完成。".into()
+                    }
+                    _ => self.result_message(
+                        result,
+                        "已在原输入框完成听写和最终校正，请检查后自行发送。",
+                    ),
+                }
+            }
+            Session::Keyboard(input) => {
+                let result = input.submit(text);
+                if result.is_ok() && input.has_pending() {
+                    self.session = Some(session);
+                    "正在向原输入框键入最终文字，请等待完成。".into()
+                } else {
+                    self.result_message(result, "已在原输入框输入最终文字，请检查后自行发送。")
+                }
             }
             Session::Terminal(terminal) => {
                 let result = terminal.update(text, true);
@@ -255,7 +312,12 @@ impl Delivery {
                 .prepared_text
                 .as_ref()
                 .is_some_and(|(_, final_text)| *final_text))
-            || matches!(self.session.as_ref(), Some(Session::Terminal(terminal)) if terminal.has_pending())
+            || match self.session.as_ref() {
+                Some(Session::Ordinary(span)) => span.has_pending(),
+                Some(Session::Keyboard(input)) => input.has_pending(),
+                Some(Session::Terminal(terminal)) => terminal.has_pending(),
+                None => false,
+            }
     }
 
     /// Call once from each main run-loop timer turn. One bounded chunk gives
@@ -285,11 +347,52 @@ impl Delivery {
                 }
             }
         }
-        if !matches!(self.session.as_ref(), Some(Session::Terminal(_))) {
-            return None;
+        match self.session.as_ref() {
+            None => return None,
+            Some(Session::Ordinary(span)) if !span.has_pending() => return None,
+            Some(Session::Keyboard(input)) if !input.has_pending() => return None,
+            _ => {}
         }
         if let Err(failure) = self.on_main() {
             return Some(failure.message());
+        }
+        if let Some(Session::Ordinary(span)) = self.session.as_mut() {
+            let pending = span.has_pending();
+            if !pending {
+                return None;
+            }
+            let restoring = span.is_restoring();
+            return match span.poll() {
+                Ok(true) => {
+                    self.session = None;
+                    Some(if restoring {
+                        "已还原原输入框中已确认的听写预览。".into()
+                    } else {
+                        "已在原输入框完成听写和最终校正，请检查后自行发送。".into()
+                    })
+                }
+                Ok(false) if span.has_pending() => Some("正在等待原输入框确认文字更新。".into()),
+                Ok(false) => Some("已在原输入框更新实时文字；停录后校正。".into()),
+                Err(failure) => {
+                    self.failure = Some(failure);
+                    self.session = None;
+                    Some(failure.message())
+                }
+            };
+        }
+        if let Some(Session::Keyboard(input)) = self.session.as_mut() {
+            return match input.poll() {
+                Ok(true) => {
+                    self.session = None;
+                    Some("已在原输入框输入最终文字，请检查后自行发送。".into())
+                }
+                Ok(false) => Some("正在键入并确认最终文字；用户输入会停止后续追加。".into()),
+                Err(failure) => {
+                    self.failure = Some(failure);
+                    self.session = None;
+                    Some(failure.message())
+                }
+            };
         }
         let Some(Session::Terminal(terminal)) = self.session.as_mut() else {
             return None;
@@ -323,11 +426,14 @@ impl Delivery {
             return;
         }
         self.discard_preparation();
-        if self.failure.is_none()
-            && let Some(Session::Terminal(terminal)) = self.session.as_mut()
-        {
-            terminal.seal();
-            if terminal.has_pending() {
+        if self.failure.is_none() {
+            match self.session.as_mut() {
+                Some(Session::Ordinary(span)) => span.seal(),
+                Some(Session::Terminal(terminal)) => terminal.seal(),
+                Some(Session::Keyboard(_)) => {}
+                None => {}
+            }
+            if self.has_pending() {
                 return;
             }
         }
@@ -346,9 +452,12 @@ impl Delivery {
                 Session::Ordinary(span) => {
                     if let Err(failure) = span.cancel() {
                         self.failure = Some(failure);
+                    } else if span.has_pending() {
+                        self.session = Some(session);
                     }
                 }
                 Session::Terminal(terminal) => terminal.end(),
+                Session::Keyboard(input) => input.end(),
             }
         }
     }
@@ -360,6 +469,21 @@ impl Delivery {
 
     /// Exercises the production delivery path only against our isolated fixture.
     pub fn input_self_test() -> serde_json::Value {
+        fn settle(delivery: &mut Delivery) -> Option<String> {
+            use objc2_foundation::{NSDate, NSRunLoop};
+            let started = std::time::Instant::now();
+            let mut status = None;
+            while delivery.has_pending() && started.elapsed() < std::time::Duration::from_secs(2) {
+                // This explicit fixture-only diagnostic owns its Delivery;
+                // no application Controller is borrowed by this run loop.
+                NSRunLoop::currentRunLoop()
+                    .runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.01));
+                if let Some(message) = delivery.poll() {
+                    status = Some(message);
+                }
+            }
+            status
+        }
         let mut report = Self::diagnose_input();
         if !native::self_test_fixture_focused() {
             report["selfTest"] = "refused: dedicated untouched input fixture is not focused".into();
@@ -370,7 +494,14 @@ impl Delivery {
             Ok(()) => {
                 report["begin"] = "ok".into();
                 report["preview"] = delivery.preview("测试").into();
+                if let Some(status) = settle(&mut delivery) {
+                    report["preview"] = status.into();
+                }
                 report["final"] = delivery.deliver("输入验证🙂", true).into();
+                if let Some(status) = settle(&mut delivery) {
+                    report["final"] = status.into();
+                }
+                report["pending"] = delivery.has_pending().into();
             }
             Err(error) => report["begin"] = error.into(),
         }
@@ -420,6 +551,7 @@ mod preparation_tests {
     struct Delayed {
         polls: Rc<Cell<usize>>,
         failure: Option<Failure>,
+        keyboard: bool,
     }
     impl native::Preparation for Delayed {
         fn poll(&mut self) -> Result<Option<native::Captured>, Failure> {
@@ -427,16 +559,26 @@ mod preparation_tests {
             if let Some(failure) = self.failure {
                 return Err(failure);
             }
-            Ok((self.polls.get() > 1).then(|| native::Captured::Ordinary(Box::new(Field))))
+            Ok((self.polls.get() > 1).then(|| {
+                if self.keyboard {
+                    native::Captured::Keyboard(Box::new(Field))
+                } else {
+                    native::Captured::Ordinary(Box::new(Field))
+                }
+            }))
         }
     }
     fn pending(failure: Option<Failure>) -> (Delivery, Rc<Cell<usize>>) {
+        pending_for_method(failure, false)
+    }
+    fn pending_for_method(failure: Option<Failure>, keyboard: bool) -> (Delivery, Rc<Cell<usize>>) {
         let polls = Rc::new(Cell::new(0));
         let mut delivery = Delivery::new();
         delivery
             .accept_capture(native::Captured::Preparing(Box::new(Delayed {
                 polls: polls.clone(),
                 failure,
+                keyboard,
             })))
             .unwrap();
         (delivery, polls)
@@ -444,21 +586,31 @@ mod preparation_tests {
 
     #[test]
     fn final_result_waits_for_capture_and_survives_late_preview() {
-        let (mut delivery, _) = pending(None);
-        delivery.queue_prepared_text("preview", false);
-        assert!(!delivery.has_pending());
-        delivery.queue_prepared_text("final🙂", true);
-        delivery.queue_prepared_text("late preview", false);
-        assert!(delivery.has_pending());
-        assert!(!delivery.advance_preparation().unwrap());
-        assert!(delivery.session.is_none());
-        assert!(delivery.advance_preparation().unwrap());
-        assert!(delivery.session.is_some());
-        assert_eq!(
-            delivery.prepared_text.as_ref(),
-            Some(&("final🙂".into(), true))
-        );
-        assert_eq!(delivery.failure_stage(), None);
+        for keyboard in [false, true] {
+            let (mut delivery, _) = pending_for_method(None, keyboard);
+            delivery.queue_prepared_text("preview", false);
+            assert!(!delivery.has_pending());
+            delivery.queue_prepared_text("final🙂", true);
+            delivery.queue_prepared_text("late preview", false);
+            assert!(delivery.has_pending());
+            assert!(!delivery.advance_preparation().unwrap());
+            assert!(delivery.session.is_none());
+            assert!(delivery.advance_preparation().unwrap());
+            assert!(delivery.session.is_some());
+            assert_eq!(
+                delivery.method(),
+                Some(if keyboard {
+                    "keyboard_final"
+                } else {
+                    "accessibility"
+                })
+            );
+            assert_eq!(
+                delivery.prepared_text.as_ref(),
+                Some(&("final🙂".into(), true))
+            );
+            assert_eq!(delivery.failure_stage(), None);
+        }
     }
 
     #[test]

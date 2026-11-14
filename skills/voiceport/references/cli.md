@@ -13,7 +13,7 @@
 
 ## App commands (macOS)
 
-- `status` or `app status`: state, busy, pending/warning, discovering, selected source, language, version, bundle path, PID, socket and permission metadata. While stopping, `pending:true` and `warning:"cancellation_pending"` do not claim cleanup has completed. No permission prompt, auth read, transcript, target content or audio.
+- `status` or `app status`: state, busy, pending/warning, discovering, selected source, language, version, bundle path, PID, socket and permission metadata. While stopping, `pending:true` and `warning:"cancellation_pending"` do not claim cleanup has completed. No permission prompt, auth read, transcript, target content or audio. `data.input` adds the GUI automatic-input preference, a content-free failure stage, and the last explicit start route. Hotkey start metadata includes only captured/dispatch application PID and bundle ID plus a fixed outcome code, never field text. A start blocked before recording reports failed rather than leaving a previous ready state looking like a successful new recording.
 - `app show [--settings]`: show the running App window, optionally on its settings page.
 - `app quit`: graceful idle-only quit; busy or configuration work returns `busy`. It never force-kills an instance.
 

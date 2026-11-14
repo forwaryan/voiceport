@@ -13,6 +13,7 @@ use objc2_foundation::{
 };
 use std::cell::{Cell, OnceCell, RefCell};
 mod control;
+mod hotkey_start;
 mod picker;
 mod quick_panel;
 mod source_manager;
@@ -183,7 +184,9 @@ struct Ivars {
     shutdown_started: Cell<bool>,
     alternative: Cell<bool>,
     hotkey: RefCell<Option<crate::hotkey::GlobalHotKey>>,
-    hotkey_rx: RefCell<Option<std::sync::mpsc::Receiver<()>>>,
+    hotkey_rx: RefCell<Option<std::sync::mpsc::Receiver<crate::hotkey::HotKeyEvent>>>,
+    pending_hotkey: RefCell<Option<crate::hotkey::HotKeyEvent>>,
+    last_start_trace: RefCell<Option<serde_json::Value>>,
     permission_rx: RefCell<Option<std::sync::mpsc::Receiver<(u64, crate::audio::AudioEvent)>>>,
     prepare_permissions: OnceCell<Retained<NSButton>>,
     accessibility: OnceCell<Retained<NSButton>>,
@@ -251,7 +254,17 @@ define_class!(
         }
         #[unsafe(method(toggle:))]
         fn toggle_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().permission_rx.borrow().is_none() && !self.ivars().managing_sources.get() { self.with_controller(|c| c.toggle()); }
+            if self.ivars().permission_rx.borrow().is_none() && !self.ivars().managing_sources.get() && self.ivars().pending_hotkey.borrow().is_none() {
+                self.with_controller(|c| {
+                    if !c.busy() && c.state.phase != Phase::Recording {
+                        *self.ivars().last_start_trace.borrow_mut() = Some(serde_json::json!({
+                            "origin":"window_or_menu", "outcome":"ui_start",
+                            "dispatch_pid":NSWorkspace::sharedWorkspace().frontmostApplication().map(|app|app.processIdentifier()),
+                        }));
+                    }
+                    c.toggle();
+                });
+            }
             self.refresh();
         }
         #[unsafe(method(cancel:))]
@@ -366,19 +379,20 @@ define_class!(
         }
         #[unsafe(method(tick:))]
         fn tick(&self, _sender: Option<&AnyObject>) {
+            self.poll_hotkey_start();
             let permission_reply = self.ivars().permission_rx.borrow().as_ref().and_then(|rx| rx.try_recv().ok());
             if let Some((_, crate::audio::AudioEvent::Permissions { microphone, speech })) = permission_reply {
                 self.ivars().permission_rx.borrow_mut().take();
                 self.with_controller(|c| c.message = format!("权限检查：麦克风{}；{}；辅助功能{}。未开始录音。", if microphone { "已允许" } else { "未允许" }, if !c.uses_system_speech() { "此来源无需系统语音识别权限" } else if speech { "系统语音识别已允许" } else { "系统语音识别未允许（无设备端预览）" }, if Delivery::trusted() { "已允许" } else { "未允许" }));
             }
-            let pressed = self.ivars().hotkey_rx.borrow().as_ref().is_some_and(|rx| rx.try_recv().is_ok()) && self.ivars().permission_rx.borrow().is_none();
+            let pressed = self.ivars().hotkey_rx.borrow().as_ref().and_then(|rx| rx.try_recv().ok());
             self.with_controller(|c| {
                 if self.ivars().quitting.get() && !self.ivars().shutdown_started.get() {
                     c.cancel(); self.ivars().shutdown_started.set(true);
                 }
                 c.poll();
-                if pressed && !self.ivars().quitting.get() && !self.ivars().managing_sources.get() { c.toggle(); }
             });
+            if let Some(event) = pressed { self.handle_hotkey(event); }
             self.poll_control();
             if self.ivars().cli_quit_at.get().is_some_and(|at| std::time::Instant::now() >= at) {
                 self.ivars().cli_quit_at.set(None);
@@ -985,8 +999,9 @@ impl Delegate {
             return;
         };
         let preparing_permissions = self.ivars().permission_rx.borrow().is_some();
+        let returning_to_input = self.ivars().pending_hotkey.borrow().is_some();
         if let Some(button) = self.ivars().prepare_permissions.get() {
-            let enabled = !c.busy() && !preparing_permissions;
+            let enabled = !c.busy() && !preparing_permissions && !returning_to_input;
             if button.isEnabled() != enabled {
                 button.setEnabled(enabled);
             }
@@ -1019,6 +1034,7 @@ impl Delegate {
             Phase::Delivering => (StatusAppearance::Working, "正在输入文字"),
             Phase::Stopping => (StatusAppearance::Working, "正在停止"),
             _ if preparing_permissions => (StatusAppearance::Working, "正在准备权限"),
+            _ if returning_to_input => (StatusAppearance::Working, "正在返回输入位置"),
             Phase::Ready if delivery_failure.is_some() => {
                 (StatusAppearance::Attention, "转写完成 · 自动输入未完成")
             }
@@ -1057,13 +1073,20 @@ impl Delegate {
         };
         if let Some(item) = self.ivars().menu_toggle.get() {
             item.setTitle(&NSString::from_str(title));
-            item.setEnabled(!preparing_permissions && (recording || c.state.can_start()));
+            item.setEnabled(
+                !preparing_permissions && !returning_to_input && (recording || c.state.can_start()),
+            );
         }
         if let Some(button) = self.ivars().toggle.get() {
             button.setTitle(&NSString::from_str(title));
-            button.setEnabled(!preparing_permissions && (recording || c.state.can_start()));
+            button.setEnabled(
+                !preparing_permissions && !returning_to_input && (recording || c.state.can_start()),
+            );
         }
-        let idle = !c.busy() && !preparing_permissions && !self.ivars().managing_sources.get();
+        let idle = !c.busy()
+            && !preparing_permissions
+            && !returning_to_input
+            && !self.ivars().managing_sources.get();
         if let Some(button) = self.ivars().manage_sources.get() {
             button.setEnabled(idle && !c.discovering());
         }

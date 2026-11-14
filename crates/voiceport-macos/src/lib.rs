@@ -5,6 +5,8 @@ mod app;
 mod controller;
 #[cfg(target_os = "macos")]
 mod hotkey;
+#[cfg(target_os = "macos")]
+mod input_target;
 pub mod lifecycle;
 pub mod local_audio;
 pub mod local_models;
