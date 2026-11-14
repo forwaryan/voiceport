@@ -29,6 +29,10 @@ pub enum Failure {
     UserInput,
     Revision,
     Event,
+    Menu,
+    Clipboard,
+    ClipboardChanged,
+    PasteRequest,
     Ended,
 }
 
@@ -56,6 +60,10 @@ impl Failure {
             Self::UserInput => "userInput",
             Self::Revision => "revision",
             Self::Event => "event",
+            Self::Menu => "menu",
+            Self::Clipboard => "clipboard",
+            Self::ClipboardChanged => "clipboardChanged",
+            Self::PasteRequest => "pasteRequest",
             Self::Ended => "ended",
         }
     }
@@ -99,6 +107,14 @@ impl Failure {
             Self::ReadbackTimeout => {
                 "目标输入框未及时确认本次文字更新，已停止后续输入；请检查输入框和结果面板。"
             }
+            Self::Menu => {
+                "微信当前没有可用的“编辑 → 粘贴”入口；请确认已点进聊天输入框，文字保留在面板。"
+            }
+            Self::Clipboard => "无法准备粘贴文字，已停止自动粘贴；文字保留在面板。",
+            Self::ClipboardChanged => {
+                "剪贴板已被其他操作更新，已停止后续粘贴以保留当前剪贴板；文字保留在面板。"
+            }
+            Self::PasteRequest => "微信未确认粘贴请求，未自动重试；请检查输入框，文字保留在面板。",
             _ => "原输入框、光标、文字或终端输入已改变，已停止自动写入；结果保留在面板。",
         };
         format!("[{}] {}", self.stage(), detail)
@@ -623,6 +639,145 @@ impl<T: Target> ChunkedInput<T> {
         self.target.abandon();
         self.pending = None;
         self.queue.clear();
+        self.ended = true;
+    }
+}
+
+/// Window-bound native menu paste. It never claims field-text acknowledgement.
+pub trait PasteTarget {
+    fn check(&mut self) -> Result<(), Failure>;
+    fn prepare(&mut self, text: &str) -> Result<(), Failure>;
+    fn ready(&mut self) -> Result<bool, Failure>;
+    fn paste(&mut self) -> Result<(), Failure>;
+    fn abandon(&mut self);
+}
+
+impl<T: PasteTarget + ?Sized> PasteTarget for Box<T> {
+    fn check(&mut self) -> Result<(), Failure> {
+        (**self).check()
+    }
+    fn prepare(&mut self, text: &str) -> Result<(), Failure> {
+        (**self).prepare(text)
+    }
+    fn ready(&mut self) -> Result<bool, Failure> {
+        (**self).ready()
+    }
+    fn paste(&mut self) -> Result<(), Failure> {
+        (**self).paste()
+    }
+    fn abandon(&mut self) {
+        (**self).abandon();
+    }
+}
+
+pub struct MenuPaste<T: PasteTarget> {
+    target: T,
+    submitted: bool,
+    pending: bool,
+    ended: bool,
+    requested: bool,
+    failure: Option<Failure>,
+}
+
+impl<T: PasteTarget> MenuPaste<T> {
+    pub fn capture(mut target: T) -> Result<Self, Failure> {
+        target.check()?;
+        Ok(Self {
+            target,
+            submitted: false,
+            pending: false,
+            ended: false,
+            requested: false,
+            failure: None,
+        })
+    }
+
+    fn check(&mut self) -> Result<(), Failure> {
+        if let Some(failure) = self.failure {
+            return Err(failure);
+        }
+        if self.ended {
+            return Err(Failure::Ended);
+        }
+        self.target.check()
+    }
+
+    fn fail(&mut self, failure: Failure) {
+        self.failure = Some(failure);
+        self.end();
+    }
+
+    pub fn verify(&mut self) -> Result<(), Failure> {
+        let result = self.check();
+        if let Err(failure) = result {
+            self.fail(failure);
+        }
+        result
+    }
+
+    pub fn submit(&mut self, raw: &str) -> Result<(), Failure> {
+        if self.submitted || self.ended {
+            return Err(self.failure.unwrap_or(Failure::Ended));
+        }
+        self.submitted = true;
+        let result = (|| {
+            self.check()?;
+            if raw.encode_utf16().count() > MAX_TEXT {
+                return Err(Failure::Content);
+            }
+            let text = automatic(raw);
+            if text.is_empty() {
+                self.ended = true;
+                return Ok(());
+            }
+            // prepare may partly succeed (clipboard ownership or menu opening).
+            // Mark submission first and never call it again after any error.
+            self.target.prepare(&text)?;
+            self.pending = true;
+            Ok(())
+        })();
+        if let Err(failure) = result {
+            self.fail(failure);
+        }
+        result
+    }
+
+    pub fn poll(&mut self) -> Result<bool, Failure> {
+        let result = (|| {
+            if let Some(failure) = self.failure {
+                return Err(failure);
+            }
+            if self.ended {
+                return Ok(true);
+            }
+            if !self.pending {
+                return Ok(false);
+            }
+            self.check()?;
+            if !self.target.ready()? {
+                return Ok(false);
+            }
+            self.target.paste()?;
+            self.requested = true;
+            self.ended = true;
+            self.pending = false;
+            Ok(true)
+        })();
+        if let Err(failure) = result {
+            self.fail(failure);
+        }
+        result
+    }
+
+    pub fn has_pending(&self) -> bool {
+        self.pending && !self.ended && self.failure.is_none()
+    }
+    pub fn requested(&self) -> bool {
+        self.requested
+    }
+    pub fn end(&mut self) {
+        self.target.abandon();
+        self.pending = false;
         self.ended = true;
     }
 }
