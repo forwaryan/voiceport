@@ -14,6 +14,11 @@ path = "tests/stop_failure.rs"
 harness = false
 
 [[test]]
+name = "clipboard_layout"
+path = "tests/clipboard_layout.rs"
+harness = false
+
+[[test]]
 name = "shortcut_native"
 path = "tests/shortcut_native.rs"
 harness = false
