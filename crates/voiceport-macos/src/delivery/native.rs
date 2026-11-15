@@ -390,6 +390,12 @@ impl FocusPreparation {
     }
 }
 
+fn generic_clipboard_fallback(bundle: &str) -> bool {
+    // Orca's hidden terminal transport needs its dedicated description and
+    // append-only classification. Missing capabilities/focus must not bypass it.
+    bundle != ORCA
+}
+
 fn waiting_for_focus(failure: Failure, elapsed: Duration) -> bool {
     failure == Failure::FocusRead(AX_NO_VALUE) && elapsed < Duration::from_secs(2)
 }
@@ -402,7 +408,10 @@ impl Preparation for FocusPreparation {
             Err(failure) if waiting_for_focus(failure, self.started.elapsed()) => {
                 return Ok(None);
             }
-            Err(failure) if clipboard::missing_focus(failure) => {
+            Err(failure)
+                if generic_clipboard_fallback(&self.bundle)
+                    && clipboard::missing_focus(failure) =>
+            {
                 self.check()?;
                 return clipboard::ClipboardTarget::capture(
                     self.pid,
@@ -512,7 +521,9 @@ pub(super) fn capture(
             return FocusPreparation::start(pid, bundle, monitor)
                 .map(|preparation| Captured::Preparing(Box::new(preparation)));
         }
-        Err(failure) if clipboard::missing_focus(failure) => {
+        Err(failure)
+            if generic_clipboard_fallback(&bundle) && clipboard::missing_focus(failure) =>
+        {
             return clipboard::ClipboardTarget::capture(pid, bundle, None, monitor)
                 .map(|target| Captured::ClipboardPaste(Box::new(target)));
         }
@@ -527,12 +538,6 @@ fn captured_target(
     element: OwnedCf,
     monitor: UserMonitor,
 ) -> Result<Captured, Failure> {
-    // Select the fallback before any text mutation. Runtime write/readback
-    // failures never trigger a second backend or a duplicate paste.
-    if clipboard::needs_compatibility(&element)? {
-        return clipboard::ClipboardTarget::capture(pid, bundle, Some(element), monitor)
-            .map(|target| Captured::ClipboardPaste(Box::new(target)));
-    }
     // An unreadable Orca description cannot safely distinguish an editor from
     // its hidden terminal transport, so never fall back to document writes.
     let description = if bundle == ORCA {
@@ -546,6 +551,12 @@ fn captured_target(
         None
     };
     let terminal = description.as_deref() == Some("Terminal input");
+    // Fix the generic route before mutation, but never replace Orca's dedicated
+    // keyboard/terminal validation with a less specific clipboard target.
+    if generic_clipboard_fallback(&bundle) && clipboard::needs_compatibility(&element)? {
+        return clipboard::ClipboardTarget::capture(pid, bundle, Some(element), monitor)
+            .map(|target| Captured::ClipboardPaste(Box::new(target)));
+    }
     let mut target = NativeTarget {
         pid,
         bundle,
@@ -1167,6 +1178,19 @@ mod tests {
             keyboard_pacing(CODEX, "AXTextArea", false, true),
             Some(KeyboardPacing::Chunked)
         );
+    }
+
+    #[test]
+    fn generic_clipboard_never_replaces_orca_routes() {
+        for status in [AX_NO_VALUE, AX_UNSUPPORTED, -25208] {
+            let missing = Failure::FocusRead(status);
+            assert!(!(generic_clipboard_fallback(ORCA) && clipboard::missing_focus(missing)));
+            assert!(generic_clipboard_fallback("test.custom") && clipboard::missing_focus(missing));
+        }
+        // The same bundle policy also gates capability-based fallback and the
+        // ClipboardTarget constructor, including asynchronously prepared focus.
+        assert!(!generic_clipboard_fallback(ORCA));
+        assert!(generic_clipboard_fallback(CODEX));
     }
 
     #[test]

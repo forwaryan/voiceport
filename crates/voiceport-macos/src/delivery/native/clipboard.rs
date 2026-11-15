@@ -156,6 +156,9 @@ impl ClipboardTarget {
         element: Option<OwnedCf>,
         monitor: UserMonitor,
     ) -> Result<Self, Failure> {
+        if !generic_clipboard_fallback(&bundle) {
+            return Err(Failure::Role);
+        }
         let target = Self {
             pid,
             bundle,
