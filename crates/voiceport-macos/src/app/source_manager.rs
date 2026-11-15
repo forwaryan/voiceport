@@ -60,32 +60,3 @@ fn content_size(d: &Delegate, preferred: NSSize) -> NSSize {
         )
     })
 }
-
-pub(super) fn confirm_test(d: &Delegate) -> bool {
-    let target = d
-        .ivars()
-        .controller
-        .borrow()
-        .as_ref()
-        .filter(|c| !c.busy())
-        .and_then(|c| c.catalog.snapshot(&c.source_id).ok());
-    let Some(crate::local_models::SessionSource::Plugin(p)) = target else {
-        return false;
-    };
-    let destination = if let Some(program) = &p.manifest.program {
-        format!(
-            "本地程序：{}\n参数：{}",
-            program.executable.display(),
-            serde_json::to_string(&program.args).unwrap_or_default()
-        )
-    } else {
-        format!(
-            "服务地址：{}",
-            p.source
-                .config
-                .get("endpoint")
-                .map_or("未配置", String::as_str)
-        )
-    };
-    alert(d,"测试转写（使用内置样例）",&format!("来源：{}\n{}\n\n将发送内置一秒静音 WAV 样例及此来源配置。不会启用麦克风或读取输入目标；可使用主界面的取消按钮停止。空 text 表示接口响应但没有识别到语音，本测试不能证明识别质量。",p.source.name,destination),&["取消","发送内置样例"]).runModal()==1001
-}

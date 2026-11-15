@@ -30,9 +30,13 @@ mod plugin_dependencies {
     pub(crate) mod plugin_credentials;
     pub(crate) mod plugin_process;
     pub(crate) mod plugin_runtime;
+    pub(crate) mod source_probe;
+    pub(crate) mod source_tests;
 }
 #[cfg(target_os = "macos")]
-use plugin_dependencies::{plugin_credentials, plugin_process, plugin_runtime};
+use plugin_dependencies::{
+    plugin_credentials, plugin_process, plugin_runtime, source_probe, source_tests,
+};
 #[cfg(target_os = "macos")]
 #[allow(dead_code, unused_imports)] // Its libtest-only imports are inert in this harness.
 #[path = "../src/proxy.rs"]

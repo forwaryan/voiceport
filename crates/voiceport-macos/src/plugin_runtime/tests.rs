@@ -223,6 +223,60 @@ fn response(status: &str, body: &[u8]) -> Vec<u8> {
     bytes.extend(body);
     bytes
 }
+#[test]
+fn source_probe_uses_the_production_http_path_with_only_synthetic_audio() {
+    for (status, body, available) in [
+        ("200 OK", br#"{"text":""}"#.as_slice(), true),
+        (
+            "503 Service Unavailable",
+            b"private server diagnostic".as_slice(),
+            false,
+        ),
+        (
+            "200 OK",
+            br#"{"not_text":"private server diagnostic"}"#.as_slice(),
+            false,
+        ),
+    ] {
+        let server = serve(response(status, body), Duration::ZERO);
+        let mut cfg = config(server.endpoint.clone());
+        cfg.remove("api_key");
+        let source = crate::plugins::Source {
+            id: "synthetic-probe-http".into(),
+            name: "Synthetic HTTP".into(),
+            plugin_id: crate::plugins::HTTP.into(),
+            plugin_version: "1".into(),
+            enabled: true,
+            config: cfg,
+            credential_refs: BTreeMap::new(),
+        };
+        let snapshot = Snapshot::configured(&crate::plugins::Store::default(), &source)
+            .unwrap()
+            .pin()
+            .unwrap();
+        let custody = Custody::default();
+        let result = crate::source_probe::execute(
+            crate::local_models::SessionSource::Plugin(Box::new(snapshot)),
+            "en",
+            &CancellationToken::new(),
+            &custody,
+        );
+        assert_eq!(result.is_ok(), available, "{result:?}");
+        if let Err(error) = result {
+            assert!(!error.message.contains("private server diagnostic"));
+        }
+        assert!(!custody.unresolved());
+        let request = server.request();
+        let text = String::from_utf8_lossy(&request);
+        assert!(text.contains("name=\"language\"\r\n\r\nen"));
+        assert!(!text.contains("authorization:") && !text.contains("chatgpt-account-id"));
+        let sample = sample();
+        assert!(request.windows(sample.len()).any(|w| w == sample));
+        assert!(sample[44..].iter().all(|byte| *byte == 0));
+        server.finish_blocking();
+    }
+}
+
 #[tokio::test]
 async fn multipart_bytes_language_bearer_and_no_chatgpt_auth() {
     let server = serve(

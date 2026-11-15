@@ -27,7 +27,11 @@ mod shortcut;
 #[cfg(target_os = "macos")]
 mod shortcut_recorder;
 #[cfg(target_os = "macos")]
+mod source_probe;
+#[cfg(target_os = "macos")]
 mod source_service;
+#[cfg(target_os = "macos")]
+mod source_tests;
 #[cfg(target_os = "macos")]
 mod status_icon;
 #[cfg(target_os = "macos")]

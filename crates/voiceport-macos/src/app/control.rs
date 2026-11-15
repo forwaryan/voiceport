@@ -20,6 +20,11 @@ pub(super) struct Control {
     background: Option<Receiver<Completed>>,
     operation: Option<Operation>,
 }
+impl Control {
+    pub(super) fn preparing(&self) -> bool {
+        self.background.is_some()
+    }
+}
 struct Operation {
     id: String,
     generation: u64,
