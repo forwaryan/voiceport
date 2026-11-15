@@ -52,6 +52,25 @@ impl Shortcut {
         self.modifiers
     }
 
+    /// Convert Carbon registration modifiers to AppKit's event flag positions.
+    pub(crate) fn stop_chord(self) -> crate::delivery::model::StopShortcut {
+        let mut modifiers = 0;
+        for (carbon, appkit) in [
+            (SHIFT, 1 << 17),
+            (CONTROL, 1 << 18),
+            (OPTION, 1 << 19),
+            (COMMAND, 1 << 20),
+        ] {
+            if self.modifiers & carbon != 0 {
+                modifiers |= appkit;
+            }
+        }
+        crate::delivery::model::StopShortcut {
+            key_code: self.key_code,
+            modifiers,
+        }
+    }
+
     /// Invalid or stale preference data never reaches native registration.
     /// A missing new preference preserves either legacy preset.
     pub(crate) fn load(saved: Option<&str>, legacy_alternative: bool) -> Self {
@@ -209,6 +228,34 @@ mod tests {
                 Shortcut::ALTERNATIVE,
                 "{saved}"
             );
+        }
+    }
+
+    #[test]
+    fn converts_every_registered_modifier_combination_for_input_monitoring() {
+        use crate::delivery::model::invalidates_input;
+        for bits in 0..16 {
+            let mut carbon = 0;
+            let mut appkit = 0;
+            for (index, native, flag) in [
+                (0, SHIFT, 1 << 17),
+                (1, CONTROL, 1 << 18),
+                (2, OPTION, 1 << 19),
+                (3, COMMAND, 1 << 20),
+            ] {
+                if bits & (1 << index) != 0 {
+                    carbon |= native;
+                    appkit |= flag;
+                }
+            }
+            let Ok(shortcut) = Shortcut::new(0, carbon) else {
+                continue;
+            };
+            let stop = shortcut.stop_chord();
+            assert_eq!(stop.key_code, 0);
+            assert_eq!(stop.modifiers, appkit);
+            assert!(!invalidates_input(0, true, 0, appkit, Some(stop)));
+            assert!(invalidates_input(0, true, 49, appkit, Some(stop)));
         }
     }
 

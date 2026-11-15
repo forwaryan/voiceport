@@ -966,15 +966,30 @@ pub fn unicode_chunks(text: &str) -> Vec<&str> {
     chunks
 }
 
-/// Only the two configured stop chords and our tagged events are exempt.
-pub fn invalidates_input(tag: i64, key_down: bool, key_code: u16, modifiers: u64) -> bool {
+/// The registered stop chord captured at the start of a delivery session.
+/// Modifiers use AppKit event flags, not Carbon registration bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StopShortcut {
+    pub key_code: u16,
+    pub modifiers: u64,
+}
+
+/// Only this session's active stop chord and our tagged events are exempt.
+pub fn invalidates_input(
+    tag: i64,
+    key_down: bool,
+    key_code: u16,
+    modifiers: u64,
+    shortcut: Option<StopShortcut>,
+) -> bool {
     const SHIFT: u64 = 1 << 17;
     const CONTROL: u64 = 1 << 18;
     const OPTION: u64 = 1 << 19;
     const COMMAND: u64 = 1 << 20;
     let modifiers = modifiers & (SHIFT | CONTROL | OPTION | COMMAND);
     let stop = key_down
-        && key_code == 49
-        && (modifiers == CONTROL | OPTION || modifiers == CONTROL | SHIFT);
+        && shortcut.is_some_and(|shortcut| {
+            key_code == shortcut.key_code && modifiers == shortcut.modifiers
+        });
     tag != EVENT_TAG && !stop
 }

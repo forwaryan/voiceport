@@ -5,8 +5,9 @@ use std::{cell::RefCell, rc::Rc};
 use voiceport_macos::delivery::{
     Delivery,
     model::{
-        ChunkedInput, EVENT_TAG, Failure, KeyboardPacing, OwnedSpan, Snapshot, Target, Terminal,
-        TerminalTarget, TextRange, automatic, byte_range, invalidates_input, unicode_chunks,
+        ChunkedInput, EVENT_TAG, Failure, KeyboardPacing, OwnedSpan, Snapshot, StopShortcut,
+        Target, Terminal, TerminalTarget, TextRange, automatic, byte_range, invalidates_input,
+        unicode_chunks,
     },
 };
 
@@ -848,19 +849,76 @@ fn input_monitor_ignores_only_own_events_and_exact_stop_shortcuts() {
     const CONTROL: u64 = 1 << 18;
     const OPTION: u64 = 1 << 19;
     const COMMAND: u64 = 1 << 20;
-    assert!(!invalidates_input(EVENT_TAG, true, 0, 0));
-    assert!(!invalidates_input(0, true, 49, CONTROL | OPTION));
-    assert!(!invalidates_input(0, true, 49, CONTROL | SHIFT));
-    // Caps Lock is irrelevant to the configured chord.
-    assert!(!invalidates_input(
-        0,
-        true,
-        49,
-        CONTROL | OPTION | (1 << 16)
-    ));
-    assert!(invalidates_input(0, true, 49, CONTROL | OPTION | COMMAND));
-    assert!(invalidates_input(0, true, 49, 0));
-    assert!(invalidates_input(0, true, 0, CONTROL | OPTION));
-    assert!(invalidates_input(0, false, 49, CONTROL | OPTION));
-    assert!(invalidates_input(0, false, 0, 0));
+    let chords = [
+        StopShortcut {
+            key_code: 49,
+            modifiers: CONTROL | OPTION,
+        },
+        StopShortcut {
+            key_code: 49,
+            modifiers: CONTROL | SHIFT,
+        },
+        StopShortcut {
+            key_code: 0,
+            modifiers: CONTROL | OPTION,
+        },
+        StopShortcut {
+            key_code: 40,
+            modifiers: COMMAND | OPTION | SHIFT,
+        },
+    ];
+    for active in chords {
+        for chord in chords {
+            assert_eq!(
+                invalidates_input(0, true, chord.key_code, chord.modifiers, Some(active)),
+                chord != active,
+                "only the registered chord is exempt: active={active:?}, event={chord:?}"
+            );
+            assert!(invalidates_input(
+                0,
+                true,
+                chord.key_code,
+                chord.modifiers,
+                None
+            ));
+        }
+        // Caps Lock and device flags do not change a registered chord.
+        assert!(!invalidates_input(
+            0,
+            true,
+            active.key_code,
+            active.modifiers | (1 << 16) | 1,
+            Some(active)
+        ));
+        for modifier in [SHIFT, CONTROL, OPTION, COMMAND] {
+            assert!(invalidates_input(
+                0,
+                true,
+                active.key_code,
+                active.modifiers ^ modifier,
+                Some(active)
+            ));
+        }
+        assert!(invalidates_input(
+            0,
+            true,
+            1,
+            active.modifiers,
+            Some(active)
+        ));
+        assert!(invalidates_input(0, true, active.key_code, 0, Some(active)));
+        assert!(invalidates_input(
+            0,
+            false,
+            active.key_code,
+            active.modifiers,
+            Some(active)
+        ));
+        assert!(invalidates_input(0, false, 0, 0, Some(active)));
+        assert!(!invalidates_input(EVENT_TAG, true, 0, 0, Some(active)));
+        assert!(!invalidates_input(EVENT_TAG, false, 0, 0, Some(active)));
+    }
+    assert!(!invalidates_input(EVENT_TAG, true, 0, 0, None));
+    assert!(invalidates_input(0, true, 0, 0, None));
+    assert!(invalidates_input(0, false, 0, 0, None));
 }

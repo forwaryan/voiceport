@@ -224,6 +224,9 @@ impl Controller {
             testing: false,
         }
     }
+    pub(crate) fn set_stop_shortcut(&mut self, shortcut: Option<crate::shortcut::Shortcut>) {
+        self.delivery.set_stop_shortcut(shortcut);
+    }
     pub fn refresh_catalog(&mut self) {
         if self.busy() || self.discovery.is_some() {
             return;

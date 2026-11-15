@@ -38,6 +38,7 @@ impl Delegate {
                 // an event queued before the editor can later start dictation.
                 self.ivars().hotkey.borrow_mut().take();
                 self.ivars().hotkey_rx.borrow_mut().take();
+                self.with_controller(|c| c.set_stop_shortcut(None));
                 self.refresh();
                 let value = crate::shortcut_recorder::record(
                     self.mtm(),

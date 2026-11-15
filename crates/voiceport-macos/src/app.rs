@@ -584,6 +584,7 @@ impl Delegate {
         // owner and queue discards stale presses from the previous binding.
         *self.ivars().hotkey.borrow_mut() = Some(hotkey);
         *self.ivars().hotkey_rx.borrow_mut() = Some(rx);
+        self.with_controller(|c| c.set_stop_shortcut(Some(shortcut)));
         self.ivars().hotkey_error.borrow_mut().take();
         Ok(())
     }

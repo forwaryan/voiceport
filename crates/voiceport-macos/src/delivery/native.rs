@@ -330,8 +330,7 @@ fn application_window(pid: libc::pid_t) -> Result<OwnedCf, Failure> {
 }
 
 impl FocusPreparation {
-    fn start(pid: libc::pid_t, bundle: String) -> Result<Self, Failure> {
-        let monitor = UserMonitor::start()?;
+    fn start(pid: libc::pid_t, bundle: String, monitor: UserMonitor) -> Result<Self, Failure> {
         let window = application_window(pid)?;
         let preparation = Self {
             pid,
@@ -397,7 +396,8 @@ impl Preparation for FocusPreparation {
             Err(failure) => return Err(failure),
         };
         self.check()?;
-        captured_target(self.pid, self.bundle.clone(), element, self.monitor.take()).map(Some)
+        let monitor = self.monitor.take().ok_or(Failure::Monitor)?;
+        captured_target(self.pid, self.bundle.clone(), element, monitor).map(Some)
     }
 }
 
@@ -441,6 +441,7 @@ fn normalize_composer_placeholder(mut snapshot: Snapshot, placeholder: &str) -> 
 
 pub(super) fn capture(
     expected: Option<&crate::delivery::model::ApplicationTarget>,
+    stop_shortcut: Option<model::StopShortcut>,
 ) -> Result<Captured, Failure> {
     if !main_thread() {
         return Err(Failure::MainThread);
@@ -456,26 +457,29 @@ pub(super) fn capture(
     if expected.is_some_and(|target| target.pid != pid || target.bundle != bundle) {
         return Err(Failure::FocusApplicationChanged);
     }
+    // One monitor owns the session's immutable stop chord for every target
+    // path, including delayed focus preparation and WeChat menu paste.
+    let monitor = UserMonitor::start(stop_shortcut)?;
     let element = match focused(pid) {
         Ok(element) => element,
         Err(failure) if wechat_menu_fallback(&bundle, failure) => {
-            return wechat::WechatMenuTarget::capture(pid)
+            return wechat::WechatMenuTarget::capture(pid, monitor)
                 .map(|target| Captured::MenuPaste(Box::new(target)));
         }
         Err(Failure::FocusRead(AX_NO_VALUE)) => {
-            return FocusPreparation::start(pid, bundle)
+            return FocusPreparation::start(pid, bundle, monitor)
                 .map(|preparation| Captured::Preparing(Box::new(preparation)));
         }
         Err(failure) => return Err(failure),
     };
-    captured_target(pid, bundle, element, None)
+    captured_target(pid, bundle, element, monitor)
 }
 
 fn captured_target(
     pid: libc::pid_t,
     bundle: String,
     element: OwnedCf,
-    monitor: Option<UserMonitor>,
+    monitor: UserMonitor,
 ) -> Result<Captured, Failure> {
     // An unreadable Orca description cannot safely distinguish an editor from
     // its hidden terminal transport, so never fall back to document writes.
@@ -497,10 +501,7 @@ fn captured_target(
         terminal,
         // All targets are monitored before the first snapshot. Reuse the
         // preparation monitor without restarting it or losing invalidation.
-        monitor: Some(match monitor {
-            Some(monitor) => monitor,
-            None => UserMonitor::start()?,
-        }),
+        monitor: Some(monitor),
         pending: None,
         _main_only: std::marker::PhantomData,
     };
@@ -972,7 +973,7 @@ struct UserMonitor {
     invalidated: Arc<AtomicBool>,
 }
 
-fn observe(event: &NSEvent, invalidated: &AtomicBool) {
+fn observe(event: &NSEvent, invalidated: &AtomicBool, stop_shortcut: Option<model::StopShortcut>) {
     let raw: *const c_void = unsafe { msg_send![event, CGEvent] };
     let tag = if raw.is_null() {
         0
@@ -982,7 +983,13 @@ fn observe(event: &NSEvent, invalidated: &AtomicBool) {
     let key_down = event.r#type() == NSEventType::KeyDown;
     // keyCode is meaningful only for keyboard events.
     let key = if key_down { event.keyCode() } else { 0 };
-    if model::invalidates_input(tag, key_down, key, event.modifierFlags().0 as u64) {
+    if model::invalidates_input(
+        tag,
+        key_down,
+        key,
+        event.modifierFlags().0 as u64,
+        stop_shortcut,
+    ) {
         invalidated.store(true, Ordering::SeqCst);
     }
 }
@@ -998,7 +1005,7 @@ fn user_input_event_mask() -> NSEventMask {
 }
 
 impl UserMonitor {
-    fn start() -> Result<Self, Failure> {
+    fn start(stop_shortcut: Option<model::StopShortcut>) -> Result<Self, Failure> {
         if !main_thread() {
             return Err(Failure::MainThread);
         }
@@ -1006,13 +1013,13 @@ impl UserMonitor {
         let mask = user_input_event_mask();
         let global_flag = invalidated.clone();
         let global_block = RcBlock::new(move |event: NonNull<NSEvent>| {
-            observe(unsafe { event.as_ref() }, &global_flag);
+            observe(unsafe { event.as_ref() }, &global_flag, stop_shortcut);
         });
         let global = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &global_block)
             .ok_or(Failure::Monitor)?;
         let local_flag = invalidated.clone();
         let local_block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
-            observe(unsafe { event.as_ref() }, &local_flag);
+            observe(unsafe { event.as_ref() }, &local_flag, stop_shortcut);
             event.as_ptr()
         });
         let local =
