@@ -4,6 +4,26 @@
 
 这是当前版本的本机开发接入，未随 VoicePort App 打包。需要独立运行带桥接的 QQ 副本，并让 QQ 正常登录、联网；QQ 自己保管认证状态。原版 `/Applications/QQ.app` 保持原文件和签名。其他 QQ 版本、机器、真实麦克风和自动输入效果需各自验证。下方旧诊断记录保留当时的离线权限和失败事实，不代表最新状态。
 
+## 换电脑时先检查接入前提
+
+```sh
+python3 -I scripts/qq_bridge/diagnose.py doctor
+# 多个安装或非默认位置：
+python3 -I scripts/qq_bridge/diagnose.py doctor --qq '/absolute/path/QQ.app'
+```
+
+`doctor` 自动查找 `/Applications/QQ.app` 和当前用户的 `~/Applications/QQ.app`，发现多个安装时要求明确选择。它只读安装元数据，并调用系统 `codesign` 验证 Apple 信任链、腾讯团队标识、QQ bundle 标识及资源完整性；再检查沙盒和实际入口资源的签名封存。两个验证子进程分别限时 30 秒、10 秒，stdout 和 stderr 各限 1 MB，只输出固定检查状态和恢复提示。它不启动或退出 QQ，不连接任何 socket，不读取账号资料、配对密钥或 Keychain，不下载依赖。
+
+JSON 外层 `status=ok` 仅表示检查已完成。连接状态始终是 `connection_status=not_tested`、`transcription_verified=false`，且 `automatic_setup_supported=false`；查看 `blockers` 获取具体原因。签名通过和 `historical_copy_build_match=true` 都不能作为普通 QQ 已连通的证据。后者只匹配历史副本实验的版本及两个文件指纹，不是自动安装许可。无法读取的元数据、无效签名、缺失的资源封存或不同的沙盒配置会明确列出；不会显示原始验证输出或错误正文。
+
+| 范围 | 当前证据 | 自动安装普通 QQ 桥接 |
+| --- | --- | --- |
+| macOS App Store 7.0.1-52892 独立副本 | 历史合成音频真实转写成功；副本改变签名和沙盒配置 | 未支持 |
+| 同版本普通官方 QQ | 官方签名保留；直接改入口重签的首启动未就绪并已恢复 | 未支持 |
+| 其他 QQ 构建、Windows、Linux | 本桥接未完成相应真实端到端验证 | 未支持 |
+
+完成元数据和签名检查后，报告仍会明确返回 `signature_preserving_route_unverified`：尚未建立保留普通 QQ 官方签名及原有沙盒的可靠加载路线。不要通过重复 `sudo`、关闭系统保护或套用历史独立副本命令处理这个原因。下方 `prepare/start` 是历史开发副本流程，尚非换电脑的一键安装方案。
+
 ## 长语音验收状态（候选）
 
 2026-11-14 完整验收发现：旧的整段单片提交在 18.33 秒（67343 SILK 字节）返回原生错误码 `8`，27.50 秒（101164 字节）也失败；两次均清理并释放本地任务。错误码的服务端含义尚未确认，不能仅由时长推断具体上限。

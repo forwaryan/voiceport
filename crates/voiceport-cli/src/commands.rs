@@ -29,7 +29,7 @@ const GUIDES: &[(&str, &str)] = &[
         include_str!("../../../skills/voiceport-plugins/templates/json_http_adapter.py"),
     ),
 ];
-const HELP: &str = "voiceport [--json] [--socket ABSOLUTE_PATH] COMMAND\n\nstatus | app status/show/quit\nsources list/show/add/update/remove/select/secret/test\nplugins list/show/import\ndictation start/stop/cancel/result\nskills list | skills get [GUIDE]\nGuides: core, cli, workflows, plugins, plugin-examples, plugin-protocol, plugin-template\n--version\n\nUse voiceport skills get cli for complete arguments.\nApp control requires the running macOS App at the chosen socket.\nNo command implicitly launches, records, uploads audio or delivers text.\nOnly dictation start records; sources test requires --accept-upload.\nLegacy help/host/demo/doctor/transcribe are also available.";
+const HELP: &str = "voiceport [--json] [--socket ABSOLUTE_PATH] COMMAND\n\nstatus | app status/show/quit\nsources list/show/add/update/remove/select/secret/test\nplugins list/show/import\ndictation start/stop/cancel/result\nqq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)\nskills list | skills get [GUIDE]\nGuides: core, cli, workflows, plugins, plugin-examples, plugin-protocol, plugin-template\n--version\n\nUse voiceport skills get cli for complete arguments.\nApp control requires the running macOS App at the chosen socket.\nNo command implicitly launches, records, uploads audio or delivers text.\nOnly dictation start records; sources test requires --accept-upload.\nLegacy help/host/demo/doctor/transcribe are also available.";
 fn invalid() -> Response {
     Response::error(
         "invalid_arguments",
@@ -61,9 +61,17 @@ pub fn run(raw: &[OsString]) -> Option<u8> {
         .iter()
         .any(|a| ["--json", "--socket", "--version"].iter().any(|f| a == f))
         || raw.first().is_some_and(|a| {
-            ["status", "app", "sources", "plugins", "dictation", "skills"]
-                .iter()
-                .any(|v| a == v)
+            [
+                "status",
+                "app",
+                "sources",
+                "plugins",
+                "dictation",
+                "skills",
+                "qq",
+            ]
+            .iter()
+            .any(|v| a == v)
         });
     if !managed {
         return None;
@@ -125,6 +133,17 @@ fn execute(mut args: Vec<String>) -> Result<Response, Response> {
                     json!({"version":env!("CARGO_PKG_VERSION"),"guide":guide,"text":text}),
                 ))
             }
+            _ => Err(invalid()),
+        };
+    }
+    if args[0] == "qq" {
+        if socket.is_some() {
+            return Err(invalid());
+        }
+        let words: Vec<_> = args.iter().map(String::as_str).collect();
+        return match words.as_slice() {
+            ["qq", "doctor"] => crate::qq::doctor(None),
+            ["qq", "doctor", "--qq", path] => crate::qq::doctor(Some(path)),
             _ => Err(invalid()),
         };
     }

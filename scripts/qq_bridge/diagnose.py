@@ -5,10 +5,15 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import platform
 import plistlib
+import re
+import selectors
 import stat
 import struct
+import subprocess
 import sys
+import time
 from string import Template
 
 MAX_JSON = 32_768
@@ -50,10 +55,16 @@ def archive_entry(archive, relative):
                 raise ValueError('invalid_archive_header')
             node = json.loads(encoded)
             for part in relative.parts:
+                if not isinstance(node, dict) or not isinstance(node.get('files'), dict):
+                    raise ValueError('invalid_archive_entry')
                 node = node['files'][part]
-            if node.get('unpacked') or 'link' in node:
+            if not isinstance(node, dict) or node.get('unpacked') or 'link' in node:
                 raise ValueError('unsupported_archive_entry')
-            size, offset = int(node['size']), int(node['offset'])
+            size, encoded_offset = node.get('size'), node.get('offset')
+            if (type(size) is not int or not isinstance(encoded_offset, str)
+                    or not re.fullmatch(r'[0-9]{1,20}', encoded_offset)):
+                raise ValueError('invalid_archive_entry')
+            offset = int(encoded_offset)
             start = 8 + header_size + offset
             if size < 0 or size > MAX_JSON or offset < 0 or start + size > info.st_size:
                 raise ValueError('invalid_archive_entry')
@@ -64,6 +75,13 @@ def archive_entry(archive, relative):
             return data
     finally:
         os.close(descriptor)
+
+
+def read_bundle_file(app, relative, limit):
+    target = app / relative
+    if target.resolve(strict=True) != target:
+        raise ValueError('linked_bundle_metadata')
+    return read_regular(target, limit)
 
 
 def inspect(app):
@@ -92,7 +110,9 @@ def inspect(app):
         if target.resolve(strict=True) != target:
             raise ValueError('linked_main')
         entry_bytes = read_regular(target, MAX_JSON)
-    info = plistlib.loads(read_regular(app / 'Contents' / 'Info.plist', 1_000_000))
+    info = plistlib.loads(read_bundle_file(app, 'Contents/Info.plist', 1_000_000))
+    if not isinstance(info, dict):
+        raise ValueError('invalid_bundle_info')
     result = {
         'schema_version': 1,
         'diagnostic_only': True,
@@ -110,6 +130,168 @@ def inspect(app):
         'smartptt_verified': False,
     }
     return result, package_bytes, package
+
+
+# Historical interoperability evidence, not a portable installation allowlist.
+KNOWN_COPY_BUILD = {
+    'version': '7.0.1-52892',
+    'package_sha256': 'fa969cb90248aa2b02bcb9b687afafa02336413c4768233ab7389008af40c42e',
+    'info_sha256': '1e242c1445cbbaa5bb886737f7be87aa36a76f9f908e717fa5da11b0749bb8da',
+}
+# A leading '=' makes codesign parse text instead of treating it as a file.
+# MAS apps use Apple's shared leaf certificate; the authenticated CodeDirectory
+# TeamIdentifier is checked separately rather than requiring Tencent's leaf OU.
+QQ_SIGNATURE_REQUIREMENT = '=anchor apple generic and identifier "com.tencent.qq"'
+MAX_VERIFIER_OUTPUT = 1_000_000
+METADATA_ERRORS = (OSError, ValueError, KeyError, TypeError, OverflowError,
+                   RecursionError, struct.error, plistlib.InvalidFileException)
+
+
+def run_codesign(args, *, capture_output=True, timeout, check=False):
+    """Capture both verifier pipes with byte and time bounds, without shell code."""
+    if not capture_output or check:
+        raise ValueError('unsupported_verifier_options')
+    with subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, bufsize=0, cwd='/',
+                          env={'LANG': 'C', 'LC_ALL': 'C', 'PATH': '/usr/bin:/bin'}) as child:
+        deadline = time.monotonic() + timeout
+        output = [bytearray(), bytearray()]
+        try:
+            with selectors.DefaultSelector() as selector:
+                for index, pipe in enumerate((child.stdout, child.stderr)):
+                    os.set_blocking(pipe.fileno(), False)
+                    selector.register(pipe, selectors.EVENT_READ, index)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(args, timeout)
+                    for key, _ in selector.select(remaining):
+                        try:
+                            chunk = os.read(key.fd, 8192)
+                        except BlockingIOError:
+                            continue
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                        elif len(output[key.data]) + len(chunk) > MAX_VERIFIER_OUTPUT:
+                            raise ValueError('verifier_output_limit')
+                        else:
+                            output[key.data].extend(chunk)
+            returncode = child.wait(timeout=max(0, deadline - time.monotonic()))
+            return subprocess.CompletedProcess(args, returncode, bytes(output[0]), bytes(output[1]))
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait()
+
+
+def resource_sealed(seal, name):
+    for key in ('files', 'files2'):
+        entry = seal.get(key, {}).get(name)
+        if isinstance(entry, bytes) and len(entry) == 20:
+            return True
+        if isinstance(entry, dict) and entry.get('omit') is not True:
+            if any(isinstance(entry.get(algorithm), bytes) and len(entry[algorithm]) == size
+                   for algorithm, size in (('hash', 20), ('hash2', 32))):
+                return True
+    return False
+
+
+def doctor(app=None, *, applications_directories=None, system=None, run=run_codesign):
+    """Read installation prerequisites; never opens QQ, user data or a socket."""
+    result = {
+        'schema_version': 1,
+        'diagnostic_only': True,
+        'platform': system or sys.platform,
+        'architecture': platform.machine(),
+        'connection_status': 'not_tested',
+        'transcription_verified': False,
+        'automatic_setup_supported': False,
+        'checks': [],
+        'blockers': [],
+    }
+
+    def block(code, message):
+        result['blockers'].append({'code': code, 'message': message})
+        return result
+
+    if result['platform'] != 'darwin':
+        return block('platform_unverified', '此平台尚无经过验证的 QQ 接入路线。')
+    try:
+        if app is None:
+            directories = applications_directories if applications_directories is not None else (
+                Path('/Applications'), Path.home() / 'Applications',
+            )
+            # No recursive search through account data, Downloads or arbitrary app code.
+            candidates = list(dict.fromkeys(Path(root) / 'QQ.app' for root in directories
+                                            if os.path.lexists(Path(root) / 'QQ.app')))
+            if not candidates:
+                return block('qq_not_found', '未在系统或用户的 Applications 目录找到 QQ；可用 --qq 指定安装位置。')
+            if len(candidates) != 1:
+                result['candidates'] = [str(path) for path in candidates]
+                return block('multiple_qq_installations', '发现多个 QQ 安装；请用 --qq 指定要检查的安装。')
+            app = candidates[0]
+        inspection = inspect(Path(app).absolute())[0]
+        app = Path(inspection['app'])
+        info_bytes = read_bundle_file(app, 'Contents/Info.plist', 1_000_000)
+        info = plistlib.loads(info_bytes)
+        if not isinstance(info, dict) or info.get('CFBundleIdentifier') != 'com.tencent.qq':
+            raise ValueError('not_official_qq_bundle')
+    except METADATA_ERRORS:
+        return block('qq_installation_unreadable', '无法安全读取 QQ 安装元数据；请检查安装是否完整。')
+    result['app'] = str(app)
+    version = inspection['qq_version']
+    result['qq_version'] = (version if isinstance(version, str) and len(version) <= 64
+                            and re.fullmatch(r'[0-9.]+-[0-9]+', version) else None)
+    result['app_store'] = inspection['app_store']
+    result['checks'].append({'id': 'installation_metadata', 'status': 'passed'})
+    try:
+        # Reject linked signature metadata before asking the verifier to read it.
+        seal = plistlib.loads(read_bundle_file(app, 'Contents/_CodeSignature/CodeResources', 8_000_000))
+        if not isinstance(seal, dict) or any(not isinstance(seal.get(k, {}), dict) for k in ('files', 'files2')):
+            raise ValueError('signature_resources_unreadable')
+        # Run only Apple's fixed verifier, never a binary from the inspected app.
+        verified = run(['/usr/bin/codesign', '--verify', '--deep', '--strict',
+                        '-R', QQ_SIGNATURE_REQUIREMENT, str(app)],
+                       capture_output=True, timeout=30, check=False)
+        if verified.returncode != 0:
+            return block('official_signature_invalid', 'QQ 未通过官方签名及完整性校验；不会自动改包或重新签名。')
+        displayed = run(['/usr/bin/codesign', '-d', '--verbose=4', '--entitlements', ':-', str(app)],
+                        capture_output=True, timeout=10, check=False)
+        if (displayed.returncode != 0
+                or len(displayed.stdout) > MAX_VERIFIER_OUTPUT
+                or len(displayed.stderr) > MAX_VERIFIER_OUTPUT):
+            raise ValueError('entitlements_unreadable')
+        teams = re.findall(rb'^TeamIdentifier=([^\r\n]+)', displayed.stderr, re.MULTILINE)
+        if teams != [b'FN2V63AD2J']:
+            return block('official_signature_invalid', 'QQ 签名的团队标识与腾讯不符；不会自动改包或重新签名。')
+        result['checks'].append({'id': 'official_signature', 'status': 'passed'})
+        entitlements = plistlib.loads(displayed.stdout)
+        if (not isinstance(entitlements, dict)
+                or type(entitlements.get('com.apple.security.app-sandbox', False)) is not bool):
+            raise ValueError('entitlements_unreadable')
+    except METADATA_ERRORS + (subprocess.SubprocessError,):
+        return block('signature_inspection_unavailable', '无法完成签名与沙盒检查；不会根据文件存在就判为可连接。')
+    relative = PurePosixPath(inspection['main'])
+    entry_resource = (PurePosixPath(relative.parts[0]) if relative.parts[0].endswith('.asar')
+                      else relative)
+    sealed = all(resource_sealed(seal, str(PurePosixPath('Resources/app') / name))
+                 for name in (PurePosixPath('package.json'), entry_resource))
+    result['sandbox_enabled'] = entitlements.get('com.apple.security.app-sandbox') is True
+    result['entry_resources_sealed'] = sealed
+    result['historical_copy_build_match'] = (
+        version == KNOWN_COPY_BUILD['version']
+        and inspection['package_sha256'] == KNOWN_COPY_BUILD['package_sha256']
+        and hashlib.sha256(info_bytes).hexdigest() == KNOWN_COPY_BUILD['info_sha256']
+    )
+    result['checks'].append({'id': 'signing_constraints', 'status': 'inspected'})
+    if not result['sandbox_enabled']:
+        block('sandbox_disabled', '此 QQ 安装未启用原有 App Sandbox；其配置不能作为已验证的普通 QQ 接入前提。')
+    if not sealed:
+        block('entry_resources_unsealed', 'QQ 配置或实际启动入口未受资源签名封存；不能确认接入前提完整。')
+    if not result['historical_copy_build_match']:
+        block('qq_build_unverified', '此 QQ 构建尚未完成真实桥接兼容性验证；不能只按版本号放行安装。')
+    return block('signature_preserving_route_unverified',
+                 '尚无经过验证的普通 QQ 接入路线能保留官方签名及原有沙盒。历史独立副本的成功不代表此安装已连通；不会自动重跑改包安装。')
 
 
 def write_new(path, data):
@@ -243,17 +425,21 @@ def main():
         sub.add_argument('--qq', type=Path, default=Path('/Applications/QQ.app'))
         if command == 'prepare':
             sub.add_argument('--output', type=Path, required=True)
+    sub = commands.add_parser('doctor', help='Read-only QQ installation and connection prerequisites')
+    sub.add_argument('--qq', type=Path, help='Explicit installation; otherwise discover Applications/QQ.app')
     sub = commands.add_parser('status')
     sub.add_argument('--report', type=Path, required=True)
     args = parser.parse_args()
     try:
-        if args.command == 'inspect':
+        if args.command == 'doctor':
+            result = doctor(args.qq)
+        elif args.command == 'inspect':
             result = inspect(args.qq)[0]
         elif args.command == 'prepare':
             result = prepare(args.qq, args.output)
         else:
             result = read_report(args.report)
-    except (OSError, ValueError, KeyError, TypeError, struct.error, plistlib.InvalidFileException):
+    except METADATA_ERRORS:
         print(json.dumps({'status': 'error', 'code': 'diagnostic_operation_failed'}))
         return 1
     print(json.dumps({'status': 'ok', 'data': result}, ensure_ascii=False, indent=2))
