@@ -129,7 +129,7 @@ pub(super) struct WechatMenuTarget {
 }
 
 impl WechatMenuTarget {
-    pub(super) fn capture(pid: libc::pid_t) -> Result<Self, Failure> {
+    pub(super) fn capture(pid: libc::pid_t, monitor: UserMonitor) -> Result<Self, Failure> {
         if !main_thread() {
             return Err(Failure::MainThread);
         }
@@ -152,7 +152,7 @@ impl WechatMenuTarget {
             application,
             window,
             edit,
-            monitor: UserMonitor::start()?,
+            monitor,
             initial_clipboard: NSPasteboard::generalPasteboard().changeCount(),
             owned_clipboard: None,
             opened_at: None,
