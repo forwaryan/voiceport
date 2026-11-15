@@ -11,7 +11,7 @@ use model::{
 };
 
 const RETAINED: &str = "无法确认原输入框支持安全写入，文字保留在面板。";
-const WECHAT_REQUESTED: &str = "已请求微信原生粘贴，请检查输入框；最终文字已复制。";
+const PASTE_REQUESTED: &str = "已请求原输入位置原生粘贴，请检查输入框；最终文字已复制。";
 const PREPARING: &str = "正在准备原输入框，请保持当前输入位置。";
 
 enum Session {
@@ -113,6 +113,10 @@ impl Delivery {
                 self.method = Some("wechat_menu_paste");
                 Session::MenuPaste(MenuPaste::capture(target)?)
             }
+            native::Captured::ClipboardPaste(target) => {
+                self.method = Some("clipboard_final");
+                Session::MenuPaste(MenuPaste::capture(target)?)
+            }
             native::Captured::Preparing(preparation) => {
                 self.preparing = Some(preparation);
                 return Ok(());
@@ -176,6 +180,11 @@ impl Delivery {
         self.method
     }
 
+    #[doc(hidden)]
+    pub fn uses_clipboard(&self) -> bool {
+        matches!(self.method, Some("wechat_menu_paste" | "clipboard_final"))
+    }
+
     fn result_message(&mut self, result: Result<(), Failure>, success: &str) -> String {
         match result {
             Ok(()) => success.to_owned(),
@@ -223,7 +232,7 @@ impl Delivery {
             }
             Some(Session::MenuPaste(paste)) => (
                 paste.verify(),
-                "微信兼容听写：停录后复制最终文字并请求原生粘贴。",
+                "原输入位置兼容听写：停录后复制最终文字并请求原生粘贴。",
             ),
             None => return self.retained(),
         };
@@ -250,7 +259,7 @@ impl Delivery {
             Session::Keyboard(_) => "正在等待最终转写，完成后输入原光标。".into(),
             Session::MenuPaste(paste) => {
                 let result = paste.verify();
-                self.result_message(result, "正在等待最终文字，完成后复制并请求微信粘贴。")
+                self.result_message(result, "正在等待最终文字，完成后复制并请求原输入位置粘贴。")
             }
             Session::Terminal(terminal) => {
                 let result = terminal.flush();
@@ -307,7 +316,7 @@ impl Delivery {
                 let result = paste.submit(text);
                 if result.is_ok() && paste.has_pending() {
                     self.session = Some(session);
-                    "最终文字已复制，正在请求微信原生粘贴。".into()
+                    "最终文字已复制，正在请求原输入位置原生粘贴。".into()
                 } else {
                     self.result_message(result, "没有可粘贴的文字。")
                 }
@@ -437,12 +446,12 @@ impl Delivery {
                     let requested = paste.requested();
                     self.session = None;
                     Some(if requested {
-                        WECHAT_REQUESTED.into()
+                        PASTE_REQUESTED.into()
                     } else {
-                        "没有请求微信粘贴。".into()
+                        "没有请求原输入位置粘贴。".into()
                     })
                 }
-                Ok(false) => Some("最终文字已复制，正在等待微信原生粘贴入口。".into()),
+                Ok(false) => Some("最终文字已复制，正在等待原输入位置原生粘贴入口。".into()),
                 Err(failure) => {
                     self.failure = Some(failure);
                     self.session = None;
@@ -730,6 +739,72 @@ mod preparation_tests {
                 input.submit("中文🙂").unwrap();
                 assert_eq!(&*writes.borrow(), &[first.to_owned()]);
             }
+        }
+    }
+
+    #[test]
+    fn clipboard_capture_is_final_only_and_survives_delayed_preparation() {
+        use std::cell::RefCell;
+        #[derive(Default)]
+        struct State {
+            copied: Vec<String>,
+            pastes: usize,
+            ready: bool,
+        }
+        struct Paste(Rc<RefCell<State>>);
+        impl PasteTarget for Paste {
+            fn check(&mut self) -> Result<(), Failure> {
+                Ok(())
+            }
+            fn prepare(&mut self, text: &str) -> Result<(), Failure> {
+                self.0.borrow_mut().copied.push(text.into());
+                Ok(())
+            }
+            fn ready(&mut self) -> Result<bool, Failure> {
+                Ok(self.0.borrow().ready)
+            }
+            fn paste(&mut self) -> Result<(), Failure> {
+                self.0.borrow_mut().pastes += 1;
+                Ok(())
+            }
+            fn abandon(&mut self) {}
+        }
+        struct Ready(Option<native::Captured>);
+        impl native::Preparation for Ready {
+            fn poll(&mut self) -> Result<Option<native::Captured>, Failure> {
+                Ok(self.0.take())
+            }
+        }
+        for delayed in [false, true] {
+            let state = Rc::new(RefCell::new(State::default()));
+            let capture = native::Captured::ClipboardPaste(Box::new(Paste(state.clone())));
+            let mut delivery = Delivery::new();
+            if delayed {
+                delivery
+                    .accept_capture(native::Captured::Preparing(Box::new(Ready(Some(capture)))))
+                    .unwrap();
+                delivery.queue_prepared_text("最终🙂\n文字", true);
+                delivery.queue_prepared_text("late preview", false);
+                assert!(delivery.advance_preparation().unwrap());
+                assert_eq!(delivery.prepared_text.as_ref().unwrap().0, "最终🙂\n文字");
+            } else {
+                delivery.accept_capture(capture).unwrap();
+            }
+            assert_eq!(delivery.method(), Some("clipboard_final"));
+            let Some(Session::MenuPaste(paste)) = delivery.session.as_mut() else {
+                panic!("clipboard route must use final-only paste policy");
+            };
+            paste.verify().unwrap();
+            assert!(state.borrow().copied.is_empty());
+            paste.submit("最终🙂\n文字").unwrap();
+            assert!(!paste.poll().unwrap());
+            state.borrow_mut().ready = true;
+            assert!(paste.poll().unwrap());
+            assert!(paste.poll().unwrap());
+            assert_eq!(paste.submit("duplicate"), Err(Failure::Ended));
+            assert_eq!(state.borrow().copied, ["最终🙂 文字"]);
+            assert_eq!(state.borrow().pastes, 1);
+            assert!(!delivery.has_pending());
         }
     }
 

@@ -2,6 +2,8 @@
 use super::model::{
     self, Failure, KeyboardPacing, PasteTarget, Snapshot, Target, TerminalTarget, TextRange,
 };
+mod clipboard;
+mod paste_key;
 mod wechat;
 use block2::RcBlock;
 use core_foundation::{
@@ -256,13 +258,15 @@ pub(super) fn diagnose_input() -> serde_json::Value {
             Err(status) => result[format!("{name}Error")] = status.into(),
         }
     }
-    match attribute(element.0, "AXEnabled") {
-        Ok(value) => {
-            result["AXEnabledIsBoolean"] =
-                (unsafe { CFGetTypeID(value.0) == CFBooleanGetTypeID() }).into();
-            result["AXEnabled"] = (unsafe { CFEqual(value.0, kCFBooleanTrue.cast()) != 0 }).into();
+    for name in ["AXEnabled", "AXEditable"] {
+        match attribute(element.0, name) {
+            Ok(value) => {
+                result[format!("{name}IsBoolean")] =
+                    (unsafe { CFGetTypeID(value.0) == CFBooleanGetTypeID() }).into();
+                result[name] = (unsafe { CFEqual(value.0, kCFBooleanTrue.cast()) != 0 }).into();
+            }
+            Err(status) => result[format!("{name}Error")] = status.into(),
         }
-        Err(status) => result["AXEnabledError"] = status.into(),
     }
     for name in ["AXSelectedTextRange", "AXSelectedText", "AXValue"] {
         result[format!("{name}Settable")] = match settable(element.0, name) {
@@ -270,6 +274,10 @@ pub(super) fn diagnose_input() -> serde_json::Value {
             Err(failure) => failure.message().into(),
         };
     }
+    result["webContent"] = match web_content(&element) {
+        Ok(value) => value.into(),
+        Err(failure) => failure.message().into(),
+    };
     result
 }
 
@@ -301,6 +309,7 @@ pub(super) enum Captured {
     Keyboard(Box<dyn Target>, KeyboardPacing),
     Terminal(Box<dyn TerminalTarget>),
     MenuPaste(Box<dyn PasteTarget>),
+    ClipboardPaste(Box<dyn PasteTarget>),
     Preparing(Box<dyn Preparation>),
 }
 
@@ -381,6 +390,12 @@ impl FocusPreparation {
     }
 }
 
+fn generic_clipboard_fallback(bundle: &str) -> bool {
+    // Orca's hidden terminal transport needs its dedicated description and
+    // append-only classification. Missing capabilities/focus must not bypass it.
+    bundle != ORCA
+}
+
 fn waiting_for_focus(failure: Failure, elapsed: Duration) -> bool {
     failure == Failure::FocusRead(AX_NO_VALUE) && elapsed < Duration::from_secs(2)
 }
@@ -393,6 +408,19 @@ impl Preparation for FocusPreparation {
             Err(failure) if waiting_for_focus(failure, self.started.elapsed()) => {
                 return Ok(None);
             }
+            Err(failure)
+                if generic_clipboard_fallback(&self.bundle)
+                    && clipboard::missing_focus(failure) =>
+            {
+                self.check()?;
+                return clipboard::ClipboardTarget::capture(
+                    self.pid,
+                    self.bundle.clone(),
+                    None,
+                    self.monitor.take().ok_or(Failure::Monitor)?,
+                )
+                .map(|target| Some(Captured::ClipboardPaste(Box::new(target))));
+            }
             Err(failure) => return Err(failure),
         };
         self.check()?;
@@ -401,13 +429,36 @@ impl Preparation for FocusPreparation {
     }
 }
 
-fn keyboard_pacing(bundle: &str, role: &str, terminal: bool) -> Option<KeyboardPacing> {
+fn web_content(element: &OwnedCf) -> Result<bool, Failure> {
+    // Read metadata only. WebKit can advertise AX text setters that acknowledge
+    // the request without editing the DOM. Pick keyboard delivery before writes.
+    let mut parent: Option<OwnedCf> = None;
+    for _ in 0..16 {
+        let current = parent.as_ref().unwrap_or(element);
+        let role = attribute(current.0, "AXRole")
+            .map_err(|_| Failure::Role)?
+            .string(100)
+            .ok_or(Failure::Role)?;
+        if role == "AXWebArea" {
+            return Ok(true);
+        }
+        parent = match attribute(current.0, "AXParent") {
+            Ok(value) if unsafe { CFGetTypeID(value.0) == AXUIElementGetTypeID() } => Some(value),
+            Err(AX_UNSUPPORTED | AX_NO_VALUE) => return Ok(false),
+            _ => return Err(Failure::Focus),
+        };
+    }
+    Ok(false)
+}
+
+fn keyboard_pacing(bundle: &str, role: &str, terminal: bool, web: bool) -> Option<KeyboardPacing> {
     if terminal {
         return None;
     }
     match (bundle, role) {
         (CODEX, _) => Some(KeyboardPacing::Chunked),
         (ORCA, "AXTextArea") => Some(KeyboardPacing::Scalar),
+        (_, "AXTextField" | "AXTextArea" | "AXComboBox") if web => Some(KeyboardPacing::Chunked),
         _ => None,
     }
 }
@@ -457,8 +508,8 @@ pub(super) fn capture(
     if expected.is_some_and(|target| target.pid != pid || target.bundle != bundle) {
         return Err(Failure::FocusApplicationChanged);
     }
-    // One monitor owns the session's immutable stop chord for every target
-    // path, including delayed focus preparation and WeChat menu paste.
+    // One monitor owns the session's immutable stop chord across capability
+    // discovery, delayed focus, clipboard fallback and WeChat menu paste.
     let monitor = UserMonitor::start(stop_shortcut)?;
     let element = match focused(pid) {
         Ok(element) => element,
@@ -469,6 +520,12 @@ pub(super) fn capture(
         Err(Failure::FocusRead(AX_NO_VALUE)) => {
             return FocusPreparation::start(pid, bundle, monitor)
                 .map(|preparation| Captured::Preparing(Box::new(preparation)));
+        }
+        Err(failure)
+            if generic_clipboard_fallback(&bundle) && clipboard::missing_focus(failure) =>
+        {
+            return clipboard::ClipboardTarget::capture(pid, bundle, None, monitor)
+                .map(|target| Captured::ClipboardPaste(Box::new(target)));
         }
         Err(failure) => return Err(failure),
     };
@@ -494,6 +551,12 @@ fn captured_target(
         None
     };
     let terminal = description.as_deref() == Some("Terminal input");
+    // Fix the generic route before mutation, but never replace Orca's dedicated
+    // keyboard/terminal validation with a less specific clipboard target.
+    if generic_clipboard_fallback(&bundle) && clipboard::needs_compatibility(&element)? {
+        return clipboard::ClipboardTarget::capture(pid, bundle, Some(element), monitor)
+            .map(|target| Captured::ClipboardPaste(Box::new(target)));
+    }
     let mut target = NativeTarget {
         pid,
         bundle,
@@ -514,7 +577,11 @@ fn captured_target(
             .ok()
             .and_then(|v| v.string(100))
             .ok_or(Failure::Role)?;
-        match keyboard_pacing(&target.bundle, &role, false) {
+        let pacing = match keyboard_pacing(&target.bundle, &role, false, false) {
+            Some(pacing) => Some(pacing),
+            None => keyboard_pacing(&target.bundle, &role, false, web_content(&target.element)?),
+        };
+        match pacing {
             Some(pacing) => Ok(Captured::Keyboard(
                 Box::new(KeyboardTarget {
                     inner: target,
@@ -1071,20 +1138,59 @@ mod tests {
     #[test]
     fn keyboard_compatibility_keeps_codex_and_orca_terminal_routes_separate() {
         assert_eq!(
-            keyboard_pacing(CODEX, "AXTextArea", false),
+            keyboard_pacing(CODEX, "AXTextArea", false, false),
             Some(KeyboardPacing::Chunked)
         );
         assert_eq!(
-            keyboard_pacing(ORCA, "AXTextArea", false),
+            keyboard_pacing(ORCA, "AXTextArea", false, false),
             Some(KeyboardPacing::Scalar)
         );
-        assert_eq!(keyboard_pacing(ORCA, "AXTextArea", true), None);
-        assert_eq!(keyboard_pacing(ORCA, "AXTextField", false), None);
+        assert_eq!(keyboard_pacing(ORCA, "AXTextArea", true, false), None);
+        assert_eq!(keyboard_pacing(ORCA, "AXTextField", false, false), None);
         assert_eq!(
-            keyboard_pacing("com.tencent.xinWeChat", "AXTextArea", false),
+            keyboard_pacing("com.tencent.xinWeChat", "AXTextArea", false, false),
             None
         );
-        assert_eq!(keyboard_pacing("test.editor", "AXTextArea", false), None);
+        assert_eq!(
+            keyboard_pacing("test.editor", "AXTextArea", false, false),
+            None
+        );
+    }
+
+    #[test]
+    fn readable_web_fields_use_acknowledged_keys_without_overriding_other_routes() {
+        for role in ["AXTextArea", "AXTextField", "AXComboBox"] {
+            assert_eq!(
+                keyboard_pacing("test.browser", role, false, true),
+                Some(KeyboardPacing::Chunked)
+            );
+            assert_eq!(keyboard_pacing("test.browser", role, false, false), None);
+        }
+        for role in ["AXButton", "AXCell", "AXSecureTextField", "AXWebArea"] {
+            assert_eq!(keyboard_pacing("test.browser", role, false, true), None);
+        }
+        assert_eq!(keyboard_pacing(ORCA, "AXTextArea", true, true), None);
+        assert_eq!(
+            keyboard_pacing(ORCA, "AXTextArea", false, true),
+            Some(KeyboardPacing::Scalar)
+        );
+        assert_eq!(
+            keyboard_pacing(CODEX, "AXTextArea", false, true),
+            Some(KeyboardPacing::Chunked)
+        );
+    }
+
+    #[test]
+    fn generic_clipboard_never_replaces_orca_routes() {
+        for status in [AX_NO_VALUE, AX_UNSUPPORTED, -25208] {
+            let missing = Failure::FocusRead(status);
+            assert!(!(generic_clipboard_fallback(ORCA) && clipboard::missing_focus(missing)));
+            assert!(generic_clipboard_fallback("test.custom") && clipboard::missing_focus(missing));
+        }
+        // The same bundle policy also gates capability-based fallback and the
+        // ClipboardTarget constructor, including asynchronously prepared focus.
+        assert!(!generic_clipboard_fallback(ORCA));
+        assert!(generic_clipboard_fallback(CODEX));
     }
 
     #[test]
