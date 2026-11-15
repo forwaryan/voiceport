@@ -27,7 +27,7 @@ impl Delegate {
             return;
         }
         if self.ivars().quitting.get()
-            || self.ivars().managing_sources.get()
+            || self.settings_locked()
             || self.ivars().permission_rx.borrow().is_some()
         {
             return;
@@ -76,7 +76,7 @@ impl Delegate {
 
     fn route_hotkey(&self, event: HotKeyEvent, first: bool) {
         if self.ivars().quitting.get()
-            || self.ivars().managing_sources.get()
+            || self.settings_locked()
             || self.ivars().permission_rx.borrow().is_some()
         {
             self.reject_hotkey("busy", "当前操作尚未结束。");

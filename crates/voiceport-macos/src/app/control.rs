@@ -156,7 +156,7 @@ impl Delegate {
         let locked = self.ivars().quitting.get()
             || self.ivars().permission_rx.borrow().is_some()
             || self.ivars().pending_hotkey.borrow().is_some()
-            || self.ivars().managing_sources.get()
+            || self.settings_locked()
             || control.background.is_some();
         let response = match action {
             Action::Status => {

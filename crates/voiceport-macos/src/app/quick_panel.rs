@@ -113,7 +113,7 @@ impl Delegate {
                     c,
                     &id,
                     self.ivars().permission_rx.borrow().is_some(),
-                    self.ivars().managing_sources.get(),
+                    self.settings_locked(),
                     self.ivars().quitting.get(),
                 ) {
                     self.set_source(c, id);

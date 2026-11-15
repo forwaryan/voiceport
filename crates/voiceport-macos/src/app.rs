@@ -16,6 +16,7 @@ mod control;
 mod hotkey_start;
 mod picker;
 mod quick_panel;
+mod shortcut_editor;
 mod source_manager;
 
 const COPY_SUCCESS: &str = "文字已复制。";
@@ -178,11 +179,14 @@ struct Ivars {
     managing_sources: Cell<bool>,
     source_manager: RefCell<Option<Retained<source_manager::Manager>>>,
     shortcut: OnceCell<Retained<NSPopUpButton>>,
+    shortcut_feedback: OnceCell<Retained<NSTextField>>,
+    shortcut_notice: RefCell<Option<String>>,
     timer: OnceCell<Retained<NSTimer>>,
     quitting: Cell<bool>,
     cli_quit_at: Cell<Option<std::time::Instant>>,
     shutdown_started: Cell<bool>,
-    alternative: Cell<bool>,
+    shortcut_binding: Cell<crate::shortcut::Shortcut>,
+    editing_shortcut: Cell<bool>,
     hotkey: RefCell<Option<crate::hotkey::GlobalHotKey>>,
     hotkey_rx: RefCell<Option<std::sync::mpsc::Receiver<crate::hotkey::HotKeyEvent>>>,
     pending_hotkey: RefCell<Option<crate::hotkey::HotKeyEvent>>,
@@ -229,7 +233,7 @@ define_class!(
                     if !self.ivars().shutdown_started.replace(true) { c.cancel(); }
                     if c.state.phase == Phase::Stopping { return NSApplicationTerminateReply::TerminateLater; }
                 }
-                if self.ivars().managing_sources.get() { return NSApplicationTerminateReply::TerminateLater; }
+                if self.settings_locked() { return NSApplicationTerminateReply::TerminateLater; }
                 self.ivars().control.borrow_mut().server.take();
                 return NSApplicationTerminateReply::TerminateNow;
             }
@@ -239,7 +243,7 @@ define_class!(
     impl Delegate {
         #[unsafe(method(preparePermissions:))]
         fn prepare_permissions_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().permission_rx.borrow().is_some() || self.ivars().managing_sources.get() { return; }
+            if self.ivars().permission_rx.borrow().is_some() || self.settings_locked() { return; }
             let idle = self.ivars().controller.try_borrow().is_ok_and(|slot| slot.as_ref().is_some_and(|c| !c.busy()));
             if !idle || self.ivars().quitting.get() { return; }
             let (sender, receiver) = std::sync::mpsc::channel();
@@ -254,7 +258,7 @@ define_class!(
         }
         #[unsafe(method(toggle:))]
         fn toggle_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().permission_rx.borrow().is_none() && !self.ivars().managing_sources.get() && self.ivars().pending_hotkey.borrow().is_none() {
+            if self.ivars().permission_rx.borrow().is_none() && !self.settings_locked() && self.ivars().pending_hotkey.borrow().is_none() {
                 self.with_controller(|c| {
                     if !c.busy() && c.state.phase != Phase::Recording {
                         *self.ivars().last_start_trace.borrow_mut() = Some(serde_json::json!({
@@ -273,7 +277,7 @@ define_class!(
         }
         #[unsafe(method(retry:))]
         fn retry_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().managing_sources.get() { return; }
+            if self.settings_locked() { return; }
             self.with_controller(|c| c.retry()); self.refresh();
         }
         #[unsafe(method(copyText:))]
@@ -320,12 +324,12 @@ define_class!(
         fn accessibility_action(&self, _sender: Option<&AnyObject>) { Delivery::request_accessibility(); }
         #[unsafe(method(toggleAutomatic:))]
         fn automatic_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().managing_sources.get() { return; }
+            if self.settings_locked() { return; }
             self.with_controller(|c| { c.automatic = !c.automatic; NSUserDefaults::standardUserDefaults().setBool_forKey(c.automatic, ns_string!("automaticPaste")); }); self.refresh();
         }
         #[unsafe(method(selectSource:))]
         fn source_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().permission_rx.borrow().is_some() || self.ivars().managing_sources.get() { return; }
+            if self.ivars().permission_rx.borrow().is_some() || self.settings_locked() { return; }
             self.with_controller(|c| {
                 if c.busy() { return; }
                 if let Some(id) = self.ivars().source.get().and_then(|control| picker::selected_id(control))
@@ -339,7 +343,7 @@ define_class!(
             let manager = self.ivars().source_manager.borrow().clone();
             if let Some(manager) = manager { manager.bring_forward(); return; }
             let idle=self.ivars().controller.borrow().as_ref().is_some_and(|c|!c.busy() && !c.discovering());
-            if self.ivars().quitting.get() || !idle || self.ivars().permission_rx.borrow().is_some() || self.ivars().managing_sources.replace(true) {return;}
+            if self.ivars().quitting.get() || !idle || self.ivars().permission_rx.borrow().is_some() || self.ivars().editing_shortcut.get() || self.ivars().managing_sources.replace(true) {return;}
             if let Err(error) = source_manager::manage(self) {
                 self.ivars().managing_sources.set(false);
                 self.with_controller(|c| c.message = format!("无法打开来源管理：{error}"));
@@ -349,7 +353,7 @@ define_class!(
         }
         #[unsafe(method(testSource:))]
         fn test_source_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().permission_rx.borrow().is_none() && !self.ivars().managing_sources.get() {
+            if self.ivars().permission_rx.borrow().is_none() && !self.settings_locked() {
                 self.ivars().managing_sources.set(true);
                 if source_manager::confirm_test(self) {self.with_controller(|c|c.test_source());}
                 self.ivars().managing_sources.set(false);
@@ -357,12 +361,12 @@ define_class!(
         }
         #[unsafe(method(refreshModels:))]
         fn refresh_models_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().permission_rx.borrow().is_none() { self.with_controller(|c| c.refresh_catalog()); }
+            if self.ivars().permission_rx.borrow().is_none() && !self.settings_locked() { self.with_controller(|c| c.refresh_catalog()); }
             self.refresh();
         }
         #[unsafe(method(cycleLanguage:))]
         fn language_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().managing_sources.get() { return; }
+            if self.settings_locked() { return; }
             self.with_controller(|c| {
                 if c.busy() { return; }
                 let selected = self.ivars().language.get().map(|control| control.indexOfSelectedItem()).unwrap_or(0);
@@ -372,10 +376,7 @@ define_class!(
         }
         #[unsafe(method(cycleShortcut:))]
         fn shortcut_action(&self, _sender: Option<&AnyObject>) {
-            let alternative = self.ivars().shortcut.get().is_some_and(|control| control.indexOfSelectedItem() == 1);
-            self.ivars().alternative.set(alternative);
-            NSUserDefaults::standardUserDefaults().setBool_forKey(alternative, ns_string!("alternativeShortcut"));
-            self.register_hotkey(); self.refresh();
+            self.change_shortcut();
         }
         #[unsafe(method(tick:))]
         fn tick(&self, _sender: Option<&AnyObject>) {
@@ -400,11 +401,12 @@ define_class!(
             }
             self.refresh();
             if self.ivars().quitting.get() {
+                if self.ivars().editing_shortcut.get() { NSApplication::sharedApplication(self.mtm()).abortModal(); }
                 let manager = self.ivars().source_manager.borrow().clone();
                 if let Some(manager) = manager { manager.close_for_shutdown(); }
                 let stopped = self.ivars().shutdown_started.get()
                     && self.ivars().controller.try_borrow().is_ok_and(|slot| slot.as_ref().is_none_or(|c| c.state.phase != Phase::Stopping));
-                if stopped && !self.ivars().managing_sources.get() && self.ivars().cli_quit_at.get().is_none() {
+                if stopped && !self.settings_locked() && self.ivars().cli_quit_at.get().is_none() {
                     self.ivars().control.borrow_mut().server.take();
                     NSApplication::sharedApplication(self.mtm()).replyToApplicationShouldTerminate(true);
                 }
@@ -538,12 +540,20 @@ impl Delegate {
             .unwrap_or_else(|| crate::local_models::CHATGPT.into());
         controller.catalog = crate::local_models::Catalog::pending(&controller.source_id);
         controller.refresh_catalog();
-        self.ivars()
-            .alternative
-            .set(defaults.boolForKey(ns_string!("alternativeShortcut")));
+        let saved = defaults
+            .stringForKey(ns_string!("dictationShortcut"))
+            .map(|s| s.to_string());
+        let shortcut = crate::shortcut::Shortcut::load(
+            saved.as_deref(),
+            defaults.boolForKey(ns_string!("alternativeShortcut")),
+        );
+        self.ivars().shortcut_binding.set(shortcut);
         *self.ivars().controller.borrow_mut() = Some(controller);
         let _ = crate::storage::cleanup_expired();
-        self.register_hotkey();
+        if let Err(message) = self.install_hotkey(shortcut) {
+            *self.ivars().hotkey_error.borrow_mut() = Some(message.clone());
+            self.with_controller(|c| c.message = message);
+        }
         let timer = unsafe {
             NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
                 0.1,
@@ -562,22 +572,20 @@ impl Delegate {
         }
         let _ = self.ivars().timer.set(timer);
     }
-    fn register_hotkey(&self) {
-        self.ivars().hotkey.borrow_mut().take();
-        self.ivars().hotkey_rx.borrow_mut().take();
-        self.ivars().hotkey_error.borrow_mut().take();
+    fn install_hotkey(&self, shortcut: crate::shortcut::Shortcut) -> Result<(), String> {
+        if self.ivars().hotkey.borrow().is_some() && shortcut == self.ivars().shortcut_binding.get()
+        {
+            return Ok(());
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let mut hotkey = crate::hotkey::GlobalHotKey::new(tx);
-        match hotkey.register(self.ivars().alternative.get()) {
-            Ok(()) => {
-                *self.ivars().hotkey.borrow_mut() = Some(hotkey);
-                *self.ivars().hotkey_rx.borrow_mut() = Some(rx);
-            }
-            Err(message) => {
-                *self.ivars().hotkey_error.borrow_mut() = Some(message.clone());
-                self.with_controller(|c| c.message = message);
-            }
-        }
+        hotkey.register(shortcut)?;
+        // Commit only after Carbon accepted the candidate. Dropping the old
+        // owner and queue discards stale presses from the previous binding.
+        *self.ivars().hotkey.borrow_mut() = Some(hotkey);
+        *self.ivars().hotkey_rx.borrow_mut() = Some(rx);
+        self.ivars().hotkey_error.borrow_mut().take();
+        Ok(())
     }
     fn button(
         &self,
@@ -841,7 +849,10 @@ impl Delegate {
             ),
         ] {
             self.label(page, title, rect(16., y, 350., 20.), 13.);
-            self.caption(page, subtitle, rect(16., y - 20., 350., 18.));
+            let caption = self.caption(page, subtitle, rect(16., y - 20., 350., 18.));
+            if title == "开始 / 停止快捷键" {
+                let _ = self.ivars().shortcut_feedback.set(caption);
+            }
         }
         for y in [260., 206., 152.] {
             let line = NSBox::initWithFrame(NSBox::alloc(self.mtm()), rect(16., y, 540., 1.));
@@ -867,9 +878,9 @@ impl Delegate {
         let _ = self.ivars().language.set(language);
         let shortcut = self.popup(
             page,
-            &["⌃ ⌥ 空格", "⌃ ⇧ 空格"],
+            &["⌃ ⌥ 空格", "⌃ ⇧ 空格", "自定义…"],
             sel!(cycleShortcut:),
-            rect(424., 126., 132., 30.),
+            rect(368., 126., 188., 30.),
         );
         shortcut.setAccessibilityLabel(Some(ns_string!("开始 / 停止快捷键")));
         let _ = self.ivars().shortcut.set(shortcut);
@@ -1016,11 +1027,8 @@ impl Delegate {
         }
         let recording = c.state.phase == Phase::Recording;
         let trusted = Delivery::trusted();
-        let shortcut = if self.ivars().alternative.get() {
-            "⌃⇧空格"
-        } else {
-            "⌃⌥空格"
-        };
+        let shortcut_label = self.ivars().shortcut_binding.get().label();
+        let shortcut = shortcut_label.as_str();
         let hotkey_failed = self.ivars().hotkey_error.borrow().is_some();
         let delivery_failure = completed_delivery_failure(
             c.state.phase,
@@ -1074,19 +1082,23 @@ impl Delegate {
         if let Some(item) = self.ivars().menu_toggle.get() {
             item.setTitle(&NSString::from_str(title));
             item.setEnabled(
-                !preparing_permissions && !returning_to_input && (recording || c.state.can_start()),
+                !preparing_permissions
+                    && !returning_to_input
+                    && !self.settings_locked()
+                    && (recording || c.state.can_start()),
             );
         }
         if let Some(button) = self.ivars().toggle.get() {
             button.setTitle(&NSString::from_str(title));
             button.setEnabled(
-                !preparing_permissions && !returning_to_input && (recording || c.state.can_start()),
+                !preparing_permissions
+                    && !returning_to_input
+                    && !self.settings_locked()
+                    && (recording || c.state.can_start()),
             );
         }
-        let idle = !c.busy()
-            && !preparing_permissions
-            && !returning_to_input
-            && !self.ivars().managing_sources.get();
+        let idle =
+            !c.busy() && !preparing_permissions && !returning_to_input && !self.settings_locked();
         if let Some(button) = self.ivars().manage_sources.get() {
             button.setEnabled(idle && !c.discovering());
         }
@@ -1234,8 +1246,28 @@ impl Delegate {
                 control.setEnabled(idle);
             }
         }
+        if let Some(label) = self.ivars().shortcut_feedback.get() {
+            let notice = self.ivars().shortcut_notice.borrow();
+            let text = notice.as_deref().unwrap_or(if hotkey_failed {
+                "快捷键不可用，请换一组或点自定义。"
+            } else {
+                "选择预设，或点自定义后按下组合键。"
+            });
+            label.setStringValue(&NSString::from_str(text));
+            label.setToolTip(Some(&NSString::from_str(&c.message)));
+        }
         if let Some(control) = self.ivars().shortcut.get() {
-            let selected = if self.ivars().alternative.get() { 1 } else { 0 };
+            let selected = self.ivars().shortcut_binding.get().preset_index();
+            if let Some(item) = control.itemAtIndex(2) {
+                let title = if selected == 2 {
+                    format!("{shortcut} · 自定义…")
+                } else {
+                    "自定义…".into()
+                };
+                if item.title().to_string() != title {
+                    item.setTitle(&NSString::from_str(&title));
+                }
+            }
             if control.indexOfSelectedItem() != selected {
                 control.selectItemAtIndex(selected);
             }

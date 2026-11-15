@@ -1,5 +1,5 @@
 //! Carbon global shortcut registration. Construction never installs a handler.
-use crate::delivery::model::ApplicationTarget;
+use crate::{delivery::model::ApplicationTarget, shortcut::Shortcut};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 use std::{
@@ -16,10 +16,6 @@ use std::{
 
 const EVENT_NOT_HANDLED: i32 = -9874;
 const SIGNATURE: u32 = u32::from_be_bytes(*b"VPOR");
-const SPACE: u32 = 49;
-const CONTROL: u32 = 1 << 12;
-const OPTION: u32 = 1 << 11;
-const SHIFT: u32 = 1 << 9;
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 
 #[repr(C)]
@@ -122,9 +118,9 @@ impl GlobalHotKey {
         }
     }
 
-    /// The default is Ctrl+Option+Space; the alternative is Ctrl+Shift+Space.
-    /// An unsuccessful registration removes the handler and leaves no hotkey.
-    pub fn register(&mut self, alternative: bool) -> Result<(), String> {
+    /// Only validated bindings can reach Carbon. Use a separate owner when
+    /// replacing a live binding so failure leaves the previous one installed.
+    pub(crate) fn register(&mut self, shortcut: Shortcut) -> Result<(), String> {
         if unsafe { libc::pthread_main_np() } != 1 {
             return Err("全局快捷键必须在主线程注册。".into());
         }
@@ -150,8 +146,8 @@ impl GlobalHotKey {
         }
         let status = unsafe {
             RegisterEventHotKey(
-                SPACE,
-                CONTROL | if alternative { SHIFT } else { OPTION },
+                shortcut.key_code(),
+                shortcut.modifiers(),
                 HotKeyId {
                     signature: SIGNATURE,
                     id: self.context.id,
