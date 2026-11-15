@@ -29,6 +29,7 @@ pub struct Delivery {
     preparing: Option<Box<dyn native::Preparation>>,
     prepared_text: Option<(String, bool)>,
     method: Option<&'static str>,
+    stop_shortcut: Option<model::StopShortcut>,
 }
 
 impl Default for Delivery {
@@ -45,7 +46,15 @@ impl Delivery {
             preparing: None,
             prepared_text: None,
             method: None,
+            stop_shortcut: None,
         }
+    }
+
+    /// Affects the next capture; existing native monitors keep their own copy.
+    /// Supply only a successfully registered chord, or None after unregistering.
+    #[doc(hidden)]
+    pub fn set_stop_shortcut(&mut self, shortcut: Option<model::StopShortcut>) {
+        self.stop_shortcut = shortcut;
     }
 
     fn on_main(&mut self) -> Result<(), Failure> {
@@ -75,7 +84,8 @@ impl Delivery {
         }
         self.failure = None;
         self.method = None;
-        let result = native::capture(target).and_then(|capture| self.accept_capture(capture));
+        let result = native::capture(target, self.stop_shortcut)
+            .and_then(|capture| self.accept_capture(capture));
         match result {
             Ok(()) => Ok(()),
             Err(failure) => {

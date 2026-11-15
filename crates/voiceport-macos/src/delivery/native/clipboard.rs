@@ -143,12 +143,8 @@ impl ClipboardTarget {
         pid: libc::pid_t,
         bundle: String,
         element: Option<OwnedCf>,
-        monitor: Option<UserMonitor>,
+        monitor: UserMonitor,
     ) -> Result<Self, Failure> {
-        let monitor = match monitor {
-            Some(monitor) => monitor,
-            None => UserMonitor::start()?,
-        };
         let target = Self {
             pid,
             bundle,

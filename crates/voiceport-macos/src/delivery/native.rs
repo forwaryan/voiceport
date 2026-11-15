@@ -402,14 +402,15 @@ impl Preparation for FocusPreparation {
                     self.pid,
                     self.bundle.clone(),
                     None,
-                    self.monitor.take(),
+                    self.monitor.take().ok_or(Failure::Monitor)?,
                 )
                 .map(|target| Some(Captured::ClipboardPaste(Box::new(target))));
             }
             Err(failure) => return Err(failure),
         };
         self.check()?;
-        captured_target(self.pid, self.bundle.clone(), element, self.monitor.take()).map(Some)
+        let monitor = self.monitor.take().ok_or(Failure::Monitor)?;
+        captured_target(self.pid, self.bundle.clone(), element, monitor).map(Some)
     }
 }
 
@@ -453,6 +454,7 @@ fn normalize_composer_placeholder(mut snapshot: Snapshot, placeholder: &str) -> 
 
 pub(super) fn capture(
     expected: Option<&crate::delivery::model::ApplicationTarget>,
+    stop_shortcut: Option<model::StopShortcut>,
 ) -> Result<Captured, Failure> {
     if !main_thread() {
         return Err(Failure::MainThread);
@@ -468,13 +470,13 @@ pub(super) fn capture(
     if expected.is_some_and(|target| target.pid != pid || target.bundle != bundle) {
         return Err(Failure::FocusApplicationChanged);
     }
-    // Keep observing across capability discovery and asynchronous preparation;
-    // never forget a click/key simply because a different backend is selected.
-    let monitor = UserMonitor::start()?;
+    // One monitor owns the session's immutable stop chord across capability
+    // discovery, delayed focus, clipboard fallback and WeChat menu paste.
+    let monitor = UserMonitor::start(stop_shortcut)?;
     let element = match focused(pid) {
         Ok(element) => element,
         Err(failure) if wechat_menu_fallback(&bundle, failure) => {
-            return wechat::WechatMenuTarget::capture(pid)
+            return wechat::WechatMenuTarget::capture(pid, monitor)
                 .map(|target| Captured::MenuPaste(Box::new(target)));
         }
         Err(Failure::FocusRead(AX_NO_VALUE)) => {
@@ -482,19 +484,19 @@ pub(super) fn capture(
                 .map(|preparation| Captured::Preparing(Box::new(preparation)));
         }
         Err(failure) if clipboard::missing_focus(failure) => {
-            return clipboard::ClipboardTarget::capture(pid, bundle, None, Some(monitor))
+            return clipboard::ClipboardTarget::capture(pid, bundle, None, monitor)
                 .map(|target| Captured::ClipboardPaste(Box::new(target)));
         }
         Err(failure) => return Err(failure),
     };
-    captured_target(pid, bundle, element, Some(monitor))
+    captured_target(pid, bundle, element, monitor)
 }
 
 fn captured_target(
     pid: libc::pid_t,
     bundle: String,
     element: OwnedCf,
-    monitor: Option<UserMonitor>,
+    monitor: UserMonitor,
 ) -> Result<Captured, Failure> {
     // Select the fallback before any text mutation. Runtime write/readback
     // failures never trigger a second backend or a duplicate paste.
@@ -522,10 +524,7 @@ fn captured_target(
         terminal,
         // All targets are monitored before the first snapshot. Reuse the
         // preparation monitor without restarting it or losing invalidation.
-        monitor: Some(match monitor {
-            Some(monitor) => monitor,
-            None => UserMonitor::start()?,
-        }),
+        monitor: Some(monitor),
         pending: None,
         _main_only: std::marker::PhantomData,
     };
@@ -997,7 +996,7 @@ struct UserMonitor {
     invalidated: Arc<AtomicBool>,
 }
 
-fn observe(event: &NSEvent, invalidated: &AtomicBool) {
+fn observe(event: &NSEvent, invalidated: &AtomicBool, stop_shortcut: Option<model::StopShortcut>) {
     let raw: *const c_void = unsafe { msg_send![event, CGEvent] };
     let tag = if raw.is_null() {
         0
@@ -1007,7 +1006,13 @@ fn observe(event: &NSEvent, invalidated: &AtomicBool) {
     let key_down = event.r#type() == NSEventType::KeyDown;
     // keyCode is meaningful only for keyboard events.
     let key = if key_down { event.keyCode() } else { 0 };
-    if model::invalidates_input(tag, key_down, key, event.modifierFlags().0 as u64) {
+    if model::invalidates_input(
+        tag,
+        key_down,
+        key,
+        event.modifierFlags().0 as u64,
+        stop_shortcut,
+    ) {
         invalidated.store(true, Ordering::SeqCst);
     }
 }
@@ -1023,7 +1028,7 @@ fn user_input_event_mask() -> NSEventMask {
 }
 
 impl UserMonitor {
-    fn start() -> Result<Self, Failure> {
+    fn start(stop_shortcut: Option<model::StopShortcut>) -> Result<Self, Failure> {
         if !main_thread() {
             return Err(Failure::MainThread);
         }
@@ -1031,13 +1036,13 @@ impl UserMonitor {
         let mask = user_input_event_mask();
         let global_flag = invalidated.clone();
         let global_block = RcBlock::new(move |event: NonNull<NSEvent>| {
-            observe(unsafe { event.as_ref() }, &global_flag);
+            observe(unsafe { event.as_ref() }, &global_flag, stop_shortcut);
         });
         let global = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &global_block)
             .ok_or(Failure::Monitor)?;
         let local_flag = invalidated.clone();
         let local_block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
-            observe(unsafe { event.as_ref() }, &local_flag);
+            observe(unsafe { event.as_ref() }, &local_flag, stop_shortcut);
             event.as_ptr()
         });
         let local =

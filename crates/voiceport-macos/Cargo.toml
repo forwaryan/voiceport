@@ -18,6 +18,11 @@ name = "clipboard_layout"
 path = "tests/clipboard_layout.rs"
 harness = false
 
+[[test]]
+name = "shortcut_native"
+path = "tests/shortcut_native.rs"
+harness = false
+
 [dependencies]
 voiceport-control = { path = "../voiceport-control" }
 voiceport-core = { path = "../voiceport-core" }
