@@ -154,6 +154,18 @@ external/periodic 的引用与用户授权由执行者核对，hook 只验证声
 6. 用户已授权正常自动轮换，无须手动开窗或粘贴；实际权限/信任拒绝仍阻塞，不换工具/会话绕过。直接顶层按开头的 session-* 路径，继承冻结契约，不创建 Run 或扩大 Git 权限；Run 协调者 register 核对真实 PreToolUse、actual terminal 和 Run coordinator_handle/generation，保留无关历史 lease。CLI 窗口轮换先持久记录，单次 launch 显式 --surface terminal，不改全局 Chat/CLI 偏好，只接受 terminal outcome；继任以不同实际 session、initial0、晚于 launch 的 transcript/状态时间接管，Run 路径另要求递增 generation；对应 claim 与精确旧 PTY 关闭成功前不恢复产品/loop。未知启动、发送和关闭只保留原始回执并有界核对，不盲重发。历史单步私有回执仅按其 scope 引用，隔离 fixture/mock 不是实际完整自然压缩生命周期，结构化 launch 送达不是 PTY 证明；本轮实际验证由执行者另附，不据规则声称 smoke 成功。旧全局 lease 须在 retire 前由当前同一实际 owner/Run 执行 `python3 -I .claude/hooks/coordinator_rotation.py upgrade-legacy --session ACTUAL_SESSION --run ACTUAL_RUN`；仅 active/requested 且未尝试 transfer 可升级，核对 authentic proof、Run generation/incarnation，以同 Run registry/当前 attempt 建有界 legacy navigation，保留 epoch/单调计数/request/history/完整原 prompt/worker 冻结。旧 lease 标记 migrated_run，原 session 转 per-Run，后续变更必须带 --run，并完成精确 close-retired。已有 per-Run lease、transfer 已尝试或沿革不明失败关闭；隔离升级测试不证明真实迁移或完整生命周期已执行。
 7. 主协调者持续维护方案/账本，多个真实 Orca 开发、独立验证及按需支撑会话并行处理无冲突的工作；各 worker 不自行开 loop。配置和角色文档也是冻结输入，若轮换修正改变它们，先明确中断旧评审、保留快照/半成品原始证据，再建立新冻结继续；不能静默改变旧评审对象。
 
+### 6.1. 合入 main 后清理 worktree
+
+2026-11-15 用户明确授权：每次合并代码后可以删除对应 worktree；有代码未合入 `main` 的 worktree 一定不能删除。常驻入口为 [.claude/rules/loop-worktree-cleanup.md](../.claude/rules/loop-worktree-cleanup.md)，默认 [.claude/loop.md](../.claude/loop.md) 与自定义 loop 均须遵守。该规则沿用第6节和第8节的合并/验证条件，不以清理任务绕过它们。
+
+1. 每次合并后检查对应目录，而非按名称或存放时长批量删除。读取实际分支、HEAD、`main` SHA，分别检查分支独有提交、暂存区、未暂存差异、全部未跟踪文件及新增/删除/重命名/模式变化；源码、测试、配置和文档等待保留内容全部纳入。
+2. 证明全部改动已进入当前 `main`。普通合并核对提交祖先关系；squash、cherry-pick 或旧工作区已被新版包含时，结合真实合并记录与逐文件/差异内容核对，保留 `main` 后续修复，不能将老文件覆盖回去。工作区干净、任务完成、PR创建/待合并、代码仅在功能分支或另有备份/快照都不足以删除。
+3. 有任一未合入内容、部分合入、来源变化或无法确认的差异，立即保留目录；在授权内继续合并，或记录缺少的具体条件。不得通过 reset、清空目录或强制删除消除待合入代码。保存快照只能支持恢复，不能替代进入 `main` 的证明。
+4. 确认相关写者、worker、构建及冻结验证已结束并释放该目录；必要原始证据移到不会随 worktree 删除的位置。删除前再次核对实际内容与合入证明，记录精确路径/选择器、来源 HEAD 和内容摘要、目标 `main` SHA 及对应合并依据。
+5. 使用 `orca-cli` 已安装版本支持的精确 worktree 删除入口，保留主工作区，不顺带删除无关分支或任务。保存真实删除回执，再核对 Orca、Git worktree 列表和文件系统；未知结果先查真实状态，不重复副作用。活动任务尚未释放或权限/暂停阻塞时保留目录，待条件满足再清理。
+
+本节是 loop 的执行约束，不改写已登记原始 loop 提示词或恢复契约；新限制随当前任务及交接继续保留。
+
 ## 7. 授权、采用取舍与后续能力
 
 当前角色仅执行本次明确分派的本地代码/文档/必要验证范围；提交、推送、PR、合并、外部部署、消息和系统设置都查本项目实际授权。参考项目曾获准合并或发消息的记录不适用于 VoicePort。遇实际审批拒绝保留动作与原因，不换工具、账号或角色绕过。
