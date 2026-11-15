@@ -13,6 +13,11 @@ name = "stop_failure"
 path = "tests/stop_failure.rs"
 harness = false
 
+[[test]]
+name = "clipboard_layout"
+path = "tests/clipboard_layout.rs"
+harness = false
+
 [dependencies]
 voiceport-control = { path = "../voiceport-control" }
 voiceport-core = { path = "../voiceport-core" }

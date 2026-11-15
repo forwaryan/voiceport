@@ -2,6 +2,8 @@
 use super::model::{
     self, Failure, KeyboardPacing, PasteTarget, Snapshot, Target, TerminalTarget, TextRange,
 };
+mod clipboard;
+mod paste_key;
 mod wechat;
 use block2::RcBlock;
 use core_foundation::{
@@ -301,6 +303,7 @@ pub(super) enum Captured {
     Keyboard(Box<dyn Target>, KeyboardPacing),
     Terminal(Box<dyn TerminalTarget>),
     MenuPaste(Box<dyn PasteTarget>),
+    ClipboardPaste(Box<dyn PasteTarget>),
     Preparing(Box<dyn Preparation>),
 }
 
@@ -330,8 +333,7 @@ fn application_window(pid: libc::pid_t) -> Result<OwnedCf, Failure> {
 }
 
 impl FocusPreparation {
-    fn start(pid: libc::pid_t, bundle: String) -> Result<Self, Failure> {
-        let monitor = UserMonitor::start()?;
+    fn start(pid: libc::pid_t, bundle: String, monitor: UserMonitor) -> Result<Self, Failure> {
         let window = application_window(pid)?;
         let preparation = Self {
             pid,
@@ -393,6 +395,16 @@ impl Preparation for FocusPreparation {
             Ok(element) => element,
             Err(failure) if waiting_for_focus(failure, self.started.elapsed()) => {
                 return Ok(None);
+            }
+            Err(failure) if clipboard::missing_focus(failure) => {
+                self.check()?;
+                return clipboard::ClipboardTarget::capture(
+                    self.pid,
+                    self.bundle.clone(),
+                    None,
+                    self.monitor.take(),
+                )
+                .map(|target| Some(Captured::ClipboardPaste(Box::new(target))));
             }
             Err(failure) => return Err(failure),
         };
@@ -456,6 +468,9 @@ pub(super) fn capture(
     if expected.is_some_and(|target| target.pid != pid || target.bundle != bundle) {
         return Err(Failure::FocusApplicationChanged);
     }
+    // Keep observing across capability discovery and asynchronous preparation;
+    // never forget a click/key simply because a different backend is selected.
+    let monitor = UserMonitor::start()?;
     let element = match focused(pid) {
         Ok(element) => element,
         Err(failure) if wechat_menu_fallback(&bundle, failure) => {
@@ -463,12 +478,16 @@ pub(super) fn capture(
                 .map(|target| Captured::MenuPaste(Box::new(target)));
         }
         Err(Failure::FocusRead(AX_NO_VALUE)) => {
-            return FocusPreparation::start(pid, bundle)
+            return FocusPreparation::start(pid, bundle, monitor)
                 .map(|preparation| Captured::Preparing(Box::new(preparation)));
+        }
+        Err(failure) if clipboard::missing_focus(failure) => {
+            return clipboard::ClipboardTarget::capture(pid, bundle, None, Some(monitor))
+                .map(|target| Captured::ClipboardPaste(Box::new(target)));
         }
         Err(failure) => return Err(failure),
     };
-    captured_target(pid, bundle, element, None)
+    captured_target(pid, bundle, element, Some(monitor))
 }
 
 fn captured_target(
@@ -477,6 +496,12 @@ fn captured_target(
     element: OwnedCf,
     monitor: Option<UserMonitor>,
 ) -> Result<Captured, Failure> {
+    // Select the fallback before any text mutation. Runtime write/readback
+    // failures never trigger a second backend or a duplicate paste.
+    if clipboard::needs_compatibility(&element)? {
+        return clipboard::ClipboardTarget::capture(pid, bundle, Some(element), monitor)
+            .map(|target| Captured::ClipboardPaste(Box::new(target)));
+    }
     // An unreadable Orca description cannot safely distinguish an editor from
     // its hidden terminal transport, so never fall back to document writes.
     let description = if bundle == ORCA {

@@ -240,7 +240,7 @@
     "crates/voiceport-cli/Cargo.toml": "65d7e65bf5569fcfead3b4dc1e337dc447c68aadb3efc2ed29b8abb9b68f3a08",
     "crates/voiceport-control/Cargo.toml": "822a697d7316fd2593f959f70c765817328c69a8e2ff74ee45f96f258229300f",
     "crates/voiceport-core/Cargo.toml": "24373b4c020cb68638193871625c013657cda89f27d318805d35158868d391bf",
-    "crates/voiceport-macos/Cargo.toml": "286fa4debe5eea42eac4be3437f0d8d6f6d10241e167468916b288801361e08a",
+    "crates/voiceport-macos/Cargo.toml": "51b7204efa383f1acb1fcaad0222d783468f254a252c5df5ed7acb4b69477b7c",
     "crates/voiceport-windows/Cargo.toml": "b331679c8bbd64bce735bf2700f2b6a0e38d249569906d3089a7c615c8afbeec"
   },
   "schema": 1,
