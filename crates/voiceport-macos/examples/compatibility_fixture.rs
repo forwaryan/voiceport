@@ -14,6 +14,8 @@ mod fixture {
         text: RefCell<String>,
         label: Retained<NSTextField>,
         receipt: PathBuf,
+        mode: &'static str,
+        editable: Option<bool>,
     }
     define_class!(
         #[unsafe(super(NSView))]
@@ -23,6 +25,15 @@ mod fixture {
         impl Editor {
             #[unsafe(method(acceptsFirstResponder))]
             fn accepts_first_responder(&self) -> bool { true }
+            #[unsafe(method_id(accessibilityAttributeValue:))]
+            fn accessibility_attribute_value(&self, name: &NSString) -> Option<Retained<objc2::runtime::AnyObject>> {
+                match (name == ns_string!("AXEditable"), self.ivars().editable) {
+                    (true, Some(editable)) => Some(unsafe {
+                        msg_send![objc2::class!(NSNumber), numberWithBool: editable]
+                    }),
+                    _ => unsafe { msg_send![super(self), accessibilityAttributeValue: name] },
+                }
+            }
             #[unsafe(method(paste:))]
             fn paste(&self, _sender: Option<&objc2::runtime::AnyObject>) {
                 if let Some(text) = unsafe {
@@ -51,15 +62,29 @@ mod fixture {
             self.ivars()
                 .label
                 .setStringValue(&NSString::from_str(&value));
-            let receipt = serde_json::json!({"pid": std::process::id(), "text": &*value});
+            let receipt = serde_json::json!({"pid": std::process::id(), "text": &*value, "mode": self.ivars().mode});
             std::fs::write(&self.ivars().receipt, receipt.to_string()).unwrap();
         }
     }
 
     pub fn run() {
         let args: Vec<_> = std::env::args().skip(1).collect();
-        assert_eq!(args.len(), 2, "--receipt ABSOLUTE_NEW_PATH");
+        assert!(
+            matches!(args.len(), 2 | 4),
+            "--receipt ABSOLUTE_NEW_PATH [--mode custom|editable-cell|readonly-cell|button|secure]"
+        );
         assert_eq!(args[0], "--receipt");
+        if args.len() == 4 {
+            assert_eq!(args[2], "--mode");
+        }
+        let (mode, role, editable) = match args.get(3).map(String::as_str).unwrap_or("custom") {
+            "custom" => ("custom", ns_string!("AXGroup"), None),
+            "editable-cell" => ("editable-cell", ns_string!("AXCell"), Some(true)),
+            "readonly-cell" => ("readonly-cell", ns_string!("AXCell"), Some(false)),
+            "button" => ("button", ns_string!("AXButton"), Some(true)),
+            "secure" => ("secure", ns_string!("AXSecureTextField"), Some(true)),
+            _ => panic!("unknown fixture mode"),
+        };
         let receipt = PathBuf::from(&args[1]);
         assert!(receipt.is_absolute() && !receipt.exists());
         std::fs::OpenOptions::new()
@@ -89,12 +114,14 @@ mod fixture {
             text: RefCell::new("左|右".into()),
             label: label.clone(),
             receipt,
+            mode,
+            editable,
         });
         let editor: Retained<Editor> = unsafe {
             msg_send![super(allocated), initWithFrame: NSRect::new(NSPoint::new(0., 0.), NSSize::new(640., 240.))]
         };
         editor.setAccessibilityElement(true);
-        editor.setAccessibilityRole(Some(ns_string!("AXGroup")));
+        editor.setAccessibilityRole(Some(role));
         editor.setAccessibilityLabel(Some(ns_string!("VoicePort compatibility fixture")));
         editor.addSubview(&label);
         window.setContentView(Some(&editor));
@@ -118,7 +145,8 @@ mod fixture {
         window.makeFirstResponder(Some(&editor));
         #[allow(deprecated)]
         app.activateIgnoringOtherApps(true);
-        let baseline = serde_json::json!({"pid": std::process::id(), "text": "左|右"});
+        let baseline =
+            serde_json::json!({"pid": std::process::id(), "text": "左|右", "mode": mode});
         std::fs::write(&editor.ivars().receipt, baseline.to_string()).unwrap();
         let started = Instant::now();
         let timer_block = RcBlock::new(move |_timer: NonNull<NSTimer>| {

@@ -40,22 +40,27 @@ fn optional_text(element: &OwnedCf, key: &str) -> Result<Option<String>, Failure
     }
 }
 
-fn optional_enabled(element: &OwnedCf, key: &str) -> Result<(), Failure> {
+fn optional_boolean(element: &OwnedCf, key: &str) -> Result<Option<bool>, Failure> {
     match attribute(element.0, key) {
         Ok(value) => unsafe {
-            if CFGetTypeID(value.0) != CFBooleanGetTypeID()
-                || CFEqual(value.0, kCFBooleanTrue.cast()) == 0
-            {
+            if CFGetTypeID(value.0) != CFBooleanGetTypeID() {
                 return Err(Failure::Disabled);
             }
-            Ok(())
+            Ok(Some(CFEqual(value.0, kCFBooleanTrue.cast()) != 0))
         },
-        Err(status) if missing(status) => Ok(()),
+        Err(status) if missing(status) => Ok(None),
         Err(_) => Err(Failure::Disabled),
     }
 }
 
-fn paste_role(role: Option<&str>) -> bool {
+fn optional_enabled(element: &OwnedCf, key: &str) -> Result<(), Failure> {
+    if optional_boolean(element, key)? == Some(false) {
+        return Err(Failure::Disabled);
+    }
+    Ok(())
+}
+
+fn paste_role(role: Option<&str>, editable: Option<bool>) -> bool {
     // Some canvas/Java/Electron editors expose a container instead of a text
     // field. Known buttons, links, tables and static text are not input targets.
     matches!(
@@ -70,7 +75,7 @@ fn paste_role(role: Option<&str>) -> bool {
                 | "AXScrollArea"
                 | "AXLayoutArea"
         )
-    )
+    ) || (role == Some("AXCell") && editable == Some(true))
 }
 
 fn check_element(element: &OwnedCf) -> Result<Option<String>, Failure> {
@@ -81,11 +86,17 @@ fn check_element(element: &OwnedCf) -> Result<Option<String>, Failure> {
     {
         return Err(Failure::Sensitive);
     }
-    if !paste_role(role.as_deref()) {
+    // Cells include both editable spreadsheet controls and static table data.
+    // Only an explicit boolean declaration admits the former; absent metadata
+    // must never turn an arbitrary selected cell into a paste target.
+    let editable = optional_boolean(element, "AXEditable")?;
+    if !paste_role(role.as_deref(), editable) {
         return Err(Failure::Role);
     }
     optional_enabled(element, "AXEnabled")?;
-    optional_enabled(element, "AXEditable")?;
+    if editable == Some(false) {
+        return Err(Failure::Disabled);
+    }
     Ok(role)
 }
 
@@ -308,7 +319,7 @@ mod tests {
             Some("AXWebArea"),
             Some("AXScrollArea"),
         ] {
-            assert!(paste_role(role));
+            assert!(paste_role(role, None));
         }
         for role in [
             "AXButton",
@@ -317,7 +328,20 @@ mod tests {
             "AXTable",
             "AXSecureTextField",
         ] {
-            assert!(!paste_role(Some(role)));
+            for editable in [None, Some(false), Some(true)] {
+                assert!(!paste_role(Some(role), editable));
+            }
         }
+    }
+
+    #[test]
+    fn cells_require_an_explicit_editable_declaration() {
+        assert!(paste_role(Some("AXCell"), Some(true)));
+        assert!(!paste_role(Some("AXCell"), Some(false)));
+        assert!(!paste_role(Some("AXCell"), None));
+        // An editable flag does not admit unknown roles or table containers.
+        assert!(!paste_role(Some("CustomRole"), Some(true)));
+        assert!(!paste_role(Some("AXRow"), Some(true)));
+        assert!(!paste_role(Some("AXTable"), Some(true)));
     }
 }

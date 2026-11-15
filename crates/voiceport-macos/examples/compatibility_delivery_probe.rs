@@ -6,7 +6,12 @@ fn main() {
     use objc2_foundation::{MainThreadMarker, NSDate, NSRunLoop};
     use voiceport_macos::delivery::Delivery;
     let args: Vec<_> = std::env::args().skip(1).collect();
-    assert_eq!(args.len(), 2, "PID FIXTURE_RECEIPT");
+    assert!(
+        matches!(args.len(), 2 | 3),
+        "PID FIXTURE_RECEIPT [--final-only]"
+    );
+    let final_only = args.get(2).is_some_and(|arg| arg == "--final-only");
+    assert!(args.len() == 2 || final_only, "unknown probe option");
     let pid: u32 = args[0].parse().unwrap();
     let receipt: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&args[1]).unwrap()).unwrap();
@@ -15,6 +20,17 @@ fn main() {
     let mtm = MainThreadMarker::new().unwrap();
     let _app = NSApplication::sharedApplication(mtm);
     let mut report = Delivery::diagnose_input();
+    if final_only {
+        // WebKit can initialize AX after its DOM is ready. Only warm the
+        // dedicated receiver's metadata; capture still enforces the target.
+        for _ in 0..40 {
+            if report["AXRole"].is_string() || report["pid"] != pid {
+                break;
+            }
+            NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.05));
+            report = Delivery::diagnose_input();
+        }
+    }
     if report["bundle"] != "io.github.forwaryan.voiceport.compatibility-fixture"
         || report["pid"] != pid
     {
@@ -31,11 +47,13 @@ fn main() {
         Ok(()) => {
             report["begin"] = "ok".into();
             report["method"] = delivery.method().into();
-            report["preview"] = delivery.preview("过时预览").into();
-            report["stop"] = delivery.finish_preview().into();
-            let before: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&args[1]).unwrap()).unwrap();
-            assert_eq!(before["text"], "左|右", "preview/stop must not write");
+            if !final_only {
+                report["preview"] = delivery.preview("过时预览").into();
+                report["stop"] = delivery.finish_preview().into();
+                let before: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&args[1]).unwrap()).unwrap();
+                assert_eq!(before["text"], "左|右", "preview/stop must not write");
+            }
             report["final"] = delivery.deliver("通用输入🙂\n第二行", true).into();
             for _ in 0..40 {
                 NSRunLoop::currentRunLoop()
@@ -60,10 +78,10 @@ fn main() {
                     break;
                 }
             }
-            report["failureStage"] = delivery.failure_stage().into();
         }
         Err(error) => report["begin"] = error.into(),
     }
+    report["failureStage"] = delivery.failure_stage().into();
     println!("{report}");
     if report["received"] != true {
         std::process::exit(1);

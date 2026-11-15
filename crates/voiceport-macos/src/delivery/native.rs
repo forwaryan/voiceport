@@ -258,13 +258,15 @@ pub(super) fn diagnose_input() -> serde_json::Value {
             Err(status) => result[format!("{name}Error")] = status.into(),
         }
     }
-    match attribute(element.0, "AXEnabled") {
-        Ok(value) => {
-            result["AXEnabledIsBoolean"] =
-                (unsafe { CFGetTypeID(value.0) == CFBooleanGetTypeID() }).into();
-            result["AXEnabled"] = (unsafe { CFEqual(value.0, kCFBooleanTrue.cast()) != 0 }).into();
+    for name in ["AXEnabled", "AXEditable"] {
+        match attribute(element.0, name) {
+            Ok(value) => {
+                result[format!("{name}IsBoolean")] =
+                    (unsafe { CFGetTypeID(value.0) == CFBooleanGetTypeID() }).into();
+                result[name] = (unsafe { CFEqual(value.0, kCFBooleanTrue.cast()) != 0 }).into();
+            }
+            Err(status) => result[format!("{name}Error")] = status.into(),
         }
-        Err(status) => result["AXEnabledError"] = status.into(),
     }
     for name in ["AXSelectedTextRange", "AXSelectedText", "AXValue"] {
         result[format!("{name}Settable")] = match settable(element.0, name) {
@@ -272,6 +274,10 @@ pub(super) fn diagnose_input() -> serde_json::Value {
             Err(failure) => failure.message().into(),
         };
     }
+    result["webContent"] = match web_content(&element) {
+        Ok(value) => value.into(),
+        Err(failure) => failure.message().into(),
+    };
     result
 }
 
@@ -414,13 +420,36 @@ impl Preparation for FocusPreparation {
     }
 }
 
-fn keyboard_pacing(bundle: &str, role: &str, terminal: bool) -> Option<KeyboardPacing> {
+fn web_content(element: &OwnedCf) -> Result<bool, Failure> {
+    // Read metadata only. WebKit can advertise AX text setters that acknowledge
+    // the request without editing the DOM. Pick keyboard delivery before writes.
+    let mut parent: Option<OwnedCf> = None;
+    for _ in 0..16 {
+        let current = parent.as_ref().unwrap_or(element);
+        let role = attribute(current.0, "AXRole")
+            .map_err(|_| Failure::Role)?
+            .string(100)
+            .ok_or(Failure::Role)?;
+        if role == "AXWebArea" {
+            return Ok(true);
+        }
+        parent = match attribute(current.0, "AXParent") {
+            Ok(value) if unsafe { CFGetTypeID(value.0) == AXUIElementGetTypeID() } => Some(value),
+            Err(AX_UNSUPPORTED | AX_NO_VALUE) => return Ok(false),
+            _ => return Err(Failure::Focus),
+        };
+    }
+    Ok(false)
+}
+
+fn keyboard_pacing(bundle: &str, role: &str, terminal: bool, web: bool) -> Option<KeyboardPacing> {
     if terminal {
         return None;
     }
     match (bundle, role) {
         (CODEX, _) => Some(KeyboardPacing::Chunked),
         (ORCA, "AXTextArea") => Some(KeyboardPacing::Scalar),
+        (_, "AXTextField" | "AXTextArea" | "AXComboBox") if web => Some(KeyboardPacing::Chunked),
         _ => None,
     }
 }
@@ -537,7 +566,11 @@ fn captured_target(
             .ok()
             .and_then(|v| v.string(100))
             .ok_or(Failure::Role)?;
-        match keyboard_pacing(&target.bundle, &role, false) {
+        let pacing = match keyboard_pacing(&target.bundle, &role, false, false) {
+            Some(pacing) => Some(pacing),
+            None => keyboard_pacing(&target.bundle, &role, false, web_content(&target.element)?),
+        };
+        match pacing {
             Some(pacing) => Ok(Captured::Keyboard(
                 Box::new(KeyboardTarget {
                     inner: target,
@@ -1094,20 +1127,46 @@ mod tests {
     #[test]
     fn keyboard_compatibility_keeps_codex_and_orca_terminal_routes_separate() {
         assert_eq!(
-            keyboard_pacing(CODEX, "AXTextArea", false),
+            keyboard_pacing(CODEX, "AXTextArea", false, false),
             Some(KeyboardPacing::Chunked)
         );
         assert_eq!(
-            keyboard_pacing(ORCA, "AXTextArea", false),
+            keyboard_pacing(ORCA, "AXTextArea", false, false),
             Some(KeyboardPacing::Scalar)
         );
-        assert_eq!(keyboard_pacing(ORCA, "AXTextArea", true), None);
-        assert_eq!(keyboard_pacing(ORCA, "AXTextField", false), None);
+        assert_eq!(keyboard_pacing(ORCA, "AXTextArea", true, false), None);
+        assert_eq!(keyboard_pacing(ORCA, "AXTextField", false, false), None);
         assert_eq!(
-            keyboard_pacing("com.tencent.xinWeChat", "AXTextArea", false),
+            keyboard_pacing("com.tencent.xinWeChat", "AXTextArea", false, false),
             None
         );
-        assert_eq!(keyboard_pacing("test.editor", "AXTextArea", false), None);
+        assert_eq!(
+            keyboard_pacing("test.editor", "AXTextArea", false, false),
+            None
+        );
+    }
+
+    #[test]
+    fn readable_web_fields_use_acknowledged_keys_without_overriding_other_routes() {
+        for role in ["AXTextArea", "AXTextField", "AXComboBox"] {
+            assert_eq!(
+                keyboard_pacing("test.browser", role, false, true),
+                Some(KeyboardPacing::Chunked)
+            );
+            assert_eq!(keyboard_pacing("test.browser", role, false, false), None);
+        }
+        for role in ["AXButton", "AXCell", "AXSecureTextField", "AXWebArea"] {
+            assert_eq!(keyboard_pacing("test.browser", role, false, true), None);
+        }
+        assert_eq!(keyboard_pacing(ORCA, "AXTextArea", true, true), None);
+        assert_eq!(
+            keyboard_pacing(ORCA, "AXTextArea", false, true),
+            Some(KeyboardPacing::Scalar)
+        );
+        assert_eq!(
+            keyboard_pacing(CODEX, "AXTextArea", false, true),
+            Some(KeyboardPacing::Chunked)
+        );
     }
 
     #[test]

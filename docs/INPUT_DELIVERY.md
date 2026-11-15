@@ -7,12 +7,15 @@
 | 目标能力 | 使用的路径 | 写入确认 |
 | --- | --- | --- |
 | 标准 AX 文字/选区读写 | 现有范围编辑，支持本次预览和最终校正 | 读取原字段确认 |
-| Codex、Orca 编辑区 | 现有分段 Unicode 键盘输入 | 每段读回确认 |
+| 可读文字/选区且位于 `AXWebArea` 内的网页输入控件 | 最终文字分段 Unicode 键盘输入 | 每段读回确认 |
+| Codex、Orca 编辑区 | 现有分段 Unicode 键盘输入，保留各自节奏 | 每段读回确认 |
 | Orca Terminal input | 现有稳定前缀追加 | 原终端目标与输入活动检查，不回车 |
 | 微信缺少焦点字段的主窗口 | 现有原生菜单粘贴 | 仅确认原生粘贴请求 |
 | 已确认缺少标准 AX 文字能力的其他编辑区 | 最终文字一次性剪贴板 + Command+V | 仅确认事件提交；应用接收须独立实测 |
 
-兼容路径不要求读取正文或光标范围，支持暴露为容器的自定义编辑区以及没有焦点字段接口但能绑定原窗口的应用。先检查已有能力，在任何文字修改前固定路径；一旦有写入或无法确认的副作用，不换路径自动重投。
+兼容路径不要求读取正文或光标范围，支持暴露为容器的自定义编辑区以及没有焦点字段接口但能绑定原窗口的应用。表格单元格 `AXCell` 必须明确返回布尔 `AXEditable=true` 才能进入该路径；缺少、错误类型或只读声明都不放行，也不扩大到整张表、按钮或任意未知角色。
+
+WebKit 网页可能声明 AX 文字接口可写，却不把 `AXSelectedText` 更新应用到网页。对于可读文字/选区的标准输入控件，沿最多 16 层 AX 父元素元数据识别 `AXWebArea`，在首次写入前选定带读回的键盘路径；实时预览留在面板，最终文字才进入原光标。Codex、Orca 编辑器及 Orca 终端保持各自专用路径。先检查已有能力，在任何文字修改前固定路径；一旦有写入或无法确认的副作用，不换路径自动重投。
 
 ## 目标与剪贴板
 
@@ -30,14 +33,20 @@
 
 共享最终粘贴状态机的回归覆盖预览不写入、仅提交一次、Unicode/控制字符处理、焦点/权限/安全输入/剪贴板变更、取消和未知失败不重放。新增回归覆盖直接及异步准备后的通用路径选择。
 
-`compatibility_fixture` 是只接受键盘和粘贴、不提供 AX 文字编辑接口的专用合成目标。`compatibility_delivery_probe` 仅在该目标 bundle、PID 和初始合成回执均匹配时调用生产 Delivery；通过目标自身的接收回执核对文字，事件提交不单独算成功。探针不录音、不上传、不向真实用户输入框写入。
+`compatibility_fixture` 是只接受键盘和粘贴、不提供 AX 文字编辑接口的专用合成目标，支持 `custom`、`editable-cell`、`readonly-cell`、`button`、`secure` 五种模式。`compatibility_delivery_probe` 仅在该目标 bundle、PID 和初始合成回执均匹配时调用生产 Delivery；通过目标自身的接收回执核对文字，事件提交不单独算成功。探针不录音、不上传、不向真实用户输入框写入。
+
+`scripts/input_editor_fixture.swift` 使用标准 `NSTextView` 和仅加载本地 HTML 的 `WKWebView`，分别提供 `standard`、`web-textarea`、`web-contenteditable` 模式。用 `xcrun swiftc` 构建后，只在专用测试 App 包中启动（bundle ID 为 `io.github.forwaryan.voiceport.compatibility-fixture`），传入模式和不存在的绝对回执路径；等待回执的 PID、初始「左|右」及 `ready=true` 匹配，再运行 `compatibility_delivery_probe PID RECEIPT --final-only`。该选项只跳过兼容路径的预览断言，目标保护及最终文字接收判据保持不变。网页就绪还要求原生键盘焦点和 `document.hasFocus()`；接收器会在 45 秒后退出。
 
 2026-11-15 验证记录：
 
 - 初版物理按键在当前布局的专用控件中通过：目标暴露 `AXGroup`，`AXSelectedTextRange`、`AXSelectedText`、`AXValue` 均不可写；生产路径选择 `clipboard_final`。预览与 Stop 不写入，最终回执精确为「左通用输入🙂 第二行右」，没有回车，等待队列清空。
 - 随后的 Unicode 字符覆盖方案实际收到普通 `v`，因此废弃；事件构造的静态检查通过不能代替目标接收。
-- 当前实现已去掉该覆盖，改为解析真实键盘布局。OS 主线程只读回归确认美式、Dvorak、Dvorak-QWERTY Command 分别映射到物理键 9、47、9，未切换输入源。当前源码通过 workspace 全目标测试、格式、严格 Clippy、release 构建与 App 打包检查。
-- 当前实现的接收复验遇到 macOS 锁屏：前台为登录窗口，探针在捕获、复制和投递前退出，专用控件初始文字未变。最终接收验证待解锁后完成，候选尚未替换安装 App。
+- 去掉 Unicode 覆盖、改为解析真实键盘布局后，OS 主线程只读回归确认美式、Dvorak、Dvorak-QWERTY Command 分别映射到物理键 9、47、9，未切换输入源。该阶段通过 workspace 全目标测试、格式、严格 Clippy、release 构建与 App 打包检查。
+- 当时的接收复验遇到 macOS 锁屏：前台为登录窗口，探针在捕获、复制和投递前退出，专用控件初始文字未变。随后在解锁后的新专用目标复验，布局解析版 `AXGroup` 路径真实收到「左通用输入🙂 第二行右」，预览与 Stop 不写入，队列清空。
+- 新增单元格反例：原实现拒绝明确 `AXEditable=true` 的 `AXCell`；修复后该目标通过 `clipboard_final` 收到相同精确文字。只读单元格、即使声明可编辑的按钮以及密码字段均被拒绝，目标保持「左|右」。
+- 标准 `NSTextView` 通过 `accessibility` 路径，将所选竖线替换为最终文字，前后文字及 UTF-16 插入位置准确。
+- 专用 WebKit `textarea` 原先声明三项 AX 接口可写，但替换后网页未变，生产读回检查超时停止；AX 初始化就绪和原生焦点复核排除了这两种测试前置问题。改为首次写入前识别网页并选择 `keyboard_final` 后，`textarea` 和 `contenteditable` 均真实收到「左通用输入🙂 第二行右」，逐段读回通过且队列清空。
+- 本轮终端覆盖为既有专用路由和稳定前缀、用户输入、取消及未知失败不重放等回归；未新增真实终端接收验收。上述全局输入修复尚未替换安装 App，安装 App 的实际辅助功能权限需单独确认。
 
 以上测试进程均已退出；未录音、上传或写入真实用户字段。开发探针的实际授权和接收证明不代表安装 App 的权限连续性或真人语音端到端已验。
 
