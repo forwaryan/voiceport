@@ -1,5 +1,6 @@
 mod commands;
 mod host;
+mod qq;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::process::ExitCode;

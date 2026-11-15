@@ -11,6 +11,14 @@
 - `skills list`: bundled guides and installed version: `core`, `cli`, `workflows`, `plugins`, `plugin-examples`, `plugin-protocol`, `plugin-template`.
 - `skills get [GUIDE]`: embedded content matching this binary; default `core`. `plugins` is the new-service onboarding Skill, `plugin-examples` covers compatible/local APIs and JSONL conversion, `plugin-protocol` is the manifest/execution contract, and `plugin-template` is the example Python adapter source (plain text; retrieval never executes it).
 
+## QQ installation diagnostics (macOS)
+
+`voiceport --json qq doctor [--qq /absolute/path/QQ.app]` runs the version-matched embedded, read-only installation checker without a running App, a checkout, a socket or network access. It requires an installed, usable `/usr/bin/python3`; the checker uses isolated Python mode and only the standard library. Omitting `--qq` checks `/Applications/QQ.app` and `~/Applications/QQ.app`; multiple installations require an explicit absolute path. `--socket` is rejected for this offline command.
+
+The report checks the QQ bundle identity, official Tencent signature/team, sandbox entitlement and sealed entry resources. `checks` explains each inspection and `blockers` gives fixed reasons and recovery guidance. Exit 0 means the diagnostic report was produced, including when QQ is absent or unsupported; inspect `data.blockers`. It always reports `connection_status:"not_tested"`, `transcription_verified:false` and `automatic_setup_supported:false`. An installation check does not prove QQ can transcribe, and ordinary QQ does not automatically expose a VoicePort bridge. The checker never launches or modifies QQ, logs in, reads account/chat/Keychain data, connects to the bridge or uploads audio.
+
+Missing Python, failed helper execution, invalid output and the 45-second outer deadline return fixed `diagnostic_unavailable`, `diagnostic_failed` or `diagnostic_timeout` errors without raw helper output. Other platforms return `unsupported`; their real QQ connection is unverified. This command does not install a bridge or offer an automatic connection route.
+
 ## App commands (macOS)
 
 - `status` or `app status`: state, busy, pending/warning, discovering, selected source, language, version, bundle path, PID, socket and permission metadata. While stopping, `pending:true` and `warning:"cancellation_pending"` do not claim cleanup has completed. No permission prompt, auth read, transcript, target content or audio. `data.input` adds the GUI automatic-input preference, a content-free failure stage, and the last explicit start route. Hotkey start metadata includes only captured/dispatch application PID and bundle ID plus a fixed outcome code, never field text. A start blocked before recording reports failed rather than leaving a previous ready state looking like a successful new recording.

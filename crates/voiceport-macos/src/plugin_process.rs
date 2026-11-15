@@ -649,7 +649,7 @@ fn execute_in(
                 if written != input.len() {
                     return Err("插件未接收完整请求。".into());
                 }
-                return parse(&output, config);
+                return parse(&output, config, &manifest.id);
             }
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -671,7 +671,11 @@ fn execute_in(
     }
     result.map_err(Failure::from)
 }
-fn parse(bytes: &[u8], config: &BTreeMap<String, String>) -> Result<String, String> {
+fn parse(
+    bytes: &[u8],
+    config: &BTreeMap<String, String>,
+    plugin_id: &str,
+) -> Result<String, String> {
     if !bytes.ends_with(b"\n") || bytes[..bytes.len().saturating_sub(1)].contains(&b'\n') {
         return Err("插件须返回恰好一行以换行结束的 final/error JSON。".into());
     }
@@ -704,7 +708,40 @@ fn parse(bytes: &[u8], config: &BTreeMap<String, String>) -> Result<String, Stri
                     .as_ref()
                     .is_some_and(|c| !c.is_empty() && c.len() <= 128) =>
         {
-            Err("插件报告转写失败；请检查服务或适配器配置。".into())
+            // Error codes are untrusted and may contain credentials. Only map
+            // exact known QQ codes to fixed text; never echo the raw value.
+            let message = match (plugin_id, result.code.as_deref()) {
+                ("qq.smartptt", Some("bridge_unavailable")) => {
+                    "QQ 转写桥接未运行或连接地址已失效。普通 QQ 不会自动提供桥接；请先检查桥接的安装和运行状态。"
+                }
+                ("qq.smartptt", Some("bridge_disconnected" | "qq_bridge_stopped")) => {
+                    "QQ 转写桥接连接已中断，本次转写未完成；请检查桥接状态后重新测试。"
+                }
+                ("qq.smartptt", Some("not_ready" | "qq_not_ready")) => {
+                    "QQ 转写服务尚未就绪；请在 QQ 中完成正常登录，并等待桥接就绪后重试。"
+                }
+                ("qq.smartptt", Some("unauthorized")) => {
+                    "QQ 桥接配对密钥不匹配或已失效；请重新配对此来源与当前桥接。"
+                }
+                ("qq.smartptt", Some("busy" | "qq_busy")) => {
+                    "QQ 转写桥接仍在处理上一项任务；请等待任务结束后重试。"
+                }
+                ("qq.smartptt", Some("qq_cleanup_failed")) => {
+                    "QQ 桥接未能完成上一项任务的清理；请检查桥接状态，并正常停止和重新启动桥接。"
+                }
+                ("qq.smartptt", Some("encoding_failed")) => {
+                    "QQ 本地音频编码失败；请检查桥接适配器和编码依赖是否完整。"
+                }
+                ("qq.smartptt", Some("timeout" | "qq_smartptt_timeout")) => {
+                    "QQ 转写等待超时；服务可能仍在处理，请确认桥接任务已结束后再重试。"
+                }
+                (
+                    "qq.smartptt",
+                    Some("qq_smartptt_error" | "qq_smartptt_call_failed" | "transcription_failed"),
+                ) => "QQ 未能完成转写；请检查 QQ 的正常登录、网络及桥接状态。",
+                _ => "插件报告转写失败；请检查服务或适配器配置。",
+            };
+            Err(message.into())
         }
         _ => Err("插件必须返回受支持的 final/error 事件。".into()),
     }

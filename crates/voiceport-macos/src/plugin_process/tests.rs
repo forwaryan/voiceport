@@ -132,6 +132,70 @@ fn errors_and_output_limits_do_not_leak_stderr() {
         assert!(!error.message.contains("synthetic-secret"));
     }
 }
+#[test]
+fn qq_errors_explain_recovery_without_exposing_raw_codes() {
+    let cases = [
+        ("bridge_unavailable", "未运行或连接地址已失效"),
+        ("bridge_disconnected", "连接已中断"),
+        ("qq_bridge_stopped", "连接已中断"),
+        ("not_ready", "尚未就绪"),
+        ("qq_not_ready", "尚未就绪"),
+        ("unauthorized", "配对密钥"),
+        ("busy", "上一项任务"),
+        ("qq_busy", "上一项任务"),
+        ("qq_cleanup_failed", "清理"),
+        ("encoding_failed", "编码依赖"),
+        ("timeout", "确认桥接任务已结束"),
+        ("qq_smartptt_timeout", "确认桥接任务已结束"),
+        ("qq_smartptt_error", "未能完成转写"),
+        ("qq_smartptt_call_failed", "未能完成转写"),
+        ("transcription_failed", "未能完成转写"),
+    ];
+    for (code, expected) in cases {
+        let bytes = format!("{{\"protocol_version\":1,\"event\":\"error\",\"code\":\"{code}\"}}\n");
+        let message = parse(bytes.as_bytes(), &BTreeMap::new(), "qq.smartptt").unwrap_err();
+        assert!(message.contains(expected), "{code}: {message}");
+        let other = parse(bytes.as_bytes(), &BTreeMap::new(), "example.synthetic").unwrap_err();
+        assert_eq!(other, "插件报告转写失败；请检查服务或适配器配置。");
+    }
+    for code in [
+        "synthetic-secret",
+        "bridge_unavailable:synthetic-secret",
+        "unauthorized=synthetic-secret",
+    ] {
+        let bytes = format!("{{\"protocol_version\":1,\"event\":\"error\",\"code\":\"{code}\"}}\n");
+        let message = parse(bytes.as_bytes(), &BTreeMap::new(), "qq.smartptt").unwrap_err();
+        assert_eq!(message, "插件报告转写失败；请检查服务或适配器配置。");
+        assert!(!message.contains("synthetic-secret"));
+    }
+}
+
+#[test]
+fn qq_missing_bridge_error_survives_real_owned_plugin_execution() {
+    let script = r#"import json,sys
+r=json.loads(sys.stdin.readline())
+assert r['plugin_id']=='qq.smartptt'
+sys.stderr.write('synthetic-private-stderr')
+print(json.dumps({'protocol_version':1,'event':'error','code':'bridge_unavailable'}))"#;
+    let mut plugin = manifest(script);
+    plugin.id = "qq.smartptt".into();
+    let custody = Custody::default();
+    let error = execute_owned(
+        &plugin,
+        &BTreeMap::new(),
+        &crate::plugin_runtime::sample(),
+        "zh",
+        &CancellationToken::new(),
+        Duration::from_secs(3),
+        &custody,
+    )
+    .unwrap_err();
+    assert!(error.message.contains("普通 QQ 不会自动提供桥接"));
+    assert!(!error.message.contains("synthetic-private"));
+    assert!(error.cleanup.is_none());
+    assert!(!custody.unresolved());
+}
+
 fn group_members(pgid: i32) -> Result<Vec<i32>, String> {
     if pgid <= 1 {
         return Err("expected an owned process group".into());

@@ -28,6 +28,12 @@ Secret values are accepted only through dedicated stdin options (`sources secret
 
 The original portable `host`, `demo`, `doctor`, and `transcribe AUDIO` contracts remain unchanged, including host's own JSONL protocol, auth-path precedence and Ctrl-C cancellation. Automation `--json`/`--socket` flags do not extend these legacy commands. File transcription remains the explicit ChatGPT operation; `transcribe --source` is not implemented. Windows can use the portable commands and offline Skill/help; App operations return unsupported.
 
+## QQ 安装诊断
+
+`voiceport --json qq doctor` 自动检查 `/Applications/QQ.app` 和 `~/Applications/QQ.app`；多份安装时使用 `qq doctor --qq /绝对路径/QQ.app` 指定。诊断器随 CLI 编译分发，无需源码目录、运行中的 VoicePort 或桥接 socket，依赖可用的 `/usr/bin/python3`。它只读安装元数据并用系统 codesign 验证官方签名、腾讯团队、沙盒及入口资源封存，不启动或修改 QQ，不登录、不读聊天/账户/Keychain、不上传音频。完整命令与错误码见 [CLI 指南](../skills/voiceport/references/cli.md#qq-installation-diagnostics-macos)。
+
+`status:"ok"`/退出 0 表示诊断报告已产生；安装问题在 `data.blockers` 中。`connection_status:"not_tested"`、`transcription_verified:false`、`automatic_setup_supported:false` 明确说明尚未测试真实连接。普通 QQ 不会自动提供 VoicePort 桥接，安装检查通过也不能作为转写联通证明。缺运行环境、失败或超时均返回固定可读错误，原始子进程输出不进入错误信息；其他平台返回 `unsupported`。
+
 ## IPC boundaries
 
 The shared `crates/voiceport-control/` crate holds protocol and transport only. Schema 1 uses a four-byte big-endian length and JSON, with a 262144-byte limit, one request per connection, five-second total transport deadline, at most four active connections and a four-request queue. Reads/writes recompute remaining deadline, so slow partial frames cannot extend it indefinitely. The listener runs separately from AppKit and never joins on the UI thread. Excess connections receive busy when possible; invalid version/frame/JSON never reaches Controller dispatch. Request deadlines are checked before main-thread dispatch and before starting a prepared recording/sample.
