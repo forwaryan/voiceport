@@ -51,8 +51,10 @@ impl Delivery {
     }
 
     /// Affects the next capture; existing native monitors keep their own copy.
-    pub(crate) fn set_stop_shortcut(&mut self, shortcut: Option<crate::shortcut::Shortcut>) {
-        self.stop_shortcut = shortcut.map(crate::shortcut::Shortcut::stop_chord);
+    /// Supply only a successfully registered chord, or None after unregistering.
+    #[doc(hidden)]
+    pub fn set_stop_shortcut(&mut self, shortcut: Option<model::StopShortcut>) {
+        self.stop_shortcut = shortcut;
     }
 
     fn on_main(&mut self) -> Result<(), Failure> {
