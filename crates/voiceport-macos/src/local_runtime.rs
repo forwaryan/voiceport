@@ -290,9 +290,76 @@ pub fn transcribe_file(
     session.finish(cancel, &mut partial)
 }
 
+/// Test actual runtime initialization and one decode using generated silence.
+/// No model output is retained and no microphone or recording file is opened.
+pub(crate) fn probe(
+    model: &Model,
+    language: &str,
+    cancel: &CancellationToken,
+) -> Result<(), String> {
+    check_cancel(cancel)?;
+    let native = Native::open(model, language)?;
+    check_cancel(cancel)?;
+    let silence = vec![0.0; RATE];
+    match model.kind {
+        ModelKind::Paraformer => {
+            native.feed(&silence)?;
+            native.status(unsafe { vp_local_finish(native.0.as_ptr()) })?;
+            native.decode_ready(cancel)?;
+            native.result()?;
+        }
+        ModelKind::Whisper => {
+            Native::json(unsafe {
+                vp_local_offline(native.0.as_ptr(), silence.as_ptr(), silence.len() as i32)
+            })?;
+        }
+    }
+    check_cancel(cancel)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancelled_probe_does_not_open_even_missing_model_files() {
+        let model = Model {
+            kind: ModelKind::Whisper,
+            directory: "/nonexistent-synthetic-model".into(),
+            runtime: "/nonexistent-synthetic-runtime".into(),
+            encoder: "/nonexistent-synthetic-encoder".into(),
+            decoder: "/nonexistent-synthetic-decoder".into(),
+            tokens: "/nonexistent-synthetic-tokens".into(),
+        };
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert_eq!(probe(&model, "", &cancel), Err("本地转写已取消。".into()));
+    }
+    #[test]
+    #[ignore = "explicit installed-model synthetic silence test; no microphone, auth or network"]
+    fn installed_models_decode_synthetic_probe() {
+        let root = std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
+            .join("Library/Application Support/orca/speech-models");
+        for id in [
+            crate::local_models::PARAFORMER,
+            crate::local_models::WHISPER,
+        ] {
+            // Keep an unavailable entry so missing runtime/model diagnostics are
+            // reported instead of a generic missing-catalog-row error.
+            let catalog = crate::local_models::Catalog::discover(
+                &root,
+                Path::new(crate::local_models::RUNTIME_DIRECTORY),
+                id,
+                std::env::consts::ARCH,
+            );
+            let crate::local_models::SessionSource::Local(model) = catalog.snapshot(id).unwrap()
+            else {
+                panic!("expected installed model");
+            };
+            let start = std::time::Instant::now();
+            probe(&model, "", &CancellationToken::new()).unwrap();
+            println!("synthetic silence {id}: {} ms", start.elapsed().as_millis());
+        }
+    }
     #[test]
     #[ignore = "explicit public model fixture inference, no microphone or auth"]
     fn installed_models_transcribe_public_fixture_through_production_path() {

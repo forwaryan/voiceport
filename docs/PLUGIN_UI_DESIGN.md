@@ -36,7 +36,7 @@
 | 判断是否可以连接服务 | 「启用」与「连接未检测」分别表达；本页不假装完成网络测试 |
 | 查看程序路径等技术信息 | 放在卡片「详情」及导入确认中，避免占满日常列表 |
 
-管理窗口在整个操作期间继续保持 App 的来源管理互斥。浏览、搜索、导入和保存不触发录音、凭据读取、转写程序或网络请求。样例测试仍使用已有听写页的明确确认入口；本轮不自动替换生产 App。
+管理窗口在整个操作期间继续保持 App 的来源管理互斥。浏览、搜索、导入和保存不触发录音、凭据读取、转写程序或网络请求。样例测试通过设置页的独立「测试各来源连通性与耗时…」窗口进行；管理窗口内不执行测试。测试窗口预先说明合成样例、可能的服务用量和耗时范围，点击逐行「测试」或「测试全部来源」才执行，不弹出重复确认。
 
 ## 紧凑窗口与所有权（2026-11-09）
 
@@ -46,7 +46,7 @@
 
 Delegate 明确保留 manager，manager 保留其 window/目标对象与 editor，editor 保留 library；管理窗口关闭时清除 Delegate 的 manager 与 managing_sources，编辑器结束后清除 library 的 editor，断开所有权环。整个可见管理会话继续阻止录音、控制器来源变更、CLI 来源写入等互斥操作；返回 manage() 不再释放 admission。重复入口聚焦同一窗口。同步来源写入期间另持有 write admission，防止钥匙串交互引起的重入保存/删除；退出请求先 fence 后续回调并等待当前写入返回，再由主循环显式取消草稿、结束 sheet、关闭窗口并等待控制器停机。
 
-管理、编辑、添加分流、AI/Skill 帮助、插件详情、NSOpenPanel、导入和删除确认均不使用 runModal / modal session，也不设置 floating level。每次 sheet 绑定 presentation token，旧/重复 completion 不能释放后来 sheet 的 admission；shutdown 先进入 closed 状态再结束 sheet，阻止迟到回调继续写配置。小型确认使用异步 parent sheet；打开下一步发生在前一 sheet 的 completion 后，不嵌套 App-wide 模态循环。既有听写页的独立「发送内置样例」确认仍为小型同步 alert，不属于管理路径，不能从管理窗口触发。
+管理、编辑、添加分流、AI/Skill 帮助、插件详情、NSOpenPanel、导入和删除确认均不使用 runModal / modal session，也不设置 floating level。每次 sheet 绑定 presentation token，旧/重复 completion 不能释放后来 sheet 的 admission；shutdown 先进入 closed 状态再结束 sheet，阻止迟到回调继续写配置。小型确认使用异步 parent sheet；打开下一步发生在前一 sheet 的 completion 后，不嵌套 App-wide 模态循环。来源测试窗口同样不使用 App-wide 模态循环；状态按来源 ID 更新，不在 100ms 定时刷新时重建列表或改变滚动位置。队列与结果由 Controller 持有，关闭窗口只发取消，后台未释放前仍阻止新任务，重开可继续查看状态。
 
 以上为实现与开发自检范围。普通 window/sheet 的跨 App 层级、close/cancel/reopen、真实键盘遍历、深浅色及缩小屏幕表现仍需新预览 App 的实际观察；未获得专属打包/启动时段前不启动预览，不重试既有 AX 拒绝。
 

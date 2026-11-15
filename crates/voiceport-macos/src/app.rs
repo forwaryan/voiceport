@@ -18,6 +18,7 @@ mod picker;
 mod quick_panel;
 mod shortcut_editor;
 mod source_manager;
+mod source_probes;
 
 const COPY_SUCCESS: &str = "文字已复制。";
 const COPY_FAILURE: &str = "复制失败，请选中文字手动复制。";
@@ -178,6 +179,7 @@ struct Ivars {
     test_source: OnceCell<Retained<NSButton>>,
     managing_sources: Cell<bool>,
     source_manager: RefCell<Option<Retained<source_manager::Manager>>>,
+    source_probe_panel: RefCell<Option<Retained<source_probes::Panel>>>,
     shortcut: OnceCell<Retained<NSPopUpButton>>,
     shortcut_feedback: OnceCell<Retained<NSTextField>>,
     shortcut_notice: RefCell<Option<String>>,
@@ -226,12 +228,14 @@ define_class!(
             self.ivars().quitting.set(true);
             let manager = self.ivars().source_manager.borrow().clone();
             if let Some(manager) = manager { manager.close_for_shutdown(); }
+            let probes = self.ivars().source_probe_panel.borrow().clone();
+            if let Some(probes) = probes { probes.close(); }
             // Idle shutdown can finish synchronously. Reentrant termination
             // must wait until the controller borrow and any worker lease end.
             if let Ok(mut slot) = self.ivars().controller.try_borrow_mut() {
                 if let Some(c) = slot.as_mut() {
                     if !self.ivars().shutdown_started.replace(true) { c.cancel(); }
-                    if c.state.phase == Phase::Stopping { return NSApplicationTerminateReply::TerminateLater; }
+                    if c.busy() { return NSApplicationTerminateReply::TerminateLater; }
                 }
                 if self.settings_locked() { return NSApplicationTerminateReply::TerminateLater; }
                 self.ivars().control.borrow_mut().server.take();
@@ -353,11 +357,10 @@ define_class!(
         }
         #[unsafe(method(testSource:))]
         fn test_source_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().permission_rx.borrow().is_none() && !self.settings_locked() {
-                self.ivars().managing_sources.set(true);
-                if source_manager::confirm_test(self) {self.with_controller(|c|c.test_source());}
-                self.ivars().managing_sources.set(false);
-            } self.refresh();
+            if !self.ivars().quitting.get() && self.ivars().permission_rx.borrow().is_none() && !self.settings_locked() {
+                source_probes::show(self);
+            }
+            self.refresh();
         }
         #[unsafe(method(refreshModels:))]
         fn refresh_models_action(&self, _sender: Option<&AnyObject>) {
@@ -400,12 +403,14 @@ define_class!(
                 NSApplication::sharedApplication(self.mtm()).terminate(None);
             }
             self.refresh();
+            let probes = self.ivars().source_probe_panel.borrow().clone();
+            if let Some(probes) = probes { probes.refresh(); }
             if self.ivars().quitting.get() {
                 if self.ivars().editing_shortcut.get() { NSApplication::sharedApplication(self.mtm()).abortModal(); }
                 let manager = self.ivars().source_manager.borrow().clone();
                 if let Some(manager) = manager { manager.close_for_shutdown(); }
                 let stopped = self.ivars().shutdown_started.get()
-                    && self.ivars().controller.try_borrow().is_ok_and(|slot| slot.as_ref().is_none_or(|c| c.state.phase != Phase::Stopping));
+                    && self.ivars().controller.try_borrow().is_ok_and(|slot| slot.as_ref().is_none_or(|c| !c.busy()));
                 if stopped && !self.settings_locked() && self.ivars().cli_quit_at.get().is_none() {
                     self.ivars().control.borrow_mut().server.take();
                     NSApplication::sharedApplication(self.mtm()).replyToApplicationShouldTerminate(true);
@@ -896,7 +901,7 @@ impl Delegate {
         ));
         let _ = self.ivars().test_source.set(self.button(
             page,
-            "测试转写（使用内置样例）",
+            "测试各来源连通性与耗时…",
             sel!(testSource:),
             90.,
             0.,
@@ -1042,6 +1047,7 @@ impl Delegate {
             Phase::Transcribing => (StatusAppearance::Working, "正在转写"),
             Phase::Delivering => (StatusAppearance::Working, "正在输入文字"),
             Phase::Stopping => (StatusAppearance::Working, "正在停止"),
+            _ if c.source_tests.busy() => (StatusAppearance::Working, "正在测试来源"),
             _ if preparing_permissions => (StatusAppearance::Working, "正在准备权限"),
             _ if returning_to_input => (StatusAppearance::Working, "正在返回输入位置"),
             Phase::Ready if delivery_failure.is_some() => {
@@ -1086,7 +1092,7 @@ impl Delegate {
                 !preparing_permissions
                     && !returning_to_input
                     && !self.settings_locked()
-                    && (recording || c.state.can_start()),
+                    && (recording || !c.busy()),
             );
         }
         if let Some(button) = self.ivars().toggle.get() {
@@ -1095,7 +1101,7 @@ impl Delegate {
                 !preparing_permissions
                     && !returning_to_input
                     && !self.settings_locked()
-                    && (recording || c.state.can_start()),
+                    && (recording || !c.busy()),
             );
         }
         let idle =
@@ -1104,13 +1110,7 @@ impl Delegate {
             button.setEnabled(idle && !c.discovering());
         }
         if let Some(button) = self.ivars().test_source.get() {
-            button.setEnabled(
-                idle && !c.discovering()
-                    && matches!(
-                        c.catalog.snapshot(&c.source_id),
-                        Ok(crate::local_models::SessionSource::Plugin(_))
-                    ),
-            );
+            button.setEnabled((idle || c.source_tests.busy()) && !c.discovering());
         }
         if let Some(control) = self.ivars().source.get() {
             let rows: Vec<_> = c

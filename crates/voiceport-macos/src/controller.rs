@@ -169,6 +169,7 @@ pub struct Controller {
     pub language: String,
     pub source_id: String,
     pub catalog: Catalog,
+    pub source_tests: crate::source_tests::SourceTests,
     discovery: Option<Receiver<Catalog>>,
     recorded_source: SessionSource,
     partial: PartialSlot,
@@ -205,6 +206,7 @@ impl Controller {
             language: String::new(),
             source_id: CHATGPT.into(),
             catalog: Catalog::pending(CHATGPT),
+            source_tests: crate::source_tests::SourceTests::new(),
             discovery: None,
             recorded_source: SessionSource::ChatGpt,
             partial: Arc::new(Mutex::new(None)),
@@ -257,7 +259,27 @@ impl Controller {
         self.started.map(|s| s.elapsed().as_secs()).unwrap_or(0)
     }
     pub fn busy(&self) -> bool {
-        !self.state.can_start() || self.delivery.has_pending()
+        !self.state.can_start() || self.delivery.has_pending() || self.source_tests.busy()
+    }
+    /// Test concrete source IDs without changing preferences, transcript or lifecycle.
+    pub fn start_source_tests(&mut self, ids: &[String]) -> Result<(), String> {
+        if self.busy() || self.discovering() {
+            return Err("请等待当前任务完成后再测试来源。".into());
+        }
+        let entries = ids
+            .iter()
+            .map(|id| {
+                self.catalog
+                    .entries
+                    .iter()
+                    .find(|entry| &entry.id == id)
+                    .cloned()
+                    .ok_or_else(|| "来源列表已变化，请重新选择测试目标。".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.source_tests.start(entries, self.language.clone())?;
+        self.message = self.source_tests.summary();
+        Ok(())
     }
     pub(crate) fn input_failure_stage(&self) -> Option<&'static str> {
         self.delivery.failure_stage()
@@ -299,7 +321,7 @@ impl Controller {
         &mut self,
         target: Option<&crate::delivery::model::ApplicationTarget>,
     ) {
-        if !self.state.can_start() {
+        if self.busy() {
             return;
         }
         let source = match self
@@ -388,7 +410,8 @@ impl Controller {
         .into();
         Some((generation, use_speech))
     }
-    /// Explicit synthetic sample only; no recorder, permissions or delivery target.
+    /// Legacy selected-plugin fixture; GUI tests now use independent source IDs.
+    #[cfg(test)]
     pub fn test_source(&mut self) {
         if self.busy() || self.discovering() {
             return;
@@ -462,7 +485,7 @@ impl Controller {
         }
     }
     pub fn retry(&mut self) {
-        if self.recording.is_none() || self.state.retry().is_none() {
+        if self.source_tests.busy() || self.recording.is_none() || self.state.retry().is_none() {
             return;
         }
         self.delivery.clear();
@@ -657,6 +680,11 @@ impl Controller {
         }
     }
     pub fn cancel(&mut self) {
+        if self.source_tests.busy() {
+            self.source_tests.cancel();
+            self.message = self.source_tests.summary();
+            return;
+        }
         if self.cleanup.is_some() {
             // This existing, enabled native action is an explicit observation
             // request. Neither polling nor repeated Quit flags call it for us.
@@ -681,10 +709,16 @@ impl Controller {
         self.wait_for_delivery();
     }
     pub fn poll(&mut self) {
+        let was_testing = self.source_tests.busy();
+        self.source_tests.poll();
+        if was_testing {
+            self.message = self.source_tests.summary();
+        }
         self.poll_cleanup_observation();
         if let Some(discovery) = &self.discovery {
             match discovery.try_recv() {
                 Ok(catalog) => {
+                    self.source_tests.retain_catalog(&catalog.entries);
                     self.catalog = catalog;
                     self.discovery = None;
                 }
@@ -1472,6 +1506,120 @@ mod tests {
             credential_refs: std::collections::BTreeMap::new(),
         }
     }
+    #[test]
+    fn independent_source_probes_preserve_dictation_and_hold_admission_until_exit() {
+        use std::time::Duration;
+        let mut c = Controller::new();
+        let entry = crate::local_models::Entry {
+            id: "synthetic-local-probe".into(),
+            title: "Synthetic local probe".into(),
+            detail: "Never opens a model".into(),
+            source: Ok(local_source()),
+        };
+        c.catalog.entries.push(entry.clone());
+        c.source_id = CHATGPT.into();
+        c.language = "en".into();
+        c.automatic = false;
+        c.transcript = "existing dictation".into();
+        c.preview_status = "existing preview".into();
+        c.delivery_status = "existing delivery".into();
+        // A failed dictation can have a retained recording available to Retry.
+        let generation = c.state.begin().unwrap();
+        c.state.permissions(generation, true);
+        c.state.transcribe();
+        c.state.complete(generation, false, true);
+        let temp = tempfile::tempdir().unwrap();
+        let recording = Arc::new(
+            crate::storage::Storage::at(
+                temp.path()
+                    .canonicalize()
+                    .unwrap()
+                    .join(crate::storage::NAMESPACE),
+            )
+            .create_recording()
+            .unwrap(),
+        );
+        c.recording = Some(recording.clone());
+        let (started_tx, started) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let released = Mutex::new(released);
+        c.source_tests = crate::source_tests::SourceTests::with_executor(
+            Duration::from_secs(5),
+            move |source, language, cancel, _custody| {
+                started_tx
+                    .send((source, language.to_owned(), cancel.clone()))
+                    .unwrap();
+                released
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
+                Ok(())
+            },
+        );
+        c.start_source_tests(std::slice::from_ref(&entry.id))
+            .unwrap();
+        let (source, language, cancel) = started.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(source, local_source());
+        assert_eq!(language, "en");
+        assert!(c.busy());
+        assert!(
+            c.start_source_tests(std::slice::from_ref(&entry.id))
+                .is_err()
+        );
+        c.start();
+        c.retry();
+        assert_eq!(c.state.phase, Phase::Failed);
+        assert_eq!(c.state.generation(), generation);
+        assert!(c.state.retry_available);
+        assert!(c.active.is_none() && c.worker.is_none());
+        assert!(c.events.try_recv().is_err());
+        c.cancel();
+        c.poll();
+        assert!(cancel.is_cancelled());
+        assert!(
+            c.busy(),
+            "cancel must keep admission until the worker exits"
+        );
+        assert_eq!(c.source_id, CHATGPT);
+        assert_eq!(c.language, "en");
+        assert!(!c.automatic);
+        assert_eq!(c.transcript, "existing dictation");
+        assert_eq!(c.preview_status, "existing preview");
+        assert_eq!(c.delivery_status, "existing delivery");
+        assert!(Arc::ptr_eq(c.recording.as_ref().unwrap(), &recording));
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while c.busy() && Instant::now() < deadline {
+            c.poll();
+            std::thread::yield_now();
+        }
+        assert!(!c.busy());
+        assert_eq!(
+            c.source_tests.row(&entry).unwrap().status,
+            crate::source_tests::Status::Cancelled
+        );
+        assert_eq!(c.state.generation(), generation);
+        assert_eq!(c.state.phase, Phase::Failed);
+        assert!(c.state.retry_available);
+        assert_eq!(c.transcript, "existing dictation");
+        assert!(Arc::ptr_eq(c.recording.as_ref().unwrap(), &recording));
+    }
+
+    #[test]
+    fn independent_source_probe_selection_is_atomic_and_respects_dictation_admission() {
+        let mut c = Controller::new();
+        assert!(
+            c.start_source_tests(&[CHATGPT.into(), "missing-source".into()])
+                .is_err()
+        );
+        assert!(!c.source_tests.busy());
+        let generation = c.state.begin().unwrap();
+        assert!(c.start_source_tests(&[CHATGPT.into()]).is_err());
+        assert_eq!(c.state.generation(), generation);
+        assert!(!c.source_tests.busy());
+    }
+
     #[test]
     fn plugin_sample_has_no_mic_target_or_recording_and_cancel_waits_for_release() {
         let mut c = Controller::new();
