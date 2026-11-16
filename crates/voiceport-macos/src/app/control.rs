@@ -31,7 +31,79 @@ struct Operation {
     generation: u64,
     cancelled: bool,
     plugin: bool,
+    sample: bool,
     result: Option<Response>,
+}
+impl Operation {
+    fn retry_available(&self, c: &Controller) -> bool {
+        !self.cancelled
+            && !self.sample
+            && self.generation == c.state.generation()
+            && c.can_retry_recording()
+    }
+    fn settle(&mut self, c: &Controller) {
+        if self.result.is_some() || c.busy() {
+            return;
+        }
+        self.result = Some(if c.state.generation() != self.generation {
+            err("not_found", "Operation was superseded by another session.")
+        } else if self.cancelled && c.state.phase == Phase::Idle {
+            err(
+                "cancelled",
+                "Operation cancelled; Controller released its active job.",
+            )
+        } else if c.state.phase == Phase::Ready {
+            Response::ok(
+                json!({"operation":self.id,"state":"ready","text":c.transcript,"empty":c.transcript.is_empty(),"delivery":"none"}),
+            )
+        } else {
+            let mut response = err(
+                if self.plugin {
+                    "plugin_error"
+                } else {
+                    "transcription_error"
+                },
+                "Operation failed. No service response body or credentials are included.",
+            );
+            response.data = json!({"operation":self.id,"state":"failed","retry_available":self.retry_available(c),"delivery":"none"});
+            response
+        });
+    }
+    fn result(&self, c: &Controller) -> Response {
+        if let Some(mut response) = self.result.clone() {
+            // A cached error may survive a later GUI session; never advertise
+            // its new recording as retryable with this old operation ID.
+            if response.data.get("retry_available").is_some() {
+                response.data["retry_available"] = self.retry_available(c).into();
+            }
+            response
+        } else if self.generation != c.state.generation() {
+            missing()
+        } else {
+            Response::ok(
+                json!({"operation":self.id,"state":phase(c.state.phase),"busy":c.busy(),"pending":c.state.phase==Phase::Stopping,"warning":if c.state.phase==Phase::Stopping {Some("cancellation_pending")} else {None}}),
+            )
+        }
+    }
+    fn retry(&mut self, requested: &str, c: &mut Controller) -> Response {
+        if self.id != requested {
+            return missing();
+        }
+        if !self.retry_available(c) {
+            return err(
+                "invalid_state",
+                "Only the retained failed recording of this CLI operation can be retried.",
+            );
+        }
+        c.retry();
+        if self.generation == c.state.generation() {
+            return err("invalid_state", "Recording could not be retried.");
+        }
+        self.id = uuid::Uuid::new_v4().to_string();
+        self.generation = c.state.generation();
+        self.result = None;
+        Response::ok(json!({"operation":self.id,"state":phase(c.state.phase),"delivery":"none"}))
+    }
 }
 struct Completed {
     pending: Pending,
@@ -76,32 +148,9 @@ impl Delegate {
         // First settle an owned operation, before a later GUI session can expose a new transcript.
         let mut control = self.ivars().control.borrow_mut();
         if let Some(operation) = &mut control.operation
-            && operation.result.is_none()
             && let Some(c) = self.ivars().controller.borrow().as_ref()
-            && !c.busy()
         {
-            // A cleanup observation preserves the Controller's original failure.
-            operation.result = Some(if c.state.generation() != operation.generation {
-                err("not_found", "Operation was superseded by another session.")
-            } else if operation.cancelled && c.state.phase == Phase::Idle {
-                err(
-                    "cancelled",
-                    "Operation cancelled; Controller released its active job.",
-                )
-            } else if c.state.phase == Phase::Ready {
-                Response::ok(
-                    json!({"operation":operation.id,"state":"ready","text":c.transcript,"empty":c.transcript.is_empty(),"delivery":"none"}),
-                )
-            } else {
-                err(
-                    if operation.plugin {
-                        "plugin_error"
-                    } else {
-                        "transcription_error"
-                    },
-                    "Operation failed. No service response body or credentials are included.",
-                )
-            });
+            operation.settle(c);
         }
         if let Some(probe) = &mut control.probe
             && let Some(c) = self.ivars().controller.borrow().as_ref()
@@ -136,7 +185,7 @@ impl Delegate {
                             if sample { c.test_pinned(source, language); }
                             else { c.start_pinned(source, language, false); }
                             let id = uuid::Uuid::new_v4().to_string();
-                            control.operation = Some(Operation { id:id.clone(), generation:c.state.generation(), cancelled:false, plugin, result:None });
+                            control.operation = Some(Operation { id:id.clone(), generation:c.state.generation(), cancelled:false, plugin, sample, result:None });
                             reply = Response::ok(json!({"operation":id,"state":phase(c.state.phase),"delivery":"none"}));
                         });
                         reply
@@ -185,11 +234,7 @@ impl Delegate {
                 _ => missing(),
             },
             Action::Result { operation } => match &control.operation {
-                Some(op) if op.id == operation => op.result.clone().unwrap_or_else(|| {
-                    Response::ok(
-                        json!({"operation":op.id,"state":phase(c.state.phase),"busy":c.busy(),"pending":c.state.phase==Phase::Stopping,"warning":if c.state.phase==Phase::Stopping {Some("cancellation_pending")} else {None}}),
-                    )
-                }),
+                Some(op) if op.id == operation => op.result(c),
                 _ => missing(),
             },
             Action::Cancel { operation } => {
@@ -227,6 +272,10 @@ impl Delegate {
                 }
             }
             _ if locked || c.busy() || c.discovering() => busy(),
+            Action::DictationRetry { operation } => match &mut control.operation {
+                Some(op) => op.retry(&operation, c),
+                None => missing(),
+            },
             Action::SourcesSelect { id } => {
                 if !c.catalog.entries.iter().any(|e| e.id == id) {
                     missing()
@@ -240,8 +289,17 @@ impl Delegate {
                     Response::ok(json!({"source":c.source_id}))
                 }
             }
-            Action::SourcesProbe { source, language, accept_upload } => {
-                match super::control_probes::ProbeOperation::start(c, source, language, accept_upload) {
+            Action::SourcesProbe {
+                source,
+                language,
+                accept_upload,
+            } => {
+                match super::control_probes::ProbeOperation::start(
+                    c,
+                    source,
+                    language,
+                    accept_upload,
+                ) {
                     Ok(mut probe) => {
                         let response = probe.result(c);
                         control.probe = Some(probe);
@@ -590,4 +648,76 @@ fn manage(action: Action, catalog: Vec<Value>) -> Outcome {
         }
     })();
     Outcome::Reply(result.map(Response::ok).unwrap_or_else(|e| e), changed)
+}
+
+#[cfg(test)]
+mod operation_tests {
+    use super::*;
+    #[test]
+    fn retry_owns_only_the_matching_failed_recording_and_gets_a_new_id() {
+        crate::controller::tests::check_control_retry(|c, generation| {
+            let mut op = Operation {
+                id: "failed-cli".into(),
+                generation,
+                cancelled: false,
+                plugin: true,
+                sample: false,
+                result: None,
+            };
+            op.settle(c);
+            let failure = op.result(c);
+            assert_eq!(failure.error.unwrap().code, "plugin_error");
+            assert_eq!(failure.data["retry_available"], true);
+            assert!(
+                !serde_json::to_string(&failure.data)
+                    .unwrap()
+                    .contains("text")
+            );
+            assert_eq!(op.retry("other-id", c).error.unwrap().code, "not_found");
+            for reason in ["sample", "cancelled", "superseded"] {
+                op.sample = reason == "sample";
+                op.cancelled = reason == "cancelled";
+                op.generation = generation + u64::from(reason == "superseded");
+                assert_eq!(op.result(c).data["retry_available"], false);
+                assert_eq!(
+                    op.retry("failed-cli", c).error.unwrap().code,
+                    "invalid_state"
+                );
+                assert_eq!(c.state.generation(), generation);
+            }
+            op.sample = false;
+            op.cancelled = false;
+            op.generation = generation;
+            let response = op.retry("failed-cli", c);
+            assert!(response.error.is_none());
+            assert_ne!(response.data["operation"], "failed-cli");
+            assert_eq!(response.data["delivery"], "none");
+            assert!(op.result.is_none());
+            assert_eq!(op.generation, c.state.generation());
+            assert_eq!(op.retry("failed-cli", c).error.unwrap().code, "not_found");
+            let current = op.id.clone();
+            assert_eq!(op.retry(&current, c).error.unwrap().code, "invalid_state");
+        });
+    }
+    #[test]
+    fn superseded_uncached_operation_never_reports_the_gui_state_or_text() {
+        let mut c = Controller::new();
+        let mut op = Operation {
+            id: "old-cli".into(),
+            generation: c.state.generation(),
+            cancelled: false,
+            plugin: false,
+            sample: false,
+            result: None,
+        };
+        c.state.begin().unwrap();
+        c.transcript = "PRIVATE_GUI_TEXT".into();
+        let response = op.result(&c);
+        assert_eq!(response.error.unwrap().code, "not_found");
+        assert_eq!(
+            op.retry("old-cli", &mut c).error.unwrap().code,
+            "invalid_state"
+        );
+        assert!(!op.retry_available(&c));
+    }
 }

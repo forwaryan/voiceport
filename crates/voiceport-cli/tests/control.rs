@@ -102,6 +102,7 @@ fn contextual_help_is_offline_for_both_entrypoints() {
         for path in [
             vec!["sources", "--help"],
             vec!["help", "dictation"],
+            vec!["dictation", "retry", "--help"],
             vec!["qq", "doctor", "-h"],
             vec!["sources", "probe", "--help"],
             vec!["plugins", "import", "--help"],
@@ -153,6 +154,9 @@ fn probe_and_dictation_invalid_options_fail_before_ipc() {
             "--language",
             "zh",
         ],
+        vec!["dictation", "retry"],
+        vec!["dictation", "retry", ""],
+        vec!["dictation", "retry", "id", "--source", "other"],
         vec!["dictation", "start", "--language", "en"],
         vec![
             "dictation",
@@ -213,6 +217,7 @@ fn parsed_options_reach_only_the_explicit_synthetic_server() {
         ),
         (vec!["sources", "probe-result", "probe-id"], "result"),
         (vec!["sources", "probe-cancel", "probe-id"], "cancel"),
+        (vec!["dictation", "retry", "failed-id"], "retry"),
         (
             vec![
                 "dictation",
@@ -306,6 +311,9 @@ fn parsed_options_reach_only_the_explicit_synthetic_server() {
             (Action::SourcesProbeResult { operation }, "result")
             | (Action::SourcesProbeCancel { operation }, "cancel") => {
                 assert_eq!(operation, "probe-id")
+            }
+            (Action::DictationRetry { operation }, "retry") => {
+                assert_eq!(operation, "failed-id");
             }
             (Action::DictationStart { source, language }, "dictation") => {
                 assert_eq!(source, "chatgpt");

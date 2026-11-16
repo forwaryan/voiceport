@@ -7,22 +7,26 @@
 Build the locked workspace with `cargo build --workspace --release --locked`. The public executable is in Cargo's release target directory. The signed App package includes `Contents/MacOS/voiceport` alongside `Contents/MacOS/voiceport-app`, and the product Skill under `Contents/Resources/skills/voiceport/`. For an installed bundle use its exact path:
 
 ```sh
-"/Applications/VoicePort.app/Contents/MacOS/voiceport" --version
-"/Applications/VoicePort.app/Contents/MacOS/voiceport" --help
-"/Applications/VoicePort.app/Contents/MacOS/voiceport" skills get cli
+"$HOME/Applications/VoicePort.app/Contents/MacOS/voiceport" --version
+"$HOME/Applications/VoicePort.app/Contents/MacOS/voiceport" --help
+"$HOME/Applications/VoicePort.app/Contents/MacOS/voiceport" skills get cli
 ```
 
-This assumes the user installed that bundle at `/Applications/VoicePort.app`; packaging itself writes only the requested output path. Nothing writes `/usr/local/bin` or changes shell startup files. A user can add the chosen bundle's `Contents/MacOS` to their own PATH, or continue using the full executable path. App launch is explicit: open the intended bundle after checking its path/version. There is no implicit launch and no `app launch` subcommand.
+These examples use the README's default installation at `~/Applications/VoicePort.app`. If the user selected another bundle location, substitute its actual path; packaging itself writes only the requested output path. Nothing writes `/usr/local/bin` or changes shell startup files. A user can add the chosen bundle's `Contents/MacOS` to their own PATH, or continue using the full executable path. App launch is explicit: open the intended bundle after checking its path/version. There is no implicit launch and no `app launch` subcommand.
 
 ## Commands and automation
 
 The single versioned detailed command reference is [skills/voiceport/references/cli.md](../skills/voiceport/references/cli.md). It is compiled into both CLI entry points, together with [the core Skill](../skills/voiceport/SKILL.md) and [workflows](../skills/voiceport/references/workflows.md). `voiceport skills list` and `voiceport skills get [GUIDE]` work without an App or network and return the matching installed version; with `--json` the content is in `data.text`. Guides include `core`, `cli`, `workflows`, `plugins`, `plugin-examples`, `plugin-protocol`, and `plugin-template`. The last four expose the [plugin onboarding Skill](../skills/voiceport-plugins/SKILL.md), [three examples](../skills/voiceport-plugins/references/examples.md), the existing manifest/protocol document, and the example Python bridge source. Reading the template does not execute it.
 
-The command groups are `status` / `app status/show/quit`, `sources list/show/add/update/remove/select/secret/test/probe/probe-result/probe-cancel`, `plugins list/show/import`, and `dictation start/stop/cancel/result`. Source IDs are stable instance IDs, distinct from plugin IDs; one plugin may supply multiple independent instances. Selection persists in the same NSUserDefaults domain as GUI selection. Disabling/removing a selected source keeps that ID unavailable; it never falls back to ChatGPT.
+The command groups are `status` / `app status/show/quit`, `sources list/show/add/update/remove/select/secret/test/probe/probe-result/probe-cancel`, `plugins list/show/import`, and `dictation start/stop/retry/cancel/result`. Source IDs are stable instance IDs, distinct from plugin IDs; one plugin may supply multiple independent instances. Selection persists in the same NSUserDefaults domain as GUI selection. Disabling/removing a selected source keeps that ID unavailable; it never falls back to ChatGPT.
 
 For automation use `voiceport --json [--socket ABSOLUTE_PATH] COMMAND`. The versioned response is `{schema_version:1,status:"ok"|"error",data:...,error:null|{code,message}}`; stdout contains one result object and diagnostics use stderr. Status includes state/busy/source/language/version/bundle/PID/permissions and no transcript, credentials or target content. The exit codes are 0 success, 1 operational failure, 2 invalid arguments/request/config, 3 App missing, 4 busy, 5 explicit confirmation missing, 6 ID missing, 7 unsupported platform/operation, and 130 cancelled. An asynchronous submission succeeds when accepted; inspect the returned operation with `dictation result ID` for its final outcome. Parse `error.code`, not message text.
 
 `plugins import MANIFEST` shows the local program/argv/origin and returns confirmation_required without persistence until `--accept-program` is explicitly supplied. Import never executes code. `sources test ID` likewise requires `--accept-upload`; the accepted action sends built-in one-second silence and returns an operation ID, without microphone/target/automatic delivery. Empty text is a valid result, not recognition-quality proof. Only explicit `dictation start --source ID` records; it pins source/language and fixes automatic delivery to false without modifying the GUI's preferences or current target. Stop/cancel/result require the current CLI operation ID and cannot control an unrelated GUI generation. Busy operations reject mutations and graceful quit. Cancellation remains observable as stopping until the worker releases its resources. Local adapter cleanup has one bounded initial confirmation phase. If termination cannot be confirmed, the App retains the recording and blocks new operations and graceful quit. A further explicit `dictation cancel ID` requests one background observation without another signal or a renewed termination budget; status/result polling does not request recovery. Do not automate repeated cancellation or force an exit to clear this state. Once cleanup is confirmed, an original cancellation releases the recording; an original transcription error retains it for a later explicit retry.
+
+`dictation retry OPERATION` explicitly re-transcribes that retained failed CLI recording using the same pinned source/language and `delivery:"none"`. It requires the original matching ID and Controller generation, failed state with current `retry_available:true`, and no busy work or pending cleanup. GUI recordings, superseded generations and legacy synthetic `sources test` operations are ineligible. Acceptance returns a new operation ID; use it for result/cancel, as the old ID then returns `not_found`. Terminal dictation errors include data `{operation,state:"failed",retry_available:bool,delivery:"none"}`. Retry availability reflects current ownership/retention, so later GUI work can invalidate a previous report. Retrying may upload audio again: only explicit user consent authorizes it, and a lost reply must never trigger automatic resubmission.
+
+CLI recording uses existing microphone/Speech grants only and never invokes OS authorization requests. Microphone permission must already be granted; missing optional Speech permission only disables device-side preview. Inspect `status` for permissions without changing them.
 
 Secret values are accepted only through dedicated stdin options (`sources secret ID FIELD --stdin`, or `--secret-stdin FIELD` during add/update); stdin must be a pipe/file, with nonempty bounded input. Values never appear in argv, response, exported Store or diagnostics. The App stores independent Keychain references using the same validated transaction as GUI editing. Normal metadata commands do not read secrets; credential values are pinned only for an explicit operation. Runtime errors omit raw service bodies and adapter stderr.
 
@@ -30,7 +34,7 @@ The original portable `host`, `demo`, `doctor`, and `transcribe AUDIO` contracts
 
 ## 来源连通性与耗时测试
 
-`voiceport sources --help`、`voiceport dictation start --help` 或 `voiceport help sources` 可离线查看对应指南，JSON 模式仍通过 `data.text` 返回。
+`voiceport sources --help`、`voiceport dictation start --help`、`voiceport dictation retry --help` 或 `voiceport help sources` 可离线查看对应指南，JSON 模式仍通过 `data.text` 返回。
 
 新增 `sources probe` 复用 GUI 的独立测试引擎，覆盖 ChatGPT、本地模型和自定义来源，保留当前听写文字、录音及设置。先查看测试目标，再按明确授权提交一次：
 
@@ -44,6 +48,12 @@ voiceport --json sources probe-cancel OPERATION
 `OPERATION` 使用实际返回的 ID；隔离实例的每条命令均携带同一个 `--socket`。`sources probe --all --language en --accept-upload` 串行测试全部目录项，需已授权所有目的地；不可用项只记失败，不执行。报告返回逐来源固定状态码、样例执行耗时和完成时间，不返回样例识别文字或原始错误正文。退出 0 表示报告已读取，完成且全部通过须检查 `state:"completed"` 与 `all_passed:true`。静音测试不代表识别准确率。
 
 取消和清理未确认时仍保持 busy，不能启动新任务或正常退出；只读轮询不触发新的清理观察。再次显式取消只检查一次，不能自动反复调用。独立操作 ID 不接管 GUI 测试；旧 `sources test` 与 `dictation result/cancel` 的插件样例协议继续兼容。新操作需要同样包含这些命令的 App，旧 App 会返回 `invalid_request`，应显式启动匹配版本后再使用。
+
+## 已识别但未输入
+
+先用同一 `--socket` 读取 `status`，核对 `bundle_path`/PID、`permissions` 和 `input.automatic`、`input.method`、`input.failure_stage`、`input.start`；需要展示设置时用 `app show --settings`。这些诊断不读取转写文字、目标字段内容、凭据或音频，也不申请权限。CLI 听写始终为 `delivery:"none"`，成功取得结果不表示已输入目标 App。
+
+GUI 的来源 App 负责识别，目标 App 接收文字，两者独立。QQ/微信目标输入失败应排查投递状态，不当作新来源接入问题；`qq doctor` 也只检查安装。`wechat_menu_paste` 只表示受保护的原生菜单粘贴请求已发出，文字保留在剪贴板，不证明目标字段内容。不要为排查投递自动探测来源、重传音频、重试识别或重新录音。完整步骤见[排查流程](../skills/voiceport/references/workflows.md#recognized-text-not-delivered)。
 
 ## QQ 安装诊断
 
