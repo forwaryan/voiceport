@@ -364,12 +364,31 @@ impl Controller {
         language: String,
         automatic: bool,
     ) {
+        self.start_pinned_with_permissions(
+            source,
+            language,
+            automatic,
+            Recorder::permission_status,
+        );
+    }
+    fn start_pinned_with_permissions(
+        &mut self,
+        source: SessionSource,
+        language: String,
+        automatic: bool,
+        permissions: impl FnOnce() -> (&'static str, &'static str),
+    ) {
         if let Some((generation, use_speech)) = self.prepare_start(source, language, automatic) {
-            Recorder::request_permissions_for_source(
+            // CLI operations consume existing grants only. Speech is optional;
+            // an undecided grant must not open an authorization dialog.
+            let (microphone, speech) = permissions();
+            let _ = self.events_tx.send((
                 generation,
-                self.events_tx.clone(),
-                use_speech,
-            );
+                AudioEvent::Permissions {
+                    microphone: microphone == "authorized",
+                    speech: use_speech && speech == "authorized",
+                },
+            ));
         }
     }
     fn prepare_start(
@@ -494,8 +513,17 @@ impl Controller {
             }
         }
     }
+    pub(crate) fn can_retry_recording(&self) -> bool {
+        !self.busy()
+            && self.active.is_none()
+            && self.cleanup.is_none()
+            && !self.testing
+            && self.recording.is_some()
+            && self.state.phase == Phase::Failed
+            && self.state.retry_available
+    }
     pub fn retry(&mut self) {
-        if self.source_tests.busy() || self.recording.is_none() || self.state.retry().is_none() {
+        if !self.can_retry_recording() || self.state.retry().is_none() {
             return;
         }
         self.delivery.clear();
@@ -1421,7 +1449,7 @@ pub(crate) mod stop_failure_regression {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     // Tests use inert device/delivery constructors and synthetic leased storage.
@@ -1443,6 +1471,37 @@ mod tests {
         c
     }
 
+    #[test]
+    fn cli_permission_policy_never_requests_undecided_grants() {
+        for microphone in ["authorized", "notDetermined", "denied", "restricted"] {
+            for speech in ["authorized", "notDetermined", "denied", "restricted"] {
+                for use_speech in [false, true] {
+                    let mut c = Controller::new();
+                    let source = if use_speech {
+                        SessionSource::ChatGpt
+                    } else {
+                        local_source()
+                    };
+                    c.start_pinned_with_permissions(source, "zh".into(), false, || {
+                        (microphone, speech)
+                    });
+                    let (generation, event) = c.events.try_recv().unwrap();
+                    assert_eq!(generation, c.state.generation());
+                    assert_eq!(
+                        event,
+                        AudioEvent::Permissions {
+                            microphone: microphone == "authorized",
+                            speech: use_speech && speech == "authorized",
+                        }
+                    );
+                    assert!(c.events.try_recv().is_err());
+                    assert_eq!(c.state.phase, Phase::Permissions);
+                    assert!(c.worker.is_none() && c.recording.is_none());
+                    assert!(!c.allow_delivery);
+                }
+            }
+        }
+    }
     fn disconnected_worker() -> Worker {
         let (jobs, incoming) = mpsc::sync_channel(1);
         let (outgoing, results) = mpsc::channel();
@@ -1463,6 +1522,9 @@ mod tests {
     }
     #[test]
     fn retry_snapshots_original_local_source_and_language_without_cloud_dispatch() {
+        check_control_retry(|c, _| c.retry());
+    }
+    pub(crate) fn check_control_retry(retry: impl FnOnce(&mut Controller, u64)) {
         let temp = tempfile::tempdir().unwrap();
         let recording = Arc::new(
             crate::storage::Storage::at(
@@ -1486,7 +1548,7 @@ mod tests {
         let (jobs, incoming) = mpsc::sync_channel(1);
         let (_outgoing, results) = mpsc::channel();
         c.worker = Some(Worker { jobs, results });
-        c.retry();
+        retry(&mut c, old);
         let job = incoming.try_recv().unwrap();
         assert_eq!(job.source, local_source());
         assert_eq!(job.language, "zh");

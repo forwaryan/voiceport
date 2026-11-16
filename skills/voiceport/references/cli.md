@@ -7,7 +7,7 @@
 ## Offline commands
 
 - `--version`: CLI package version and control schema.
-- `help`, `--help`, `-h`: usage; legacy portable commands included. `sources --help`, `dictation start --help`, `qq doctor -h`, or `help sources` show the matching embedded reference section without connecting to the App, reading stdin/manifests, or running diagnostics. Unknown command paths still fail.
+- `help`, `--help`, `-h`: usage; legacy portable commands included. `sources --help`, `dictation start --help`, `dictation retry --help`, `qq doctor -h`, or `help sources` show the matching embedded reference section without connecting to the App, reading stdin/manifests, or running diagnostics. Unknown command paths still fail.
 - `skills list`: bundled guides and installed version: `core`, `cli`, `workflows`, `plugins`, `plugin-examples`, `plugin-protocol`, `plugin-template`.
 - `skills get [GUIDE]`: embedded content matching this binary; default `core`. `plugins` is the new-service onboarding Skill, `plugin-examples` covers compatible/local APIs and JSONL conversion, `plugin-protocol` is the manifest/execution contract, and `plugin-template` is the example Python adapter source (plain text; retrieval never executes it).
 
@@ -49,12 +49,13 @@ Configuration reads/writes and credential pinning use a background worker. Busy/
 
 ## Dictation and test operations
 
-- `dictation start --source ID [--language zh|en|auto]`: explicitly start recording using a pinned source/language and no automatic text delivery. Source and language options can appear in either order; duplicate/unknown options fail before connecting. The microphone permission must already be granted; the CLI does not request it. GUI preference values are unchanged.
+- `dictation start --source ID [--language zh|en|auto]`: explicitly start recording using a pinned source/language and no automatic text delivery. Source and language options can appear in either order; duplicate/unknown options fail before connecting. CLI recording uses only existing microphone/Speech grants and never invokes OS authorization requests. Microphone permission must already be granted; missing optional Speech permission disables device-side preview only. GUI preference values are unchanged.
 - `dictation stop OPERATION`: stop that CLI recording and perform same-source transcription.
+- `dictation retry OPERATION`: explicitly re-transcribe the retained failed CLI recording with the same pinned source/language and `delivery:"none"`; no new recording or source/language override. Requires the original matching CLI operation ID and Controller generation, failed state with current `retry_available:true`, and no busy work or pending cleanup. Rejects GUI operations, superseded generations and legacy `sources test` synthetic operations. Acceptance returns a **new** operation ID; the old ID then returns `not_found`. This may upload the recording again and requires explicit user consent; never use it as an automatic failure/transport retry.
 - `dictation cancel OPERATION`: request cancellation of that CLI operation, including a synthetic test. `stopping` remains busy until the worker has released its resources.
-- `dictation result OPERATION`: read only the current CLI-owned operation. Running operations return state/busy; completed ones return text/empty or a structured error. Results are ephemeral; a newer CLI operation replaces the previous result. The App's GUI transcript is never returned by default or for an unrelated generation.
+- `dictation result OPERATION`: read only the current CLI-owned operation. Running operations return state/busy; completed ones return text/empty or a structured error. Terminal failures include data `{operation,state:"failed",retry_available:bool,delivery:"none"}` alongside the error. Retry availability is evaluated against the current retained recording and Controller generation; a later GUI generation invalidates an earlier availability report. Results are ephemeral; a newer CLI operation replaces the previous result. The App's GUI transcript is never returned by default or for an unrelated generation.
 
-These commands never deliver text to an input target or clipboard. Stop/result/cancel require the ID returned by the start/test command; they cannot take over a GUI operation. `result` may contain explicit user-requested text and should not be logged as default diagnostics.
+These commands never deliver text to an input target or clipboard. Stop/result/cancel require the current ID returned by start/test/retry; retry is restricted to failed CLI recordings. They cannot take over a GUI operation. `result` may contain explicit user-requested text and should not be logged as default diagnostics. Preserve the same socket throughout; a lost retry reply is ambiguous, so inspect status/results without automatically resubmitting or starting a replacement.
 
 ## JSON and exits
 
@@ -64,7 +65,7 @@ Automation commands with `--json` produce exactly one stdout object:
 {"schema_version":1,"status":"ok","data":{"state":"idle"},"error":null}
 ```
 
-An error has `status:"error"`, `error:{"code":"busy","message":"..."}` and usually null data. Confirmation errors contain a proposed descriptor/destination in data. Parse `error.code`, never localized text. Diagnostics use stderr. Exit codes: 0 success; 1 operational/plugin/transport/permission failure; 2 invalid arguments/request/config; 3 app_not_running; 4 busy; 5 confirmation_required; 6 not_found; 7 unsupported; 130 cancelled. An accepted asynchronous operation exits 0 for submission; inspect `dictation result` for final success/error/cancellation. A completed plugin failure uses `plugin_error`; no raw service body, plugin stderr or secret is included.
+An error has `status:"error"`, `error:{"code":"busy","message":"..."}` and usually null data. Confirmation errors contain a proposed descriptor/destination in data; terminal dictation failures contain the operation/state/retry/delivery metadata described above. Parse `error.code`, never localized text. Diagnostics use stderr. Exit codes: 0 success; 1 operational/plugin/transport/permission failure; 2 invalid arguments/request/config; 3 app_not_running; 4 busy; 5 confirmation_required; 6 not_found; 7 unsupported; 130 cancelled. An accepted asynchronous operation exits 0 for submission; inspect `dictation result` for final success/error/cancellation. A completed plugin failure uses `plugin_error`; no raw service body, plugin stderr or secret is included.
 
 IPC schema is 1, four-byte big-endian frame length plus JSON, maximum 262144 bytes, one request per connection and five-second total transport deadline. No automatic retries. If a reply is lost or deadline expires, a mutation may have happened: inspect state before deciding what to do next. Polling read-only status/result does not repeat uploads. Sockets are same-user controls, not protection from hostile code already running as that user.
 

@@ -29,7 +29,7 @@ const GUIDES: &[(&str, &str)] = &[
         include_str!("../../../skills/voiceport-plugins/templates/json_http_adapter.py"),
     ),
 ];
-const HELP: &str = "voiceport [--json] [--socket ABSOLUTE_PATH] COMMAND\n\nstatus | app status/show/quit\nsources list/show/add/update/remove/select/secret/test\nsources probe ID|--all [--language zh|en|auto] [--accept-upload]\nsources probe-result/probe-cancel OPERATION\nplugins list/show/import\ndictation start/stop/cancel/result\nqq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)\nskills list | skills get [GUIDE]\nGuides: core, cli, workflows, plugins, plugin-examples, plugin-protocol, plugin-template\n--version\n\nUse voiceport skills get cli for complete arguments.\nApp control requires the running macOS App at the chosen socket.\nNo command implicitly launches, records, uploads audio or delivers text.\nOnly dictation start records; sources test/probe require --accept-upload.\nUse COMMAND --help or help COMMAND for offline group help.\nLegacy help/host/demo/doctor/transcribe are also available.";
+const HELP: &str = "voiceport [--json] [--socket ABSOLUTE_PATH] COMMAND\n\nstatus | app status/show/quit\nsources list/show/add/update/remove/select/secret/test\nsources probe ID|--all [--language zh|en|auto] [--accept-upload]\nsources probe-result/probe-cancel OPERATION\nplugins list/show/import\ndictation start/stop/retry/cancel/result\nqq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)\nskills list | skills get [GUIDE]\nGuides: core, cli, workflows, plugins, plugin-examples, plugin-protocol, plugin-template\n--version\n\nUse voiceport skills get cli for complete arguments.\nApp control requires the running macOS App at the chosen socket.\nNo command implicitly launches, records, uploads audio or delivers text.\nOnly dictation start records; sources test/probe require --accept-upload.\nUse COMMAND --help or help COMMAND for offline group help.\nLegacy help/host/demo/doctor/transcribe are also available.";
 fn invalid() -> Response {
     Response::error(
         "invalid_arguments",
@@ -241,7 +241,7 @@ fn contextual_help(args: &[String]) -> Option<String> {
         ),
         "dictation" => (
             "dictation",
-            &["start", "stop", "cancel", "result"],
+            &["start", "stop", "retry", "cancel", "result"],
             "Dictation and test operations",
         ),
         "qq" => ("qq", &["doctor"], "QQ installation diagnostics (macOS)"),
@@ -327,6 +327,9 @@ fn parse(args: &[String]) -> Result<Action, Response> {
             }
         }
         ["dictation", "stop", operation] => Action::DictationStop {
+            operation: (*operation).into(),
+        },
+        ["dictation", "retry", operation] if !operation.is_empty() => Action::DictationRetry {
             operation: (*operation).into(),
         },
         ["dictation", "cancel", operation] => Action::Cancel {

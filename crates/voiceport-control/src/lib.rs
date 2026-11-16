@@ -74,6 +74,9 @@ pub enum Action {
     DictationStop {
         operation: String,
     },
+    DictationRetry {
+        operation: String,
+    },
     Cancel {
         operation: String,
     },
