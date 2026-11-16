@@ -22,11 +22,12 @@
   <a href="#常见问题">FAQ</a>
 </p>
 
-<p align="center">
-  <img src="docs/images/voiceport-settings-qq-20261116.webp" alt="VoicePort 真实设置界面：当前选择通过插件配置的 QQ 语音输入，开启自动输入到原光标，并使用全局快捷键开始和停止。" width="620">
-</p>
+| 菜单栏快捷面板 | 偏好设置 |
+| :---: | :---: |
+| <a href="docs/images/voiceport-quick-panel-20261116.webp"><img src="docs/images/voiceport-quick-panel-20261116.webp" alt="VoicePort 菜单栏快捷面板：当前选中 QQ 语音输入，可切换 ChatGPT、添加转写方式或打开完整窗口。" width="340"></a> | <a href="docs/images/voiceport-preferences-20261116.webp"><img src="docs/images/voiceport-preferences-20261116.webp" alt="VoicePort 偏好设置：QQ 转写来源、自动输入选项、识别语言、快捷键与辅助功能权限。" width="468"></a> |
+| 快速选择来源、添加转写方式，或进入完整窗口。 | 配置转写来源、自动输入、识别语言与快捷键。 |
 
-<sub>macOS 开发版真实界面，展示已配置的实验性 QQ 来源；不是开箱即用的 QQ 安装流程。</sub>
+<sub>macOS 开发版真实界面，点击图片可查看原图。图中 QQ 来源已经单独配置，仍为实验性接入。</sub>
 
 ## 为什么需要 VoicePort
 
