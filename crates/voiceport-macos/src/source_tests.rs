@@ -160,6 +160,7 @@ pub struct SourceTests {
     queue: VecDeque<Queued>,
     active: Option<Active>,
     language: String,
+    generation: u64,
     budget: Duration,
     executor: Arc<Executor>,
 }
@@ -175,6 +176,7 @@ impl SourceTests {
             queue: VecDeque::new(),
             active: None,
             language: String::new(),
+            generation: 0,
             budget: BUDGET,
             executor: Arc::new(crate::source_probe::execute),
         }
@@ -194,6 +196,14 @@ impl SourceTests {
     }
     pub fn busy(&self) -> bool {
         self.active.is_some() || !self.queue.is_empty()
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn cleanup_pending(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| active.cleanup.is_some())
     }
     /// Equality includes the entire catalog/configuration snapshot, not just ID.
     pub fn row(&self, entry: &Entry) -> Option<&ProbeResult> {
@@ -218,6 +228,10 @@ impl SourceTests {
         if entries.iter().any(|entry| !ids.insert(&entry.id)) {
             return Err("同一来源不能在一次测试中重复。".into());
         }
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .ok_or("Source test generation exhausted.")?;
         self.language = language;
         for entry in entries {
             let mut result = ProbeResult::pending();

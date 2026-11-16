@@ -13,6 +13,7 @@ use objc2_foundation::{
 };
 use std::cell::{Cell, OnceCell, RefCell};
 mod control;
+mod control_probes;
 mod hotkey_start;
 mod picker;
 mod quick_panel;

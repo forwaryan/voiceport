@@ -29,7 +29,7 @@ const GUIDES: &[(&str, &str)] = &[
         include_str!("../../../skills/voiceport-plugins/templates/json_http_adapter.py"),
     ),
 ];
-const HELP: &str = "voiceport [--json] [--socket ABSOLUTE_PATH] COMMAND\n\nstatus | app status/show/quit\nsources list/show/add/update/remove/select/secret/test\nplugins list/show/import\ndictation start/stop/cancel/result\nqq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)\nskills list | skills get [GUIDE]\nGuides: core, cli, workflows, plugins, plugin-examples, plugin-protocol, plugin-template\n--version\n\nUse voiceport skills get cli for complete arguments.\nApp control requires the running macOS App at the chosen socket.\nNo command implicitly launches, records, uploads audio or delivers text.\nOnly dictation start records; sources test requires --accept-upload.\nLegacy help/host/demo/doctor/transcribe are also available.";
+const HELP: &str = "voiceport [--json] [--socket ABSOLUTE_PATH] COMMAND\n\nstatus | app status/show/quit\nsources list/show/add/update/remove/select/secret/test\nsources probe ID|--all [--language zh|en|auto] [--accept-upload]\nsources probe-result/probe-cancel OPERATION\nplugins list/show/import\ndictation start/stop/cancel/result\nqq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)\nskills list | skills get [GUIDE]\nGuides: core, cli, workflows, plugins, plugin-examples, plugin-protocol, plugin-template\n--version\n\nUse voiceport skills get cli for complete arguments.\nApp control requires the running macOS App at the chosen socket.\nNo command implicitly launches, records, uploads audio or delivers text.\nOnly dictation start records; sources test/probe require --accept-upload.\nUse COMMAND --help or help COMMAND for offline group help.\nLegacy help/host/demo/doctor/transcribe are also available.";
 fn invalid() -> Response {
     Response::error(
         "invalid_arguments",
@@ -72,11 +72,33 @@ pub fn run(raw: &[OsString]) -> Option<u8> {
             ]
             .iter()
             .any(|v| a == v)
-        });
+        })
+        || (raw.first().is_some_and(|a| a == "help")
+            && raw.get(1).is_some_and(|a| {
+                [
+                    "status",
+                    "app",
+                    "sources",
+                    "plugins",
+                    "dictation",
+                    "qq",
+                    "skills",
+                ]
+                .iter()
+                .any(|group| a == group)
+            }));
     if !managed {
         return None;
     }
-    let json_output = raw.iter().any(|a| a == "--json");
+    let mut flags = raw.iter();
+    let mut json_output = false;
+    while let Some(arg) = flags.next() {
+        if arg == "--json" {
+            json_output = true;
+        } else if arg.to_str().is_some_and(option_takes_value) {
+            flags.next();
+        }
+    }
     let args: Result<Vec<_>, _> = raw
         .iter()
         .map(|a| a.to_str().map(str::to_owned).ok_or(()))
@@ -105,6 +127,7 @@ fn execute(mut args: Vec<String>) -> Result<Response, Response> {
                 socket = Some(PathBuf::from(args.remove(i + 1)));
                 args.remove(i);
             }
+            value if option_takes_value(value) => i += 2,
             _ => i += 1,
         }
     }
@@ -117,6 +140,9 @@ fn execute(mut args: Vec<String>) -> Result<Response, Response> {
         || matches!(args.as_slice(), [s] if matches!(s.as_str(), "help" | "--help" | "-h"))
     {
         return Ok(Response::ok(json!({"text":HELP})));
+    }
+    if let Some(text) = contextual_help(&args) {
+        return Ok(Response::ok(json!({"text":text})));
     }
     if args[0] == "skills" {
         return match args.get(1).map(String::as_str) {
@@ -165,6 +191,74 @@ fn execute(mut args: Vec<String>) -> Result<Response, Response> {
 pub fn help() -> &'static str {
     HELP
 }
+fn option_takes_value(option: &str) -> bool {
+    matches!(
+        option,
+        "--socket"
+            | "--qq"
+            | "--plugin"
+            | "--name"
+            | "--enabled"
+            | "--set"
+            | "--secret-stdin"
+            | "--source"
+            | "--language"
+    )
+}
+/// Reuse the embedded reference so group help stays version-matched and offline.
+fn contextual_help(args: &[String]) -> Option<String> {
+    let words: Vec<_> = args.iter().map(String::as_str).collect();
+    let is_help = |word: &str| matches!(word, "help" | "--help" | "-h");
+    let path = match words.as_slice() {
+        ["help", path @ ..] if !path.is_empty() => path,
+        [path @ .., flag] if is_help(flag) && !path.is_empty() => path,
+        _ => return None,
+    };
+    let (group, verbs, section): (&str, &[&str], &str) = match path[0] {
+        "status" => ("status", &[], "App commands (macOS)"),
+        "app" => ("app", &["status", "show", "quit"], "App commands (macOS)"),
+        "sources" => (
+            "sources",
+            &[
+                "list",
+                "show",
+                "add",
+                "update",
+                "remove",
+                "select",
+                "secret",
+                "test",
+                "probe",
+                "probe-result",
+                "probe-cancel",
+            ],
+            "Sources and plugins",
+        ),
+        "plugins" => (
+            "plugins",
+            &["list", "show", "import"],
+            "Sources and plugins",
+        ),
+        "dictation" => (
+            "dictation",
+            &["start", "stop", "cancel", "result"],
+            "Dictation and test operations",
+        ),
+        "qq" => ("qq", &["doctor"], "QQ installation diagnostics (macOS)"),
+        "skills" => ("skills", &["list", "get"], "Offline commands"),
+        _ => return None,
+    };
+    if path.len() > 2 || (path.len() == 2 && !verbs.contains(&path[1])) {
+        return None;
+    }
+    let reference = GUIDES.iter().find(|(name, _)| *name == "cli")?.1;
+    let heading = format!("## {section}\n");
+    let content = reference.split_once(&heading)?.1.split("\n## ").next()?;
+    Some(format!(
+        "voiceport [--json] [--socket ABSOLUTE_PATH] {group}\n\n{}",
+        content.trim()
+    ))
+}
 fn parse(args: &[String]) -> Result<Action, Response> {
     let words: Vec<_> = args.iter().map(String::as_str).collect();
     let action = match words.as_slice() {
@@ -176,6 +270,13 @@ fn parse(args: &[String]) -> Result<Action, Response> {
         ["sources", "show", id] => Action::SourcesShow { id: (*id).into() },
         ["sources", "remove", id] => Action::SourcesRemove { id: (*id).into() },
         ["sources", "select", id] => Action::SourcesSelect { id: (*id).into() },
+        ["sources", "probe-result", operation] => Action::SourcesProbeResult {
+            operation: (*operation).into(),
+        },
+        ["sources", "probe-cancel", operation] => Action::SourcesProbeCancel {
+            operation: (*operation).into(),
+        },
+        ["sources", "probe", rest @ ..] => return probe(rest),
         ["sources", "test", source] => Action::Test {
             source: (*source).into(),
             accept_upload: false,
@@ -198,25 +299,33 @@ fn parse(args: &[String]) -> Result<Action, Response> {
         ["plugins", "show", id] => Action::PluginsShow { id: (*id).into() },
         ["plugins", "import", path] => import(path, false)?,
         ["plugins", "import", path, "--accept-program"] => import(path, true)?,
-        ["dictation", "start", "--source", source] => Action::DictationStart {
-            source: (*source).into(),
-            language: String::new(),
-        },
-        [
-            "dictation",
-            "start",
-            "--source",
-            source,
-            "--language",
-            language,
-        ] if matches!(*language, "zh" | "en" | "auto") => Action::DictationStart {
-            source: (*source).into(),
-            language: if *language == "auto" {
-                String::new()
-            } else {
-                (*language).into()
-            },
-        },
+        ["dictation", "start", rest @ ..] => {
+            let (mut source, mut language) = (None, None);
+            let mut pairs = rest.chunks_exact(2);
+            for pair in &mut pairs {
+                match pair {
+                    ["--source", value] if source.is_none() && !value.is_empty() => {
+                        source = Some(*value)
+                    }
+                    ["--language", value]
+                        if language.is_none() && matches!(*value, "zh" | "en" | "auto") =>
+                    {
+                        language = Some(*value)
+                    }
+                    _ => return Err(invalid()),
+                }
+            }
+            if !pairs.remainder().is_empty() {
+                return Err(invalid());
+            }
+            Action::DictationStart {
+                source: source.ok_or_else(invalid)?.into(),
+                language: language
+                    .filter(|value| *value != "auto")
+                    .unwrap_or_default()
+                    .into(),
+            }
+        }
         ["dictation", "stop", operation] => Action::DictationStop {
             operation: (*operation).into(),
         },
@@ -232,6 +341,48 @@ fn parse(args: &[String]) -> Result<Action, Response> {
         _ => return Err(invalid()),
     };
     Ok(action)
+}
+fn probe(rest: &[&str]) -> Result<Action, Response> {
+    let (mut target, mut language, mut accept_upload) = (None, None, false);
+    let mut index = 0;
+    while index < rest.len() {
+        match rest[index] {
+            "--accept-upload" if !accept_upload => accept_upload = true,
+            "--source" if target.is_none() => {
+                index += 1;
+                let value = *rest
+                    .get(index)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(invalid)?;
+                target = Some(Some(value));
+            }
+            "--language" if language.is_none() => {
+                index += 1;
+                let value = *rest.get(index).ok_or_else(invalid)?;
+                if !matches!(value, "auto" | "zh" | "en") {
+                    return Err(invalid());
+                }
+                language = Some(value);
+            }
+            value
+                if target.is_none()
+                    && (value == "--all" || (!value.is_empty() && !value.starts_with('-'))) =>
+            {
+                target = Some((value != "--all").then_some(value))
+            }
+            _ => return Err(invalid()),
+        }
+        index += 1;
+    }
+    let target = target.ok_or_else(invalid)?;
+    Ok(Action::SourcesProbe {
+        source: target.map(str::to_owned),
+        language: language
+            .filter(|value| *value != "auto")
+            .unwrap_or_default()
+            .into(),
+        accept_upload,
+    })
 }
 fn source(id: &str, update: bool, rest: &[&str]) -> Result<Action, Response> {
     let (mut plugin, mut name, mut enabled) = (None, None, None);

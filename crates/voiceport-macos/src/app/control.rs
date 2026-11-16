@@ -19,6 +19,7 @@ pub(super) struct Control {
     pub server: Option<Server>,
     background: Option<Receiver<Completed>>,
     operation: Option<Operation>,
+    probe: Option<super::control_probes::ProbeOperation>,
 }
 impl Control {
     pub(super) fn preparing(&self) -> bool {
@@ -102,6 +103,11 @@ impl Delegate {
                 )
             });
         }
+        if let Some(probe) = &mut control.probe
+            && let Some(c) = self.ivars().controller.borrow().as_ref()
+        {
+            probe.settle(c);
+        }
         let completion = control
             .background
             .as_ref()
@@ -167,9 +173,17 @@ impl Delegate {
             Action::Status => {
                 let (microphone, speech) = crate::audio::Recorder::permission_status();
                 Response::ok(
-                    json!({"state":phase(c.state.phase),"busy":c.busy()||locked,"pending":c.state.phase==Phase::Stopping,"warning":if c.state.phase==Phase::Stopping {Some("cancellation_pending")} else {None},"discovering":c.discovering(),"source":c.source_id,"language":c.language,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"bundle_path":NSBundle::mainBundle().bundlePath().to_string(),"socket":voiceport_control::transport::path_from_env().ok(),"permissions":{"microphone":microphone,"speech":speech,"accessibility":Delivery::trusted()},"input":{"automatic":c.automatic,"method":c.input_method(),"failure_stage":c.input_failure_stage(),"start":self.ivars().last_start_trace.borrow().as_ref()},"operation":control.operation.as_ref().filter(|o|o.result.is_none()).map(|o|&o.id)}),
+                    json!({"state":phase(c.state.phase),"busy":c.busy()||locked,"pending":c.state.phase==Phase::Stopping,"warning":if c.state.phase==Phase::Stopping {Some("cancellation_pending")} else {None},"discovering":c.discovering(),"source":c.source_id,"language":c.language,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"bundle_path":NSBundle::mainBundle().bundlePath().to_string(),"socket":voiceport_control::transport::path_from_env().ok(),"permissions":{"microphone":microphone,"speech":speech,"accessibility":Delivery::trusted()},"input":{"automatic":c.automatic,"method":c.input_method(),"failure_stage":c.input_failure_stage(),"start":self.ivars().last_start_trace.borrow().as_ref()},"operation":control.operation.as_ref().filter(|o|o.result.is_none()).map(|o|&o.id),"source_probe":{"operation":control.probe.as_ref().and_then(|probe|probe.active_id()),"busy":c.source_tests.busy(),"cleanup_pending":c.source_tests.cleanup_pending()}}),
                 )
             }
+            Action::SourcesProbeResult { operation } => match &mut control.probe {
+                Some(probe) if probe.id == operation => probe.result(c),
+                _ => missing(),
+            },
+            Action::SourcesProbeCancel { operation } => match &mut control.probe {
+                Some(probe) if probe.id == operation => probe.cancel(c),
+                _ => missing(),
+            },
             Action::Result { operation } => match &control.operation {
                 Some(op) if op.id == operation => op.result.clone().unwrap_or_else(|| {
                     Response::ok(
@@ -224,6 +238,16 @@ impl Delegate {
                 } else {
                     self.set_source(c, id);
                     Response::ok(json!({"source":c.source_id}))
+                }
+            }
+            Action::SourcesProbe { source, language, accept_upload } => {
+                match super::control_probes::ProbeOperation::start(c, source, language, accept_upload) {
+                    Ok(mut probe) => {
+                        let response = probe.result(c);
+                        control.probe = Some(probe);
+                        response
+                    }
+                    Err(response) => response,
                 }
             }
             Action::Test {

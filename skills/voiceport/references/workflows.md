@@ -16,12 +16,27 @@ Only after the user requests this configuration, use a stable ID and the complet
 ```sh
 voiceport --json --socket /private/tmp/vp-example/control.sock sources add lab-http --plugin voiceport.http-transcription --name Lab --enabled true --set endpoint=http://127.0.0.1:8765/transcribe --set model=synthetic
 voiceport --json --socket /private/tmp/vp-example/control.sock sources select lab-http
-voiceport --json --socket /private/tmp/vp-example/control.sock sources test lab-http
+voiceport --json --socket /private/tmp/vp-example/control.sock sources probe lab-http
 ```
 
-The last command intentionally returns exit 5 and destination information without sending anything. If the user has explicitly authorized sending synthetic silence to that destination, complete once with `sources test lab-http --accept-upload`. Parse the returned operation ID, then use `dictation result ID` until it completes. To stop a slow request use `dictation cancel ID` and inspect status/result until Controller confirms release. A `stopping` state or `cancellation_pending` warning is still pending. If a local adapter's termination cannot be confirmed, the App retains the recording and blocks new operations and graceful quit. Only a further explicit user-requested cancel on the same operation checks cleanup once in the background; it sends no new termination signal. Do not repeat cancel automatically or force an exit. Confirmed cleanup releases an originally cancelled recording; an original transcription error instead settles as failed and retains the recording for later explicit retry. Empty text is expected for silence and is not a recognition-quality score. Do not repeat an upload to poll it.
+The last command intentionally returns exit 5 and destination information without sending anything. If the user has authorized this synthetic test, submit once with `sources probe lab-http --accept-upload` on the same socket. Keep the returned operation ID and use `sources probe-result ID` for a bounded read-only wait. Completion requires `state:"completed"` and `busy:false`; a passing report also requires `all_passed:true`. To stop a slow probe, use `sources probe-cancel ID` and inspect its result until release. `busy:true` or `warning:"cleanup_pending"` keeps new operations and graceful quit blocked. Only a further explicit user-requested cancel on that operation checks cleanup once without another termination signal. Independent probes preserve previous dictation/recordings. Do not resubmit to poll, automatically repeat cancel, or force an exit. No recognized sample text is returned; synthetic success is not an accuracy score.
 
 For secret fields, obtain user-provided input through a secure producer and pipe directly to `sources secret lab-http api_key --stdin`. Do not read the user's real credentials, put the value in a command argument or shell literal, echo it into evidence, or export it. Secret input is optional for the built-in HTTP adapter and not needed by controlled unauthenticated test services. No command reveals existing secret values.
+
+## Independent connectivity and timing diagnostics
+
+Use `sources probe` to preserve the existing dictation while testing ChatGPT, installed local models, or custom sources. Inspect the destination proposal first; run the accepted command only when the user authorizes that sample upload/execution:
+
+```sh
+voiceport --json sources probe chatgpt
+voiceport --json sources probe chatgpt --language zh --accept-upload
+voiceport --json sources probe-result OPERATION
+voiceport --json sources probe-cancel OPERATION
+```
+
+Replace the sample OPERATION with the actual returned ID, and use the intended instance's `--socket` consistently. `sources probe --all --language en --accept-upload` tests all catalog entries sequentially, so inspect each configured source with `sources show ID` and its program with `plugins show PLUGIN`, then confirm all destinations are authorized. Batch previews list stable source/plugin IDs and omit repeated endpoint/program details to fit the wire limit. Unavailable entries return failed rows without execution. Poll the returned report until `state:"completed"`; exit 0 alone does not imply all sources passed. Inspect `all_passed`, per-source status and worker-measured elapsed milliseconds. No recognized sample text is returned, and silence is not an accuracy test. Cancellation stays busy until resource release; only a further explicit user-requested cancel can check unresolved cleanup once. Neither an old CLI ID nor `dictation cancel` can control a later GUI probe. Reports are ephemeral; collect the report before a newer test replaces it.
+
+For older, explicitly selected compatibility workflows, `sources test ID --accept-upload` still uses the plugin-only dictation lifecycle and may replace its result. Follow that command with `dictation result ID` or `dictation cancel ID`. Keep the two operation families separate; do not fall back automatically when a new command is unsupported.
 
 ## Import a local adapter
 

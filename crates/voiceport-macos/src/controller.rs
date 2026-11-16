@@ -263,6 +263,16 @@ impl Controller {
     }
     /// Test concrete source IDs without changing preferences, transcript or lifecycle.
     pub fn start_source_tests(&mut self, ids: &[String]) -> Result<(), String> {
+        self.start_source_tests_with_language(ids, self.language.clone())
+    }
+    pub(crate) fn start_source_tests_with_language(
+        &mut self,
+        ids: &[String],
+        language: String,
+    ) -> Result<(), String> {
+        if !matches!(language.as_str(), "" | "zh" | "en") {
+            return Err("Unsupported source test language.".into());
+        }
         if self.busy() || self.discovering() {
             return Err("请等待当前任务完成后再测试来源。".into());
         }
@@ -277,7 +287,7 @@ impl Controller {
                     .ok_or_else(|| "来源列表已变化，请重新选择测试目标。".to_string())
             })
             .collect::<Result<Vec<_>, _>>()?;
-        self.source_tests.start(entries, self.language.clone())?;
+        self.source_tests.start(entries, language)?;
         self.message = self.source_tests.summary();
         Ok(())
     }

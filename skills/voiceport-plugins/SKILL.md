@@ -69,7 +69,11 @@ GUI：设置 → 管理来源… → 添加转写方式… → 连接兼容 API�
 
 向用户说明导入的程序有当前用户权限。用户接受程序和参数后才使用 `plugins import ... --accept-program`。已有的明确授权可沿用；不重复要求确认。
 
-发送样例前，确认目标和发送合成静音已在用户授权范围内。`sources test ID` 无接受标志时只返回目标/确认信息；获准后用 `--accept-upload` 提交一次，保存返回的 operation ID，再用 `dictation result ID` 查结果。不要通过重复 test 轮询。静音返回空串或模拟服务返回固定文本不证明 ASR 质量。
+发送样例前，确认目标和发送合成静音已在用户授权范围内。优先使用独立的 `sources probe ID [--language zh|en|auto]`；无接受标志时只返回目标/确认信息。获准后添加 `--accept-upload` 提交一次，保存返回的 `data.operation`，再用 `sources probe-result OPERATION` 查状态与耗时。仅在 `state:"completed"`、`busy:false` 且 `all_passed:true` 时报告样例测试通过；退出 0 也可能只是成功读取了失败报告。探测不返回识别文字，并保留旧听写结果、录音和设置。不要通过重复 probe 轮询；`--all` 会包含其他来源，单来源接入不应扩大为全量测试。
+
+取消使用 `sources probe-cancel OPERATION`，等待 busy 解除；清理未确认时仍禁止新任务和正常退出，只有后续明确请求的取消才检查一次清理，不自动重复。旧 App 不认识 probe 时先检查实例和版本，不静默退回旧生命周期。旧 `sources test` 保持插件专用兼容协议，使用 `dictation result/cancel`，可能替换之前的听写结果。静音或模拟服务固定响应都不证明真实 ASR 质量；识别准确率需另有获准的音频验证。
+
+QQ 场景可先执行 `voiceport --json qq doctor [--qq /绝对路径/QQ.app]` 检查安装；它无需运行中的 VoicePort 或桥接，报告的 `blockers` 才是安装问题，退出 0 不表示 QQ 转写接通。普通 QQ 不会自动提供 VoicePort 桥接；不自动安装/注入、登录或上传样例。
 
 创建 Skill、生成清单、导入和保存均不授权真实录音、读取真实凭据、上传用户音频或操作目标输入。不要为诊断请求麦克风/辅助功能权限。超时或丢失回复可能已提交，先查状态再决定是否重试。
 
