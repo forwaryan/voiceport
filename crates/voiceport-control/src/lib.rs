@@ -56,6 +56,17 @@ pub enum Action {
         source: String,
         accept_upload: bool,
     },
+    SourcesProbe {
+        source: Option<String>,
+        language: String,
+        accept_upload: bool,
+    },
+    SourcesProbeResult {
+        operation: String,
+    },
+    SourcesProbeCancel {
+        operation: String,
+    },
     DictationStart {
         source: String,
         language: String,

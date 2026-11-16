@@ -18,7 +18,7 @@ This assumes the user installed that bundle at `/Applications/VoicePort.app`; pa
 
 The single versioned detailed command reference is [skills/voiceport/references/cli.md](../skills/voiceport/references/cli.md). It is compiled into both CLI entry points, together with [the core Skill](../skills/voiceport/SKILL.md) and [workflows](../skills/voiceport/references/workflows.md). `voiceport skills list` and `voiceport skills get [GUIDE]` work without an App or network and return the matching installed version; with `--json` the content is in `data.text`. Guides include `core`, `cli`, `workflows`, `plugins`, `plugin-examples`, `plugin-protocol`, and `plugin-template`. The last four expose the [plugin onboarding Skill](../skills/voiceport-plugins/SKILL.md), [three examples](../skills/voiceport-plugins/references/examples.md), the existing manifest/protocol document, and the example Python bridge source. Reading the template does not execute it.
 
-The command groups are `status` / `app status/show/quit`, `sources list/show/add/update/remove/select/secret/test`, `plugins list/show/import`, and `dictation start/stop/cancel/result`. Source IDs are stable instance IDs, distinct from plugin IDs; one plugin may supply multiple independent instances. Selection persists in the same NSUserDefaults domain as GUI selection. Disabling/removing a selected source keeps that ID unavailable; it never falls back to ChatGPT.
+The command groups are `status` / `app status/show/quit`, `sources list/show/add/update/remove/select/secret/test/probe/probe-result/probe-cancel`, `plugins list/show/import`, and `dictation start/stop/cancel/result`. Source IDs are stable instance IDs, distinct from plugin IDs; one plugin may supply multiple independent instances. Selection persists in the same NSUserDefaults domain as GUI selection. Disabling/removing a selected source keeps that ID unavailable; it never falls back to ChatGPT.
 
 For automation use `voiceport --json [--socket ABSOLUTE_PATH] COMMAND`. The versioned response is `{schema_version:1,status:"ok"|"error",data:...,error:null|{code,message}}`; stdout contains one result object and diagnostics use stderr. Status includes state/busy/source/language/version/bundle/PID/permissions and no transcript, credentials or target content. The exit codes are 0 success, 1 operational failure, 2 invalid arguments/request/config, 3 App missing, 4 busy, 5 explicit confirmation missing, 6 ID missing, 7 unsupported platform/operation, and 130 cancelled. An asynchronous submission succeeds when accepted; inspect the returned operation with `dictation result ID` for its final outcome. Parse `error.code`, not message text.
 
@@ -27,6 +27,23 @@ For automation use `voiceport --json [--socket ABSOLUTE_PATH] COMMAND`. The vers
 Secret values are accepted only through dedicated stdin options (`sources secret ID FIELD --stdin`, or `--secret-stdin FIELD` during add/update); stdin must be a pipe/file, with nonempty bounded input. Values never appear in argv, response, exported Store or diagnostics. The App stores independent Keychain references using the same validated transaction as GUI editing. Normal metadata commands do not read secrets; credential values are pinned only for an explicit operation. Runtime errors omit raw service bodies and adapter stderr.
 
 The original portable `host`, `demo`, `doctor`, and `transcribe AUDIO` contracts remain unchanged, including host's own JSONL protocol, auth-path precedence and Ctrl-C cancellation. Automation `--json`/`--socket` flags do not extend these legacy commands. File transcription remains the explicit ChatGPT operation; `transcribe --source` is not implemented. Windows can use the portable commands and offline Skill/help; App operations return unsupported.
+
+## 来源连通性与耗时测试
+
+`voiceport sources --help`、`voiceport dictation start --help` 或 `voiceport help sources` 可离线查看对应指南，JSON 模式仍通过 `data.text` 返回。
+
+新增 `sources probe` 复用 GUI 的独立测试引擎，覆盖 ChatGPT、本地模型和自定义来源，保留当前听写文字、录音及设置。先查看测试目标，再按明确授权提交一次：
+
+```sh
+voiceport --json sources probe chatgpt
+voiceport --json sources probe chatgpt --language zh --accept-upload
+voiceport --json sources probe-result OPERATION
+voiceport --json sources probe-cancel OPERATION
+```
+
+`OPERATION` 使用实际返回的 ID；隔离实例的每条命令均携带同一个 `--socket`。`sources probe --all --language en --accept-upload` 串行测试全部目录项，需已授权所有目的地；不可用项只记失败，不执行。报告返回逐来源固定状态码、样例执行耗时和完成时间，不返回样例识别文字或原始错误正文。退出 0 表示报告已读取，完成且全部通过须检查 `state:"completed"` 与 `all_passed:true`。静音测试不代表识别准确率。
+
+取消和清理未确认时仍保持 busy，不能启动新任务或正常退出；只读轮询不触发新的清理观察。再次显式取消只检查一次，不能自动反复调用。独立操作 ID 不接管 GUI 测试；旧 `sources test` 与 `dictation result/cancel` 的插件样例协议继续兼容。新操作需要同样包含这些命令的 App，旧 App 会返回 `invalid_request`，应显式启动匹配版本后再使用。
 
 ## QQ 安装诊断
 
