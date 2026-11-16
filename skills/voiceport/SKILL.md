@@ -1,6 +1,6 @@
 ---
 name: voiceport
-description: Controls VoicePort through its CLI. Use when inspecting VoicePort status, configuring transcription sources or plugins, diagnosing QQ installation, testing source connectivity and latency, or managing explicitly requested voice dictation. Supports 来源配置、连通性测试、耗时诊断 and 听写控制.
+description: Controls VoicePort through its CLI. Use when inspecting status, configuring sources or plugins, diagnosing QQ installation or recognized text not reaching a target App, testing connectivity and latency, or explicitly recording/retrying dictation. Supports 来源配置、连通性测试、耗时诊断、听写控制 and 已识别但未输入排查.
 ---
 
 # VoicePort
@@ -18,6 +18,8 @@ Choose the command for the question:
 | Check a QQ installation | `qq doctor [--qq ABSOLUTE_APP_PATH]` | Read-only installation report; inspect `data.blockers`, not just exit 0; no bridge or transcription proof |
 | Test source connectivity and elapsed time | `sources probe ID [--language zh|en|auto]` | Proposal only until `--accept-upload`; tests synthetic silence, not recognition quality |
 | Record and retrieve requested speech | `dictation start/stop/result` | Explicit microphone operation; no automatic delivery |
+| Retry a retained failed CLI recording | `dictation result OPERATION`, then explicitly authorized `dictation retry OPERATION` | Re-transcribes with the original source/language; may upload again; returns a new ID |
+| Recognized text did not reach QQ, WeChat or another target | `status`, `app show --settings` | Content-free input/permission/instance diagnosis; no re-recording or upload |
 
 The portable `doctor` only checks ChatGPT auth-file metadata. `transcribe AUDIO` explicitly uploads an existing file to ChatGPT; it has no `--source` option. See [references/cli.md](references/cli.md) for the complete contract.
 
@@ -47,7 +49,13 @@ Examples and instance isolation are in [references/workflows.md](references/work
 
 ## Step 4: Record only on an explicit request
 
-Use `dictation start --source ID [--language zh|en|auto]`, keep its operation ID, then `dictation stop OPERATION` and `dictation result OPERATION`. CLI recording pins source/language and disables automatic delivery. Status never returns transcripts. Stop/cancel cannot take over an unrelated GUI session; sharing or inserting returned text requires a separate instruction. Microphone permission must already be granted; diagnostics do not request permissions.
+Use `dictation start --source ID [--language zh|en|auto]`, keep its operation ID, then `dictation stop OPERATION` and `dictation result OPERATION`. CLI recording pins source/language and disables automatic delivery. Status never returns transcripts. Stop/cancel cannot take over an unrelated GUI session; sharing or inserting returned text requires a separate instruction. CLI recording uses only existing microphone/Speech grants and never requests OS authorization. Microphone permission must already be granted; missing optional Speech permission only disables device-side preview.
+
+For a failed retained recording, inspect result data for `state:"failed"`, current `retry_available:true` and `delivery:"none"`. Only an explicit user request to re-transcribe authorizes `dictation retry OPERATION`, which may upload the recording again. It requires the matching CLI ID and Controller generation, no busy/pending cleanup, and keeps the original pinned source/language and delivery none. GUI operations, superseded generations and legacy synthetic tests cannot be retried this way. Acceptance returns a new operation ID; use it for result/cancel, since the old ID then returns `not_found`. Availability can change after later GUI work; an earlier report is not a retry guarantee. Never retry automatically after failure or a lost reply.
+
+## Step 5: Diagnose recognized text not reaching a target
+
+Read `status` on the same socket and check bundle path/PID, `permissions`, and `input.automatic`, `input.method`, `input.failure_stage` and `input.start`. Use `app show --settings` to expose the intended instance's settings when requested. CLI dictation deliberately uses `delivery:"none"`; obtaining text does not mean it was inserted. For GUI input failures, distinguish the source App that recognizes speech from the target App receiving text. QQ/WeChat target failures do not imply a missing source plugin, and `qq doctor` checks installation only. Do not read target text or transcripts for routine diagnostics, change permissions, reprobe sources or reupload audio automatically. See [references/workflows.md](references/workflows.md#recognized-text-not-delivered).
 
 ## Error handling
 
@@ -60,7 +68,7 @@ Parse `error.code`, not localized messages. Do not log transcript-bearing result
 | `confirmation_required` | Review the proposed destination/program and use the acceptance flag only within user authorization |
 | `not_found` / `invalid_state` | Verify source/operation ID; reports may have expired or the operation may have ended; do not start a replacement automatically |
 | `invalid_arguments` / `invalid_config` | Correct arguments/configuration using installed help before retrying |
-| `invalid_request` on new probe actions | Check CLI/App compatibility and the chosen instance; preserve the original operation and do not silently change test paths |
+| `invalid_request` on new probe/retry actions | Check CLI/App compatibility and the chosen instance; preserve the original operation and do not silently change workflows |
 | `permission_denied` / `unsupported` | Report the actual permission/platform limit; no force quit or system-permission changes |
 | `cleanup_pending` / `busy:true` | Keep admission blocked and read results; only an explicit cancel requests another cleanup observation |
 | Probe `completed` with `all_passed:false` | Report failed/timed-out/cancelled rows as failed diagnostics, even though exit 0 returned a report |

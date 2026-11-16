@@ -44,7 +44,31 @@ For older, explicitly selected compatibility workflows, `sources test ID --accep
 
 ## Explicit recording
 
-Only when the user asks to record: inspect status and source availability, then run `voiceport --json dictation start --source SOURCE --language zh`. Keep the returned operation ID. `dictation stop ID` finalizes recording and transcribes using the original source/language. `dictation result ID` retrieves the requested text. CLI sessions always disable automatic delivery; sharing or inserting text requires a separate user instruction outside this CLI. Cancel uses `dictation cancel ID`; wait for release rather than assuming a cancellation request has freed resources. Never start a recording during diagnostics or Skill installation.
+Only when the user asks to record: inspect status and source availability, then run `voiceport --json dictation start --source SOURCE --language zh`. Keep the returned operation ID. `dictation stop ID` finalizes recording and transcribes using the original source/language. `dictation result ID` retrieves the requested text. CLI sessions always disable automatic delivery; sharing or inserting text requires a separate user instruction outside this CLI. Recording uses existing microphone/Speech grants only, never OS authorization requests. Missing microphone permission blocks recording; missing optional Speech permission disables preview only. Cancel uses `dictation cancel ID`; wait for release rather than assuming a cancellation request has freed resources. Never start a recording during diagnostics or Skill installation.
+
+## Explicit retry of a failed recording
+
+On the same instance/socket, read `dictation result FAILED_OPERATION`. Terminal failure data includes `operation`, `state:"failed"`, current `retry_available` and `delivery:"none"`. If retry is available and busy/cleanup has cleared, explain that re-transcription uses the retained audio and may upload it again. Only after an explicit user request for that retry, submit once:
+
+```sh
+voiceport --json --socket /private/tmp/vp-example/control.sock dictation retry FAILED_OPERATION
+voiceport --json --socket /private/tmp/vp-example/control.sock dictation result NEW_OPERATION
+```
+
+Replace both IDs with actual returned IDs: accepted retry returns NEW_OPERATION, and FAILED_OPERATION then returns `not_found`. Poll/cancel using the new ID. The original pinned source/language and delivery none are preserved; retry does not record again or change GUI preferences. The original ID and Controller generation must still match; later GUI work can invalidate an earlier `retry_available:true`. GUI recordings, superseded operations and legacy synthetic `sources test` operations are ineligible. Pending cleanup remains blocked under the existing explicit-cancel rules. Never retry automatically on failure or a lost reply; inspect status/results first, and report an unknown outcome if the new ID was lost rather than resubmitting.
+
+## Recognized text not delivered
+
+For “recognized, but not typed into QQ/WeChat/the editor”, first inspect content-free metadata on the selected instance:
+
+```sh
+voiceport --json --socket /private/tmp/vp-example/control.sock status
+voiceport --json --socket /private/tmp/vp-example/control.sock app show --settings
+```
+
+Verify `bundle_path`/PID and keep that socket fixed. Check `permissions` and `input.automatic`, `input.method`, `input.failure_stage` and `input.start` for the preference, delivery stage and start route. Showing settings does not change permissions or start recording. Do not fetch a transcript, target field contents, credentials or audio for routine diagnosis.
+
+CLI dictation intentionally has `delivery:"none"`: a successful result is not an insertion. For GUI dictation, the source App providing recognition and target App receiving text are independent; QQ/WeChat target input failures belong to delivery diagnosis, not new-source onboarding. `wechat_menu_paste` acknowledges the guarded native Paste request, leaves final text in the clipboard and does not verify field contents. `qq doctor` checks QQ installation only, not input delivery or transcription connectivity. Report the observed stage and settings; do not automatically reprobe, reupload, retry transcription or record again to diagnose delivery.
 
 ## Isolated App validation
 
