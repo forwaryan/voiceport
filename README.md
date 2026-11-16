@@ -1,12 +1,26 @@
-# VoicePort
+<h1 align="center">VoicePort</h1>
 
-**把 App 的语音转文字能力，带到每一个输入框。**
+<p align="center">
+  <b>插件化的语音能力转接器</b> — 把 App 的语音转文字能力，带到每一个输入框。
+</p>
 
-VoicePort 是一个**插件化的语音能力转接器**：把不同 App 已有的语音转文字功能接出来，作为统一的听写来源，再把结果输入你正在使用的 App。
+<p align="center">
+  <a href="https://github.com/forwaryan/voiceport/releases/tag/v0.3.8"><img src="docs/images/badges/preview.svg" alt="开发预览版 v0.3.8" width="186" height="28"></a>
+  <a href="https://www.rust-lang.org/tools/install"><img src="docs/images/badges/rust.svg" alt="Rust 1.95+" width="136" height="28"></a>
+  <a href="#平台支持"><img src="docs/images/badges/macos.svg" alt="macOS 13+ / ARM64" width="196" height="28"></a>
+  <a href="LICENSE"><img src="docs/images/badges/license.svg" alt="MIT License" width="136" height="28"></a>
+</p>
 
-你选择哪个 App 来识别，也选择在哪个 App 里写字。插件处理来源 App 的调用差异；VoicePort 统一录音、快捷键、结果预览与文字输入。接入一个来源，就可以在编辑器、终端、聊天窗口等不同输入场景中复用。
-
-[快速开始](#快速开始) · [插件接入](#通过插件接入-app) · [已有来源](#已有来源) · [使用指南](docs/USAGE.md) · [开发文档](#开发与贡献)
+<p align="center">
+  <a href="#为什么需要-voiceport">介绍</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#通过插件接入-app">插件接入</a> ·
+  <a href="#已有来源">已有来源</a> ·
+  <a href="docs/USAGE.md">使用指南</a> ·
+  <a href="#命令行与集成">命令参考</a> ·
+  <a href="skills/voiceport-plugins/SKILL.md">接入 Skill</a> ·
+  <a href="#常见问题">FAQ</a>
+</p>
 
 <p align="center">
   <img src="docs/images/voiceport-settings-qq-20261116.webp" alt="VoicePort 真实设置界面：当前选择通过插件配置的 QQ 语音输入，开启自动输入到原光标，并使用全局快捷键开始和停止。" width="620">
@@ -15,6 +29,10 @@ VoicePort 是一个**插件化的语音能力转接器**：把不同 App 已有�
 <sub>macOS 开发版真实界面，展示已配置的实验性 QQ 来源；不是开箱即用的 QQ 安装流程。</sub>
 
 ## 为什么需要 VoicePort
+
+VoicePort 是一个**插件化的语音能力转接器**：把不同 App 已有的语音转文字功能接出来，作为统一的听写来源，再把结果输入你正在使用的 App。
+
+你选择哪个 App 来识别，也选择在哪个 App 里写字。插件处理来源 App 的调用差异；VoicePort 统一录音、快捷键、结果预览与文字输入。接入一个来源，就可以在编辑器、终端、聊天窗口等不同输入场景中复用。
 
 喜欢一个 App 的语音识别，不代表你只想在那个 App 里输入文字。
 

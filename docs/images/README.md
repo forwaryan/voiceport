@@ -13,6 +13,12 @@ README 使用真实产品截图展示界面，再用一张机制图解释“来�
 
 截图以 620px 显示，机制图以 880px 显示，窄屏按可用宽度缩放。两张素材合计约 112 KiB。
 
+### 页首徽章
+
+[preview.svg](badges/preview.svg)、[rust.svg](badges/rust.svg)、[macos.svg](badges/macos.svg) 和 [license.svg](badges/license.svg) 为仓库内自绘的静态 SVG，采用深灰标签和彩色值的矩形样式。它们分别对应现有 v0.3.8 开发预览标签、workspace 的 Rust 1.95 要求、macOS 13+ / ARM64 支持范围和项目 MIT 许可。相关信息变化时需同步更新 SVG 与 README 链接；徽章不表示最新正式版本或实时 CI 状态。
+
+页首的居中标题、定位、徽章与导航结构参考 [feishu-cli](https://github.com/riba2534/feishu-cli)，未复用其品牌标志或统计数字。
+
 ### 真实截图
 
 截图来自固定安装路径中的 VoicePort，仅截取应用窗口，未拼接或替换控件、文字与状态。截图时没有开始录音、执行来源测试或修改来源配置。

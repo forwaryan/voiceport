@@ -13,11 +13,19 @@ VoicePort 正常启动后常驻 macOS 右上角菜单栏，不占用 Dock，也�
 
 菜单栏图标会反映听写、转写或待处理状态，并适配深浅外观。悬停可查看当前来源、状态与快捷键。来源较多时可以滚动查看；不可用来源会显示原因。快捷面板与设置页的选中状态同步，选择会保存供下次使用。
 
-正常重新打开应用时展示快捷面板；需要直接打开完整窗口，可显式执行：
+正常重新打开应用时展示快捷面板。App 已在菜单栏运行时，使用随包 CLI 直接打开完整窗口：
+
+```bash
+"$HOME/Applications/VoicePort.app/Contents/MacOS/voiceport" app show
+```
+
+App 尚未运行时，可以在启动时直接显示完整窗口：
 
 ```bash
 open "$HOME/Applications/VoicePort.app" --args --show-window
 ```
+
+`--args --show-window` 仅对新启动的进程生效；CLI 的 `app show` 通过本机 IPC 控制运行中的实例，不会自行启动 App。
 
 ### 菜单栏图标不可见
 
