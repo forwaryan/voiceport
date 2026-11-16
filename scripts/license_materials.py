@@ -84,17 +84,17 @@ def generate(write=True):
   source=pathlib.Path(p['manifest_path']).parent;relative=pathlib.Path('crates')/(p['name']+'-'+p['version']);files=[]
   for file in sorted(source.rglob('*')):
    if not file.is_file() or file.is_symlink():continue
-   name=file.name.lower()
+   name=file.name.lower();data=file.read_bytes()
    notice=p['license']=='MPL-2.0' or any(x in name for x in ['license','copying','notice','copyright','authors'])
    # Include complete attribution-bearing source files too: ring explicitly
    # assigns some embedded components' terms in individual source headers.
    if not notice:
-    data=file.read_bytes()
-    notice=any(token in data.lower() for token in [b'copyright',b'spdx-license-identifier',b'permission is hereby granted',b'redistribution and use'])
+    lowered=data.lower()
+    notice=any(token in lowered for token in [b'copyright',b'spdx-license-identifier',b'permission is hereby granted',b'redistribution and use'])
    if not notice:continue
    out=DEST/relative/file.relative_to(source)
-   if write:out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(file.read_bytes())
-   files.append({'path':str(out.relative_to(DEST)),'source_relative':str(file.relative_to(source)),'sha256':sha(file),'bytes':file.stat().st_size})
+   if write:out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(data)
+   files.append({'path':str(out.relative_to(DEST)),'source_relative':str(file.relative_to(source)),'sha256':hashlib.sha256(data).hexdigest(),'bytes':len(data)})
   files=sorted({f['path']:f for f in [*files,*supplemental_materials(p,source,relative,write)]}.values(),key=lambda f:f['path'])
   assert files,(p['name'],'missing materials')
   license=p['license'];assert license,(p['name'],'unknown SPDX declaration')

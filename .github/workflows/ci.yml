@@ -40,7 +40,7 @@ jobs:
         run: python3 -I scripts/ci_scope.py >> "$GITHUB_OUTPUT"
 
       - name: Test CI scope selection
-        run: python3 -I -m unittest discover -s Tests/CITests -v
+        run: python3 -I -m unittest discover -s Tests/CITests -p test_ci_scope.py -v
 
       # Keep the required job present for every PR instead of using workflow
       # paths-ignore (which can leave a required check pending indefinitely).
@@ -79,36 +79,27 @@ jobs:
           CARGO_NET_OFFLINE: 'false'
         run: cargo fetch --locked
 
-      - name: Run QQ offline diagnostic tests
-        if: steps.scope.outputs.full != 'false'
-        run: |
-          node --test Tests/QQBridgeTests/*.test.cjs
-          python3 -I -m unittest discover -s Tests/QQBridgeTests -p 'test_*.py' -v
-
-      # Separate steps expose timings without dropping checks or adding runners.
-      - name: Run offline Rust and streaming checks
-        if: steps.scope.outputs.full != 'false'
-        env:
-          CARGO_NET_OFFLINE: 'true'
-        run: bash scripts/test_rust.sh
-
+      # Packaging reads release products; build them before overlapping its two
+      # isolated process shards with Rust and the remaining offline suites.
       - name: Build release products
         if: steps.scope.outputs.full != 'false'
         env:
           CARGO_NET_OFFLINE: 'true'
         run: cargo build --workspace --release --locked
 
-      - name: Run loop and hook tests
+      - name: Run full offline checks in parallel
+        id: checks
         if: steps.scope.outputs.full != 'false'
         env:
           CARGO_NET_OFFLINE: 'true'
-        run: |
-          python3 -I -m unittest discover -s Tests/LoopTests -v
-          python3 -I -m unittest discover -s .claude/hooks -p 'test_*.py' -v
+        run: python3 -I scripts/ci_checks.py
 
-      - name: Run real bundle packaging tests
-        if: steps.scope.outputs.full != 'false'
-        env:
-          CARGO_NET_OFFLINE: 'true'
-        # RealBundleTests packages release products into a fresh temporary bundle.
-        run: python3 -I -m unittest discover -s Tests/PackagingTests -v
+      - name: Preserve per-check logs and timings
+        if: always() && steps.scope.outputs.full != 'false' && steps.checks.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: offline-checks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .voiceport/evidence/ci-*
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
