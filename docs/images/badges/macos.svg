@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="196" height="28" viewBox="0 0 196 28" role="img" aria-label="macOS: 13 or newer, ARM64">
+  <title>macOS: 13 or newer, ARM64</title>
+  <rect width="78" height="28" fill="#555"/>
+  <rect x="78" width="118" height="28" fill="#2563eb"/>
+  <g fill="#fff" text-anchor="middle" font-family="Verdana,DejaVu Sans,sans-serif" font-size="11" letter-spacing="1">
+    <text x="39" y="18">MACOS</text>
+    <text x="137" y="18" font-weight="bold">13+ · ARM64</text>
+  </g>
+</svg>
