@@ -1,37 +1,48 @@
-# README 配图
+# README 素材
 
-两张图通过 `image-use` 的 Codex 后端调用 `image_generation` 工具直接生成。实际返回的图像模型均为 **`gpt-image-2-codex`**，未使用社区风格、参考图或已有图片进行编辑。
+README 使用真实产品截图展示界面，再用一张机制图解释“来源 App → 插件 → VoicePort → 目标 App”。两类素材分别标注，避免把示意图当作实际界面或兼容性证据。
 
-画面采用白色背景、深蓝文字与青蓝重点色，突出产品方向：**ChatGPT、微信语音等识别引擎可以替换，快捷键和目标输入流程保持一致。**
+## 当前素材
 
-这些是产品方向插画，不是应用截图。ChatGPT 标为 `Connected`；微信语音和其他引擎标为 `Planned`，图中同时注明引擎切换尚在规划。它们不代表当前应用已能选择多个转写后端，也不代表某个编辑器、平台或完整语音输入流程已经通过验收。
+更新日期：2026-11-16。
 
-| 图片 | 用途 | 实际尺寸 | 实际质量 |
+| 图片 | 类型与内容 | 实际尺寸 | 格式与大小 |
 | --- | --- | --- | --- |
-| [voiceport-hero.png](voiceport-hero.png) | ChatGPT、微信语音与更多引擎汇入 VoicePort，再将文字送到当前光标。 | 1774 × 887 | medium |
-| [voiceport-workflow.png](voiceport-workflow.png) | 选择引擎 → 定位光标 → 说话 → 检查文字，最后由使用者自行发送。 | 1774 × 887 | medium |
+| [真实设置界面](voiceport-settings-qq-20261116.webp) | macOS 0.3.8 开发版；已配置 QQ 来源、自动输入与快捷键。 | 1240 × 1104 | 无损 WebP，53,006 字节 |
+| [插件转接机制](voiceport-app-bridge-20261116.webp) | 不同来源 App 经各自插件接入，再用于编辑器、终端与聊天输入。 | 1536 × 768 | WebP，61,466 字节 |
 
-README 的显示宽度为 880px，原图宽度超过其两倍。文件直接保留后端返回的 PNG，没有进行像素放大或锐化处理。
+截图以 620px 显示，机制图以 880px 显示，窄屏按可用宽度缩放。两张素材合计约 112 KiB。
 
-## 生成方式与实际返回
+### 真实截图
 
-- 工具：`image-use` 0.34.6。
-- 指定后端：`--backend codex`，使用已有的 Codex ChatGPT 文件登录。
-- 关闭风格与参考图：`--no-style`，两次生成均未附加图片。
-- 请求参数：`--size 3072x1536 --quality high --action generate --quiet --timeout 300`。
-- 实际结果：后端将 `quality=high` 改为 `auto`，最终两张图均返回 **1774 × 887、medium、gpt-image-2-codex**。请求尺寸与质量不等于实际输出，以上表格采用实际结果。
-- 兼容处理：使用本地临时包装，省略 0.34.6 固定的 `reasoning` 参数，未修改已安装的 CLI。上游 [issue #69](https://github.com/leeguooooo/image-use/issues/69) 记录了同一问题，0.34.7 已包含修复。后续重新生成请使用修复后的版本。
+截图来自固定安装路径中的 VoicePort，仅截取应用窗口，未拼接或替换控件、文字与状态。截图时没有开始录音、执行来源测试或修改来源配置。
 
-以下保留本次成功生成使用的完整内容提示词。
+界面展示已经配置的 QQ 来源，不能据此认为 QQ 桥接可以免配置使用或已经完成所有语音验收。接入要求见 [QQ 桥接说明](../../scripts/qq_bridge/README.md)。
 
-## 产品概念图提示词
+### 生成图
+
+- 工具：`image-use` 0.34.6；保留 `auto` 后端，因 chrome-use 未安装，实际使用 Codex。
+- 兼容处理：临时包装仅移除旧版固定发送的 `reasoning` 字段，不修改已安装 CLI。相关问题见上游 [issue #69](https://github.com/leeguooooo/image-use/issues/69)。
+- 请求：`--size 1536x1024 --format png --no-style --quiet --timeout 300`，无参考图或社区风格，一次生成完成。
+- 实际回报：`gpt-image-2-codex`、质量 `medium`、原始 PNG 为 1536 × 1024。后端另有内部提示词改写，下文记录实际提交文本。
+- 发布处理：只裁去上下空白，范围为原图 x=0…1536、y=128…896，保留全部内容；以 Pillow quality=90、method=6 转为 WebP。
+
+图中的通用 App 表示可扩展方向，每个来源仍需对应适配器。多条连接表示可选择的来源和输入位置，不表示同时调用多个识别 App 或同时向多个目标写入。具体依赖和兼容性以功能文档为准。
+
+#### 提交的提示词
 
 ```text
-Use the image_generation tool to create a crisp professional conceptual product illustration for VoicePort. This artwork must emphasize a choice of interchangeable speech recognition providers, rather than implying ChatGPT is the whole product. Wide 2:1 landscape, request 3072 by 1536 PNG. Pure white, deep navy typography, blue and cyan accents, smooth anti-aliased vector-like flat shapes, generous whitespace, no sketching, texture, rough edges or tiny text. At top exact title VoicePort and exact subtitle Your voice. Your engine. On the left, three vertically stacked clean provider cards labelled exactly ChatGPT, WeChat Voice, More engines. Each card has a smaller readable status: Connected under ChatGPT, Planned under WeChat Voice, Planned under More engines. Use generic icons only, no company logos. All three paths converge through a clean central VoicePort hub with a microphone, then one shared waveform leads right into a cyan insertion caret in a generic editor. The editor contains only the phrase Your words, right here. Along the bottom a neat shared keyboard shortcut Ctrl + Option + Space, and a readable note Product vision: provider switching is planned. The visual should communicate replace the recognition provider while keeping the same input workflow. This is explicitly a conceptual product direction, not a real screenshot or an already available provider selection interface. Keep every label large and sharply readable.
+Use the image_generation tool to render a restrained, precise software documentation figure for VoicePort. This is an explanatory schematic for a serious GitHub README, not a marketing poster. White background, ink-black modern sans-serif typography, thin cool-gray strokes, square-corner or subtly rounded rectangles, one cobalt-blue accent. No gradients, shadows, waves, giant microphones, hands, characters, plants, decorative blobs, serif typography or vendor logos. Landscape canvas 1536 by 1024, with the actual content in a wide horizontal band through the middle and generous whitespace above and below. Show the core idea with a clearly readable left-to-right path: on the left, a group titled SOURCE APPS containing three small generic application cards labeled App A, App B, App C, each with a tiny speech bubble; the middle has three corresponding small adapter cards grouped under PLUGINS, then one modest blue outlined VoicePort hub; on the right, a group titled WHERE YOU TYPE containing three simple generic target cards labeled Editor, Terminal, Chat. Connect each source app to its own plugin with a thin directional line, converge the three plugins into VoicePort, then branch VoicePort to the three targets. Above the figure place the compact exact heading Bring app speech-to-text everywhere. Below the figure place the exact short caption App capability. Plugin adapter. Any input. Use large readable labels and enough space that the route is obvious. Source applications and destination applications are independent; this is about reusing an existing app's speech recognition through an adapter, not merely switching AI models. It is an architecture concept, not a screenshot and not proof of universal compatibility. No credentials, no model metrics, no fake UI controls or download buttons.
 ```
 
-## 使用分镜提示词
+## 历史素材
 
-```text
-Use the image_generation tool to create a crisp professional four-step conceptual workflow illustration for VoicePort, a desktop voice input tool whose product direction is interchangeable recognition providers. Wide 2:1 composition, request 3072 by 1536 PNG. Pure white background, deep navy readable modern sans serif lettering, cyan and blue accents, precise smooth vector-like flat lines, no doodles, grain, fuzzy edges or rough brush marks. Four balanced columns with subtle vertical dividers. Large exact headings 01 CHOOSE, 02 FOCUS, 03 SPEAK, 04 REVIEW. In CHOOSE show three tidy generic cards: ChatGPT with status Connected, WeChat Voice with status Planned, Other engines with status Planned. Do not copy any real settings UI or company logos. In FOCUS show a generic input field with a bright insertion caret and three shortcut keycaps Ctrl, Option, Space. In SPEAK show an elegant microphone, waveform and the same text field receiving a blue word. In REVIEW show a stopped microphone, finished text field and magnifier with the caption You send it. Across the bottom a readable note Product vision: provider switching is planned. The point is choose a provider then reuse one consistent voice input flow; switching providers is a future capability, only ChatGPT is currently connected. Use sparse, large typography, conceptual icons and ample whitespace; no Enter key or automatic sending. This is product direction artwork, not a screenshot or proof of current provider switching.
-```
+[voiceport-hero.png](voiceport-hero.png) 和 [voiceport-workflow.png](voiceport-workflow.png) 是早期产品方向图，已退出当前 README。它们把来源切换标为规划中，并包含尚未接入的微信语音设想，不能作为当前功能说明。文件保留供历史引用，完整生成记录可通过本文件的 Git 历史查看。
+
+## 文档结构参考
+
+查看日期：2026-11-16。参考以下项目的信息组织，未复制文案、图片或标志：
+
+- [Zed](https://github.com/zed-industries/zed)：简短明确的产品定位，安装与开发入口优先。
+- [Tauri](https://github.com/tauri-apps/tauri)：解释架构如何支撑产品价值，区分使用与扩展入口。
+- [Home Assistant](https://github.com/home-assistant/core)：将第三方集成组织成共同的用户价值，配合真实产品界面与扩展开发入口。

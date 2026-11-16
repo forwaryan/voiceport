@@ -1,4 +1,34 @@
-# Third-party references
+# VoicePort and third-party notices
+
+## VoicePort
+
+VoicePort's own code and documentation are licensed under the MIT License in [LICENSE](LICENSE). Third-party components retain their respective licenses and notices below. The project license is reproduced here so that the app's bundled copy of this file also carries the full VoicePort notice.
+
+```text
+MIT License
+
+Copyright (c) 2026 forwaryan and contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## GPT Voice
 
 VoicePort's transcription protocol and macOS delivery design were informed by [GPT Voice](https://github.com/entropyconquers/gpt-voice/tree/0f3f29ffcb2bfe83806c0530559549b61d8f7f28). Its source was read at the pinned commit; no upstream application or its dependencies are copied from that project. The following notice is retained for source-derived portions and design attribution.
 
@@ -60,7 +90,7 @@ The Rust workspace has the following direct dependencies, with versions resolved
 | unicode-segmentation | 1.13.3 | Text delivery boundaries | MIT OR Apache-2.0 |
 | uuid | 1.29.0 | Owned recording-session identifiers | Apache-2.0 OR MIT |
 
-Full pinned native-target dependency, feature/scope and license-material inventory is now included in [resources/third-party/manifest.json](resources/third-party/manifest.json). Full applicable license/NOTICE files and supplementary attribution-bearing source files (including ring embedded BoringSSL/fiat/once_cell components) are bundled under Contents/Resources/third-party; MPL source is retained there. Dev/build materials are conservatively included and labelled; excluded-platform lock entries are not labelled actual linked dependencies. See [packaging rules](docs/PACKAGING.md) for choices, source provenance, checks and limitations. No project license or external distribution approval is asserted.
+Full pinned native-target dependency, feature/scope and license-material inventory is now included in [resources/third-party/manifest.json](resources/third-party/manifest.json). Full applicable license/NOTICE files and supplementary attribution-bearing source files (including ring embedded BoringSSL/fiat/once_cell components) are bundled under Contents/Resources/third-party; MPL source is retained there. Dev/build materials are conservatively included and labelled; excluded-platform lock entries are not labelled actual linked dependencies. See [packaging rules](docs/PACKAGING.md) for choices, source provenance, checks and limitations. This third-party inventory does not change VoicePort's MIT license or the licenses of its dependencies.
 
 VP-013 adds a target-specific `windows-sys` 0.61.2 Win32 binding dependency (MIT OR Apache-2.0) resolved in Cargo.lock; the adapter selects MIT and leaves macOS bindings cfg-excluded. Native Windows runtime packaging and its complete applicable materials remain outstanding; see docs/WINDOWS.md.
 
