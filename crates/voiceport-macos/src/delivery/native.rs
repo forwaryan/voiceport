@@ -3,6 +3,7 @@ use super::model::{
     self, Failure, KeyboardPacing, PasteTarget, Snapshot, Target, TerminalTarget, TextRange,
 };
 mod clipboard;
+mod focus;
 mod paste_key;
 mod wechat;
 use block2::RcBlock;
@@ -14,7 +15,8 @@ use core_foundation::{
 };
 use objc2::{msg_send, rc::Retained, runtime::AnyObject};
 use objc2_app_kit::{
-    NSEvent, NSEventMask, NSEventType, NSPasteboard, NSPasteboardTypeString, NSWorkspace,
+    NSEvent, NSEventMask, NSEventType, NSPasteboard, NSPasteboardTypeString, NSRunningApplication,
+    NSWorkspace,
 };
 use objc2_foundation::NSString;
 use std::{
@@ -211,13 +213,7 @@ fn set(element: CFTypeRef, name: &str, value: CFTypeRef) -> Result<(), Failure> 
 }
 
 fn focused(pid: libc::pid_t) -> Result<OwnedCf, Failure> {
-    let application =
-        OwnedCf::new(unsafe { AXUIElementCreateApplication(pid) }).ok_or(Failure::Focus)?;
-    let element = attribute(application.0, "AXFocusedUIElement").map_err(Failure::FocusRead)?;
-    if unsafe { CFGetTypeID(element.0) != AXUIElementGetTypeID() } {
-        return Err(Failure::Focus);
-    }
-    Ok(element)
+    focus::resolve(pid).map(|resolved| resolved.element)
 }
 
 /// Explicit diagnostic: reads only target metadata, never field text or permissions.
@@ -238,21 +234,46 @@ pub(super) fn diagnose_input() -> serde_json::Value {
     };
     result["pid"] = pid.into();
     result["bundle"] = bundle.into();
-    let Some(application) = OwnedCf::new(unsafe { AXUIElementCreateApplication(pid) }) else {
+    inspect_focus(pid, result)
+}
+
+/// Explicit metadata-only inspection of a running application without activation.
+/// This does not arm delivery or adopt a background application's focus.
+pub(super) fn diagnose_application(pid: libc::pid_t) -> serde_json::Value {
+    let result = serde_json::json!({
+        "mainThread": main_thread(), "accessibilityTrusted": trusted(),
+        "secureInput": secure_input(), "pid": pid,
+        "bundle": NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+            .and_then(|app| app.bundleIdentifier()).map(|id| id.to_string()),
+        "frontmost": frontmost().is_ok_and(|(current, _)| current == pid),
+    });
+    if !main_thread() || !trusted() || pid <= 0 || pid == unsafe { libc::getpid() } {
         return result;
-    };
-    let element = match attribute(application.0, "AXFocusedUIElement") {
-        Ok(element) => element,
-        Err(status) => {
-            result["focusedElementAXError"] = status.into();
+    }
+    inspect_focus(pid, result)
+}
+
+fn inspect_focus(pid: libc::pid_t, mut result: serde_json::Value) -> serde_json::Value {
+    let resolved = match focus::resolve(pid) {
+        Ok(resolved) => resolved,
+        Err(failure) => {
+            if let Failure::FocusRead(status) = failure {
+                result["focusedElementAXError"] = status.into();
+            }
+            result["failure"] = failure.message().into();
             return result;
         }
     };
-    if unsafe { CFGetTypeID(element.0) != AXUIElementGetTypeID() } {
-        result["failure"] = "Focused value is not an AX element".into();
-        return result;
+    result["focusSource"] = resolved.source.into();
+    let element = resolved.element;
+    result["bounds"] = focus::bounds(&element);
+    // Custom web editors can put draft text in AXDescription. Only Orca's
+    // dedicated terminal classification needs that attribute in diagnostics.
+    let mut names = vec!["AXRole", "AXSubrole", "AXIdentifier"];
+    if result["bundle"] == ORCA {
+        names.push("AXDescription");
     }
-    for name in ["AXRole", "AXSubrole", "AXDescription", "AXIdentifier"] {
+    for name in names {
         match attribute(element.0, name) {
             Ok(value) => result[name] = value.string(1_000).into(),
             Err(status) => result[format!("{name}Error")] = status.into(),

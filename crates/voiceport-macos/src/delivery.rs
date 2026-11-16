@@ -534,6 +534,12 @@ impl Delivery {
         native::diagnose_input()
     }
 
+    /// Metadata-only diagnosis for an explicitly selected running application.
+    /// Does not activate it, read field text, or create a delivery session.
+    pub fn diagnose_application(pid: i32) -> serde_json::Value {
+        native::diagnose_application(pid)
+    }
+
     /// Exercises the production delivery path only against our isolated fixture.
     pub fn input_self_test() -> serde_json::Value {
         fn settle(delivery: &mut Delivery) -> Option<String> {
