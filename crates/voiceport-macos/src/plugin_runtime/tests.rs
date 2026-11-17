@@ -623,3 +623,61 @@ fn wav_conversion_is_bounded_and_preserves_pcm() {
     cancel.cancel();
     assert!(convert(&file, &cancel).is_err());
 }
+
+#[tokio::test]
+async fn cloud_base_configuration_reaches_production_multipart_with_expanded_languages() {
+    for language in ["", "ja", "ko", "fr", "ar", "hi", "yue"] {
+        let server = serve(
+            response("200 OK", br#"{"text":"fixture multilingual"}"#),
+            Duration::ZERO,
+        );
+        let origin = reqwest::Url::parse(&server.endpoint)
+            .unwrap()
+            .origin()
+            .ascii_serialization();
+        let endpoint =
+            crate::cloud_models::transcription_endpoint(&format!("{origin}/v1/"), None).unwrap();
+        let mut cfg = config(endpoint);
+        cfg.remove("api_key");
+        let result = http(
+            &cfg,
+            sample(),
+            language,
+            &CancellationToken::new(),
+            Duration::from_secs(2),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, "fixture multilingual");
+        let bytes = server.request();
+        let request = String::from_utf8_lossy(&bytes);
+        assert!(request.starts_with("POST /v1/audio/transcriptions HTTP/1.1\r\n"));
+        assert!(!request.contains("audio/transcriptions/audio/transcriptions"));
+        assert!(request.contains("name=\"model\"\r\n\r\nfixture-model\r\n"));
+        assert!(!request.contains("authorization:") && !request.contains("chatgpt-account-id"));
+        if language.is_empty() {
+            assert!(!request.contains("name=\"language\""));
+        } else {
+            assert!(request.contains(&format!("name=\"language\"\r\n\r\n{language}\r\n")));
+        }
+        let audio = sample();
+        assert!(bytes.windows(audio.len()).any(|w| w == audio));
+        server.finish().await;
+    }
+    let server = serve(vec![], Duration::ZERO);
+    for language in ["xx", "ja\r\nmodel=other", "JA"] {
+        let result = http(
+            &config(server.endpoint.clone()),
+            sample(),
+            language,
+            &CancellationToken::new(),
+            Duration::from_secs(2),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "语言代码无效。");
+        assert!(!server.received.load(Ordering::SeqCst));
+    }
+    drop(server);
+}

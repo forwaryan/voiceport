@@ -4,6 +4,14 @@
 
 一个插件是一种接入方式，一个来源是该插件的一份配置。每次听写只使用一个选定来源。可以为同一兼容 HTTP 插件配置多个服务，不需要 Orca 模型或 ChatGPT 登录；现有 ChatGPT、Paraformer 和 Whisper 仍保留。插件清单、JSONL 扩展协议及参考适配器见 [转写插件](TRANSCRIPTION_PLUGINS.md)。
 
+## 模型窗口中的云端配置
+
+「语音模型… → 云端」提供 **GPT Transcribe** 与 **OpenAI-compatible** 两个入口。前者预填 OpenAI 的 API 基础地址与 `gpt-4o-transcribe`，使用独立 API 密钥和服务计费；不复用 ChatGPT 登录。后者可连接兼容服务或本机服务器。
+
+配置包含显示名称、基础 URL、模型和可选 API 密钥。例如 `https://api.groq.com/openai/v1` 会转换为 `https://api.groq.com/openai/v1/audio/transcriptions`；已经带完整标准路径时不重复追加。基础 URL 不接受查询参数、用户名、密码或 fragment；本地服务器可使用 loopback HTTP 并留空密钥。未改动的旧自定义完整 endpoint 在编辑时原样保留。
+
+保存后配置显示在云端列表，可编辑、移除或点击「使用」。保存和启用不联网、不录音，也不自动选择；只有之后主动听写或显式测试才向所选地址发送音频。每行显示音频目的地，质量显示「未测量」，配置完成不代表服务已连通。移除当前来源保留不可用选择，不自动回退。
+
 ## 添加兼容服务
 
 在「设置 → 管理来源…」点击「添加转写方式… → 连接兼容 API…」，直接填写服务信息，**不需要下载插件或准备 JSON 文件**。服务须支持 OpenAI 兼容的音频文件转写接口；官网地址、聊天接口和控制台链接不能当作转写接口使用。也可在插件库的 HTTP 卡片点击「填写服务信息…」。
@@ -33,7 +41,7 @@
 | `file` | `dictation.wav`、`Content-Type: audio/wav`。 |
 | `model` | 配置中的音频模型标识。 |
 | `response_format` | `json`。 |
-| `language` | 显式中文为 `zh`，English 为 `en`，自动时省略。 |
+| `language` | 按选择发送稳定语言代码，如 `zh`、`en`、`ja`、`ko`、`fr`、`ar`、`hi`；自动时省略。服务的支持范围以其文档为准。 |
 | `Authorization` | 有独立 key 时 `Bearer <此来源密钥>`，无 key 时省略。 |
 
 成功要求 HTTP 2xx 和 JSON 对象内的字符串 `text`，额外字段忽略：

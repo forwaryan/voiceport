@@ -13,6 +13,7 @@
  X(SherpaOnnxDecodeOnlineStream) X(SherpaOnnxGetOnlineStreamResultAsJson) \
  X(SherpaOnnxDestroyOnlineStreamResultJson) X(SherpaOnnxOnlineStreamInputFinished) \
  X(SherpaOnnxOnlineStreamIsEndpoint) X(SherpaOnnxOnlineStreamReset) \
+ X(SherpaOnnxOnlineStreamSetOption) \
  X(SherpaOnnxCreateOfflineRecognizer) X(SherpaOnnxDestroyOfflineRecognizer) \
  X(SherpaOnnxCreateOfflineStream) X(SherpaOnnxDestroyOfflineStream) \
  X(SherpaOnnxAcceptWaveformOffline) X(SherpaOnnxDecodeOfflineStream) \
@@ -33,7 +34,21 @@ struct Runtime {
   catch (...) { snprintf(target, capacity, "Unknown native inference exception"); }
 
 // Keep these values aligned with ModelKind::native_mode in local_models.rs.
-enum ModelMode { Paraformer = 1, WhisperTiny = 2, WhisperTurbo = 3, SenseVoice = 4 };
+enum ModelMode {
+  Paraformer = 1, WhisperTiny = 2, WhisperTurbo = 3, SenseVoice = 4,
+  ParakeetTdtV3 = 5, ParakeetTdtV2 = 6, ParakeetUnified = 7, Nemotron = 8
+};
+
+// The pinned 2.0.1 C ABI (af2d8d81dbfa61c4cea4c568da78f3982edca005)
+// preserves the online/model layouts in our vendored 1.12.37 header. The
+// offline recognizer config adds only this zero-default CTC/FST tail. Supply
+// its full storage to 2.0.1; 1.12.37 reads the original prefix. Keeping both
+// version checks permits existing installations to keep their working engine.
+struct OfflineConfigStorage {
+  SherpaOnnxOfflineRecognizerConfig config = {};
+  const char *ctc_fst_graph = nullptr;
+  int32_t ctc_fst_max_active = 0;
+};
 
 extern "C" {
 void vp_local_close(Runtime *r) {
@@ -47,17 +62,30 @@ void vp_local_close(Runtime *r) {
 }
 const char *vp_local_error(Runtime *r) { return r->error; }
 Runtime *vp_local_open(const char *directory, const char *encoder,
-    const char *decoder, const char *tokens, const char *language,
-    int mode, char *error, size_t capacity) {
-  if (mode < Paraformer || mode > SenseVoice) {
+    const char *decoder, const char *joiner, const char *tokens, const char *language,
+    const char *version, int mode, char *error, size_t capacity) {
+  if (mode < Paraformer || mode > Nemotron) {
     snprintf(error, capacity, "Unsupported local model mode: %d", mode);
+    return nullptr;
+  }
+  if (!version || (strcmp(version, "1.12.37") != 0 && strcmp(version, "2.0.1") != 0)) {
+    snprintf(error, capacity, "Unsupported sherpa-onnx ABI requested");
+    return nullptr;
+  }
+  if ((mode == ParakeetUnified || mode == Nemotron) && strcmp(version, "2.0.1") != 0) {
+    snprintf(error, capacity, "This streaming model requires sherpa-onnx 2.0.1");
+    return nullptr;
+  }
+  if (mode >= ParakeetTdtV3 && (!joiner || !joiner[0])) {
+    snprintf(error, capacity, "Transducer model requires a joiner");
     return nullptr;
   }
   Runtime *r = nullptr;
   try { r = new Runtime; } CATCH_ERROR(error, capacity)
   if (!r) return nullptr;
   char path[4096];
-  if (snprintf(path, sizeof(path), "%s/libonnxruntime.1.23.2.dylib", directory) >= (int)sizeof(path)) goto fail;
+  if (snprintf(path, sizeof(path), "%s/%s", directory,
+      strcmp(version, "2.0.1") == 0 ? "libonnxruntime.dylib" : "libonnxruntime.1.23.2.dylib") >= (int)sizeof(path)) goto fail;
   r->ort = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
   if (!r->ort) { snprintf(error, capacity, "ONNX Runtime: %s", dlerror()); goto fail; }
   if (snprintf(path, sizeof(path), "%s/libsherpa-onnx-c-api.dylib", directory) >= (int)sizeof(path)) goto fail;
@@ -68,17 +96,25 @@ Runtime *vp_local_open(const char *directory, const char *encoder,
   if (!r->name) { snprintf(error, capacity, "Missing runtime symbol: %s", #name); goto fail; }
   FUNCTIONS(LOAD)
 #undef LOAD
-  if (strcmp(r->SherpaOnnxGetVersionStr(), "1.12.37") != 0) {
-    snprintf(error, capacity, "Unsupported sherpa-onnx ABI: %s (requires 1.12.37)", r->SherpaOnnxGetVersionStr());
+  if (strcmp(r->SherpaOnnxGetVersionStr(), version) != 0) {
+    snprintf(error, capacity, "Unsupported sherpa-onnx ABI: %s (requires %s)", r->SherpaOnnxGetVersionStr(), version);
     goto fail;
   }
   try {
-    if (mode == Paraformer) {
+    if (mode == Paraformer || mode == ParakeetUnified || mode == Nemotron) {
       SherpaOnnxOnlineRecognizerConfig c = {};
       c.feat_config.sample_rate = 16000;
-      c.feat_config.feature_dim = 80;
-      c.model_config.paraformer.encoder = encoder;
-      c.model_config.paraformer.decoder = decoder;
+      c.feat_config.feature_dim = mode == Paraformer ? 80 : 128;
+      if (mode == Paraformer) {
+        c.model_config.paraformer.encoder = encoder;
+        c.model_config.paraformer.decoder = decoder;
+      } else {
+        c.model_config.transducer.encoder = encoder;
+        c.model_config.transducer.decoder = decoder;
+        c.model_config.transducer.joiner = joiner;
+        // Unified is selected by its dedicated streaming_model_type metadata;
+        // NeMo multilingual decoding reads the encoder's prompt dictionary.
+      }
       c.model_config.tokens = tokens;
       c.model_config.num_threads = 2;
       c.model_config.provider = "cpu";
@@ -88,14 +124,24 @@ Runtime *vp_local_open(const char *directory, const char *encoder,
       c.rule2_min_trailing_silence = 1.2f;
       c.rule3_min_utterance_length = 20;
       r->online = r->SherpaOnnxCreateOnlineRecognizer(&c);
-      if (!r->online) { snprintf(error, capacity, "Cannot load Paraformer model"); goto fail; }
+      if (!r->online) { snprintf(error, capacity, "Cannot load streaming ASR model"); goto fail; }
       r->stream = r->SherpaOnnxCreateOnlineStream(r->online);
-      if (!r->stream) { snprintf(error, capacity, "Cannot create Paraformer stream"); goto fail; }
+      if (!r->stream) { snprintf(error, capacity, "Cannot create ASR stream"); goto fail; }
+      if (mode == Nemotron) {
+        // Set once at capture/retry creation; stream reset preserves options.
+        r->SherpaOnnxOnlineStreamSetOption(r->stream, "language", language[0] ? language : "auto");
+      }
     } else {
-      SherpaOnnxOfflineRecognizerConfig c = {};
+      OfflineConfigStorage storage;
+      auto &c = storage.config;
       c.feat_config.sample_rate = 16000;
-      c.feat_config.feature_dim = mode == WhisperTurbo ? 128 : 80;
-      if (mode == SenseVoice) {
+      c.feat_config.feature_dim = (mode == WhisperTurbo || mode == ParakeetTdtV3 || mode == ParakeetTdtV2) ? 128 : 80;
+      if (mode == ParakeetTdtV3 || mode == ParakeetTdtV2) {
+        c.model_config.transducer.encoder = encoder;
+        c.model_config.transducer.decoder = decoder;
+        c.model_config.transducer.joiner = joiner;
+        c.model_config.model_type = "nemo_transducer";
+      } else if (mode == SenseVoice) {
         c.model_config.sense_voice.model = encoder;
         c.model_config.sense_voice.language = language[0] ? language : "auto";
         c.model_config.sense_voice.use_itn = 1;
@@ -116,6 +162,8 @@ Runtime *vp_local_open(const char *directory, const char *encoder,
       r->offline = r->SherpaOnnxCreateOfflineRecognizer(&c);
       if (!r->offline) {
         const char *name = mode == SenseVoice ? "SenseVoice" :
+            mode == ParakeetTdtV3 ? "Parakeet TDT v3" :
+            mode == ParakeetTdtV2 ? "Parakeet TDT v2" :
             mode == WhisperTurbo ? "Whisper Large v3 Turbo" : "Whisper Tiny";
         snprintf(error, capacity, "Cannot load %s model", name);
         goto fail;

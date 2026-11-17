@@ -118,17 +118,40 @@ fn official_download_installs_engine_and_model_and_decodes_silence() {
     let id = std::env::var("VOICEPORT_TEST_MODEL")
         .unwrap_or_else(|_| crate::local_models::WHISPER.into());
     let definition = MODELS.iter().find(|d| d.id == id).expect("known model ID");
-    println!(
-        "Downloading pinned {} ({} model bytes)",
-        definition.id,
-        definition.bytes()
-    );
+    // Exercise the current downloadable engine even when a compatible legacy
+    // Orca runtime is present on this development machine.
+    runtime()
+        .block_on(install_runtime(
+            &paths,
+            &client().unwrap(),
+            &AtomicBool::new(false),
+            &Mutex::new(Progress::default()),
+        ))
+        .unwrap();
+    let import = std::env::var_os("VOICEPORT_TEST_IMPORT_DIR").map(PathBuf::from);
+    let operation = if let Some(import) = import {
+        assert!(import.is_absolute(), "explicit import must be absolute");
+        println!(
+            "Importing pinned {} from {} ({} model bytes)",
+            definition.id,
+            import.display(),
+            definition.bytes()
+        );
+        Operation::Import(import)
+    } else {
+        println!(
+            "Downloading pinned {} ({} model bytes)",
+            definition.id,
+            definition.bytes()
+        );
+        Operation::Download
+    };
     let started = std::time::Instant::now();
     runtime()
         .block_on(install(
             &paths,
             definition,
-            Operation::Download,
+            operation,
             &AtomicBool::new(false),
             &Mutex::new(Progress::default()),
         ))
@@ -138,6 +161,13 @@ fn official_download_installs_engine_and_model_and_decodes_silence() {
     crate::local_runtime::probe(&model, "", &voiceport_core::CancellationToken::new()).unwrap();
     assert_eq!(stages(&paths), 0);
     assert!(paths.runtime().join("LICENSE-sherpa-onnx.txt").is_file());
+    assert_eq!(paths.installation(definition), Installation::Current);
+    for (name, text) in bundled_notices(definition.kind) {
+        assert_eq!(
+            fs::read_to_string(paths.model(definition).join(name)).unwrap(),
+            text
+        );
+    }
     assert!(
         paths
             .runtime()
@@ -182,10 +212,10 @@ fn fixture() -> (tempfile::TempDir, Paths, PathBuf) {
     fs::create_dir_all(paths.runtime()).unwrap();
     fs::write(
         paths.runtime().join("package.json"),
-        br#"{"version":"1.12.37"}"#,
+        br#"{"version":"2.0.1"}"#,
     )
     .unwrap();
-    for name in ["libsherpa-onnx-c-api.dylib", "libonnxruntime.1.23.2.dylib"] {
+    for name in ["libsherpa-onnx-c-api.dylib", "libonnxruntime.dylib"] {
         fs::write(
             paths.runtime().join(name),
             [0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0, 0, 1],
@@ -235,17 +265,19 @@ fn import_publishes_verified_copy_without_modifying_source() {
             b"abc"
         );
     }
-    assert!(
-        runtime()
-            .block_on(install(
-                &paths,
-                &TEST_MODEL,
-                Operation::Import(source.clone()),
-                &cancel,
-                &progress
-            ))
-            .is_err()
-    );
+    fs::write(paths.model(&TEST_MODEL).join("old-format-marker"), "old").unwrap();
+    runtime()
+        .block_on(install(
+            &paths,
+            &TEST_MODEL,
+            Operation::Import(source.clone()),
+            &cancel,
+            &progress,
+        ))
+        .unwrap();
+    assert!(!paths.model(&TEST_MODEL).join("old-format-marker").exists());
+    assert_eq!(paths.installation(&TEST_MODEL), Installation::Current);
+    assert_eq!(stages(&paths), 0);
     remove(&paths, &TEST_MODEL, &cancel).unwrap();
     assert!(source.is_dir());
     assert!(!paths.model(&TEST_MODEL).exists());
@@ -365,6 +397,22 @@ fn every_catalog_model_import_requires_complete_matching_files() {
             assert_eq!(stages(&paths), 0);
             if case == "ok" {
                 assert_eq!(paths.discover(&definition).unwrap().kind, official.kind);
+                assert_eq!(paths.installation(&definition), Installation::Current);
+                for (name, text) in bundled_notices(official.kind) {
+                    assert_eq!(
+                        fs::read_to_string(paths.model(&definition).join(name)).unwrap(),
+                        text
+                    );
+                }
+                if matches!(
+                    official.kind,
+                    ModelKind::ParakeetTdtV3
+                        | ModelKind::ParakeetTdtV2
+                        | ModelKind::ParakeetUnified
+                        | ModelKind::Nemotron
+                ) {
+                    assert!(paths.discover(&definition).unwrap().joiner.is_some());
+                }
                 if official.kind == ModelKind::SenseVoice {
                     let license =
                         fs::read_to_string(paths.model(&definition).join("MODEL_LICENSE.txt"))
@@ -412,11 +460,22 @@ fn catalog_retains_ids_and_pins_distinct_complete_artifacts() {
     use crate::local_models::*;
     assert_eq!(
         MODELS.iter().map(|d| d.id).collect::<Vec<_>>(),
-        [PARAFORMER, WHISPER, SENSEVOICE, WHISPER_TURBO]
+        [
+            PARAFORMER,
+            WHISPER,
+            SENSEVOICE,
+            WHISPER_TURBO,
+            PARAKEET_TDT_V3,
+            PARAKEET_TDT_V2,
+            PARAKEET_UNIFIED,
+            NEMOTRON
+        ]
     );
     assert_eq!(
         MODELS.iter().map(Definition::bytes).collect::<Vec<_>>(),
-        [237202501, 103609903, 239549735, 1036613791]
+        [
+            237202501, 103609903, 239549735, 1036613791, 670576784, 661288526, 663048978, 682215356
+        ]
     );
     let mut ids = std::collections::BTreeSet::new();
     for definition in MODELS {
@@ -442,6 +501,122 @@ fn catalog_retains_ids_and_pins_distinct_complete_artifacts() {
             assert!(asset.bytes > 0);
         }
     }
+}
+#[test]
+fn failed_reinstallation_preserves_usable_copy_and_staging_is_removed() {
+    for case in ["corrupt", "missing", "cancelled", "symlink"] {
+        let (_temp, paths, source) = fixture();
+        runtime()
+            .block_on(install(
+                &paths,
+                &TEST_MODEL,
+                Operation::Import(source.clone()),
+                &AtomicBool::new(false),
+                &Mutex::new(Progress::default()),
+            ))
+            .unwrap();
+        let before = fs::read(paths.model(&TEST_MODEL).join("VOICEPORT_MODEL.json")).unwrap();
+        let file = source.join(TEST_MODEL.assets[1].name);
+        match case {
+            "corrupt" => fs::write(&file, b"xyz").unwrap(),
+            "missing" => fs::remove_file(&file).unwrap(),
+            "symlink" => {
+                fs::remove_file(&file).unwrap();
+                std::os::unix::fs::symlink(source.join(TEST_MODEL.assets[0].name), &file).unwrap();
+            }
+            _ => {}
+        }
+        let error = runtime()
+            .block_on(install(
+                &paths,
+                &TEST_MODEL,
+                Operation::Import(source),
+                &AtomicBool::new(case == "cancelled"),
+                &Mutex::new(Progress::default()),
+            ))
+            .unwrap_err();
+        assert!(!error.is_empty());
+        assert_eq!(
+            paths.installation(&TEST_MODEL),
+            Installation::Current,
+            "{case}"
+        );
+        assert_eq!(
+            fs::read(paths.model(&TEST_MODEL).join("VOICEPORT_MODEL.json")).unwrap(),
+            before
+        );
+        for asset in TEST_MODEL.assets {
+            assert_eq!(
+                fs::read(paths.model(&TEST_MODEL).join(asset.name)).unwrap(),
+                b"abc"
+            );
+        }
+        assert_eq!(stages(&paths), 0);
+    }
+}
+#[test]
+fn installation_distinguishes_current_legacy_incompatible_and_special_notices() {
+    let (_temp, paths, source) = fixture();
+    assert_eq!(paths.installation(&TEST_MODEL), Installation::Missing);
+    runtime()
+        .block_on(install(
+            &paths,
+            &TEST_MODEL,
+            Operation::Import(source),
+            &AtomicBool::new(false),
+            &Mutex::new(Progress::default()),
+        ))
+        .unwrap();
+    assert_eq!(paths.installation(&TEST_MODEL), Installation::Current);
+    let receipt = paths.model(&TEST_MODEL).join("VOICEPORT_MODEL.json");
+    fs::remove_file(&receipt).unwrap();
+    assert_eq!(paths.installation(&TEST_MODEL), Installation::Legacy);
+    assert!(paths.discover(&TEST_MODEL).is_ok());
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(receipt.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    assert_eq!(paths.installation(&TEST_MODEL), Installation::Legacy);
+    fs::write(
+        paths.model(&TEST_MODEL).join(TEST_MODEL.assets[0].name),
+        "wrong-format",
+    )
+    .unwrap();
+    assert_eq!(paths.installation(&TEST_MODEL), Installation::Incompatible);
+    assert!(paths.discover(&TEST_MODEL).is_err());
+}
+#[test]
+fn model_licenses_and_exact_multilingual_nemotron_provenance_are_bundled() {
+    for (license, expected) in [
+        (
+            catalog::CC_BY_4_LICENSE,
+            "9ba9550ad48438d0836ddab3da480b3b69ffa0aac7b7878b5a0039e7ab429411",
+        ),
+        (
+            catalog::NVIDIA_OPEN_MODEL_LICENSE,
+            "ce3f3dfe1955f49a899892ad379c02a8ac74d71899c1e2532e5a122a852b4ea7",
+        ),
+        (
+            catalog::OPENMDW_LICENSE,
+            "4b126232937611510f638632b554733444bd8523023be54bdb64adaf529f3a26",
+        ),
+    ] {
+        assert_eq!(
+            hex(ring::digest::digest(&SHA256, license.as_bytes()).as_ref()),
+            expected
+        );
+    }
+    let nemotron = MODELS
+        .iter()
+        .find(|d| d.kind == ModelKind::Nemotron)
+        .unwrap();
+    assert!(nemotron.assets.iter().all(|a| {
+        a.url
+            .contains("sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8")
+    }));
+    assert!(catalog::NEMOTRON_ATTRIBUTION.contains("nvidia/nemotron-3.5-asr-streaming-0.6b/tree/"));
+    assert!(!catalog::NEMOTRON_ATTRIBUTION.contains("nemotron-speech-streaming-en"));
+    assert!(catalog::OPENMDW_LICENSE.contains("all copyright notices and other notices of origin"));
+    assert_eq!(runtime_bytes(), 10339327);
 }
 #[test]
 fn lock_excludes_second_writer_and_releases_after_drop() {

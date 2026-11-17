@@ -1,21 +1,29 @@
 //! Native model library. One retained window owns installation and its admission lock.
 use super::*;
-use crate::model_library::{Definition, Job, MODELS, Operation, Paths};
+use crate::model_library::{Definition, Installation, Job, MODELS, Operation, Paths};
 use block2::RcBlock;
 use objc2::Message;
 use std::path::PathBuf;
+mod cloud;
 
 struct Row {
     definition: &'static Definition,
     view: Retained<NSView>,
     status: Retained<NSTextField>,
+    compatibility: Retained<NSTextField>,
     primary: Retained<NSButton>,
     import: Retained<NSButton>,
+    update: Retained<NSButton>,
+    details: Retained<NSButton>,
     remove: Retained<NSButton>,
 }
 pub(super) struct State {
     owner: Retained<Delegate>,
     paths: Paths,
+    cloud: cloud::State,
+    page_tabs: OnceCell<Retained<NSSegmentedControl>>,
+    caption: OnceCell<Retained<NSTextField>>,
+    footer: OnceCell<Retained<NSTextField>>,
     window: OnceCell<Retained<NSWindow>>,
     rows: RefCell<Vec<Row>>,
     notice: OnceCell<Retained<NSTextField>>,
@@ -74,10 +82,21 @@ define_class!(
             if !self.ready() { return; }
             let usable = self.ivars().owner.ivars().controller.borrow().as_ref()
                 .is_some_and(|c| c.catalog.snapshot(d.id).is_ok());
+            if usable && !self.ivars().owner.ivars().controller.borrow().as_ref().is_some_and(|c| d.kind.supports_language(&c.language)) {
+                self.notice("此模型不支持所选语言，请更改语言后使用。"); return;
+            }
             if usable {
                 self.ivars().owner.with_controller(|c| self.ivars().owner.set_source(c, d.id.into()));
                 self.refresh(); self.ivars().owner.refresh();
             } else { self.start(d, Operation::Download); }
+        }
+        #[unsafe(method(modelUpdate:))]
+        fn update_action(&self, sender: &NSButton) {
+            if let Some(d) = self.definition(sender) { self.start(d, Operation::Download); }
+        }
+        #[unsafe(method(modelDetails:))]
+        fn details_action(&self, sender: &NSButton) {
+            if let Some(d) = self.definition(sender) { self.show_details(d); }
         }
         #[unsafe(method(modelImport:))]
         fn import_action(&self, sender: &NSButton) {
@@ -93,6 +112,15 @@ define_class!(
             let list = self.ivars().list.get().unwrap();
             list.scrollPoint(NSPoint::new(0., list.frame().size.height));
         }
+        #[unsafe(method(modelPage:))]
+        fn page_action(&self, _sender: Option<&AnyObject>) {
+            self.refresh();
+            if self.ivars().job.borrow().is_none() {
+                self.notice(if self.ivars().page_tabs.get().unwrap().selectedSegment() == 1 { "添加或编辑服务配置，再点击「使用」选择。保存不发送请求或音频。" } else { "下载或导入模型后，点击「使用」切换；旧副本更新失败时会保留。" });
+            }
+        }
+        #[unsafe(method(modelCloudItem:))]
+        fn cloud_item_action(&self, sender: &NSButton) { self.cloud_action(sender); }
         #[unsafe(method(modelCancel:))]
         fn cancel_action(&self, _sender: Option<&AnyObject>) { self.cancel_job(); }
         #[unsafe(method(modelEngine:))]
@@ -100,7 +128,7 @@ define_class!(
         #[unsafe(method(modelLanguage:))]
         fn language_action(&self, _sender: Option<&AnyObject>) {
             if !self.ready() { return; }
-            let language = match self.ivars().language.get().unwrap().indexOfSelectedItem() { 1 => "zh", 2 => "en", _ => "" };
+            let language = voiceport_core::language::code(self.ivars().language.get().unwrap().indexOfSelectedItem() as usize);
             self.ivars().owner.with_controller(|c| {
                 c.language = language.into();
                 unsafe { NSUserDefaults::standardUserDefaults().setObject_forKey(Some(&NSString::from_str(language)), ns_string!("language")); }
@@ -110,7 +138,7 @@ define_class!(
     }
 );
 impl Manager {
-    fn window(&self) -> &NSWindow {
+    pub(in crate::app) fn window(&self) -> &NSWindow {
         self.ivars().window.get().unwrap()
     }
     pub(super) fn bring_forward(&self) {
@@ -149,6 +177,7 @@ impl Manager {
         }
     }
     pub(super) fn shutdown(&self) {
+        self.close_cloud_editor();
         self.ivars().shutting_down.set(true);
         if self.ivars().job.borrow().is_some() {
             self.cancel_job();
@@ -229,8 +258,37 @@ impl Manager {
             }
         }
         let ready = self.ready();
+        let cloud_page = self.ivars().page_tabs.get().unwrap().selectedSegment() == 1;
+        self.ivars().scroll.get().unwrap().setHidden(cloud_page);
+        self.ivars().tabs.get().unwrap().setHidden(cloud_page);
+        self.ivars().engine.get().unwrap().setHidden(cloud_page);
+        self.ivars()
+            .cloud
+            .scroll
+            .get()
+            .unwrap()
+            .setHidden(!cloud_page);
+        self.ivars().page_tabs.get().unwrap().setEnabled(ready);
+        self.ivars()
+            .caption
+            .get()
+            .unwrap()
+            .setStringValue(&NSString::from_str(if cloud_page {
+                "选中云端来源后才发送音频。保存配置不会联网、录音或切换来源。"
+            } else {
+                "按语言和用途选择模型。下载后可离线识别，音频留在这台电脑。"
+            }));
+        self.ivars()
+            .footer
+            .get()
+            .unwrap()
+            .setStringValue(&NSString::from_str(if cloud_page {
+                "云端服务使用独立配置与系统钥匙串；不会复用 ChatGPT 登录。"
+            } else {
+                "导入对应的固定 ONNX 文件集；模型许可和来源说明随副本保留。"
+            }));
         let engine_ready = crate::local_models::validate_runtime(
-            &self.ivars().paths.runtime_or_orca(),
+            &self.ivars().paths.runtime(),
             std::env::consts::ARCH,
         )
         .is_ok();
@@ -245,6 +303,9 @@ impl Manager {
         let Some(c) = slot.as_ref() else {
             return;
         };
+        if cloud_page {
+            self.render_cloud(&c.source_id, ready && self.cloud_store().is_ok());
+        }
         let current = c.catalog.entries.iter().find(|e| e.id == c.source_id);
         self.ivars()
             .current
@@ -297,6 +358,7 @@ impl Manager {
                     .setFrameOrigin(NSPoint::new(0., list_height - (position + 1) as f64 * 116.));
                 position += 1;
             }
+            let installation = self.ivars().paths.installation(row.definition);
             let working = self.ivars().active_model.get() == Some(row.definition.id);
             let status = if working {
                 if self.ivars().cancelling.get() {
@@ -305,7 +367,13 @@ impl Manager {
                     "正在处理文件…"
                 }
             } else if usable {
-                if selected {
+                if installation == Installation::Legacy {
+                    if selected {
+                        "✓ 使用中 · 可更新"
+                    } else {
+                        "旧副本可用 · 可更新"
+                    }
+                } else if selected {
                     "✓ 使用中"
                 } else if own {
                     "已安装"
@@ -317,6 +385,19 @@ impl Manager {
             } else {
                 "未安装"
             };
+            let compatible = row.definition.kind.supports_language(&c.language);
+            row.compatibility
+                .setStringValue(&NSString::from_str(if compatible {
+                    "质量：未测量"
+                } else {
+                    "不支持所选语言"
+                }));
+            let compatibility_color = if compatible {
+                NSColor::secondaryLabelColor()
+            } else {
+                NSColor::systemOrangeColor()
+            };
+            row.compatibility.setTextColor(Some(&compatibility_color));
             row.status.setStringValue(&NSString::from_str(status));
             let status_color = if selected && usable {
                 NSColor::controlAccentColor()
@@ -329,13 +410,26 @@ impl Manager {
             row.primary.setTitle(&NSString::from_str(if usable {
                 if selected { "使用中" } else { "使用" }
             } else if own {
-                "需重新安装"
+                "更新 / 重装"
             } else {
                 "下载"
             }));
             row.primary
-                .setEnabled(ready && !(usable && selected) && (usable || !own));
+                .setEnabled(ready && !(usable && selected) && (!usable || compatible));
             row.import.setEnabled(ready && !own);
+            row.update.setHidden(!own || !usable);
+            row.update.setTitle(&NSString::from_str(
+                if installation == Installation::Legacy {
+                    "更新"
+                } else {
+                    "重装"
+                },
+            ));
+            row.update.setEnabled(ready && own && usable);
+            row.update.setToolTip(Some(ns_string!(
+                "校验完整的新副本后再替换；失败或取消会保留旧副本。"
+            )));
+            row.details.setEnabled(ready);
             row.remove.setEnabled(ready && own && !selected);
             row.remove.setToolTip(Some(&NSString::from_str(if selected {
                 "请先选择其他转写来源，再删除此模型。"
@@ -356,15 +450,67 @@ impl Manager {
             .unwrap()
             .setHidden(self.ivars().job.borrow().is_none());
         self.ivars().language.get().unwrap().setEnabled(ready);
-        let index = match c.language.as_str() {
-            "zh" => 1,
-            "en" => 2,
-            _ => 0,
-        };
+        self.ivars()
+            .cancel
+            .get()
+            .unwrap()
+            .setHidden(cloud_page && self.ivars().job.borrow().is_none());
+        let index = voiceport_core::language::index(&c.language) as isize;
         let language = self.ivars().language.get().unwrap();
         if language.indexOfSelectedItem() != index {
             language.selectItemAtIndex(index);
         }
+    }
+    fn show_details(&self, d: &'static Definition) {
+        if !self.ready() {
+            return;
+        }
+        let alert = NSAlert::new(self.mtm());
+        alert.setMessageText(&NSString::from_str(d.name));
+        alert.setInformativeText(ns_string!(
+            "固定 ONNX int8 文件集。下载和导入均校验完整大小与 SHA-256；质量未测量。"
+        ));
+        alert.addButtonWithTitle(ns_string!("完成"));
+        let scroll =
+            NSScrollView::initWithFrame(NSScrollView::alloc(self.mtm()), rect(0., 0., 540., 300.));
+        scroll.setHasVerticalScroller(true);
+        scroll.setAutohidesScrollers(true);
+        let text =
+            NSTextView::initWithFrame(NSTextView::alloc(self.mtm()), rect(0., 0., 520., 300.));
+        text.setEditable(false);
+        text.setSelectable(true);
+        text.setFont(Some(&NSFont::systemFontOfSize(12.)));
+        text.setTextColor(Some(&NSColor::textColor()));
+        text.setTextContainerInset(NSSize::new(6., 6.));
+        let mut details = format!(
+            "来源 ID：{}\n支持语言：{}\n模型下载：{}（{} bytes）\n共享引擎：sherpa-onnx {}，另计 {}\n\n",
+            d.id,
+            d.languages,
+            model_size(d.bytes()),
+            d.bytes(),
+            crate::local_models::RUNTIME_VERSION,
+            model_size(crate::model_library::runtime_bytes())
+        );
+        for asset in d.assets {
+            details.push_str(&format!(
+                "{}\n{} bytes\nSHA-256：{}\n{}\n\n",
+                asset.name, asset.bytes, asset.sha256, asset.url
+            ));
+        }
+        for (name, material) in crate::model_library::bundled_notices(d.kind) {
+            details.push_str(&format!("{name}\n{material}\n\n"));
+        }
+        text.setString(&NSString::from_str(&details));
+        text.setAccessibilityLabel(Some(ns_string!("模型固定版本与许可详情")));
+        scroll.setDocumentView(Some(&text));
+        alert.setAccessoryView(Some(&scroll));
+        let manager = self.retain();
+        let callback = RcBlock::new(move |_| {
+            manager.ivars().alert.borrow_mut().take();
+            manager.refresh();
+        });
+        *self.ivars().alert.borrow_mut() = Some(alert.clone());
+        alert.beginSheetModalForWindow_completionHandler(self.window(), Some(&callback));
     }
     fn choose_import(&self, d: &'static Definition) {
         if !self.ready() {
@@ -474,6 +620,10 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
     let manager = Manager::alloc(owner.mtm()).set_ivars(State {
         owner: owner.retain(),
         paths,
+        cloud: cloud::State::new()?,
+        page_tabs: OnceCell::new(),
+        caption: OnceCell::new(),
+        footer: OnceCell::new(),
         window: OnceCell::new(),
         rows: RefCell::new(vec![]),
         notice: OnceCell::new(),
@@ -535,15 +685,32 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
     };
     owner.label(
         &view,
-        "语音模型 · 这台电脑",
+        "语音模型",
         rect(20., height - 48., width - 230., 28.),
         21.,
     );
-    owner.caption(
+    let caption = owner.caption(
         &view,
         "按语言和用途选择模型。下载后可离线识别，音频留在这台电脑。",
         rect(20., height - 74., width - 40., 22.),
     );
+    manager.ivars().caption.set(caption).ok();
+    let page_tabs = NSSegmentedControl::initWithFrame(
+        NSSegmentedControl::alloc(owner.mtm()),
+        rect(width - 246., height - 48., 226., 30.),
+    );
+    page_tabs.setSegmentCount(2);
+    page_tabs.setLabel_forSegment(ns_string!("这台电脑"), 0);
+    page_tabs.setLabel_forSegment(ns_string!("云端"), 1);
+    page_tabs.setSelectedSegment(0);
+    page_tabs.setAccessibilityLabel(Some(ns_string!("模型位置")));
+    page_tabs.setAccessibilityIdentifier(Some(ns_string!("voiceport.models.location")));
+    unsafe {
+        page_tabs.setTarget(Some(&*manager));
+        page_tabs.setAction(Some(sel!(modelPage:)));
+    }
+    view.addSubview(&page_tabs);
+    manager.ivars().page_tabs.set(page_tabs).ok();
     owner.surface(&view, rect(20., height - 138., width - 40., 52.));
     let current = owner.label(
         &view,
@@ -566,16 +733,11 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
         tabs.setAction(Some(sel!(modelFilter:)));
     }
     view.addSubview(&tabs);
-    owner.caption(
-        &view,
-        "推荐依据为语言与使用方式",
-        rect(width - 240., height - 178., 220., 22.),
-    );
     let engine = manager.button(
         &view,
         "安装识别引擎",
         sel!(modelEngine:),
-        rect(width - 190., height - 48., 170., 30.),
+        rect(width - 190., height - 184., 170., 30.),
     );
     engine.setAccessibilityIdentifier(Some(ns_string!("voiceport.models.engine")));
     manager.ivars().engine.set(engine).ok();
@@ -615,19 +777,19 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
         owner.label(
             &row_view,
             definition.name,
-            rect(18., 78., row_width - 248., 24.),
+            rect(18., 78., row_width - 300., 24.),
             16.,
         );
         let recommendation = owner.caption(
             &row_view,
             definition.recommendation,
-            rect(18., 57., row_width - 248., 20.),
+            rect(18., 57., row_width - 300., 20.),
         );
         recommendation.setTextColor(Some(&NSColor::controlAccentColor()));
         owner.caption(
             &row_view,
             definition.description,
-            rect(18., 34., row_width - 248., 22.),
+            rect(18., 34., row_width - 300., 22.),
         );
         owner.caption(
             &row_view,
@@ -636,12 +798,29 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
                 definition.languages,
                 model_size(definition.bytes())
             ),
-            rect(18., 11., row_width - 248., 22.),
+            rect(18., 11., row_width - 300., 22.),
         );
         let status = owner.caption(
             &row_view,
             "正在检查…",
             rect(row_width - 218., 78., 196., 22.),
+        );
+        let compatibility = owner.caption(
+            &row_view,
+            "质量：未测量",
+            rect(row_width - 188., 10., 166., 22.),
+        );
+        let details = manager.button(
+            &row_view,
+            "详情",
+            sel!(modelDetails:),
+            rect(row_width - 266., 6., 74., 28.),
+        );
+        let update = manager.button(
+            &row_view,
+            "更新",
+            sel!(modelUpdate:),
+            rect(row_width - 266., 39., 74., 30.),
         );
         let primary = manager.button(
             &row_view,
@@ -665,6 +844,8 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
         for (button, action, label) in [
             (&primary, "primary", "下载或使用"),
             (&import, "import", "导入模型文件夹"),
+            (&update, "update", "更新或重新安装"),
+            (&details, "details", "查看固定版本、文件与许可"),
             (&remove, "remove", "删除 VoicePort 副本"),
         ] {
             button.setTag(index as isize);
@@ -681,8 +862,11 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
             definition,
             view: row_view,
             status,
+            compatibility,
             primary,
             import,
+            update,
+            details,
             remove,
         });
     }
@@ -694,10 +878,19 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
     empty.setHidden(true);
     scroll.setDocumentView(Some(&list));
     list.scrollPoint(NSPoint::new(0., list_height));
+    let cloud_scroll = NSScrollView::initWithFrame(
+        NSScrollView::alloc(owner.mtm()),
+        rect(16., 166., width - 32., (height - 320.).max(80.)),
+    );
+    cloud_scroll.setHasVerticalScroller(true);
+    cloud_scroll.setAutohidesScrollers(true);
+    cloud_scroll.setHidden(true);
+    view.addSubview(&cloud_scroll);
+    manager.ivars().cloud.scroll.set(cloud_scroll).ok();
     owner.label(&view, "识别语言", rect(24., 123., 100., 22.), 13.);
     owner.caption(
         &view,
-        "自动检测覆盖模型支持的语言；Paraformer 固定中英双语。",
+        "按模型或服务的实际支持范围选择；质量尚未进行同音频评估。",
         rect(24., 102., width - 240., 22.),
     );
     let language = NSPopUpButton::initWithFrame_pullsDown(
@@ -705,14 +898,14 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
         rect(width - 192., 112., 168., 30.),
         false,
     );
-    for title in ["自动检测", "中文", "English"] {
+    for (_, title) in voiceport_core::language::LANGUAGES {
         language.addItemWithTitle(&NSString::from_str(title));
     }
     unsafe {
         language.setTarget(Some(&*manager));
         language.setAction(Some(sel!(modelLanguage:)));
     }
-    language.setAccessibilityLabel(Some(ns_string!("本地模型识别语言")));
+    language.setAccessibilityLabel(Some(ns_string!("模型识别语言")));
     view.addSubview(&language);
     let progress = NSProgressIndicator::initWithFrame(
         NSProgressIndicator::alloc(owner.mtm()),
@@ -726,7 +919,10 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
     view.addSubview(&progress);
     let notice = owner.caption(
         &view,
-        "首次下载会安装共享识别引擎（22.1 MB）。安装完成后，点击「使用」切换模型。",
+        &format!(
+            "首次下载会安装共享识别引擎（{}）。安装完成后，点击「使用」切换模型。",
+            model_size(crate::model_library::runtime_bytes())
+        ),
         rect(24., 44., width - 156., 40.),
     );
     let cancel = manager.button(
@@ -735,11 +931,12 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
         sel!(modelCancel:),
         rect(width - 112., 58., 96., 30.),
     );
-    owner.caption(
+    let footer = owner.caption(
         &view,
-        "云端来源在偏好设置中选择。导入支持对应的官方 ONNX 文件夹；SenseVoice 使用 FunASR 模型许可。" ,
+        "导入对应的固定 ONNX 文件集；模型许可和来源说明随副本保留。",
         rect(24., 15., width - 48., 28.),
     );
+    manager.ivars().footer.set(footer).ok();
     manager.ivars().tabs.set(tabs).ok();
     manager.ivars().scroll.set(scroll).ok();
     manager.ivars().list.set(list).ok();

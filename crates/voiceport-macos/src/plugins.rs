@@ -13,6 +13,9 @@ pub const CHATGPT_PLUGIN: &str = "voiceport.chatgpt";
 pub const PARA_PLUGIN: &str = "voiceport.orca-paraformer";
 pub const WHISPER_PLUGIN: &str = "voiceport.orca-whisper";
 pub const SENSEVOICE_PLUGIN: &str = "voiceport.sensevoice";
+pub const PARAKEET_PLUGIN: &str = "voiceport.parakeet";
+pub const PARAKEET_STREAMING_PLUGIN: &str = "voiceport.parakeet-streaming";
+pub const NEMOTRON_PLUGIN: &str = "voiceport.nemotron";
 pub const MAX_CONFIG: u64 = 262_144;
 pub const MAX_MANIFEST: u64 = 32_768;
 type Result<T> = std::result::Result<T, String>;
@@ -39,6 +42,8 @@ pub enum Adapter {
     Paraformer,
     Whisper,
     SenseVoice,
+    Parakeet,
+    Nemotron,
     Http,
     Jsonl,
 }
@@ -188,6 +193,27 @@ pub fn builtins() -> Vec<Manifest> {
             Adapter::SenseVoice,
             false,
             false,
+        ),
+        (
+            PARAKEET_PLUGIN,
+            "Parakeet TDT 本地离线",
+            Adapter::Parakeet,
+            false,
+            false,
+        ),
+        (
+            PARAKEET_STREAMING_PLUGIN,
+            "Parakeet Unified EN 本地流式",
+            Adapter::Parakeet,
+            false,
+            true,
+        ),
+        (
+            NEMOTRON_PLUGIN,
+            "Nemotron 3.5 本地流式",
+            Adapter::Nemotron,
+            false,
+            true,
         ),
         (HTTP, "兼容音频转写 HTTP", Adapter::Http, false, false),
     ]

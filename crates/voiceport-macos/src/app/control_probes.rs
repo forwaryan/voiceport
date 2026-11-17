@@ -22,7 +22,7 @@ impl ProbeOperation {
         language: String,
         accept_upload: bool,
     ) -> Result<Self, Response> {
-        if !matches!(language.as_str(), "" | "zh" | "en") {
+        if !voiceport_core::language::supported(&language) {
             return Err(Response::error("invalid_request", "Unsupported language."));
         }
         let batch = source.is_none();
@@ -176,6 +176,7 @@ mod tests {
                     encoder: "never-opened".into(),
                     decoder: "never-opened".into(),
                     tokens: "never-opened".into(),
+                    joiner: None,
                 })),
             },
             Entry {

@@ -338,7 +338,7 @@ impl Delegate {
                 }
             }
             Action::DictationStart { source, language } => {
-                if !matches!(language.as_str(), "" | "zh" | "en") {
+                if !voiceport_core::language::supported(&language) {
                     err("invalid_request", "Unsupported language.")
                 } else if crate::audio::Recorder::permission_status().0 != "authorized" {
                     err(

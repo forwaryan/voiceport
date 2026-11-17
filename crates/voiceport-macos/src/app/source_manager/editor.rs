@@ -8,8 +8,69 @@ struct FieldControl {
     input: Retained<NSTextField>,
     remove: Option<Retained<NSButton>>,
 }
-pub(super) struct EditorState {
-    library: Retained<library::Library>,
+pub(in crate::app) enum Host {
+    Library(Retained<library::Library>),
+    Models(Retained<model_manager::Manager>),
+}
+impl Host {
+    fn owner(&self) -> &Delegate {
+        match self {
+            Self::Library(h) => h.owner(),
+            Self::Models(h) => h.owner(),
+        }
+    }
+    fn window(&self) -> &NSWindow {
+        match self {
+            Self::Library(h) => h.window(),
+            Self::Models(h) => h.window(),
+        }
+    }
+    fn path(&self) -> &std::path::Path {
+        match self {
+            Self::Library(h) => h.path(),
+            Self::Models(h) => h.cloud_path(),
+        }
+    }
+    fn store(&self) -> Result<Store, String> {
+        match self {
+            Self::Library(h) => Ok(h.store()),
+            Self::Models(h) => h.cloud_store(),
+        }
+    }
+    fn ready(&self) -> bool {
+        match self {
+            Self::Library(h) => h.ready(),
+            Self::Models(h) => h.cloud_ready(),
+        }
+    }
+    fn writing(&self) -> bool {
+        match self {
+            Self::Library(h) => h.writing(),
+            Self::Models(h) => h.cloud_writing(),
+        }
+    }
+    fn begin_write(&self) -> bool {
+        match self {
+            Self::Library(h) => h.begin_write(),
+            Self::Models(h) => h.cloud_begin_write(),
+        }
+    }
+    fn finished(&self, token: u64) {
+        match self {
+            Self::Library(h) => h.editor_finished(token),
+            Self::Models(h) => h.cloud_editor_finished(),
+        }
+    }
+    fn reconcile(&self, result: Result<(), String>, adding: bool) {
+        match self {
+            Self::Library(h) => h.reconcile(result, adding, None),
+            Self::Models(h) => h.cloud_reconcile(result),
+        }
+    }
+}
+pub(in crate::app) struct EditorState {
+    host: Host,
+    preset: Option<crate::cloud_models::Preset>,
     plugin: Manifest,
     old: Option<Source>,
     index: Option<usize>,
@@ -26,7 +87,7 @@ define_class!(
     #[unsafe(super = NSObject)]
     #[thread_kind = MainThreadOnly]
     #[ivars = EditorState]
-    pub(super) struct Editor;
+    pub(in crate::app) struct Editor;
     unsafe impl NSObjectProtocol for Editor {}
     impl Editor {
         #[unsafe(method(saveSourceDraft:))]
@@ -37,7 +98,9 @@ define_class!(
         fn help_action(&self, _sender: Option<&AnyObject>) {
             let iv = self.ivars();
             iv.help.set(!iv.help.get());
-            self.message(if iv.help.get() { if iv.plugin.adapter == Adapter::Http {
+            self.message(if iv.help.get() { if iv.preset.is_some() {
+                "填写服务文档中的 API 基础 URL（如 /v1）；已带 /audio/transcriptions 时不会重复追加。远程须 HTTPS，本地可用 loopback HTTP。旧自定义完整地址未改动时原样保留。密钥存系统钥匙串；本地服务可留空。保存不发送音频，点击使用后才切换。"
+            } else if iv.plugin.adapter == Adapter::Http {
                 "地址需包含完整音频转写路径（例如 /v1/audio/transcriptions），不能填官网或控制台。远程须 HTTPS，本机可用 loopback HTTP。模型按服务文档填写；密钥存入系统钥匙串。启用后回听写页选择来源。"
             } else {
                 "按插件作者说明填写配置；适配器须已安装。密钥存入系统钥匙串，其他字段保存在本机。只有显式启用并选择来源后才可能执行程序。保存不执行插件或测试连接。"
@@ -57,8 +120,8 @@ impl Editor {
         };
         label.setTextColor(Some(&color));
     }
-    pub(super) fn cancel(&self) {
-        if self.ivars().library.writing() {
+    pub(in crate::app) fn cancel(&self) {
+        if self.ivars().host.writing() {
             return;
         }
         self.finish();
@@ -70,12 +133,12 @@ impl Editor {
             return;
         }
         let window = iv.window.get().unwrap();
-        iv.library
+        iv.host
             .window()
             .endSheet_returnCode(window, NSModalResponseCancel);
         window.orderOut(None);
         // Break Library -> Editor -> Library only after the sheet has ended.
-        iv.library.editor_finished(iv.token);
+        iv.host.finished(iv.token);
     }
     fn save(&self) {
         let keep_alive = self.retain();
@@ -83,11 +146,11 @@ impl Editor {
         if iv.finished.get() {
             return;
         }
-        if !iv.library.ready() {
+        if !iv.host.ready() {
             self.message("暂时无法保存：正在刷新或配置读取失败。请稍候，或取消后查看管理窗口提示。已填写内容仍保留。", true);
             return;
         }
-        let values: Vec<_> = iv
+        let mut values: Vec<_> = iv
             .fields
             .borrow()
             .iter()
@@ -101,6 +164,22 @@ impl Editor {
                     .is_some_and(|b| b.state() == NSControlStateValueOn),
             })
             .collect();
+        if iv.preset.is_some()
+            && let Some(field) = values.iter_mut().find(|f| f.id == "endpoint")
+        {
+            let old = iv
+                .old
+                .as_ref()
+                .and_then(|s| s.config.get("endpoint"))
+                .map(String::as_str);
+            match crate::cloud_models::transcription_endpoint(&field.value, old) {
+                Ok(endpoint) => field.value = endpoint,
+                Err(error) => {
+                    self.message(&error, true);
+                    return;
+                }
+            }
+        }
         let (source, pending) = draft::candidate(
             iv.old.as_ref(),
             &iv.plugin,
@@ -108,7 +187,13 @@ impl Editor {
             iv.enabled.get().unwrap().state() == NSControlStateValueOn,
             &values,
         );
-        let mut store = iv.library.store();
+        let mut store = match iv.host.store() {
+            Ok(store) => store,
+            Err(error) => {
+                self.message(&error, true);
+                return;
+            }
+        };
         if let Err(message) = draft::validate_with_pending(&store, iv.index, &source, &pending) {
             self.message(
                 &format!("{message} 请修改后再次保存；已填写内容仍保留。"),
@@ -116,25 +201,25 @@ impl Editor {
             );
             return;
         }
-        if !iv.library.begin_write() {
+        if !iv.host.begin_write() {
             self.message("正在处理配置，请稍候；已填写内容仍保留。", true);
             return;
         }
         let result = crate::source_service::save_source(
             &mut store,
-            iv.library.path(),
+            iv.host.path(),
             iv.index,
             source,
             pending,
         );
-        iv.library.owner().with_controller(|c| {
+        iv.host.owner().with_controller(|c| {
             if result.is_ok() {
                 c.message = "来源配置已保存；保存未发送网络请求或执行插件。".into();
             }
         });
         // Transactions can fail after committing. Reload before deciding what is
         // editable again; the library reports the original error and blocks stale writes.
-        iv.library.reconcile(result, iv.index.is_none(), None);
+        iv.host.reconcile(result, iv.index.is_none());
         self.finish();
     }
     fn button(
@@ -195,10 +280,36 @@ pub(super) fn show(
     plugin: Manifest,
     token: u64,
 ) -> Retained<Editor> {
-    let d = library.owner();
-    let old = index.and_then(|i| library.store().sources.get(i).cloned());
-    let editor = Editor::alloc(d.mtm()).set_ivars(EditorState {
-        library: library.retain(),
+    show_host(Host::Library(library.retain()), index, plugin, token, None)
+}
+pub(in crate::app) fn show_cloud(
+    manager: &model_manager::Manager,
+    index: Option<usize>,
+    preset: crate::cloud_models::Preset,
+) -> Retained<Editor> {
+    let plugin = Store::default()
+        .plugin(crate::plugins::HTTP)
+        .expect("built-in HTTP");
+    show_host(
+        Host::Models(manager.retain()),
+        index,
+        plugin,
+        0,
+        Some(preset),
+    )
+}
+fn show_host(
+    host: Host,
+    index: Option<usize>,
+    plugin: Manifest,
+    token: u64,
+    preset: Option<crate::cloud_models::Preset>,
+) -> Retained<Editor> {
+    let old = index.and_then(|i| host.store().ok()?.sources.get(i).cloned());
+    let mtm = host.owner().mtm();
+    let editor = Editor::alloc(mtm).set_ivars(EditorState {
+        host,
+        preset,
         plugin,
         old,
         index,
@@ -213,6 +324,7 @@ pub(super) fn show(
     });
     let editor: Retained<Editor> = unsafe { msg_send![super(editor), init] };
     let iv = editor.ivars();
+    let d = iv.host.owner();
     let form_height = 36. + (iv.plugin.fields.len() + 1) as f64 * 52.;
     let size = content_size(d, NSSize::new(620., (form_height + 184.).min(480.)));
     let (w, h) = (size.width, size.height);
@@ -250,7 +362,9 @@ pub(super) fn show(
         d,
         &form,
         "显示名称",
-        iv.old.as_ref().map_or("", |s| s.name.as_str()),
+        iv.old
+            .as_ref()
+            .map_or(preset.map_or("", |p| p.name()), |s| s.name.as_str()),
         "例如：工作账号",
         rect(0., form_height - 52., form_width, 52.),
         false,
@@ -262,6 +376,9 @@ pub(super) fn show(
         let retained = iv.old.as_ref().filter(|s| s.plugin_id == iv.plugin.id);
         let has_key = retained.is_some_and(|s| s.credential_refs.contains_key(&f.id));
         let hint = match f.id.as_str() {
+            "endpoint" if preset.is_some() => {
+                "例如 https://api.groq.com/openai/v1；也接受完整转写地址"
+            }
             "endpoint" if iv.plugin.adapter == Adapter::Http => {
                 "https://api.example.com/v1/audio/transcriptions"
             }
@@ -274,6 +391,7 @@ pub(super) fn show(
         };
         let label = if iv.plugin.adapter == Adapter::Http {
             match f.id.as_str() {
+                "endpoint" if preset.is_some() => "基础 URL",
                 "endpoint" => "转写地址",
                 "model" => "模型",
                 "api_key" => "API Key",
@@ -283,17 +401,27 @@ pub(super) fn show(
             &f.label
         };
         let value = if f.kind == FieldKind::Secret {
-            ""
+            String::new()
+        } else if let Some(value) = retained.and_then(|s| s.config.get(&f.id)) {
+            if preset.is_some() && f.id == "endpoint" {
+                crate::cloud_models::editable_base(value)
+            } else {
+                value.clone()
+            }
         } else {
-            retained
-                .and_then(|s| s.config.get(&f.id))
-                .map_or("", String::as_str)
+            preset
+                .map_or("", |p| match f.id.as_str() {
+                    "endpoint" => p.base_url(),
+                    "model" => p.model(),
+                    _ => "",
+                })
+                .into()
         };
         let control = input(
             d,
             &form,
             &format!("{label}{}", if f.required { " *" } else { "" }),
-            value,
+            &value,
             hint,
             rect(
                 0.,
@@ -330,7 +458,7 @@ pub(super) fn show(
         d,
         &form,
         "启用此来源",
-        iv.old.as_ref().is_some_and(|s| s.enabled),
+        iv.old.as_ref().map_or(preset.is_some(), |s| s.enabled),
         rect(124., 3., 200., 26.),
     );
     key_views.push(enabled.clone().into_super().into_super());
@@ -376,7 +504,7 @@ pub(super) fn show(
     }
     window.setInitialFirstResponder(Some(&name));
     let _ = iv.window.set(window.clone());
-    library.window().beginSheet_completionHandler(&window, None);
+    iv.host.window().beginSheet_completionHandler(&window, None);
     window.makeFirstResponder(Some(&name));
     editor
 }

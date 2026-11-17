@@ -29,7 +29,7 @@ const GUIDES: &[(&str, &str)] = &[
         include_str!("../../../skills/voiceport-plugins/templates/json_http_adapter.py"),
     ),
 ];
-const HELP: &str = "voiceport [--json] [--socket ABSOLUTE_PATH] COMMAND\n\nstatus | app status/show/quit\nsources list/show/add/update/remove/select/secret/test\nsources probe ID|--all [--language zh|en|auto] [--accept-upload]\nsources probe-result/probe-cancel OPERATION\nplugins list/show/import\ndictation start/stop/retry/cancel/result\nqq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)\nskills list | skills get [GUIDE]\nGuides: core, cli, workflows, plugins, plugin-examples, plugin-protocol, plugin-template\n--version\n\nUse voiceport skills get cli for complete arguments.\nApp control requires the running macOS App at the chosen socket.\nNo command implicitly launches, records, uploads audio or delivers text.\nOnly dictation start records; sources test/probe require --accept-upload.\nUse COMMAND --help or help COMMAND for offline group help.\nLegacy help/host/demo/doctor/transcribe are also available.";
+const HELP: &str = "voiceport [--json] [--socket ABSOLUTE_PATH] COMMAND\n\nstatus | app status/show/quit\nsources list/show/add/update/remove/select/secret/test\nsources probe ID|--all [--language CODE|auto] [--accept-upload]\nsources probe-result/probe-cancel OPERATION\nplugins list/show/import\ndictation start/stop/retry/cancel/result\nqq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)\nskills list | skills get [GUIDE]\nGuides: core, cli, workflows, plugins, plugin-examples, plugin-protocol, plugin-template\n--version\n\nUse voiceport skills get cli for complete arguments.\nApp control requires the running macOS App at the chosen socket.\nNo command implicitly launches, records, uploads audio or delivers text.\nOnly dictation start records; sources test/probe require --accept-upload.\nUse COMMAND --help or help COMMAND for offline group help.\nLegacy help/host/demo/doctor/transcribe are also available.";
 fn invalid() -> Response {
     Response::error(
         "invalid_arguments",
@@ -308,7 +308,10 @@ fn parse(args: &[String]) -> Result<Action, Response> {
                         source = Some(*value)
                     }
                     ["--language", value]
-                        if language.is_none() && matches!(*value, "zh" | "en" | "auto") =>
+                        if language.is_none()
+                            && (*value == "auto"
+                                || (!value.is_empty()
+                                    && voiceport_core::language::supported(value))) =>
                     {
                         language = Some(*value)
                     }
@@ -362,7 +365,9 @@ fn probe(rest: &[&str]) -> Result<Action, Response> {
             "--language" if language.is_none() => {
                 index += 1;
                 let value = *rest.get(index).ok_or_else(invalid)?;
-                if !matches!(value, "auto" | "zh" | "en") {
+                if value != "auto"
+                    && (value.is_empty() || !voiceport_core::language::supported(value))
+                {
                     return Err(invalid());
                 }
                 language = Some(value);

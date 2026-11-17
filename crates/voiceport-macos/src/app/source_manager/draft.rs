@@ -272,4 +272,56 @@ mod tests {
         assert!(store.validate().is_ok());
         assert!(validate(&store, None, &source()).is_err());
     }
+    #[test]
+    fn cloud_draft_save_is_local_and_keeps_optional_credentials_out_of_json() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let endpoint = crate::cloud_models::transcription_endpoint(&base, None).unwrap();
+        let store = Store::default();
+        let plugin = store.plugin(HTTP).unwrap();
+        let fields = vec![
+            FieldValue {
+                id: "endpoint".into(),
+                secret: false,
+                value: endpoint.clone(),
+                remove: false,
+            },
+            FieldValue {
+                id: "model".into(),
+                secret: false,
+                value: "fixture-model".into(),
+                remove: false,
+            },
+            FieldValue {
+                id: "api_key".into(),
+                secret: true,
+                value: String::new(),
+                remove: false,
+            },
+        ];
+        let (source, pending) = candidate(None, &plugin, "Local compatible", true, &fields);
+        validate_with_pending(&store, None, &source, &pending).unwrap();
+        assert!(pending.is_empty() && source.credential_refs.is_empty());
+        assert_eq!(source.config["endpoint"], endpoint);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sources.json");
+        let mut next = store;
+        next.sources.push(source.clone());
+        next.save(&path).unwrap();
+        assert_eq!(Store::load(&path).unwrap(), next);
+        assert!(matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
+        let mut fields = fields;
+        fields[2].value = "synthetic-credential-value".into();
+        let (edited, pending) = candidate(Some(&source), &plugin, "Renamed", true, &fields);
+        validate_with_pending(&next, Some(0), &edited, &pending).unwrap();
+        assert_eq!(edited.id, source.id);
+        assert_eq!(pending[0].1, "synthetic-credential-value");
+        assert!(
+            !serde_json::to_string(&edited)
+                .unwrap()
+                .contains("synthetic-credential-value")
+        );
+        assert!(matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
+    }
 }

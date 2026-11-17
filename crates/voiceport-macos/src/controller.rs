@@ -270,7 +270,7 @@ impl Controller {
         ids: &[String],
         language: String,
     ) -> Result<(), String> {
-        if !matches!(language.as_str(), "" | "zh" | "en") {
+        if !voiceport_core::language::supported(&language) {
             return Err("Unsupported source test language.".into());
         }
         if self.busy() || self.discovering() {
@@ -407,6 +407,12 @@ impl Controller {
         target: Option<&crate::delivery::model::ApplicationTarget>,
     ) -> Option<(u64, bool)> {
         if self.busy() {
+            return None;
+        }
+        if !voiceport_core::language::supported(&language)
+            || matches!(&source, SessionSource::Local(model) if !model.kind.supports_language(&language))
+        {
+            self.message = "所选模型不支持此语言，请更改语言或模型。".into();
             return None;
         }
         self.delivery.clear();
@@ -1324,6 +1330,7 @@ pub(crate) mod stop_failure_regression {
             encoder: "/synthetic/encoder".into(),
             decoder: "/synthetic/decoder".into(),
             tokens: "/synthetic/tokens".into(),
+            joiner: None,
         });
         c.recording = c.recorder.lease();
         let control = controlled_worker(c, 1);
@@ -1390,6 +1397,7 @@ pub(crate) mod stop_failure_regression {
             encoder: "/synthetic/encoder".into(),
             decoder: "/synthetic/decoder".into(),
             tokens: "/synthetic/tokens".into(),
+            joiner: None,
         });
         // Same production preparation used by start_pinned; substitute only the
         // permission/device boundary, never invoke an OS permission request.
@@ -1518,7 +1526,25 @@ pub(crate) mod tests {
             encoder: "/synthetic/encoder".into(),
             decoder: "/synthetic/decoder".into(),
             tokens: "/synthetic/tokens".into(),
+            joiner: None,
         })
+    }
+    #[test]
+    fn unsupported_model_language_is_rejected_before_recording_preparation() {
+        let mut c = Controller::new();
+        let source = local_source(); // Fixed bilingual Paraformer fixture; no model/device I/O.
+        assert!(
+            c.prepare_start(source.clone(), "ja".into(), false)
+                .is_none()
+        );
+        assert_eq!(c.state.phase, Phase::Idle);
+        assert!(matches!(c.recorded_source, SessionSource::ChatGpt));
+        assert!(c.recording.is_none());
+        assert!(c.message.contains("不支持此语言"));
+        let (_, speech) = c.prepare_start(source.clone(), "zh".into(), false).unwrap();
+        assert!(!speech);
+        assert_eq!(c.recorded_source, source);
+        assert_eq!(c.recorded_language, "zh");
     }
     #[test]
     fn retry_snapshots_original_local_source_and_language_without_cloud_dispatch() {

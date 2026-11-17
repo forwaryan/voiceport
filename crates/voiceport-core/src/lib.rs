@@ -6,6 +6,7 @@ pub mod audio;
 pub mod auth;
 mod client;
 mod error;
+pub mod language;
 
 pub use client::TranscriptionClient;
 pub use error::{Error, Result};
