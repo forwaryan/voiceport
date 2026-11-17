@@ -1,7 +1,9 @@
 //! Focused macOS text delivery. Construction is inert; `begin` captures the
 //! target only after the user starts dictation. Call every operation on the
 //! application main thread. WeChat's unreadable main window has a guarded
-//! clipboard/native-menu path; no helper process or Return key is used.
+//! clipboard/Command+V path; no menu, helper process or Return key is used.
+#[cfg(test)]
+mod callback_tests;
 #[doc(hidden)]
 pub mod model;
 mod native;
@@ -11,7 +13,7 @@ use model::{
 };
 
 const RETAINED: &str = "无法确认原输入框支持安全写入，文字保留在面板。";
-const PASTE_REQUESTED: &str = "已请求原输入位置原生粘贴，请检查输入框；最终文字已复制。";
+const PASTE_REQUESTED: &str = "已请求原输入位置粘贴，请检查输入框；最终文字已复制。";
 const PREPARING: &str = "正在准备原输入框，请保持当前输入位置。";
 
 enum Session {
@@ -19,6 +21,17 @@ enum Session {
     Keyboard(ChunkedInput<Box<dyn Target>>),
     Terminal(Terminal<Box<dyn TerminalTarget>>),
     MenuPaste(MenuPaste<Box<dyn PasteTarget>>),
+}
+
+impl Session {
+    fn receipt(&self) -> model::DeliveryReceipt {
+        match self {
+            Self::Ordinary(span) => span.receipt(),
+            Self::Keyboard(input) => input.receipt(),
+            Self::Terminal(terminal) => terminal.receipt(),
+            Self::MenuPaste(paste) => paste.receipt(),
+        }
+    }
 }
 
 /// Holds text only for the currently captured field and never logs its content.
@@ -29,6 +42,8 @@ pub struct Delivery {
     preparing: Option<Box<dyn native::Preparation>>,
     prepared_text: Option<(String, bool)>,
     method: Option<&'static str>,
+    receipt: model::DeliveryReceipt,
+    final_accepted: bool,
     stop_shortcut: Option<model::StopShortcut>,
 }
 
@@ -46,6 +61,8 @@ impl Delivery {
             preparing: None,
             prepared_text: None,
             method: None,
+            receipt: model::DeliveryReceipt::default(),
+            final_accepted: false,
             stop_shortcut: None,
         }
     }
@@ -84,6 +101,8 @@ impl Delivery {
         }
         self.failure = None;
         self.method = None;
+        self.receipt = model::DeliveryReceipt::default();
+        self.final_accepted = false;
         let result = native::capture(target, self.stop_shortcut)
             .and_then(|capture| self.accept_capture(capture));
         match result {
@@ -109,10 +128,6 @@ impl Delivery {
                 self.method = Some("terminal");
                 Session::Terminal(Terminal::capture(target)?)
             }
-            native::Captured::MenuPaste(target) => {
-                self.method = Some("wechat_menu_paste");
-                Session::MenuPaste(MenuPaste::capture(target)?)
-            }
             native::Captured::ClipboardPaste(target) => {
                 self.method = Some("clipboard_final");
                 Session::MenuPaste(MenuPaste::capture(target)?)
@@ -126,6 +141,13 @@ impl Delivery {
     }
 
     fn queue_prepared_text(&mut self, text: &str, final_text: bool) -> String {
+        if self
+            .prepared_text
+            .as_ref()
+            .is_some_and(|(_, final_)| *final_)
+        {
+            return PREPARING.to_owned();
+        }
         if text.encode_utf16().count() > model::MAX_TEXT {
             self.discard_preparation();
             self.failure = Some(Failure::Content);
@@ -175,6 +197,23 @@ impl Delivery {
     pub fn failure_stage(&self) -> Option<&'static str> {
         self.failure.map(Failure::stage)
     }
+    /// Content-free evidence retained after completion or failure. Submitted
+    /// clipboard/terminal events are never presented as confirmed field text.
+    pub fn receipt(&self) -> model::DeliveryReceipt {
+        let mut receipt = self
+            .session
+            .as_ref()
+            .map(Session::receipt)
+            .unwrap_or(self.receipt);
+        if self.preparing.is_some() {
+            receipt.state = model::DeliveryState::Waiting;
+        }
+        if self.failure.is_some() {
+            receipt.stopped = true;
+        }
+        receipt
+    }
+
     #[doc(hidden)]
     pub fn method(&self) -> Option<&'static str> {
         self.method
@@ -182,7 +221,7 @@ impl Delivery {
 
     #[doc(hidden)]
     pub fn uses_clipboard(&self) -> bool {
-        matches!(self.method, Some("wechat_menu_paste" | "clipboard_final"))
+        self.method == Some("clipboard_final")
     }
 
     fn result_message(&mut self, result: Result<(), Failure>, success: &str) -> String {
@@ -201,9 +240,34 @@ impl Delivery {
             .unwrap_or_else(|| RETAINED.to_owned())
     }
 
+    fn final_status(&self) -> String {
+        if self.failure.is_some() {
+            self.retained()
+        } else if self.has_pending() {
+            "正在完成已接收的最终文字，请保持原输入位置。".into()
+        } else {
+            match self.receipt().state {
+                model::DeliveryState::Confirmed => {
+                    "已确认原输入框中的最终文字，请检查后自行发送。".into()
+                }
+                model::DeliveryState::Submitted => {
+                    "已提交原输入位置的输入请求，请检查接收结果。".into()
+                }
+                _ => "本轮自动输入已结束，请检查输入框；完整结果保留在面板。".into(),
+            }
+        }
+    }
+
     pub fn preview(&mut self, text: &str) -> String {
         if let Err(failure) = self.on_main() {
             return failure.message();
+        }
+        self.preview_inner(text)
+    }
+
+    fn preview_inner(&mut self, text: &str) -> String {
+        if self.final_accepted {
+            return self.final_status();
         }
         if self.failure.is_some() {
             return self.retained();
@@ -232,7 +296,7 @@ impl Delivery {
             }
             Some(Session::MenuPaste(paste)) => (
                 paste.verify(),
-                "原输入位置兼容听写：停录后复制最终文字并请求原生粘贴。",
+                "原输入位置兼容听写：停录后复制最终文字并请求粘贴。",
             ),
             None => return self.retained(),
         };
@@ -244,6 +308,9 @@ impl Delivery {
     pub fn finish_preview(&mut self) -> String {
         if let Err(failure) = self.on_main() {
             return failure.message();
+        }
+        if self.final_accepted {
+            return self.final_status();
         }
         if self.failure.is_some() {
             return self.retained();
@@ -275,9 +342,16 @@ impl Delivery {
         if let Err(failure) = self.on_main() {
             return failure.message();
         }
+        self.deliver_inner(text, automatic)
+    }
+
+    fn deliver_inner(&mut self, text: &str, automatic: bool) -> String {
         if !automatic {
             self.clear();
             return "自动输入已关闭，文字保留在面板。".to_owned();
+        }
+        if self.final_accepted {
+            return self.final_status();
         }
         if self.failure.is_some() {
             self.retain_preview();
@@ -286,12 +360,14 @@ impl Delivery {
         if self.preparing.is_some() {
             return self.queue_prepared_text(text, true);
         }
+        self.final_accepted = true;
         let Some(mut session) = self.session.take() else {
             return self.retained();
         };
         match &mut session {
             Session::Ordinary(span) => {
                 let result = span.update(text, true);
+                self.receipt = span.receipt();
                 match result {
                     Ok(()) if span.has_pending() => {
                         self.session = Some(session);
@@ -305,6 +381,7 @@ impl Delivery {
             }
             Session::Keyboard(input) => {
                 let result = input.submit(text);
+                self.receipt = input.receipt();
                 if result.is_ok() && input.has_pending() {
                     self.session = Some(session);
                     "正在向原输入框键入最终文字，请等待完成。".into()
@@ -314,15 +391,17 @@ impl Delivery {
             }
             Session::MenuPaste(paste) => {
                 let result = paste.submit(text);
+                self.receipt = paste.receipt();
                 if result.is_ok() && paste.has_pending() {
                     self.session = Some(session);
-                    "最终文字已复制，正在请求原输入位置原生粘贴。".into()
+                    "最终文字已复制，正在请求原输入位置粘贴。".into()
                 } else {
                     self.result_message(result, "没有可粘贴的文字。")
                 }
             }
             Session::Terminal(terminal) => {
                 let result = terminal.update(text, true);
+                self.receipt = terminal.receipt();
                 match result {
                     Ok(()) => {
                         if terminal.has_pending() {
@@ -408,7 +487,9 @@ impl Delivery {
                 return None;
             }
             let restoring = span.is_restoring();
-            return match span.poll() {
+            let result = span.poll();
+            self.receipt = span.receipt();
+            return match result {
                 Ok(true) => {
                     self.session = None;
                     Some(if restoring {
@@ -427,12 +508,14 @@ impl Delivery {
             };
         }
         if let Some(Session::Keyboard(input)) = self.session.as_mut() {
-            return match input.poll() {
+            let result = input.poll();
+            self.receipt = input.receipt();
+            return match result {
                 Ok(true) => {
                     self.session = None;
                     Some("已在原输入框输入最终文字，请检查后自行发送。".into())
                 }
-                Ok(false) => Some("正在键入并确认最终文字；用户输入会停止后续追加。".into()),
+                Ok(false) => Some("正在准备或确认最终文字，请松开快捷键并保持原输入位置。".into()),
                 Err(failure) => {
                     self.failure = Some(failure);
                     self.session = None;
@@ -441,7 +524,9 @@ impl Delivery {
             };
         }
         if let Some(Session::MenuPaste(paste)) = self.session.as_mut() {
-            return match paste.poll() {
+            let result = paste.poll();
+            self.receipt = paste.receipt();
+            return match result {
                 Ok(true) => {
                     let requested = paste.requested();
                     self.session = None;
@@ -451,7 +536,9 @@ impl Delivery {
                         "没有请求原输入位置粘贴。".into()
                     })
                 }
-                Ok(false) => Some("最终文字已复制，正在等待原输入位置原生粘贴入口。".into()),
+                Ok(false) => {
+                    Some("最终文字已复制，正在准备粘贴；请松开快捷键并保持原输入位置。".into())
+                }
                 Err(failure) => {
                     self.failure = Some(failure);
                     self.session = None;
@@ -464,13 +551,14 @@ impl Delivery {
         };
         let pending = terminal.has_pending();
         let result = terminal.poll();
+        self.receipt = terminal.receipt();
         match result {
             Ok(true) => {
                 self.session = None;
-                Some("已向原 Orca 终端输入已确认文字，请检查后自行发送。".to_owned())
+                Some("已向原 Orca 终端提交输入事件，请检查文字后自行发送。".to_owned())
             }
             Ok(false) if pending => {
-                Some("正在向原 Orca 终端分段输入已确认文字；用户输入会停止后续追加。".to_owned())
+                Some("正在向原 Orca 终端分段提交输入事件；用户输入会停止后续追加。".to_owned())
             }
             Ok(false) => None,
             Err(failure) => {
@@ -490,6 +578,11 @@ impl Delivery {
         if self.on_main().is_err() {
             return;
         }
+        self.retain_preview_inner();
+    }
+
+    fn retain_preview_inner(&mut self) {
+        self.final_accepted = true;
         self.discard_preparation();
         if self.failure.is_none() {
             match self.session.as_mut() {
@@ -503,6 +596,7 @@ impl Delivery {
                 return;
             }
         }
+        self.receipt = self.receipt();
         self.session = None;
     }
 
@@ -512,19 +606,37 @@ impl Delivery {
         if self.on_main().is_err() {
             return;
         }
+        self.clear_inner();
+    }
+
+    fn clear_inner(&mut self) {
+        self.receipt = self.receipt();
+        self.receipt.stopped = true;
+        self.final_accepted = true;
         self.discard_preparation();
         if let Some(mut session) = self.session.take() {
             match &mut session {
                 Session::Ordinary(span) => {
-                    if let Err(failure) = span.cancel() {
+                    let result = span.cancel();
+                    self.receipt = span.receipt();
+                    if let Err(failure) = result {
                         self.failure = Some(failure);
                     } else if span.has_pending() {
                         self.session = Some(session);
                     }
                 }
-                Session::Terminal(terminal) => terminal.end(),
-                Session::Keyboard(input) => input.end(),
-                Session::MenuPaste(paste) => paste.end(),
+                Session::Terminal(terminal) => {
+                    terminal.end();
+                    self.receipt = terminal.receipt();
+                }
+                Session::Keyboard(input) => {
+                    input.end();
+                    self.receipt = input.receipt();
+                }
+                Session::MenuPaste(paste) => {
+                    paste.end();
+                    self.receipt = paste.receipt();
+                }
             }
         }
     }
@@ -665,6 +777,9 @@ mod preparation_tests {
             assert!(!delivery.has_pending());
             delivery.queue_prepared_text("final🙂", true);
             delivery.queue_prepared_text("late preview", false);
+            delivery.queue_prepared_text(&"迟".repeat(model::MAX_TEXT + 1), false);
+            delivery.queue_prepared_text("duplicate final", true);
+            assert_eq!(delivery.failure_stage(), None);
             assert!(delivery.has_pending());
             assert!(!delivery.advance_preparation().unwrap());
             assert!(delivery.session.is_none());

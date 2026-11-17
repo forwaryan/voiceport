@@ -1,6 +1,8 @@
 //! Pure delivery policy. Boundaries in tests never inspect or modify real applications.
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
+mod progress;
+pub use progress::{DeliveryReceipt, DeliveryState};
 
 pub const MAX_TEXT: usize = 100_000;
 pub const MAX_FIELD: usize = 1_000_000;
@@ -32,6 +34,7 @@ pub enum Failure {
     Menu,
     Clipboard,
     ClipboardChanged,
+    ModifiersHeld,
     PasteRequest,
     Ended,
 }
@@ -63,6 +66,7 @@ impl Failure {
             Self::Menu => "menu",
             Self::Clipboard => "clipboard",
             Self::ClipboardChanged => "clipboardChanged",
+            Self::ModifiersHeld => "modifiers",
             Self::PasteRequest => "pasteRequest",
             Self::Ended => "ended",
         }
@@ -113,6 +117,9 @@ impl Failure {
             Self::Clipboard => "无法准备粘贴文字，已停止自动粘贴；文字保留在面板。",
             Self::ClipboardChanged => {
                 "剪贴板已被其他操作更新，已停止后续粘贴以保留当前剪贴板；文字保留在面板。"
+            }
+            Self::ModifiersHeld => {
+                "快捷键修饰键尚未松开，已停止自动输入；请松开按键后检查已有文字，完整结果保留在面板。"
             }
             Self::PasteRequest => {
                 "未确认原输入位置的粘贴请求，未自动重试；请检查输入框，文字保留在面板。"
@@ -198,6 +205,11 @@ pub fn automatic(text: &str) -> String {
 
 pub trait Target {
     fn read(&mut self) -> Result<Snapshot, Failure>;
+    /// Before starting a keyboard chunk, observe bounded prerequisites without
+    /// writing. False leaves that chunk queued for a later main-loop turn.
+    fn ready(&mut self) -> Result<bool, Failure> {
+        Ok(true)
+    }
     /// Must recheck the exact snapshot immediately before writing. A failed
     /// write is never retried, because it may have partially succeeded.
     fn replace(&mut self, range: TextRange, text: &str, expected: &Snapshot)
@@ -218,6 +230,9 @@ pub trait Target {
 impl<T: Target + ?Sized> Target for Box<T> {
     fn read(&mut self) -> Result<Snapshot, Failure> {
         (**self).read()
+    }
+    fn ready(&mut self) -> Result<bool, Failure> {
+        (**self).ready()
     }
     fn replace(
         &mut self,
@@ -249,6 +264,7 @@ pub struct OwnedSpan<T: Target> {
     changed: bool,
     ended: bool,
     failure: Option<Failure>,
+    receipt: DeliveryReceipt,
     pending: Option<PendingSpan>,
     queued: Option<(String, bool)>,
     cancel_requested: bool,
@@ -270,6 +286,7 @@ impl<T: Target> OwnedSpan<T> {
             changed: false,
             ended: false,
             failure: None,
+            receipt: DeliveryReceipt::default(),
             pending: None,
             queued: None,
             cancel_requested: false,
@@ -291,9 +308,6 @@ impl<T: Target> OwnedSpan<T> {
 
     pub fn update(&mut self, raw: &str, final_text: bool) -> Result<(), Failure> {
         let result = (|| {
-            if raw.encode_utf16().count() > MAX_TEXT {
-                return Err(Failure::Content);
-            }
             if let Some(failure) = self.failure {
                 return Err(failure);
             }
@@ -307,6 +321,9 @@ impl<T: Target> OwnedSpan<T> {
                 || (!final_text && self.queued.as_ref().is_some_and(|(_, final_)| *final_))
             {
                 return Ok(());
+            }
+            if raw.encode_utf16().count() > MAX_TEXT {
+                return Err(Failure::Content);
             }
             if self.pending.is_some() {
                 self.poll_inner()?;
@@ -335,6 +352,9 @@ impl<T: Target> OwnedSpan<T> {
         let bytes = byte_range(&self.expected.text, self.owned).ok_or(Failure::Selection)?;
         if self.changed && self.expected.text[bytes.clone()] == text {
             self.ended = final_text;
+            if final_text {
+                self.receipt.finish();
+            }
             return Ok(());
         }
         let mut next_text = self.expected.text.clone();
@@ -357,9 +377,14 @@ impl<T: Target> OwnedSpan<T> {
         if next == self.expected {
             self.owned = owned;
             self.ended = final_text;
+            if final_text {
+                self.receipt.finish();
+            }
             return Ok(());
         }
+        self.receipt.attempting();
         self.target.replace(self.owned, &text, &self.expected)?;
+        self.receipt.submitted(true);
         self.pending = Some(PendingSpan {
             next,
             owned,
@@ -370,6 +395,7 @@ impl<T: Target> OwnedSpan<T> {
     }
 
     fn fail(&mut self, failure: Failure) {
+        self.receipt.stop();
         self.failure = Some(failure);
         self.pending = None;
         self.queued = None;
@@ -384,6 +410,7 @@ impl<T: Target> OwnedSpan<T> {
             if !self.target.confirm(&pending.next)? {
                 return Ok(false);
             }
+            self.receipt.confirmed();
             let pending = self.pending.take().expect("confirmed pending span");
             self.expected = pending.next;
             self.owned = pending.owned;
@@ -398,6 +425,9 @@ impl<T: Target> OwnedSpan<T> {
         {
             self.update_inner(&text, final_text)?;
         }
+        if self.ended {
+            self.receipt.finish();
+        }
         Ok(self.ended && !self.has_pending())
     }
 
@@ -407,6 +437,10 @@ impl<T: Target> OwnedSpan<T> {
             self.fail(failure);
         }
         result
+    }
+
+    pub fn receipt(&self) -> DeliveryReceipt {
+        self.receipt
     }
 
     pub fn has_pending(&self) -> bool {
@@ -426,6 +460,7 @@ impl<T: Target> OwnedSpan<T> {
             pending.final_text = true;
         } else {
             self.ended = true;
+            self.receipt.finish();
         }
     }
 
@@ -434,6 +469,7 @@ impl<T: Target> OwnedSpan<T> {
             return Ok(());
         }
         self.cancel_requested = true;
+        self.receipt.stop();
         if self.has_pending() {
             // The submitted edit may already have taken effect. Stop follow-up
             // writes and preserve it rather than guessing what to undo.
@@ -459,8 +495,10 @@ impl<T: Target> OwnedSpan<T> {
                 location: owned.location + owned.length,
                 length: 0,
             };
+            self.receipt.attempting();
             self.target
                 .replace(self.owned, &self.original, &self.expected)?;
+            self.receipt.submitted(true);
             self.pending = Some(PendingSpan {
                 next,
                 owned,
@@ -504,6 +542,7 @@ pub struct ChunkedInput<T: Target> {
     submitted: bool,
     ended: bool,
     failure: Option<Failure>,
+    receipt: DeliveryReceipt,
     pacing: KeyboardPacing,
 }
 
@@ -526,6 +565,7 @@ impl<T: Target> ChunkedInput<T> {
             submitted: false,
             ended: false,
             failure: None,
+            receipt: DeliveryReceipt::default(),
             pacing,
         })
     }
@@ -587,6 +627,7 @@ impl<T: Target> ChunkedInput<T> {
     }
 
     fn fail(&mut self, failure: Failure) {
+        self.receipt.stop();
         self.failure = Some(failure);
         self.end();
     }
@@ -606,12 +647,21 @@ impl<T: Target> ChunkedInput<T> {
                 return Ok(false);
             }
             self.expected = self.pending.take().expect("confirmed chunk");
+            self.receipt.confirmed();
         }
-        let Some(chunk) = self.queue.pop_front() else {
+        if self.queue.is_empty() {
+            self.receipt.finish();
             self.ended = true;
             return Ok(true);
-        };
+        }
+        // Preserve the exact next chunk while a native precondition settles.
+        // Check ownership on every waiting turn, including after partial input.
         self.check()?;
+        if !self.target.ready()? {
+            self.receipt.waiting();
+            return Ok(false);
+        }
+        let chunk = self.queue.pop_front().expect("checked next chunk");
         let selection = self.expected.selection;
         let bytes = byte_range(&self.expected.text, selection).ok_or(Failure::Selection)?;
         let mut next = self.expected.clone();
@@ -620,7 +670,9 @@ impl<T: Target> ChunkedInput<T> {
             location: selection.location + chunk.encode_utf16().count(),
             length: 0,
         };
+        self.receipt.attempting();
         self.target.replace(selection, &chunk, &self.expected)?;
+        self.receipt.submitted(true);
         self.pending = Some(next);
         Ok(false)
     }
@@ -633,11 +685,16 @@ impl<T: Target> ChunkedInput<T> {
         result
     }
 
+    pub fn receipt(&self) -> DeliveryReceipt {
+        self.receipt
+    }
+
     pub fn has_pending(&self) -> bool {
         self.submitted && !self.ended && self.failure.is_none()
     }
 
     pub fn end(&mut self) {
+        self.receipt.stop();
         self.target.abandon();
         self.pending = None;
         self.queue.clear();
@@ -645,7 +702,7 @@ impl<T: Target> ChunkedInput<T> {
     }
 }
 
-/// Window-bound native menu paste. It never claims field-text acknowledgement.
+/// Window-bound final paste. It never claims field-text acknowledgement.
 pub trait PasteTarget {
     fn check(&mut self) -> Result<(), Failure>;
     fn prepare(&mut self, text: &str) -> Result<(), Failure>;
@@ -679,6 +736,7 @@ pub struct MenuPaste<T: PasteTarget> {
     ended: bool,
     requested: bool,
     failure: Option<Failure>,
+    receipt: DeliveryReceipt,
 }
 
 impl<T: PasteTarget> MenuPaste<T> {
@@ -691,6 +749,7 @@ impl<T: PasteTarget> MenuPaste<T> {
             ended: false,
             requested: false,
             failure: None,
+            receipt: DeliveryReceipt::default(),
         })
     }
 
@@ -705,6 +764,7 @@ impl<T: PasteTarget> MenuPaste<T> {
     }
 
     fn fail(&mut self, failure: Failure) {
+        self.receipt.stop();
         self.failure = Some(failure);
         self.end();
     }
@@ -735,6 +795,7 @@ impl<T: PasteTarget> MenuPaste<T> {
             // prepare may partly succeed (clipboard ownership or menu opening).
             // Mark submission first and never call it again after any error.
             self.target.prepare(&text)?;
+            self.receipt.waiting();
             self.pending = true;
             Ok(())
         })();
@@ -759,7 +820,9 @@ impl<T: PasteTarget> MenuPaste<T> {
             if !self.target.ready()? {
                 return Ok(false);
             }
+            self.receipt.attempting();
             self.target.paste()?;
+            self.receipt.submitted(false);
             self.requested = true;
             self.ended = true;
             self.pending = false;
@@ -771,6 +834,10 @@ impl<T: PasteTarget> MenuPaste<T> {
         result
     }
 
+    pub fn receipt(&self) -> DeliveryReceipt {
+        self.receipt
+    }
+
     pub fn has_pending(&self) -> bool {
         self.pending && !self.ended && self.failure.is_none()
     }
@@ -778,6 +845,7 @@ impl<T: PasteTarget> MenuPaste<T> {
         self.requested
     }
     pub fn end(&mut self) {
+        self.receipt.stop();
         self.target.abandon();
         self.pending = false;
         self.ended = true;
@@ -812,6 +880,7 @@ pub struct Terminal<T: TerminalTarget> {
     finalizing: bool,
     ended: bool,
     failure: Option<Failure>,
+    receipt: DeliveryReceipt,
 }
 
 impl<T: TerminalTarget> Terminal<T> {
@@ -825,6 +894,7 @@ impl<T: TerminalTarget> Terminal<T> {
             finalizing: false,
             ended: false,
             failure: None,
+            receipt: DeliveryReceipt::default(),
         })
     }
 
@@ -895,6 +965,10 @@ impl<T: TerminalTarget> Terminal<T> {
         result
     }
 
+    pub fn receipt(&self) -> DeliveryReceipt {
+        self.receipt
+    }
+
     pub fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
@@ -904,6 +978,7 @@ impl<T: TerminalTarget> Terminal<T> {
         self.finalizing = true;
         if self.pending.is_empty() {
             self.end();
+            self.receipt.stopped = false;
         }
     }
 
@@ -919,10 +994,16 @@ impl<T: TerminalTarget> Terminal<T> {
         let result = (|| {
             self.check()?;
             if let Some(chunk) = self.pending.pop_front() {
+                self.receipt.attempting();
                 self.target.post(&chunk)?;
+                self.receipt.submitted(false);
+                if !self.pending.is_empty() {
+                    self.receipt.state = DeliveryState::PartiallySent;
+                }
             }
             if self.finalizing && self.pending.is_empty() {
                 self.end();
+                self.receipt.stopped = false;
                 return Ok(true);
             }
             Ok(false)
@@ -936,6 +1017,7 @@ impl<T: TerminalTarget> Terminal<T> {
 
     /// Cancellation discards unsent text; already posted terminal input stays.
     pub fn end(&mut self) {
+        self.receipt.stop();
         self.pending.clear();
         self.ended = true;
         self.target.end();

@@ -6,6 +6,17 @@ use super::*;
 const PASTE_TURN: Duration = Duration::from_millis(30);
 const PASTE_DEADLINE: Duration = Duration::from_secs(1);
 const COMMAND: u64 = 1 << 20;
+fn paste_ready(elapsed: Duration, flags: u64) -> Result<bool, Failure> {
+    let held = modifiers::held(flags);
+    if elapsed >= PASTE_DEADLINE {
+        return Err(if held {
+            Failure::ModifiersHeld
+        } else {
+            Failure::PasteRequest
+        });
+    }
+    Ok(elapsed >= PASTE_TURN && !held)
+}
 
 fn paste_events(key: u16) -> Result<(OwnedCf, OwnedCf, OwnedCf), Failure> {
     let source = OwnedCf::new(unsafe { CGEventSourceCreate(-1) }).ok_or(Failure::Event)?;
@@ -193,6 +204,9 @@ impl ClipboardTarget {
         if unsafe { CFEqual(window.0, self.window.0) } == 0 {
             return Err(Failure::FocusElementChanged);
         }
+        if self.bundle == WECHAT && self.element.is_none() {
+            wechat::check_window(&window)?;
+        }
         match (&self.element, focused(pid)) {
             (Some(original), Ok(current)) => {
                 if unsafe { CFEqual(original.0, current.0) } == 0 {
@@ -239,10 +253,7 @@ impl PasteTarget for ClipboardTarget {
     fn ready(&mut self) -> Result<bool, Failure> {
         self.validate()?;
         let elapsed = self.prepared_at.ok_or(Failure::PasteRequest)?.elapsed();
-        if elapsed >= PASTE_DEADLINE {
-            return Err(Failure::PasteRequest);
-        }
-        Ok(elapsed >= PASTE_TURN)
+        paste_ready(elapsed, modifiers::physical())
     }
 
     fn paste(&mut self) -> Result<(), Failure> {
@@ -253,7 +264,11 @@ impl PasteTarget for ClipboardTarget {
         // synthetic mouse event; plain text was sanitized by the shared policy.
         let key = paste_key::current().ok_or(Failure::Event)?;
         let (_source, down, up) = paste_events(key)?;
-        self.validate()?;
+        // Recheck after event construction and target validation too. A newly
+        // held modifier stops this request; it must not trigger a second paste.
+        if !self.ready()? {
+            return Err(Failure::PasteRequest);
+        }
         self.attempted = true;
         self.prepared_at = None;
         unsafe {
@@ -273,6 +288,53 @@ impl PasteTarget for ClipboardTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paste_waits_for_each_conflicting_modifier_and_resumes_after_release() {
+        let elapsed = Duration::from_millis(100);
+        for held in [
+            1 << 17,
+            1 << 18,
+            1 << 19,
+            COMMAND,
+            1 << 23,
+            (1 << 17) | (1 << 18) | (1 << 19) | COMMAND | (1 << 23),
+        ] {
+            assert_eq!(paste_ready(elapsed, held), Ok(false));
+            assert_eq!(paste_ready(elapsed + PASTE_TURN, 0), Ok(true));
+        }
+    }
+
+    #[test]
+    fn lock_and_keypad_flags_do_not_delay_paste_or_skip_the_clipboard_turn() {
+        let harmless = (1 << 16) | (1 << 21);
+        assert_eq!(paste_ready(Duration::ZERO, harmless), Ok(false));
+        assert_eq!(
+            paste_ready(PASTE_TURN - Duration::from_millis(1), harmless),
+            Ok(false)
+        );
+        assert_eq!(paste_ready(PASTE_TURN, harmless), Ok(true));
+        assert_eq!(paste_ready(PASTE_TURN, harmless | COMMAND), Ok(false));
+    }
+
+    #[test]
+    fn held_modifiers_timeout_without_allowing_a_late_paste() {
+        let last_turn = PASTE_DEADLINE - Duration::from_millis(1);
+        assert_eq!(paste_ready(last_turn, COMMAND), Ok(false));
+        assert_eq!(paste_ready(last_turn, 0), Ok(true));
+        assert_eq!(
+            paste_ready(PASTE_DEADLINE, COMMAND),
+            Err(Failure::ModifiersHeld)
+        );
+        // Releasing after the deadline never reopens the request.
+        assert_eq!(paste_ready(PASTE_DEADLINE, 0), Err(Failure::PasteRequest));
+        assert_eq!(
+            paste_ready(PASTE_DEADLINE + PASTE_TURN, COMMAND),
+            Err(Failure::ModifiersHeld)
+        );
+        assert_eq!(Failure::ModifiersHeld.stage(), "modifiers");
+        assert!(!Failure::ModifiersHeld.blocks_recording());
+    }
 
     #[test]
     fn paste_events_use_the_resolved_physical_key_without_posting_anything() {

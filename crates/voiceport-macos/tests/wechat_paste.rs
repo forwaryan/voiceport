@@ -72,6 +72,7 @@ fn focus_user_input_security_and_clipboard_changes_stop_before_or_after_copy() {
         Failure::Accessibility,
         Failure::SecureInput,
         Failure::ClipboardChanged,
+        Failure::ModifiersHeld,
     ] {
         for before in [true, false] {
             let fake = Fake::default();

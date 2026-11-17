@@ -82,6 +82,129 @@ impl Target for FakeTarget {
     }
 }
 
+#[derive(Clone)]
+struct GatedTarget {
+    field: FakeTarget,
+    ready: Rc<RefCell<Result<bool, Failure>>>,
+}
+
+impl GatedTarget {
+    fn new() -> Self {
+        Self {
+            field: FakeTarget::new(state("左|右", 1, 1)),
+            ready: Rc::new(RefCell::new(Ok(false))),
+        }
+    }
+}
+
+impl Target for GatedTarget {
+    fn read(&mut self) -> Result<Snapshot, Failure> {
+        self.field.read()
+    }
+    fn ready(&mut self) -> Result<bool, Failure> {
+        *self.ready.borrow()
+    }
+    fn replace(&mut self, span: TextRange, text: &str, expected: &Snapshot) -> Result<(), Failure> {
+        self.field.replace(span, text, expected)
+    }
+}
+
+#[test]
+fn keyboard_wait_preserves_first_and_following_chunks_through_boxed_targets() {
+    let fake = GatedTarget::new();
+    let mut input = ChunkedInput::capture_with_pacing(
+        Box::new(fake.clone()) as Box<dyn Target>,
+        KeyboardPacing::Scalar,
+    )
+    .unwrap();
+    input.submit("中🙂尾").unwrap();
+    for _ in 0..3 {
+        assert!(!input.poll().unwrap());
+        assert_eq!(fake.field.writes(), 0);
+        assert_eq!(fake.field.snapshot(), state("左|右", 1, 1));
+    }
+    *fake.ready.borrow_mut() = Ok(true);
+    assert!(!input.poll().unwrap());
+    assert_eq!(fake.field.snapshot(), state("左中右", 2, 0));
+    *fake.ready.borrow_mut() = Ok(false);
+    for _ in 0..3 {
+        assert!(!input.poll().unwrap());
+        assert_eq!(fake.field.writes(), 1);
+    }
+    *fake.ready.borrow_mut() = Ok(true);
+    for _ in 0..3 {
+        input.poll().unwrap();
+    }
+    assert!(!input.has_pending());
+    assert_eq!(fake.field.snapshot(), state("左中🙂尾右", 5, 0));
+    assert_eq!(fake.field.writes(), 3);
+}
+
+#[test]
+fn keyboard_wait_still_rejects_target_changes_and_latches_modifier_timeout() {
+    for failure in [
+        Failure::UserInput,
+        Failure::FocusElementChanged,
+        Failure::Accessibility,
+        Failure::SecureInput,
+    ] {
+        let fake = GatedTarget::new();
+        let mut input = ChunkedInput::capture(fake.clone()).unwrap();
+        input.submit("文字").unwrap();
+        fake.field.0.borrow_mut().failure = Some(failure);
+        assert_eq!(input.poll(), Err(failure));
+        fake.field.0.borrow_mut().failure = None;
+        *fake.ready.borrow_mut() = Ok(true);
+        assert_eq!(input.poll(), Err(failure));
+        assert_eq!(fake.field.writes(), 0);
+    }
+    let fake = GatedTarget::new();
+    let mut input = ChunkedInput::capture(fake.clone()).unwrap();
+    input.submit("文字").unwrap();
+    fake.field.0.borrow_mut().snapshot.selection = range(0, 0);
+    assert_eq!(input.poll(), Err(Failure::Ownership));
+    assert_eq!(fake.field.writes(), 0);
+
+    let fake = GatedTarget::new();
+    let mut input =
+        ChunkedInput::capture_with_pacing(fake.clone(), KeyboardPacing::Scalar).unwrap();
+    *fake.ready.borrow_mut() = Ok(true);
+    input.submit("中🙂尾").unwrap();
+    assert_eq!(fake.field.writes(), 1);
+    *fake.ready.borrow_mut() = Err(Failure::ModifiersHeld);
+    assert_eq!(input.poll(), Err(Failure::ModifiersHeld));
+    *fake.ready.borrow_mut() = Ok(true);
+    assert_eq!(input.poll(), Err(Failure::ModifiersHeld));
+    assert_eq!(input.submit("重投"), Err(Failure::ModifiersHeld));
+    assert!(!input.has_pending());
+    assert_eq!(fake.field.snapshot(), state("左中右", 2, 0));
+    assert_eq!(fake.field.writes(), 1);
+}
+
+#[test]
+fn cancellation_during_keyboard_wait_discards_only_unsent_chunks() {
+    for partial in [false, true] {
+        let fake = GatedTarget::new();
+        *fake.ready.borrow_mut() = Ok(partial);
+        let mut input =
+            ChunkedInput::capture_with_pacing(fake.clone(), KeyboardPacing::Scalar).unwrap();
+        input.submit("中🙂尾").unwrap();
+        *fake.ready.borrow_mut() = Ok(false);
+        input.end();
+        *fake.ready.borrow_mut() = Ok(true);
+        assert!(input.poll().unwrap());
+        assert_eq!(fake.field.writes(), usize::from(partial));
+        assert_eq!(
+            fake.field.snapshot(),
+            if partial {
+                state("左中右", 2, 0)
+            } else {
+                state("左|右", 1, 1)
+            }
+        );
+    }
+}
+
 struct DeferredField {
     snapshot: Snapshot,
     before: Option<Snapshot>,

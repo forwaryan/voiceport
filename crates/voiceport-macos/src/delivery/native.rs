@@ -4,6 +4,7 @@ use super::model::{
 };
 mod clipboard;
 mod focus;
+mod modifiers;
 mod paste_key;
 mod wechat;
 use block2::RcBlock;
@@ -38,6 +39,7 @@ unsafe extern "C" {
     fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> bool;
     fn AXUIElementCreateApplication(pid: libc::pid_t) -> CFTypeRef;
     fn AXUIElementGetTypeID() -> CFTypeID;
+    fn AXUIElementSetMessagingTimeout(element: CFTypeRef, timeout: f32) -> i32;
     fn AXUIElementCopyAttributeValue(
         element: CFTypeRef,
         key: CFTypeRef,
@@ -45,8 +47,6 @@ unsafe extern "C" {
     ) -> i32;
     fn AXUIElementIsAttributeSettable(element: CFTypeRef, key: CFTypeRef, result: *mut u8) -> i32;
     fn AXUIElementSetAttributeValue(element: CFTypeRef, key: CFTypeRef, value: CFTypeRef) -> i32;
-    fn AXUIElementPerformAction(element: CFTypeRef, action: CFTypeRef) -> i32;
-    fn AXUIElementSetMessagingTimeout(element: CFTypeRef, seconds: f32) -> i32;
     fn AXValueGetTypeID() -> CFTypeID;
     fn AXValueGetType(value: CFTypeRef) -> u32;
     fn AXValueGetValue(value: CFTypeRef, kind: u32, result: *mut c_void) -> bool;
@@ -329,7 +329,6 @@ pub(super) enum Captured {
     Ordinary(Box<dyn Target>),
     Keyboard(Box<dyn Target>, KeyboardPacing),
     Terminal(Box<dyn TerminalTarget>),
-    MenuPaste(Box<dyn PasteTarget>),
     ClipboardPaste(Box<dyn PasteTarget>),
     Preparing(Box<dyn Preparation>),
 }
@@ -352,8 +351,16 @@ struct FocusPreparation {
 
 fn application_window(pid: libc::pid_t) -> Result<OwnedCf, Failure> {
     let app = OwnedCf::new(unsafe { AXUIElementCreateApplication(pid) }).ok_or(Failure::Focus)?;
+    // Messaging timeouts belong to each AX object, including fresh receivers
+    // created during validation; equal focus-resolver objects do not share them.
+    if unsafe { AXUIElementSetMessagingTimeout(app.0, 0.25) } != 0 {
+        return Err(Failure::Focus);
+    }
     let window = attribute(app.0, "AXFocusedWindow").map_err(Failure::FocusRead)?;
     if unsafe { CFGetTypeID(window.0) != AXUIElementGetTypeID() } {
+        return Err(Failure::Focus);
+    }
+    if unsafe { AXUIElementSetMessagingTimeout(window.0, 0.25) } != 0 {
         return Err(Failure::Focus);
     }
     Ok(window)
@@ -484,7 +491,7 @@ fn keyboard_pacing(bundle: &str, role: &str, terminal: bool, web: bool) -> Optio
     }
 }
 
-fn wechat_menu_fallback(bundle: &str, failure: Failure) -> bool {
+fn wechat_window_fallback(bundle: &str, failure: Failure) -> bool {
     bundle == WECHAT
         && matches!(
             failure,
@@ -530,13 +537,13 @@ pub(super) fn capture(
         return Err(Failure::FocusApplicationChanged);
     }
     // One monitor owns the session's immutable stop chord across capability
-    // discovery, delayed focus, clipboard fallback and WeChat menu paste.
+    // discovery, delayed focus and all clipboard fallback targets.
     let monitor = UserMonitor::start(stop_shortcut)?;
     let element = match focused(pid) {
         Ok(element) => element,
-        Err(failure) if wechat_menu_fallback(&bundle, failure) => {
-            return wechat::WechatMenuTarget::capture(pid, monitor)
-                .map(|target| Captured::MenuPaste(Box::new(target)));
+        Err(failure) if wechat_window_fallback(&bundle, failure) => {
+            return clipboard::ClipboardTarget::capture(pid, bundle, None, monitor)
+                .map(|target| Captured::ClipboardPaste(Box::new(target)));
         }
         Err(Failure::FocusRead(AX_NO_VALUE)) => {
             return FocusPreparation::start(pid, bundle, monitor)
@@ -607,6 +614,7 @@ fn captured_target(
                 Box::new(KeyboardTarget {
                     inner: target,
                     pending: None,
+                    modifiers: modifiers::ReleaseWait::default(),
                     placeholder: if pacing == KeyboardPacing::Scalar {
                         description
                     } else {
@@ -623,10 +631,16 @@ fn captured_target(
 struct KeyboardTarget {
     inner: NativeTarget,
     pending: Option<PendingWrite>,
+    modifiers: modifiers::ReleaseWait,
     placeholder: Option<String>,
 }
 
 impl Target for KeyboardTarget {
+    fn ready(&mut self) -> Result<bool, Failure> {
+        self.inner.validate()?;
+        self.modifiers.ready(Instant::now(), modifiers::physical())
+    }
+
     fn read(&mut self) -> Result<Snapshot, Failure> {
         let snapshot = self.inner.read()?;
         Ok(match self.placeholder.as_deref() {
@@ -659,6 +673,9 @@ impl Target for KeyboardTarget {
         // clipboard, Delete or Return is used for this known application.
         if self.read()? != *expected {
             return Err(Failure::Ownership);
+        }
+        if modifiers::held(modifiers::physical()) {
+            return Err(Failure::ModifiersHeld);
         }
         unsafe {
             CGEventPostToPid(self.inner.pid, down.0);
@@ -1215,10 +1232,10 @@ mod tests {
     }
 
     #[test]
-    fn menu_fallback_only_handles_known_wechat_missing_focus_support() {
+    fn wechat_window_fallback_only_handles_known_missing_focus_support() {
         for status in [AX_NO_VALUE, AX_UNSUPPORTED, -25208] {
-            assert!(wechat_menu_fallback(WECHAT, Failure::FocusRead(status)));
-            assert!(!wechat_menu_fallback(CODEX, Failure::FocusRead(status)));
+            assert!(wechat_window_fallback(WECHAT, Failure::FocusRead(status)));
+            assert!(!wechat_window_fallback(CODEX, Failure::FocusRead(status)));
         }
         for failure in [
             Failure::Accessibility,
@@ -1228,7 +1245,7 @@ mod tests {
             Failure::FocusRead(-25211),
             Failure::FocusElementChanged,
         ] {
-            assert!(!wechat_menu_fallback(WECHAT, failure));
+            assert!(!wechat_window_fallback(WECHAT, failure));
         }
     }
 
