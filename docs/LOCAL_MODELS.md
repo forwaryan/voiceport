@@ -1,32 +1,45 @@
 # 本地语音模型
 
-VoicePort 原生 macOS 设置页的「转写来源」一次选择一个来源。默认保持 ChatGPT；本地模型只在用户选择后使用，不会在模型丢失或失败时切换到云端。选择保存在 VoicePort 自己的 `transcriptionSource` 偏好中，不修改 Orca 设置。语言与来源在开始录音时固定；失败后的手动重试继续使用原来源、原语言，并关闭自动输入。
+在偏好设置的「转写来源」旁点击 **语音模型…**，或从菜单栏打开同名入口。模型窗口会列出可下载的本地模型、语言、大小、安装状态和当前选择；未安装的模型也能看到。
 
-| 来源 | 录音期间 | 停止后 | 数据去向 |
-| --- | --- | --- | --- |
-| ChatGPT | 可选的 macOS 设备端预览 | ChatGPT 最终转写 | 上传至 ChatGPT，需自己的登录 |
-| Paraformer · 本地流式 | 模型载入后持续返回累积的部分文字 | 排空音频、补齐尾音并完成本地最终结果 | 本机 CPU，不读云端登录，不联网 |
-| Whisper Tiny · 本地离线 | 不产生实时预览 | 按最长 30 秒的音频片段逐段识别，合并最终结果 | 本机 CPU，不读云端登录，不联网 |
+| 模型 | 下载大小 | 适合的用途 | 识别方式 |
+| --- | ---: | --- | --- |
+| SenseVoice Small | 239.5 MB | 中文日常输入，也支持英语、日语、韩语、粤语 | 停止后在本机识别 |
+| Whisper Large v3 Turbo | 1.04 GB | 多语言输入，可接受较大的下载与内存开销 | 停止后在本机分段识别 |
+| Paraformer · 中英双语 | 237.2 MB | 需要边说边显示文字的中英输入 | 流式预览并在本机完成最终识别 |
+| Whisper Tiny | 103.6 MB | 小下载、快速体验本地识别 | 停止后在本机分段识别 |
 
-Paraformer 支持中英双语，语言下拉中的提示不会把双语模型限制成单语言。Whisper 支持自动检测或显式中文 / English 提示。Whisper 分段优先在片段末尾五秒内的低能量窗口切分，长语句在分段边缘仍可能丢词或重复词；这里没有语义去重或跨段上下文。实时识别的部分结果可以修改当前片段，终端输入仍遵循已有的前缀保护规则。停止后需要改写已输入文字的最终结果可能只保留在面板。
+窗口顶部显示当前来源；「全部模型 / 已安装」可筛选列表。每行分别展示推荐用途、支持语言、模型大小和安装状态。推荐依据是模型语言覆盖与使用方式，未将这些描述当作同音频准确率或速度排名。
 
-## 安装与发现
+本地识别目前支持 **Apple Silicon / arm64 macOS**，音频留在本机，不读取云端登录。模型下载期间需要联网，识别期间无需联网。默认仍是 ChatGPT；下载或导入不会自动更改转写来源，点击「使用」后才切换。模型缺失或识别失败会报告错误，不会自动上传至云端。
 
-当前本地运行时仅支持 Apple Silicon / arm64，要求 Orca 安装在 `/Applications/Orca.app`，其原生 `sherpa-onnx-darwin-arm64` 包版本为 **1.12.37**。从 Finder 启动时使用固定绝对路径，不依赖 Node、nvm、终端 PATH 或 Orca CLI。VoicePort 不会自动下载模型或运行时。
+## 下载、导入与选择
 
-运行时目录：
+1. 点击模型行的「下载」。第一次会同时安装约 **22.1 MB** 的 sherpa-onnx 1.12.37 引擎，之后其他模型共用。也可以先点击右上角「安装识别引擎」，再导入已有文件。
+2. 窗口显示当前文件、进度条、百分比和已下载大小；正在处理的模型行会标明状态。下载、复制与校验均在后台进行；「取消下载」会取消当前任务，清理未完成文件。关闭窗口时如有任务，会先请求取消并等待清理。
+3. 安装完成后点击「使用」，关闭模型窗口即可听写。选择与语言保存在 VoicePort 自己的偏好中，不修改 Orca 设置。
+4. 已有官方模型时点击该行「导入…」，选择包含下列文件的文件夹。VoicePort 复制并逐件校验大小与 SHA-256；不会执行该目录里的脚本，也不会修改原文件。
+5. 「删除」只移除 VoicePort 的副本；当前所选模型须先切换到其他来源，再删除。删除不会改动 Orca 的模型。损坏的副本需先删除再重新下载，本版不做原位更新或断点续传。
+
+导入本身不联网。如果本机没有兼容引擎，先通过「安装识别引擎」明确下载，再导入模型。首次下载模型后即使模型阶段被取消，已经完整安装的共享引擎仍会保留。
+
+下载源为 Hugging Face 模型仓库、npm 官方 registry，以及 ONNX Runtime 官方许可文件。文件 URL 固定到上游 revision/版本；目录随应用内置，安装时验证精确大小和哈希。所有文件先写入 VoicePort 下的临时目录，校验完整后才发布为可发现的模型。失败或取消不会让半成品成为可选来源。不同 VoicePort 实例通过文件锁串行安装。
+
+窗口打开期间会暂停录音、新识别、快捷键启动及其他来源编辑，避免切换、删除或安装与识别争用模型。关闭窗口后恢复。退出 App 会请求取消安装，等后台释放文件后退出。
+
+## 存储与格式
+
+VoicePort 独立存储，不要求安装 Orca：
 
 ```text
-/Applications/Orca.app/Contents/Resources/node_modules/sherpa-onnx-darwin-arm64/
-  package.json
-  libsherpa-onnx-c-api.dylib
-  libonnxruntime.1.23.2.dylib
-```
-
-通过 Orca 的模型管理安装相应模型；VoicePort 仅读取以下目录：
-
-```text
-~/Library/Application Support/orca/speech-models/
+~/Library/Application Support/VoicePort/speech-models/
+  runtime-1.12.37/
+    package.json
+    libsherpa-onnx-c-api.dylib
+    libonnxruntime.1.23.2.dylib
+    LICENSE-sherpa-onnx.txt
+    LICENSE-ONNX-Runtime.txt
+    ThirdPartyNotices-ONNX-Runtime.txt
   paraformer-bilingual-zh-en/
     encoder.int8.onnx
     decoder.int8.onnx
@@ -35,43 +48,72 @@ Paraformer 支持中英双语，语言下拉中的提示不会把双语模型限
     tiny-encoder.int8.onnx
     tiny-decoder.int8.onnx
     tiny-tokens.txt
+    MODEL_LICENSE.txt
+    ATTRIBUTION.txt
+  whisper-large-v3-turbo/
+    turbo-encoder.int8.onnx
+    turbo-decoder.int8.onnx
+    turbo-tokens.txt
+    MODEL_LICENSE.txt
+    ATTRIBUTION.txt
+  sensevoice/
+    model.int8.onnx
+    tokens.txt
+    MODEL_LICENSE.txt
+    ATTRIBUTION.txt
 ```
 
-本版 Whisper 使用实际已安装的 int8 模型对；仅有非量化文件时不会将其列为可用。来源 ID 分别为 `chatgpt`、`orca:paraformer-bilingual-zh-en` 和 `orca:whisper-tiny`。
+SenseVoice 安装时会写入应用携带的固定 FunASR 许可与来源说明；Whisper Tiny / Turbo 安装时会写入固定上游 MIT 完整版权与许可正文、来源说明。下载与离线导入均保留这些材料，无需额外联网获取。导入文件必须是普通文件；符号链接、FIFO 等特殊文件会被拒绝。
 
-启动时在后台检查文件可读、非空、运行时版本与 arm64 Mach-O 架构，不加载大模型。设置中的「刷新」可重新发现刚安装的模型。未安装的本地来源不会显示为可用；曾选中的模型即使丢失，也会保留为「不可用」，显示错误且阻止该次启动，直到用户刷新或更改选择。运行时二进制加载失败、版本变化、无效模型或解码失败同样显示为本地错误，不会上传录音。
+导入只接受上述四个模型对应的固定官方 ONNX 文件集；任意改名文件、GGML/GGUF、zip、其他精度或版本不会通过。模型大小与 Handy/Orca 当前显示的 GGUF 大小不同，因为这里使用 ONNX int8 模型。
 
-## 录音、线程和权限
+兼容的既有 Orca 模型仍只读发现于 `~/Library/Application Support/orca/speech-models/`。可使用 VoicePort 自己的引擎；旧 Orca 的 `sherpa-onnx-darwin-arm64` 1.12.37 引擎存在时也可只读复用。Orca 近期改用 transcribe.cpp/GGUF，其新引擎和 SenseVoice GGUF 不能由当前 ONNX 桥直接加载。VoicePort 自有副本优先；若副本损坏，会明确显示不可用，不悄悄改用另一份文件。
 
-本地来源仅申请麦克风权限，不创建 macOS Speech 预览，也不申请系统语音识别权限。自动输入仍需要辅助功能授权；关闭自动输入可只把结果保留在面板。显式检查权限不会录音。
+保留原稳定来源 ID：`chatgpt`、`orca:paraformer-bilingual-zh-en`、`orca:whisper-tiny`；新增 `orca:sensevoice`、`orca:whisper-large-v3-turbo`。`orca:` 是历史 ID，不代表现在必须安装 Orca。保存的模型丢失时仍保留不可用选项，阻止启动，直到用户修复或更改来源。
 
-现有单个音频 tap 同时保留受保护的 AAC 录音，并复制原始 PCM 到有界队列。支持 float32 / float64 / int16 / int32、交错或非交错、1–8 声道和 8–192 kHz（包括小数采样率）。输入先做边界和非有限值检查，在工作线程混成单声道并持续线性重采样到固定 16 kHz，之后才进入本地模型。线性重采样的质量与专用高阶滤波器存在差异。
+## 参考与支持边界
 
-队列最多 128 包，每包最多 8192 帧、8 声道，最坏 PCM 队列约 32 MiB；通常 1024 帧回调会小得多。队列溢出是显式失败，保留可用的 AAC 录音供手动本地重试。设备格式变化或无效 PCM 使录音失败。Whisper 的归一化音频最多保留 180 秒（约 11 MiB），每次原生离线解码最多 30 秒；单次录音仍最多三分钟。
+模型管理参考 [Handy](https://github.com/cjpais/Handy/tree/aca8985190c3ad7f361d8a80cb30f179513ed690) 的离线目录、安装与选择分离、逐文件校验和暂存发布机制，以及 Orca 的模型列表交互。没有复制第三方应用代码或执行其安装脚本。
 
-载入、推理和重试读音频均在工作线程；界面和实时音频回调不载入或推理模型。部分结果只保留最新一份，带录音代次，端点确认的片段与当前部分文字组成完整预览。停止后先移除 tap、关闭 AAC，再排空已排队 PCM、冲刷重采样余量、为 Paraformer 加 0.8 秒静音并通知输入结束，最后发布完整最终结果。界面不会阻塞等待线程 join。停止期间仍可取消；取消 / 退出等待当前工作释放录音租约后才允许新的会话或退出。
+Paraformer、Whisper Tiny、SenseVoice 与 Whisper Large v3 Turbo 均接入正式识别链路。SenseVoice 适合中文为主的使用，Turbo 提供更大的多语言模型选项；较大权重不构成具体语音质量或延迟承诺，当前运行时使用 CPU。Nemotron 与 Parakeet 尚未接入，不在可下载列表中；它们需要各自模型格式、推理配置和验证，不能仅下载同名文件就视为支持。
 
-C ABI 桥将常规 C++ 推理异常转成可显示的错误。模型加载与单个原生解码调用不能在中途强制打断；取消会在其返回后生效。原生运行时与应用处于同一进程，底层库崩溃或恶意/损坏的 ONNX 文件可能终止应用；只使用 Orca 安装的可信模型，并避免录音期间更新或删除运行时。模型与运行时版本升级需要重新检查支持的 ABI。本地依赖缺失时 ChatGPT 仍可由用户显式选择。
+固定下载清单、大小、哈希与运行时白名单见 [catalog.rs](../crates/voiceport-macos/src/model_library/catalog.rs)：
 
-录音仍使用描述符相对路径、私有权限和租约清理策略。成功、取消或正常退出会释放；失败可保留供重试。VoicePort 不改写模型目录、不保存转写历史、不读取 Orca 云端密钥。本地推理不发起网络请求。
+- Paraformer：`csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en`，revision `8e40c43232a1c5c66c82111efc5820d3accca11b`。转换仓库模型卡声明 Apache-2.0，并注明来源 ModelScope。
+- Whisper Tiny：`csukuangfj/sherpa-onnx-whisper-tiny`，revision `65176e2deb88badc814a94058666cadccc29b61c`。Whisper 上游代码和权重采用 [OpenAI MIT License](https://github.com/openai/whisper/blob/main/LICENSE)；ONNX 转换仓库未单独提供许可文件，不将权重标为 sherpa 的 Apache-2.0。
+- Whisper Large v3 Turbo：`csukuangfj/sherpa-onnx-whisper-turbo`，revision `2ca6ff69fc878651b770880507669577ac41c2ff`。上游 Whisper 代码和权重为 MIT；使用固定 int8 编码器、解码器和词表。
+- SenseVoice：`csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17`，revision `2365baeacb507f821a0c8120fcee3d484dba7a07`。原始模型为 FunAudioLLM 的 SenseVoiceSmall，适用 [FunASR 模型许可](https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE) 自定义 v1.1 条款，包含模型名称、作者与来源保留要求；不能将其当作 MIT 或 Apache-2.0 权重。安装副本附带完整固定许可与归属说明。
+- 引擎：npm `sherpa-onnx-darwin-arm64@1.12.37`，下载同时核验 SHA-256 和 registry SHA-512 integrity；仅提取固定的 package.json 与两件 dylib，不运行 npm、Node 或包脚本。安装目录携带 sherpa Apache-2.0、ONNX Runtime MIT 及其第三方 notices。
 
-## 构建与开发自检
+## 识别与权限
 
-Cargo 自动使用 macOS Command Line Tools 的 clang / ar 编译小型 C 桥，使用仓库中精确版本的 C ABI 头文件；没有新增 Cargo 依赖、JS UI、辅助进程或需要打包的动态库。标准 `scripts/package_app.sh` 构建的主程序已包含本地实现，实际运行时从上述 Orca 目录动态加载。模型及原生运行时仍属于外部安装依赖，不复制入包。来源、版权和 Apache-2.0 全文见 `crates/voiceport-macos/src/local_runtime/` 与顶层第三方声明。
+本地来源只申请麦克风权限，不创建系统 Speech 预览。自动输入仍需要辅助功能授权；关闭自动输入可将结果保留在面板。语言和来源在开始录音时固定；失败后的手动重试继续使用原来源与语言，并关闭自动输入。
 
-常规测试只使用惰性构造、临时目录和合成 PCM，不会申请权限或录制麦克风：
+Paraformer 始终为中英双语。SenseVoice 的自动模式覆盖中文、英语、日语、韩语和粤语；窗口可选择自动、中文或 English。Tiny 与 Turbo 使用 Whisper 自动检测或中文 / English 提示。离线模型最多保留 180 秒归一化音频，每段最长 30 秒，在末尾五秒低能量窗口优先切分；长语句在分段边缘可能丢词或重复，没有跨段上下文或语义去重。部分结果可修改当前片段；实时输入遵循已有前缀保护，最终改写可能只保留在面板。
+
+现有单音频 tap 保留受保护的 AAC，并将 PCM 放入有界队列，在后台混为单声道、线性重采样为 16 kHz，再交给本地模型。支持 float32/64、int16/32，交错/非交错，1–8 声道、8–192 kHz。队列溢出或格式变化是显式失败，保留可用录音供手动重试。单次录音最长三分钟。
+
+模型载入和一次原生解码不能中途强制打断，取消在其返回后生效。推理与 App 位于同一进程；底层库崩溃仍可能结束应用。C 桥核对实际 sherpa 版本并将常规 C++ 异常转为错误。本版不自动升级引擎或模型。
+
+## 开发验证
+
+GUI 隔离验证可为测试实例设置非空绝对路径 `VOICEPORT_MODELS_PATH`，将 VoicePort 自有模型与引擎存到专用目录；保留正常 HOME，再配合独立 bundle ID、`VOICEPORT_SOURCES_PATH`、合成 CODEX_HOME 与私有控制 socket。该变量不改变 Orca 模型目录。App 可用 `--show-models` 直接打开模型库。
+
+普通测试不联网、不申请权限、不录音：
 
 ```sh
-CARGO_TARGET_DIR=/tmp/voiceport-local-models-check CARGO_NET_OFFLINE=true \
-  cargo test -p voiceport-macos --lib --locked
+cargo test -p voiceport-macos --lib --offline --locked
 ```
 
-已安装上述模型时，可显式执行附带公共 WAV 的真实推理开发自检：
+以下显式测试会在临时目录实际下载约 126 MB 的引擎、许可和 Tiny 模型，校验、安装，再通过正式桥解码一秒合成静音。结束后临时目录释放，不更改已安装 App、来源选择或 Orca：
 
 ```sh
-CARGO_TARGET_DIR=/tmp/voiceport-local-models-check CARGO_NET_OFFLINE=true \
-  cargo test -p voiceport-macos --lib --locked \
-  installed_models_transcribe_public_fixture -- --ignored --nocapture
+cargo test -p voiceport-macos --lib --offline --locked \
+  official_download_installs_engine_and_model_and_decodes_silence -- --ignored --nocapture
 ```
 
-该用例通过正式音频读取、归一化、本地推理和实时队列路径验证 16 kHz / 8 kHz 公共样本、停止时的完整排空、端点段落累积、静音及 Whisper 无部分结果。它不读取用户录音、登录或剪贴板，不操作输入目标。它属于开发自检，不能代表真实麦克风、Finder/TCC 权限、实际目标接收、所有语言、最长录音识别质量或独立验收。
+`--offline` 约束 Cargo 依赖解析；该显式用例仍会发起上述下载。可通过 `VOICEPORT_TEST_MODEL=orca:sensevoice` 或 `VOICEPORT_TEST_MODEL=orca:whisper-large-v3-turbo` 选择新增模型；如需保留模型给隔离 GUI 测试，`VOICEPORT_TEST_RETAIN_ROOT` 必须是全新绝对目录，测试拒绝复用已有安装。
+
+新增模型另有显式 `expanded_model_transcribes_pinned_public_fixture` 用例：通过 `VOICEPORT_TEST_MODELS_ROOT`、`VOICEPORT_TEST_MODEL` 和 `VOICEPORT_TEST_PUBLIC_WAV` 指定专用安装及固定公开样例，对比正式文件转写和队列输入路径。开发验证已用固定 Tiny revision 的 `test_wavs/0.wav`（212044 bytes，SHA-256 `6bc58a4efdf20daac252b6b1502632601a71efe0308f6757dc1eda34891a7e4f`）确认 SenseVoice 与 Turbo 均识别出预期英文关键词，且两路径结果相同。单个公开英文样例不代表五语言质量评估。
+
+这些用例验证真实安装、引擎加载及指定公开音频的识别，不代表真人语音准确度、麦克风权限或目标输入验收。

@@ -12,6 +12,7 @@ pub const HTTP: &str = "voiceport.http-transcription";
 pub const CHATGPT_PLUGIN: &str = "voiceport.chatgpt";
 pub const PARA_PLUGIN: &str = "voiceport.orca-paraformer";
 pub const WHISPER_PLUGIN: &str = "voiceport.orca-whisper";
+pub const SENSEVOICE_PLUGIN: &str = "voiceport.sensevoice";
 pub const MAX_CONFIG: u64 = 262_144;
 pub const MAX_MANIFEST: u64 = 32_768;
 type Result<T> = std::result::Result<T, String>;
@@ -37,6 +38,7 @@ pub enum Adapter {
     Chatgpt,
     Paraformer,
     Whisper,
+    SenseVoice,
     Http,
     Jsonl,
 }
@@ -168,15 +170,22 @@ pub fn builtins() -> Vec<Manifest> {
         (CHATGPT_PLUGIN, "ChatGPT", Adapter::Chatgpt, true, false),
         (
             PARA_PLUGIN,
-            "Orca Paraformer",
+            "Paraformer 本地流式",
             Adapter::Paraformer,
             false,
             true,
         ),
         (
             WHISPER_PLUGIN,
-            "Orca Whisper Tiny",
+            "Whisper Tiny 本地离线",
             Adapter::Whisper,
+            false,
+            false,
+        ),
+        (
+            SENSEVOICE_PLUGIN,
+            "SenseVoice 本地离线",
+            Adapter::SenseVoice,
             false,
             false,
         ),

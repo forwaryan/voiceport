@@ -2,9 +2,9 @@
 
 ## 当前实现（2026-11-08）
 
-VoicePort 的目标仍是可替换识别引擎、统一光标输入。macOS 开发实现保留 ChatGPT、Orca Paraformer 本地流式和 Orca Whisper Tiny 本地离线，新增插件式来源管理：一个插件定义接入方式，同一插件可保存多个独立来源，每次听写只使用一个。兼容 HTTP 来源和可导入的 JSONL 本机适配器无需 Orca；两种内置本地模型仍依赖规定的 Orca 运行时与布局，详见 [LOCAL_MODELS.md](LOCAL_MODELS.md)。
+VoicePort 的目标仍是可替换识别引擎、统一光标输入。macOS 开发实现保留 ChatGPT、Paraformer 本地流式及 Whisper Tiny 本地离线，增加 SenseVoice Small 五语言与 Whisper Large v3 Turbo 多语言离线模型，新增插件式来源管理：一个插件定义接入方式，同一插件可保存多个独立来源，每次听写只使用一个。兼容 HTTP 来源和可导入的 JSONL 本机适配器无需 Orca；四种内置本地模型可通过「语音模型…」下载或导入，首次下载会安装 VoicePort 自有的 sherpa-onnx 引擎；兼容的旧 Orca 模型与引擎可只读复用。详见 [LOCAL_MODELS.md](LOCAL_MODELS.md)。
 
-macOS 应用按选定来源运行：ChatGPT 经 `voiceport-core` 请求固定 ChatGPT 转写端点；两种本地模型通过后台原生桥接调用已安装的 sherpa-onnx 运行时，不读取 ChatGPT 登录或上传音频。UI、菜单、Carbon 快捷键、AVAudioEngine 录音与 PCM 分流、24kHz 单声道 AAC 编码、可选设备端 Speech、私有存储与 flock、AX 普通字段拥有范围编辑及 Orca 稳定前缀字符追加均在 Rust 中实现。内置来源不启动 Swift 或 Rust helper；用户导入并启用的 JSONL 插件则在后台执行明确确认的本机程序。HTTP 插件使用独立客户端和来源凭据，不转发 Codex 登录；通用 HTTP / JSONL 第一版只支持停止后转写，Paraformer 保留实时能力。旧 Swift 源码、测试和 SwiftPM 清单已从当前文件树移除，历史对照可从 Git 历史查看。
+macOS 应用按选定来源运行：ChatGPT 经 `voiceport-core` 请求固定 ChatGPT 转写端点；四种本地模型通过后台原生桥接调用已安装的 sherpa-onnx 运行时，不读取 ChatGPT 登录或上传音频。UI、菜单、Carbon 快捷键、AVAudioEngine 录音与 PCM 分流、24kHz 单声道 AAC 编码、可选设备端 Speech、私有存储与 flock、AX 普通字段拥有范围编辑及 Orca 稳定前缀字符追加均在 Rust 中实现。内置来源不启动 Swift 或 Rust helper；用户导入并启用的 JSONL 插件则在后台执行明确确认的本机程序。HTTP 插件使用独立客户端和来源凭据，不转发 Codex 登录；通用 HTTP / JSONL 第一版只支持停止后转写，Paraformer 保留实时能力。旧 Swift 源码、测试和 SwiftPM 清单已从当前文件树移除，历史对照可从 Git 历史查看。
 
 会话通过递增 generation 拒绝迟到权限与识别回调；录音仅在主动操作后打开。云端任务在后台线程执行，录音 Arc 租约保持到工作资源释放后才回报完成。取消先使会话失效，界面继续轮询停止确认；手动重试清除旧输入目标，不把旧音频的结果写入新焦点。设备端 Speech 不可用时继续录音并等停录后转写，不回退 Apple 云端识别。
 

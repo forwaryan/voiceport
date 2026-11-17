@@ -27,6 +27,7 @@ mod local_runtime;
 #[allow(dead_code, unused_imports)]
 #[path = "../src"]
 mod plugin_dependencies {
+    pub(crate) mod model_library;
     pub(crate) mod plugin_credentials;
     pub(crate) mod plugin_process;
     pub(crate) mod plugin_runtime;
@@ -35,7 +36,7 @@ mod plugin_dependencies {
 }
 #[cfg(target_os = "macos")]
 use plugin_dependencies::{
-    plugin_credentials, plugin_process, plugin_runtime, source_probe, source_tests,
+    model_library, plugin_credentials, plugin_process, plugin_runtime, source_probe, source_tests,
 };
 #[cfg(target_os = "macos")]
 #[allow(dead_code, unused_imports)] // Its libtest-only imports are inert in this harness.

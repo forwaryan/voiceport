@@ -60,9 +60,9 @@ Other research references: [codex-asr](https://github.com/Wangnov/codex-asr/tree
 
 ## sherpa-onnx C interface
 
-The unmodified `sherpa-onnx/c-api/c-api.h` from [sherpa-onnx v1.12.37](https://github.com/k2-fsa/sherpa-onnx/blob/v1.12.37/sherpa-onnx/c-api/c-api.h) is retained under `crates/voiceport-macos/src/local_runtime/` with its full Apache-2.0 LICENSE and source provenance. Copyright (c) 2023 Xiaomi Corporation. VoicePort's own `bridge.cc` uses this interface to load the user's separately installed Orca runtime; no sherpa-onnx implementation, ONNX Runtime binary, or speech model is copied into the app.
+The unmodified `sherpa-onnx/c-api/c-api.h` from [sherpa-onnx v1.12.37](https://github.com/k2-fsa/sherpa-onnx/blob/v1.12.37/sherpa-onnx/c-api/c-api.h) is retained under `crates/voiceport-macos/src/local_runtime/` with its full Apache-2.0 LICENSE and source provenance. Copyright (c) 2023 Xiaomi Corporation. VoicePort's own `bridge.cc` uses this interface to load a compatible runtime. The model library can explicitly download the pinned `sherpa-onnx-darwin-arm64@1.12.37` package from npm and ONNX int8 models from pinned Hugging Face revisions into VoicePort's user-data directory. No runtime binary or model weight is bundled in the app. Installation retains the full sherpa Apache-2.0 license, ONNX Runtime v1.23.2 MIT license and its ThirdPartyNotices.txt alongside the runtime. Compatible older Orca installations remain read-only optional sources.
 
-The full Apache License 2.0 terms are also present in the shipped bundle at `Contents/Resources/third-party/crates/cfg-if-1.0.5/LICENSE-APACHE`. The external Orca runtime and models retain their own licensing and installation requirements. See [local model dependencies](docs/LOCAL_MODELS.md).
+The full Apache License 2.0 terms are also present in the shipped bundle at `Contents/Resources/third-party/crates/cfg-if-1.0.5/LICENSE-APACHE`. Downloaded or externally installed runtimes and models retain their own licenses: sherpa-onnx is Apache-2.0; ONNX Runtime is MIT; upstream Whisper code and weights are MIT; the pinned Paraformer conversion model card declares Apache-2.0. SenseVoiceSmall, by FunAudioLLM, uses the custom FunASR Model License v1.1 rather than MIT or Apache-2.0. Its installation retains the complete fixed MODEL_LICENSE.txt and an ATTRIBUTION.txt naming the model, authors and source. Whisper Tiny and Large v3 Turbo installations, including offline imports, retain the complete upstream MIT copyright and permission notice (Copyright (c) 2022 OpenAI) in MODEL_LICENSE.txt, plus an ATTRIBUTION.txt with pinned model and license sources. The fixed upstream license is embedded from `crates/voiceport-macos/src/model_library/WHISPER_LICENSE.txt`. Conversion repositories and original model authors are identified in the model documentation. See [local model dependencies](docs/LOCAL_MODELS.md).
 
 ## Rust dependencies
 
@@ -77,7 +77,8 @@ The Rust workspace has the following direct dependencies, with versions resolved
 | serde_json | 1.0.154 | Auth and response JSON | MIT OR Apache-2.0 |
 | base64 | 0.22.1 | JWT payload decoding | MIT OR Apache-2.0 |
 | dirs | 6.0.0 | Platform user directory | MIT OR Apache-2.0 |
-| tempfile | 3.27.0 | Isolated test fixtures only | MIT OR Apache-2.0 |
+| tempfile | 3.27.0 | Isolated fixtures and atomic model installation staging | MIT OR Apache-2.0 |
+| ring | 0.17.14 | Model and runtime SHA-256 / SHA-512 integrity | Apache-2.0 AND ISC; bundled notices retain embedded component terms |
 | objc2 | 0.6.5 | Native Objective-C runtime bindings | MIT |
 | objc2-foundation | 0.3.2 | Foundation types and native paths | MIT |
 | objc2-app-kit | 0.3.2 | Native menu, window and input integration | Zlib OR Apache-2.0 OR MIT |

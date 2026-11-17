@@ -15,6 +15,7 @@ use std::cell::{Cell, OnceCell, RefCell};
 mod control;
 mod control_probes;
 mod hotkey_start;
+mod model_manager;
 mod picker;
 mod quick_panel;
 mod shortcut_editor;
@@ -170,6 +171,7 @@ struct Ivars {
     copy: OnceCell<Retained<NSButton>>,
     window: OnceCell<Retained<NSWindow>>,
     show_window_on_launch: Cell<bool>,
+    show_models_on_launch: Cell<bool>,
     message: OnceCell<Retained<NSTextField>>,
     details: OnceCell<Retained<NSTextField>>,
     transcript: OnceCell<Retained<NSTextView>>,
@@ -181,6 +183,9 @@ struct Ivars {
     source_rows: RefCell<Vec<(String, String)>>,
     source_detail: OnceCell<Retained<NSTextField>>,
     refresh_models: OnceCell<Retained<NSButton>>,
+    manage_models: OnceCell<Retained<NSButton>>,
+    managing_models: Cell<bool>,
+    model_manager: RefCell<Option<Retained<model_manager::Manager>>>,
     manage_sources: OnceCell<Retained<NSButton>>,
     test_source: OnceCell<Retained<NSButton>>,
     managing_sources: Cell<bool>,
@@ -236,6 +241,8 @@ define_class!(
             if let Some(manager) = manager { manager.close_for_shutdown(); }
             let probes = self.ivars().source_probe_panel.borrow().clone();
             if let Some(probes) = probes { probes.close(); }
+            let models = self.ivars().model_manager.borrow().clone();
+            if let Some(models) = models { models.shutdown(); }
             // Idle shutdown can finish synchronously. Reentrant termination
             // must wait until the controller borrow and any worker lease end.
             if let Ok(mut slot) = self.ivars().controller.try_borrow_mut() {
@@ -353,7 +360,7 @@ define_class!(
             let manager = self.ivars().source_manager.borrow().clone();
             if let Some(manager) = manager { manager.bring_forward(); return; }
             let idle=self.ivars().controller.borrow().as_ref().is_some_and(|c|!c.busy() && !c.discovering());
-            if self.ivars().quitting.get() || !idle || self.ivars().permission_rx.borrow().is_some() || self.ivars().editing_shortcut.get() || self.ivars().managing_sources.replace(true) {return;}
+            if self.ivars().quitting.get() || !idle || self.ivars().permission_rx.borrow().is_some() || self.ivars().editing_shortcut.get() || self.ivars().managing_models.get() || self.ivars().managing_sources.replace(true) {return;}
             if let Err(error) = source_manager::manage(self) {
                 self.ivars().managing_sources.set(false);
                 self.with_controller(|c| c.message = format!("无法打开来源管理：{error}"));
@@ -366,6 +373,15 @@ define_class!(
             if !self.ivars().quitting.get() && self.ivars().permission_rx.borrow().is_none() && !self.settings_locked() {
                 source_probes::show(self);
             }
+            self.refresh();
+        }
+        #[unsafe(method(manageModels:))]
+        fn manage_models_action(&self, _sender: Option<&AnyObject>) {
+            let existing = self.ivars().model_manager.borrow().clone();
+            if let Some(manager) = existing { manager.bring_forward(); return; }
+            let idle = self.ivars().controller.borrow().as_ref().is_some_and(|c| !c.busy() && !c.discovering());
+            if self.ivars().quitting.get() || !idle || self.settings_locked() || self.ivars().permission_rx.borrow().is_some() || self.ivars().pending_hotkey.borrow().is_some() || self.ivars().control.borrow().preparing() { return; }
+            if let Err(error) = model_manager::show(self) { self.with_controller(|c| c.message = error); }
             self.refresh();
         }
         #[unsafe(method(refreshModels:))]
@@ -403,6 +419,11 @@ define_class!(
                 c.poll();
             });
             if let Some(event) = pressed { self.handle_hotkey(event); }
+            if self.ivars().show_models_on_launch.get()
+                && self.ivars().controller.borrow().as_ref().is_some_and(|c| !c.busy() && !c.discovering()) {
+                self.ivars().show_models_on_launch.set(false);
+                self.manage_models_action(sel!(manageModels:), None);
+            }
             self.poll_control();
             if self.ivars().cli_quit_at.get().is_some_and(|at| std::time::Instant::now() >= at) {
                 self.ivars().cli_quit_at.set(None);
@@ -411,6 +432,8 @@ define_class!(
             self.refresh();
             let probes = self.ivars().source_probe_panel.borrow().clone();
             if let Some(probes) = probes { probes.refresh(); }
+            let models = self.ivars().model_manager.borrow().clone();
+            if let Some(models) = models { models.refresh(); }
             if self.ivars().quitting.get() {
                 if self.ivars().editing_shortcut.get() { NSApplication::sharedApplication(self.mtm()).abortModal(); }
                 let manager = self.ivars().source_manager.borrow().clone();
@@ -473,6 +496,7 @@ impl Delegate {
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         for (title, action, symbol) in [
             ("打开结果与设置…", sel!(showWindow:), "macwindow"),
+            ("语音模型…", sel!(manageModels:), "internaldrive"),
             ("开始听写", sel!(toggle:), "mic"),
             ("复制最近文字", sel!(copyText:), "doc.on.doc"),
             ("取消听写", sel!(cancel:), "xmark.circle"),
@@ -827,9 +851,12 @@ impl Delegate {
         );
         self.surface(page, rect(0., 100., 572., 244.));
         self.label(page, "转写来源", rect(16., 312., 90., 20.), 13.);
-        let source = self.popup(page, &[], sel!(selectSource:), rect(112., 305., 360., 30.));
+        let source = self.popup(page, &[], sel!(selectSource:), rect(112., 305., 268., 30.));
         source.setAccessibilityLabel(Some(ns_string!("转写来源")));
         let _ = self.ivars().source.set(source);
+        let models = self.button(page, "语音模型…", sel!(manageModels:), 380., 305., 100.);
+        models.setAccessibilityIdentifier(Some(ns_string!("voiceport.models.open")));
+        let _ = self.ivars().manage_models.set(models);
         let _ = self.ivars().refresh_models.set(self.button(
             page,
             "刷新",
@@ -1112,6 +1139,9 @@ impl Delegate {
         }
         let idle =
             !c.busy() && !preparing_permissions && !returning_to_input && !self.settings_locked();
+        if let Some(button) = self.ivars().manage_models.get() {
+            button.setEnabled((idle && !c.discovering()) || self.ivars().managing_models.get());
+        }
         if let Some(button) = self.ivars().manage_sources.get() {
             button.setEnabled(idle && !c.discovering());
         }
@@ -1337,7 +1367,7 @@ pub fn run() {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     if arguments.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "VoicePort Rust macOS\n  --show-window             Explicitly open results and settings (normal launch stays in the menu bar)\n  --smoke-test              Build menu and exit without recording or network\n  --check-input-permission  Print input authorization JSON for this execution context\n  --diagnose-input          Inspect focused input metadata without writing\n  --input-self-test         Write fixed text only to the dedicated development fixture\n  --help                   Show this help"
+            "VoicePort Rust macOS\n  --show-window             Explicitly open results and settings (normal launch stays in the menu bar)\n  --show-models             Open the local speech model library\n  --smoke-test              Build menu and exit without recording or network\n  --check-input-permission  Print input authorization JSON for this execution context\n  --diagnose-input          Inspect focused input metadata without writing\n  --input-self-test         Write fixed text only to the dedicated development fixture\n  --help                   Show this help"
         );
         return;
     }
@@ -1347,6 +1377,7 @@ pub fn run() {
             "--smoke-test"
                 | "--check-input-permission"
                 | "--show-window"
+                | "--show-models"
                 | "--diagnose-input"
                 | "--input-self-test"
         )
@@ -1391,6 +1422,10 @@ pub fn run() {
         .ivars()
         .show_window_on_launch
         .set(arguments.iter().any(|a| a == "--show-window"));
+    delegate
+        .ivars()
+        .show_models_on_launch
+        .set(arguments.iter().any(|a| a == "--show-models"));
     if smoke {
         delegate.build_menu();
         println!("VoicePort Rust app launched: menu ready, no recording or network");
