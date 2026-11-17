@@ -409,8 +409,11 @@ class RevisionBoundaries(unittest.TestCase):
         for mutation in mutations:
             with tempfile.TemporaryDirectory() as temp:
                 directory = pathlib.Path(temp) / 'materials'
-                shutil.copytree(ROOT / 'resources/third-party', directory)
-                manifest = json.loads((directory / 'manifest.json').read_text())
+                # These cases must fail at the source-manifest comparison,
+                # before installed material is inspected. Copy only the input
+                # being mutated, preserving the exact expected failure below.
+                directory.mkdir()
+                manifest = json.loads((ROOT / 'resources/third-party/manifest.json').read_text())
                 mutation(manifest)
                 (directory / 'manifest.json').write_text(json.dumps(manifest))
                 with patch.object(materials, 'DEST', directory):
