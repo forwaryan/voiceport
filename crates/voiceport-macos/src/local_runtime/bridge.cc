@@ -32,6 +32,9 @@ struct Runtime {
   catch (const std::exception &e) { snprintf(target, capacity, "%s", e.what()); } \
   catch (...) { snprintf(target, capacity, "Unknown native inference exception"); }
 
+// Keep these values aligned with ModelKind::native_mode in local_models.rs.
+enum ModelMode { Paraformer = 1, WhisperTiny = 2, WhisperTurbo = 3, SenseVoice = 4 };
+
 extern "C" {
 void vp_local_close(Runtime *r) {
   if (!r) return;
@@ -45,7 +48,11 @@ void vp_local_close(Runtime *r) {
 const char *vp_local_error(Runtime *r) { return r->error; }
 Runtime *vp_local_open(const char *directory, const char *encoder,
     const char *decoder, const char *tokens, const char *language,
-    int online, char *error, size_t capacity) {
+    int mode, char *error, size_t capacity) {
+  if (mode < Paraformer || mode > SenseVoice) {
+    snprintf(error, capacity, "Unsupported local model mode: %d", mode);
+    return nullptr;
+  }
   Runtime *r = nullptr;
   try { r = new Runtime; } CATCH_ERROR(error, capacity)
   if (!r) return nullptr;
@@ -66,7 +73,7 @@ Runtime *vp_local_open(const char *directory, const char *encoder,
     goto fail;
   }
   try {
-    if (online) {
+    if (mode == Paraformer) {
       SherpaOnnxOnlineRecognizerConfig c = {};
       c.feat_config.sample_rate = 16000;
       c.feat_config.feature_dim = 80;
@@ -87,17 +94,32 @@ Runtime *vp_local_open(const char *directory, const char *encoder,
     } else {
       SherpaOnnxOfflineRecognizerConfig c = {};
       c.feat_config.sample_rate = 16000;
-      c.feat_config.feature_dim = 80;
-      c.model_config.whisper.encoder = encoder;
-      c.model_config.whisper.decoder = decoder;
-      c.model_config.whisper.language = language;
-      c.model_config.whisper.task = "transcribe";
+      c.feat_config.feature_dim = mode == WhisperTurbo ? 128 : 80;
+      if (mode == SenseVoice) {
+        c.model_config.sense_voice.model = encoder;
+        c.model_config.sense_voice.language = language[0] ? language : "auto";
+        c.model_config.sense_voice.use_itn = 1;
+        c.model_config.model_type = "sense_voice";
+      } else {
+        // Tiny and Large v3 Turbo share the Whisper ABI; their distinct model
+        // files (including Turbo's 128-bin features) are read from ONNX metadata.
+        c.model_config.whisper.encoder = encoder;
+        c.model_config.whisper.decoder = decoder;
+        c.model_config.whisper.language = language;
+        c.model_config.whisper.task = "transcribe";
+        c.model_config.model_type = "whisper";
+      }
       c.model_config.tokens = tokens;
       c.model_config.num_threads = 2;
       c.model_config.provider = "cpu";
       c.decoding_method = "greedy_search";
       r->offline = r->SherpaOnnxCreateOfflineRecognizer(&c);
-      if (!r->offline) { snprintf(error, capacity, "Cannot load Whisper Tiny model"); goto fail; }
+      if (!r->offline) {
+        const char *name = mode == SenseVoice ? "SenseVoice" :
+            mode == WhisperTurbo ? "Whisper Large v3 Turbo" : "Whisper Tiny";
+        snprintf(error, capacity, "Cannot load %s model", name);
+        goto fail;
+      }
     }
     return r;
   } CATCH_ERROR(error, capacity)

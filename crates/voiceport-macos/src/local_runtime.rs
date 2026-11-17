@@ -19,7 +19,7 @@ unsafe extern "C" {
         decoder: *const c_char,
         tokens: *const c_char,
         language: *const c_char,
-        online: i32,
+        mode: i32,
         error: *mut c_char,
         capacity: usize,
     ) -> *mut c_void;
@@ -39,7 +39,7 @@ struct Native(NonNull<c_void>);
 impl Native {
     fn open(model: &Model, language: &str) -> Result<Self, String> {
         model.validate()?;
-        if !matches!(language, "" | "zh" | "en") {
+        if !model.kind.supports_language(language) {
             return Err("本地转写语言不受支持。".into());
         }
         let string = |path: &Path| {
@@ -61,7 +61,7 @@ impl Native {
                 decoder.as_ptr(),
                 tokens.as_ptr(),
                 language.as_ptr(),
-                i32::from(model.kind == ModelKind::Paraformer),
+                model.kind.native_mode(),
                 error.as_mut_ptr(),
                 error.len(),
             )
@@ -196,7 +196,7 @@ impl Session {
                     }
                 }
             }
-            ModelKind::Whisper => {
+            ModelKind::Whisper | ModelKind::WhisperTurbo | ModelKind::SenseVoice => {
                 if self.offline.len() + samples.len() > MAX_SAMPLES {
                     return Err("本地音频超过 180 秒。".into());
                 }
@@ -226,7 +226,7 @@ impl Session {
                 self.native.decode_ready(cancel)?;
                 self.transcript.commit(&self.native.result()?);
             }
-            ModelKind::Whisper => {
+            ModelKind::Whisper | ModelKind::WhisperTurbo | ModelKind::SenseVoice => {
                 let mut offset = 0;
                 while offset < self.offline.len() {
                     check_cancel(cancel)?;
@@ -308,7 +308,7 @@ pub(crate) fn probe(
             native.decode_ready(cancel)?;
             native.result()?;
         }
-        ModelKind::Whisper => {
+        ModelKind::Whisper | ModelKind::WhisperTurbo | ModelKind::SenseVoice => {
             Native::json(unsafe {
                 vp_local_offline(native.0.as_ptr(), silence.as_ptr(), silence.len() as i32)
             })?;
@@ -320,6 +320,29 @@ pub(crate) fn probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_bridge_rejects_unknown_modes_before_loading_libraries() {
+        let mut error = [0 as c_char; 256];
+        let pointer = unsafe {
+            vp_local_open(
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                99,
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        assert!(pointer.is_null());
+        assert!(
+            unsafe { CStr::from_ptr(error.as_ptr()) }
+                .to_str()
+                .unwrap()
+                .contains("Unsupported local model mode: 99")
+        );
+    }
     #[test]
     fn cancelled_probe_does_not_open_even_missing_model_files() {
         let model = Model {
@@ -337,28 +360,111 @@ mod tests {
     #[test]
     #[ignore = "explicit installed-model synthetic silence test; no microphone, auth or network"]
     fn installed_models_decode_synthetic_probe() {
-        let root = std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
-            .join("Library/Application Support/orca/speech-models");
-        for id in [
-            crate::local_models::PARAFORMER,
-            crate::local_models::WHISPER,
-        ] {
-            // Keep an unavailable entry so missing runtime/model diagnostics are
-            // reported instead of a generic missing-catalog-row error.
+        let own_root = std::env::var_os("VOICEPORT_TEST_MODELS_ROOT").map(std::path::PathBuf::from);
+        let root = own_root.clone().unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
+                .join("Library/Application Support/orca/speech-models")
+        });
+        assert!(root.is_absolute());
+        let runtime = own_root
+            .map(|root| root.join(format!("runtime-{}", crate::local_models::RUNTIME_VERSION)))
+            .unwrap_or_else(|| crate::local_models::RUNTIME_DIRECTORY.into());
+        let ids = std::env::var("VOICEPORT_TEST_MODEL")
+            .map(|id| vec![id])
+            .unwrap_or_else(|_| {
+                vec![
+                    crate::local_models::PARAFORMER.into(),
+                    crate::local_models::WHISPER.into(),
+                ]
+            });
+        for id in ids {
             let catalog = crate::local_models::Catalog::discover(
                 &root,
-                Path::new(crate::local_models::RUNTIME_DIRECTORY),
-                id,
+                &runtime,
+                &id,
                 std::env::consts::ARCH,
             );
-            let crate::local_models::SessionSource::Local(model) = catalog.snapshot(id).unwrap()
+            let crate::local_models::SessionSource::Local(model) = catalog.snapshot(&id).unwrap()
             else {
                 panic!("expected installed model");
             };
-            let start = std::time::Instant::now();
-            probe(&model, "", &CancellationToken::new()).unwrap();
-            println!("synthetic silence {id}: {} ms", start.elapsed().as_millis());
+            for language in ["", "zh", "en"] {
+                let start = std::time::Instant::now();
+                probe(&model, language, &CancellationToken::new()).unwrap();
+                println!(
+                    "synthetic silence {id} language={language:?}: {} ms",
+                    start.elapsed().as_millis()
+                );
+            }
         }
+    }
+    #[test]
+    #[ignore = "explicit new-model ASR using hash-pinned public WAV and dedicated model root; no microphone or network"]
+    fn expanded_model_transcribes_pinned_public_fixture() {
+        use std::io::Read;
+        let root = std::path::PathBuf::from(
+            std::env::var_os("VOICEPORT_TEST_MODELS_ROOT").expect("dedicated model root"),
+        );
+        let fixture = std::path::PathBuf::from(
+            std::env::var_os("VOICEPORT_TEST_PUBLIC_WAV").expect("pinned public WAV path"),
+        );
+        assert!(root.is_absolute() && fixture.is_absolute());
+        let id = std::env::var("VOICEPORT_TEST_MODEL").expect("explicit expanded model ID");
+        assert!(matches!(
+            id.as_str(),
+            crate::local_models::SENSEVOICE | crate::local_models::WHISPER_TURBO
+        ));
+        let mut bytes = vec![];
+        std::fs::File::open(&fixture)
+            .unwrap()
+            .take(1_000_001)
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert_eq!(bytes.len(), 212044);
+        // Official whisper-tiny revision 65176e2deb88badc814a94058666cadccc29b61c,
+        // test_wavs/0.wav. Existing production fixture tests independently expect "yellow".
+        let digest: String = ring::digest::digest(&ring::digest::SHA256, &bytes)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            digest,
+            "6bc58a4efdf20daac252b6b1502632601a71efe0308f6757dc1eda34891a7e4f"
+        );
+        assert_eq!(&bytes[..12], b"RIFF\x44\x3c\x03\x00WAVE");
+        let runtime = root.join(format!("runtime-{}", crate::local_models::RUNTIME_VERSION));
+        let catalog =
+            crate::local_models::Catalog::discover(&root, &runtime, &id, std::env::consts::ARCH);
+        let crate::local_models::SessionSource::Local(model) = catalog.snapshot(&id).unwrap()
+        else {
+            panic!("local model")
+        };
+        let mut partials = vec![];
+        let started = std::time::Instant::now();
+        let text = transcribe_file(&model, "en", &fixture, &CancellationToken::new(), |text| {
+            partials.push(text)
+        })
+        .unwrap();
+        assert!(!text.trim().is_empty());
+        assert!(
+            text.to_lowercase().contains("yellow"),
+            "unexpected public fixture ASR: {text}"
+        );
+        assert!(
+            partials.is_empty(),
+            "offline models must not claim streaming previews"
+        );
+        let (input, incoming) = crate::local_audio::channel();
+        crate::audio::read_pcm(&fixture, |packet| input.send(packet)).unwrap();
+        input.finish();
+        let live =
+            transcribe_live(&model, "en", incoming, &CancellationToken::new(), |_| {}).unwrap();
+        assert_eq!(live, text, "queued capture and file retry route must agree");
+        println!(
+            "PUBLIC FIXTURE ASR {id}: {text:?}; file+queued-capture {:?}",
+            started.elapsed()
+        );
     }
     #[test]
     #[ignore = "explicit public model fixture inference, no microphone or auth"]

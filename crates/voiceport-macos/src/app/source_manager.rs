@@ -45,7 +45,7 @@ fn checkbox(
 }
 
 /// Keep utility windows within the current display's usable area, including the titlebar.
-fn content_size(d: &Delegate, preferred: NSSize) -> NSSize {
+pub(super) fn content_size(d: &Delegate, preferred: NSSize) -> NSSize {
     let screen = d
         .ivars()
         .window

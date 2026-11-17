@@ -104,8 +104,9 @@ fn matches_query(query: &str, values: &[&str]) -> bool {
 fn description(p: &Manifest) -> &'static str {
     match p.adapter {
         Adapter::Chatgpt => "ChatGPT 登录 · 系统语音预览，停止后校正",
-        Adapter::Paraformer => "Orca 本地模型 · 边说边预览",
-        Adapter::Whisper => "Orca 本地模型 · 停止后转写",
+        Adapter::Paraformer => "本地模型 · 边说边预览；到偏好设置的“语音模型”下载安装",
+        Adapter::Whisper => "本地模型 · 停止后转写；到偏好设置的“语音模型”下载安装",
+        Adapter::SenseVoice => "本地五语言模型 · 停止后转写；到“语音模型”下载安装",
         Adapter::Http => "填写地址、模型和密钥，连接兼容音频转写 API",
         Adapter::Jsonl => "本地插件 · 填写配置后启用",
     }
@@ -238,7 +239,7 @@ impl Library {
             return;
         }
         // A short routing sheet; explanations live in explicit help.
-        self.sheet("添加转写方式", "已有服务地址和模型？连接兼容 API。\n本地插件需要作者提供的 VoicePort .json 清单和已安装的适配器。", &["连接兼容 API…", "导入本地插件…", "AI / Skill 帮助…", "取消"], |library, code| match code {
+        self.sheet("添加转写方式", "已有服务地址和模型？连接兼容 API。\n本地插件需要作者提供的 VoicePort .json 清单和已安装的适配器。\n要下载或导入语音模型，请关闭此窗口，到偏好设置的“语音模型…”操作。", &["连接兼容 API…", "导入本地插件…", "AI / Skill 帮助…", "取消"], |library, code| match code {
             1000 => library.perform(Action::Add(crate::plugins::HTTP.into())),
             1001 => library.import(),
             1002 => library.ai_help(),
@@ -252,7 +253,7 @@ impl Library {
             "请用 VoicePort 接入 Skill，根据我接下来提供的服务文档判断：直接配置兼容 API，还是生成 JSONL 适配器和清单。给出具体配置、文件路径和使用步骤；缺失信息不要猜。\n\n当前 App 的 CLI 完整路径：{}\n请用该路径运行离线命令：\nskills get plugins\nskills get plugin-examples\n\n只生成和检查方案；不要读取真实密钥、录音、上传音频或修改配置。",
             cli.display()
         );
-        self.sheet("AI / Skill 接入帮助", &format!("官网、GitHub 链接、zip 和模型文件不能直接导入。请提供服务文档，让 AI 判断接入方式。\n\n{prompt}"), &["关闭", "复制接入说明"], move |library, code| {
+        self.sheet("AI / Skill 接入帮助", &format!("此处导入的是插件清单；语音模型请到偏好设置的“语音模型…”下载安装或导入。官网、GitHub 链接和 zip 不能作为插件清单导入。请提供服务文档，让 AI 判断接入方式。\n\n{prompt}"), &["关闭", "复制接入说明"], move |library, code| {
             if code == 1001 {
                 let pasteboard = NSPasteboard::generalPasteboard();
                 pasteboard.clearContents();

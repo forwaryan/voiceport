@@ -4,7 +4,9 @@ use crate::shortcut::Shortcut;
 
 impl Delegate {
     pub(super) fn settings_locked(&self) -> bool {
-        self.ivars().managing_sources.get() || self.ivars().editing_shortcut.get()
+        self.ivars().managing_sources.get()
+            || self.ivars().managing_models.get()
+            || self.ivars().editing_shortcut.get()
     }
 
     pub(super) fn change_shortcut(&self) {

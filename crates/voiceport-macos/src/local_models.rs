@@ -1,4 +1,4 @@
-//! Small, read-only catalog. Discovery never loads a model or a dynamic library.
+//! Read-only source discovery across VoicePort and compatible Orca installations.
 use std::{
     fs::File,
     io::Read,
@@ -8,6 +8,8 @@ use std::{
 pub const CHATGPT: &str = "chatgpt";
 pub const PARAFORMER: &str = "orca:paraformer-bilingual-zh-en";
 pub const WHISPER: &str = "orca:whisper-tiny";
+pub const WHISPER_TURBO: &str = "orca:whisper-large-v3-turbo";
+pub const SENSEVOICE: &str = "orca:sensevoice";
 pub const RUNTIME_VERSION: &str = "1.12.37";
 pub const RUNTIME_DIRECTORY: &str =
     "/Applications/Orca.app/Contents/Resources/node_modules/sherpa-onnx-darwin-arm64";
@@ -16,6 +18,23 @@ pub const RUNTIME_DIRECTORY: &str =
 pub enum ModelKind {
     Paraformer,
     Whisper,
+    WhisperTurbo,
+    SenseVoice,
+}
+impl ModelKind {
+    /// Must match the explicit modes in local_runtime/bridge.cc.
+    pub(crate) fn native_mode(self) -> i32 {
+        match self {
+            Self::Paraformer => 1,
+            Self::Whisper => 2,
+            Self::WhisperTurbo => 3,
+            Self::SenseVoice => 4,
+        }
+    }
+    pub(crate) fn supports_language(self, language: &str) -> bool {
+        matches!(language, "" | "zh" | "en")
+            || self == Self::SenseVoice && matches!(language, "ja" | "ko" | "yue")
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Model {
@@ -49,7 +68,8 @@ impl SessionSource {
             Self::ChatGpt => CHATGPT_PLUGIN,
             Self::Local(m) => match m.kind {
                 ModelKind::Paraformer => PARA_PLUGIN,
-                ModelKind::Whisper => WHISPER_PLUGIN,
+                ModelKind::Whisper | ModelKind::WhisperTurbo => WHISPER_PLUGIN,
+                ModelKind::SenseVoice => SENSEVOICE_PLUGIN,
             },
             Self::Plugin(p) => return p.manifest.clone(),
         };
@@ -114,6 +134,12 @@ impl Catalog {
                 ModelKind::Paraformer,
             ),
             (WHISPER, "whisper-tiny", ModelKind::Whisper),
+            (
+                WHISPER_TURBO,
+                "whisper-large-v3-turbo",
+                ModelKind::WhisperTurbo,
+            ),
+            (SENSEVOICE, "sensevoice", ModelKind::SenseVoice),
         ] {
             let result = runtime_check
                 .clone()
@@ -144,15 +170,39 @@ impl Catalog {
             }
             return catalog;
         };
+        #[cfg(target_os = "macos")]
+        let runtime = crate::model_library::Paths::system()
+            .map(|paths| paths.runtime_or_orca())
+            .unwrap_or_else(|_| PathBuf::from(RUNTIME_DIRECTORY));
+        #[cfg(not(target_os = "macos"))]
+        let runtime = PathBuf::from(RUNTIME_DIRECTORY);
         let catalog = Self::discover(
             &PathBuf::from(home).join("Library/Application Support/orca/speech-models"),
-            Path::new(RUNTIME_DIRECTORY),
+            &runtime,
             saved,
             std::env::consts::ARCH,
         );
         #[cfg(target_os = "macos")]
         {
             let mut catalog = catalog;
+            if let Ok(paths) = crate::model_library::Paths::system() {
+                for definition in crate::model_library::MODELS {
+                    if paths.model(definition).symlink_metadata().is_ok() {
+                        let result = paths.discover(definition);
+                        let entry = match result {
+                            Ok(model) => Entry {
+                                id: definition.id.into(),
+                                title: title(definition.id).into(),
+                                detail: description(definition.id).into(),
+                                source: Ok(SessionSource::Local(model)),
+                            },
+                            Err(error) => unavailable(definition.id, &error),
+                        };
+                        catalog.entries.retain(|e| e.id != definition.id);
+                        catalog.entries.push(entry);
+                    }
+                }
+            }
             catalog.load_configured(saved);
             catalog
         }
@@ -222,7 +272,11 @@ impl Catalog {
     }
 }
 impl Model {
-    fn discover(directory: PathBuf, runtime: &Path, kind: ModelKind) -> Result<Self, String> {
+    pub(crate) fn discover(
+        directory: PathBuf,
+        runtime: &Path,
+        kind: ModelKind,
+    ) -> Result<Self, String> {
         let (encoder, decoder, tokens) = match kind {
             ModelKind::Paraformer => ("encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt"),
             ModelKind::Whisper => (
@@ -230,6 +284,14 @@ impl Model {
                 "tiny-decoder.int8.onnx",
                 "tiny-tokens.txt",
             ),
+            ModelKind::WhisperTurbo => (
+                "turbo-encoder.int8.onnx",
+                "turbo-decoder.int8.onnx",
+                "turbo-tokens.txt",
+            ),
+            // The single SenseVoice model occupies encoder; decoder is unused by
+            // its explicit native mode. Preserve the existing Model struct API.
+            ModelKind::SenseVoice => ("model.int8.onnx", "model.int8.onnx", "tokens.txt"),
         };
         let model = Self {
             kind,
@@ -270,6 +332,8 @@ pub fn title(id: &str) -> &str {
         CHATGPT => "ChatGPT",
         PARAFORMER => "Paraformer · 本地流式",
         WHISPER => "Whisper Tiny · 本地离线",
+        WHISPER_TURBO => "Whisper Large v3 Turbo · 本地离线",
+        SENSEVOICE => "SenseVoice · 本地离线",
         other => other,
     }
 }
@@ -277,7 +341,12 @@ fn description(id: &str) -> &'static str {
     match id {
         CHATGPT => "系统设备端预览；停止后上传至 ChatGPT 完成转写。",
         PARAFORMER => "中英双语边说边出字；停止后在本地完成，无需联网。语言提示不限制双语识别。",
-        WHISPER => "停止后在本地分段转写，无实时预览；无需联网。",
+        WHISPER | WHISPER_TURBO => {
+            "停止后在本地分段转写；支持自动检测或中文 / English 提示，无实时预览；无需联网。"
+        }
+        SENSEVOICE => {
+            "停止后在本地分段转写；自动识别中文、English、日本語、한국어、粤语，无实时预览；无需联网。"
+        }
         _ => "保存的转写来源不可用。",
     }
 }
@@ -292,7 +361,7 @@ fn readable(path: &Path) -> Result<(), String> {
     })();
     result.map_err(|_| format!("缺少可读的非空文件：{}", path.display()))
 }
-fn validate_runtime(directory: &Path, architecture: &str) -> Result<(), String> {
+pub(crate) fn validate_runtime(directory: &Path, architecture: &str) -> Result<(), String> {
     if architecture != "aarch64" {
         return Err("本地模型目前仅支持 Apple Silicon arm64。".into());
     }
@@ -371,6 +440,114 @@ mod tests {
         let catalog = Catalog::discover(temp.path(), &runtime, CHATGPT, "aarch64");
         assert_eq!(catalog.entries.len(), 2);
         assert!(catalog.snapshot(PARAFORMER).is_err());
+    }
+    #[test]
+    fn expanded_models_discover_distinct_files_and_preserve_old_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = installed(temp.path());
+        for (id, directory, kind, names) in [
+            (
+                WHISPER_TURBO,
+                "whisper-large-v3-turbo",
+                ModelKind::WhisperTurbo,
+                &[
+                    "turbo-encoder.int8.onnx",
+                    "turbo-decoder.int8.onnx",
+                    "turbo-tokens.txt",
+                ][..],
+            ),
+            (
+                SENSEVOICE,
+                "sensevoice",
+                ModelKind::SenseVoice,
+                &["model.int8.onnx", "tokens.txt"][..],
+            ),
+        ] {
+            let path = temp.path().join(directory);
+            std::fs::create_dir(&path).unwrap();
+            // A different model's filenames must not satisfy this model.
+            for name in [
+                "tiny-encoder.int8.onnx",
+                "tiny-decoder.int8.onnx",
+                "tiny-tokens.txt",
+            ] {
+                std::fs::write(path.join(name), [1]).unwrap();
+            }
+            assert!(
+                Catalog::discover(temp.path(), &runtime, id, "aarch64")
+                    .snapshot(id)
+                    .is_err()
+            );
+            for name in names {
+                std::fs::write(path.join(name), [1]).unwrap();
+            }
+            let catalog = Catalog::discover(temp.path(), &runtime, id, "aarch64");
+            let source = catalog.snapshot(id).unwrap();
+            assert!(!source.streaming());
+            let SessionSource::Local(model) = &source else {
+                panic!("local model")
+            };
+            assert_eq!(model.kind, kind);
+            assert_eq!(model.encoder, path.join(names[0]));
+            #[cfg(target_os = "macos")]
+            {
+                let descriptor = source.descriptor();
+                assert_eq!(
+                    descriptor.id,
+                    if kind == ModelKind::SenseVoice {
+                        crate::plugins::SENSEVOICE_PLUGIN
+                    } else {
+                        crate::plugins::WHISPER_PLUGIN
+                    }
+                );
+                assert!(descriptor.capabilities.batch);
+                assert!(!descriptor.capabilities.streaming);
+                assert!(!descriptor.capabilities.system_preview);
+            }
+            assert!(catalog.snapshot(PARAFORMER).unwrap().streaming());
+            assert!(catalog.snapshot(WHISPER).is_ok());
+            for name in names {
+                std::fs::write(path.join(name), []).unwrap();
+                assert!(
+                    Catalog::discover(temp.path(), &runtime, id, "aarch64")
+                        .snapshot(id)
+                        .is_err(),
+                    "empty {name}"
+                );
+                std::fs::remove_file(path.join(name)).unwrap();
+                assert!(
+                    Catalog::discover(temp.path(), &runtime, id, "aarch64")
+                        .snapshot(id)
+                        .is_err(),
+                    "missing {name}"
+                );
+                std::fs::write(path.join(name), [1]).unwrap();
+            }
+        }
+    }
+    #[test]
+    fn model_modes_and_language_limits_are_explicit() {
+        assert_eq!(ModelKind::Paraformer.native_mode(), 1);
+        assert_eq!(ModelKind::Whisper.native_mode(), 2);
+        assert_eq!(ModelKind::WhisperTurbo.native_mode(), 3);
+        assert_eq!(ModelKind::SenseVoice.native_mode(), 4);
+        for kind in [
+            ModelKind::Paraformer,
+            ModelKind::Whisper,
+            ModelKind::WhisperTurbo,
+            ModelKind::SenseVoice,
+        ] {
+            for language in ["", "zh", "en"] {
+                assert!(kind.supports_language(language));
+            }
+            for language in ["ja", "ko", "yue"] {
+                assert_eq!(
+                    kind.supports_language(language),
+                    kind == ModelKind::SenseVoice
+                );
+            }
+            assert!(!kind.supports_language("unsupported"));
+        }
     }
     #[test]
     fn unsupported_runtime_and_unknown_saved_choice_never_fall_back() {

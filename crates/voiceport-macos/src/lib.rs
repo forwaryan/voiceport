@@ -13,6 +13,8 @@ pub mod local_models;
 #[cfg(target_os = "macos")]
 mod local_runtime;
 #[cfg(target_os = "macos")]
+pub mod model_library;
+#[cfg(target_os = "macos")]
 mod plugin_credentials;
 #[cfg(target_os = "macos")]
 mod plugin_process;
