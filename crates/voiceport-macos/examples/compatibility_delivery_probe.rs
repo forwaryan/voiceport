@@ -55,6 +55,16 @@ fn main() {
                 assert_eq!(before["text"], "左|右", "preview/stop must not write");
             }
             report["final"] = delivery.deliver("通用输入🙂\n第二行", true).into();
+            report["receiptAfterFinal"] = serde_json::to_value(delivery.receipt()).unwrap();
+            // Late callbacks must not discard the accepted queue, replay text,
+            // change backend, or turn successful completion into a failure.
+            report["duplicateFinal"] = delivery.deliver("重复投递禁止", true).into();
+            report["latePreview"] = delivery.preview(&"迟".repeat(100_001)).into();
+            assert_eq!(delivery.failure_stage(), None);
+            assert_eq!(
+                serde_json::to_value(delivery.receipt()).unwrap(),
+                report["receiptAfterFinal"]
+            );
             for _ in 0..40 {
                 NSRunLoop::currentRunLoop()
                     .runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.05));
@@ -81,7 +91,17 @@ fn main() {
         }
         Err(error) => report["begin"] = error.into(),
     }
+    report["deliveryReceipt"] = serde_json::to_value(delivery.receipt()).unwrap();
     report["failureStage"] = delivery.failure_stage().into();
+    report["method"] = delivery.method().into();
+    if report["received"] == true {
+        let before = delivery.receipt();
+        delivery.deliver("完成后重复禁止", true);
+        delivery.preview("完成后迟到预览");
+        delivery.poll();
+        assert_eq!(delivery.receipt(), before);
+        assert_eq!(delivery.failure_stage(), None);
+    }
     println!("{report}");
     if report["received"] != true {
         std::process::exit(1);

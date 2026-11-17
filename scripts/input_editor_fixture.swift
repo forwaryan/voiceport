@@ -7,7 +7,8 @@ import WebKit
 let arguments = Array(CommandLine.arguments.dropFirst())
 precondition(arguments.count == 2, "MODE ABSOLUTE_NEW_RECEIPT")
 let mode = arguments[0]
-precondition(["standard", "web-textarea", "web-contenteditable"].contains(mode))
+precondition(["standard", "standard-descendant", "web-textarea", "web-contenteditable"].contains(mode))
+let standard = mode.hasPrefix("standard")
 let receipt = URL(fileURLWithPath: arguments[1])
 precondition(arguments[1].hasPrefix("/") && !FileManager.default.fileExists(atPath: receipt.path))
 
@@ -37,7 +38,13 @@ final class Navigation: NSObject, WKNavigationDelegate {
     }
 }
 
-let app = NSApplication.shared
+// Exercise the production bounded window-tree resolver without a real app.
+final class FixtureApplication: NSApplication {
+    override var accessibilityFocusedUIElement: Any? {
+        mode == "standard-descendant" ? nil : super.accessibilityFocusedUIElement
+    }
+}
+let app = FixtureApplication.shared
 app.setActivationPolicy(.regular)
 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 300),
     styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -47,11 +54,19 @@ let edit = NSMenu(title: "Edit")
 edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
 let item = NSMenuItem(); item.submenu = edit
 let menu = NSMenu(); menu.addItem(item); app.mainMenu = menu
-let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 640, height: 300))
+final class FixtureTextView: NSTextView {
+    override func isAccessibilityFocused() -> Bool {
+        if mode == "standard-descendant" {
+            return window?.isKeyWindow == true && window?.firstResponder === self
+        }
+        return super.isAccessibilityFocused()
+    }
+}
+let text = FixtureTextView(frame: NSRect(x: 0, y: 0, width: 640, height: 300))
 let navigation = Navigation()
 let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 640, height: 300))
 web.navigationDelegate = navigation
-if mode == "standard" {
+if standard {
     text.string = "左|右"
     window.contentView = text
 } else {
@@ -66,7 +81,7 @@ if mode == "standard" {
 }
 window.center(); window.makeKeyAndOrderFront(nil)
 app.activate(ignoringOtherApps: true)
-if mode == "standard" {
+if standard {
     window.makeFirstResponder(text)
     text.setSelectedRange(NSRange(location: 1, length: 1))
     save(text.string, ready: true, selection: [1, 1])
@@ -76,7 +91,7 @@ if mode == "standard" {
 let started = Date()
 let timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
     if Date().timeIntervalSince(started) > 45 { exit(0) }
-    if mode == "standard" {
+    if standard {
         let selected = text.selectedRange()
         save(text.string, ready: true, selection: [selected.location, selected.length])
     } else if navigation.prepared {
