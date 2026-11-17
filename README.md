@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/forwaryan/voiceport/releases/tag/v0.3.8"><img src="docs/images/badges/preview.svg" alt="开发预览版 v0.3.8" width="186" height="28"></a>
+  <a href="https://github.com/forwaryan/voiceport/releases/tag/v0.3.10"><img src="docs/images/badges/preview.svg" alt="开发预览版 v0.3.10" width="186" height="28"></a>
   <a href="https://www.rust-lang.org/tools/install"><img src="docs/images/badges/rust.svg" alt="Rust 1.95+" width="136" height="28"></a>
   <a href="#平台支持"><img src="docs/images/badges/macos.svg" alt="macOS 13+ / ARM64" width="196" height="28"></a>
   <a href="LICENSE"><img src="docs/images/badges/license.svg" alt="MIT License" width="136" height="28"></a>
