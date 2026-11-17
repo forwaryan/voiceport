@@ -10,7 +10,25 @@ pub const PARAFORMER: &str = "orca:paraformer-bilingual-zh-en";
 pub const WHISPER: &str = "orca:whisper-tiny";
 pub const WHISPER_TURBO: &str = "orca:whisper-large-v3-turbo";
 pub const SENSEVOICE: &str = "orca:sensevoice";
-pub const RUNTIME_VERSION: &str = "1.12.37";
+pub const PARAKEET_TDT_V3: &str = "orca:parakeet-tdt-v3";
+pub const PARAKEET_TDT_V2: &str = "orca:parakeet-tdt-v2";
+pub const PARAKEET_UNIFIED: &str = "orca:parakeet-unified-en";
+pub const NEMOTRON: &str = "orca:nemotron-3.5";
+
+/// NVIDIA's published language coverage; these transducers detect the spoken
+/// language rather than using a Whisper-style language prompt.
+pub const PARAKEET_V3_LANGUAGES: &[&str] = &[
+    "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt",
+    "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk",
+];
+/// Out-of-box transcription languages only. The eight adaptation-only locales
+/// in the Nemotron 3.5 card are deliberately excluded. `no` selects nb-NO.
+pub const NEMOTRON_LANGUAGES: &[&str] = &[
+    "en", "es", "fr", "it", "pt", "nl", "de", "tr", "ru", "ar", "hi", "ja", "ko", "vi", "uk", "pl",
+    "sv", "cs", "no", "da", "bg", "fi", "hr", "sk", "zh", "hu", "ro", "et",
+];
+pub const RUNTIME_VERSION: &str = "2.0.1";
+pub const LEGACY_RUNTIME_VERSION: &str = "1.12.37";
 pub const RUNTIME_DIRECTORY: &str =
     "/Applications/Orca.app/Contents/Resources/node_modules/sherpa-onnx-darwin-arm64";
 
@@ -20,6 +38,10 @@ pub enum ModelKind {
     Whisper,
     WhisperTurbo,
     SenseVoice,
+    ParakeetTdtV3,
+    ParakeetTdtV2,
+    ParakeetUnified,
+    Nemotron,
 }
 impl ModelKind {
     /// Must match the explicit modes in local_runtime/bridge.cc.
@@ -29,11 +51,31 @@ impl ModelKind {
             Self::Whisper => 2,
             Self::WhisperTurbo => 3,
             Self::SenseVoice => 4,
+            Self::ParakeetTdtV3 => 5,
+            Self::ParakeetTdtV2 => 6,
+            Self::ParakeetUnified => 7,
+            Self::Nemotron => 8,
         }
     }
-    pub(crate) fn supports_language(self, language: &str) -> bool {
-        matches!(language, "" | "zh" | "en")
-            || self == Self::SenseVoice && matches!(language, "ja" | "ko" | "yue")
+    pub fn streaming(self) -> bool {
+        matches!(
+            self,
+            Self::Paraformer | Self::ParakeetUnified | Self::Nemotron
+        )
+    }
+    pub fn supports_language(self, language: &str) -> bool {
+        if language.is_empty() {
+            return true;
+        }
+        match self {
+            Self::Paraformer => matches!(language, "zh" | "en"),
+            Self::Whisper => language != "yue" && voiceport_core::language::supported(language),
+            Self::WhisperTurbo => voiceport_core::language::supported(language),
+            Self::SenseVoice => matches!(language, "zh" | "en" | "ja" | "ko" | "yue"),
+            Self::ParakeetTdtV3 => PARAKEET_V3_LANGUAGES.contains(&language),
+            Self::ParakeetTdtV2 | Self::ParakeetUnified => language == "en",
+            Self::Nemotron => NEMOTRON_LANGUAGES.contains(&language),
+        }
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +85,7 @@ pub struct Model {
     pub runtime: PathBuf,
     pub encoder: PathBuf,
     pub decoder: PathBuf,
+    pub joiner: Option<PathBuf>,
     pub tokens: PathBuf,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +113,9 @@ impl SessionSource {
                 ModelKind::Paraformer => PARA_PLUGIN,
                 ModelKind::Whisper | ModelKind::WhisperTurbo => WHISPER_PLUGIN,
                 ModelKind::SenseVoice => SENSEVOICE_PLUGIN,
+                ModelKind::ParakeetTdtV3 | ModelKind::ParakeetTdtV2 => PARAKEET_PLUGIN,
+                ModelKind::ParakeetUnified => PARAKEET_STREAMING_PLUGIN,
+                ModelKind::Nemotron => NEMOTRON_PLUGIN,
             },
             Self::Plugin(p) => return p.manifest.clone(),
         };
@@ -89,13 +135,7 @@ impl SessionSource {
         matches!(self, Self::Local(_))
     }
     pub fn streaming(&self) -> bool {
-        matches!(
-            self,
-            Self::Local(Model {
-                kind: ModelKind::Paraformer,
-                ..
-            })
-        )
+        matches!(self, Self::Local(model) if model.kind.streaming())
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +180,14 @@ impl Catalog {
                 ModelKind::WhisperTurbo,
             ),
             (SENSEVOICE, "sensevoice", ModelKind::SenseVoice),
+            (PARAKEET_TDT_V3, "parakeet-tdt-v3", ModelKind::ParakeetTdtV3),
+            (PARAKEET_TDT_V2, "parakeet-tdt-v2", ModelKind::ParakeetTdtV2),
+            (
+                PARAKEET_UNIFIED,
+                "parakeet-unified-en",
+                ModelKind::ParakeetUnified,
+            ),
+            (NEMOTRON, "nemotron-3.5", ModelKind::Nemotron),
         ] {
             let result = runtime_check
                 .clone()
@@ -292,11 +340,23 @@ impl Model {
             // The single SenseVoice model occupies encoder; decoder is unused by
             // its explicit native mode. Preserve the existing Model struct API.
             ModelKind::SenseVoice => ("model.int8.onnx", "model.int8.onnx", "tokens.txt"),
+            ModelKind::ParakeetTdtV3
+            | ModelKind::ParakeetTdtV2
+            | ModelKind::ParakeetUnified
+            | ModelKind::Nemotron => ("encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt"),
+        };
+        let joiner = match kind {
+            ModelKind::ParakeetTdtV3
+            | ModelKind::ParakeetTdtV2
+            | ModelKind::ParakeetUnified
+            | ModelKind::Nemotron => Some(directory.join("joiner.int8.onnx")),
+            _ => None,
         };
         let model = Self {
             kind,
             encoder: directory.join(encoder),
             decoder: directory.join(decoder),
+            joiner,
             tokens: directory.join(tokens),
             directory,
             runtime: runtime.into(),
@@ -308,7 +368,17 @@ impl Model {
         for path in [&self.encoder, &self.decoder, &self.tokens] {
             readable(path)?;
         }
-        validate_runtime(&self.runtime, std::env::consts::ARCH)
+        let requires_joiner = matches!(
+            self.kind,
+            ModelKind::ParakeetTdtV3
+                | ModelKind::ParakeetTdtV2
+                | ModelKind::ParakeetUnified
+                | ModelKind::Nemotron
+        );
+        if requires_joiner {
+            readable(self.joiner.as_deref().ok_or("转写模型缺少 joiner 路径。")?)?;
+        }
+        validate_runtime_for(&self.runtime, std::env::consts::ARCH, self.kind)
     }
 }
 fn cloud() -> Entry {
@@ -334,6 +404,10 @@ pub fn title(id: &str) -> &str {
         WHISPER => "Whisper Tiny · 本地离线",
         WHISPER_TURBO => "Whisper Large v3 Turbo · 本地离线",
         SENSEVOICE => "SenseVoice · 本地离线",
+        PARAKEET_TDT_V3 => "Parakeet TDT v3 · 本地离线",
+        PARAKEET_TDT_V2 => "Parakeet TDT v2 · 本地离线",
+        PARAKEET_UNIFIED => "Parakeet Unified EN · 本地流式",
+        NEMOTRON => "Nemotron 3.5 · 本地流式",
         other => other,
     }
 }
@@ -342,42 +416,85 @@ fn description(id: &str) -> &'static str {
         CHATGPT => "系统设备端预览；停止后上传至 ChatGPT 完成转写。",
         PARAFORMER => "中英双语边说边出字；停止后在本地完成，无需联网。语言提示不限制双语识别。",
         WHISPER | WHISPER_TURBO => {
-            "停止后在本地分段转写；支持自动检测或中文 / English 提示，无实时预览；无需联网。"
+            "停止后在本地分段转写；支持自动检测或选择受支持语言，无实时预览；无需联网。"
         }
         SENSEVOICE => {
             "停止后在本地分段转写；自动识别中文、English、日本語、한국어、粤语，无实时预览；无需联网。"
         }
+        PARAKEET_TDT_V3 => "停止后本机分段识别 25 种欧洲语言；自动判断语言，无需联网。",
+        PARAKEET_TDT_V2 => "停止后本机分段识别英语；无需联网。",
+        PARAKEET_UNIFIED => "英语流式预览与本机最终识别；固定 560ms 模型上下文，无需联网。",
+        NEMOTRON => "Nemotron 3.5 多语言流式预览与本机最终识别；无需联网。",
         _ => "保存的转写来源不可用。",
     }
 }
+fn model_file(path: &Path) -> std::io::Result<File> {
+    #[cfg(target_os = "macos")]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?
+    };
+    #[cfg(not(target_os = "macos"))]
+    let file = File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(std::io::Error::other("empty or not a regular file"));
+    }
+    Ok(file)
+}
 fn readable(path: &Path) -> Result<(), String> {
-    let result = (|| {
-        let mut file = File::open(path)?;
-        if !file.metadata()?.is_file() || file.metadata()?.len() == 0 {
-            return Err(std::io::Error::other("empty or not a file"));
-        }
-        let mut byte = [0];
-        file.read_exact(&mut byte)
-    })();
-    result.map_err(|_| format!("缺少可读的非空文件：{}", path.display()))
+    model_file(path)
+        .and_then(|mut file| file.read_exact(&mut [0]))
+        .map_err(|_| format!("缺少可读的非空普通文件：{}", path.display()))
+}
+pub(crate) fn runtime_version(directory: &Path) -> Result<String, String> {
+    let file = model_file(&directory.join("package.json")).map_err(|e| e.to_string())?;
+    if file.metadata().map_err(|e| e.to_string())?.len() > 65536 {
+        return Err("本地运行时元数据过大。".into());
+    }
+    let metadata: serde_json::Value = serde_json::from_reader(file).map_err(|e| e.to_string())?;
+    metadata["version"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or("识别引擎缺少版本。".into())
+}
+pub(crate) fn validate_runtime_for(
+    directory: &Path,
+    architecture: &str,
+    kind: ModelKind,
+) -> Result<(), String> {
+    validate_runtime(directory, architecture)?;
+    if matches!(kind, ModelKind::ParakeetUnified | ModelKind::Nemotron)
+        && runtime_version(directory)? != RUNTIME_VERSION
+    {
+        return Err(format!(
+            "此模型需要 sherpa-onnx {RUNTIME_VERSION}，请安装新版识别引擎。"
+        ));
+    }
+    Ok(())
 }
 pub(crate) fn validate_runtime(directory: &Path, architecture: &str) -> Result<(), String> {
     if architecture != "aarch64" {
         return Err("本地模型目前仅支持 Apple Silicon arm64。".into());
     }
-    let package = directory.join("package.json");
-    readable(&package)?;
-    let metadata: serde_json::Value =
-        serde_json::from_reader(File::open(&package).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-    if metadata["version"] != RUNTIME_VERSION {
-        return Err(format!("需要 Orca sherpa-onnx {RUNTIME_VERSION} 运行时。"));
-    }
-    for name in ["libsherpa-onnx-c-api.dylib", "libonnxruntime.1.23.2.dylib"] {
+    let version = runtime_version(directory)?;
+    let ort = match version.as_str() {
+        RUNTIME_VERSION => "libonnxruntime.dylib",
+        LEGACY_RUNTIME_VERSION => "libonnxruntime.1.23.2.dylib",
+        _ => {
+            return Err(format!(
+                "需要兼容的 sherpa-onnx {RUNTIME_VERSION} 或 {LEGACY_RUNTIME_VERSION} 运行时。"
+            ));
+        }
+    };
+    for name in ["libsherpa-onnx-c-api.dylib", ort] {
         let path = directory.join(name);
         readable(&path)?;
         let mut header = [0; 8];
-        File::open(&path)
+        model_file(&path)
             .and_then(|mut f| f.read_exact(&mut header))
             .map_err(|e| e.to_string())?;
         if u32::from_le_bytes(header[..4].try_into().unwrap()) != 0xfeed_facf
@@ -531,22 +648,95 @@ mod tests {
         assert_eq!(ModelKind::Whisper.native_mode(), 2);
         assert_eq!(ModelKind::WhisperTurbo.native_mode(), 3);
         assert_eq!(ModelKind::SenseVoice.native_mode(), 4);
+        assert_eq!(ModelKind::ParakeetTdtV3.native_mode(), 5);
+        assert_eq!(ModelKind::ParakeetTdtV2.native_mode(), 6);
+        assert_eq!(ModelKind::ParakeetUnified.native_mode(), 7);
+        assert_eq!(ModelKind::Nemotron.native_mode(), 8);
         for kind in [
             ModelKind::Paraformer,
             ModelKind::Whisper,
             ModelKind::WhisperTurbo,
             ModelKind::SenseVoice,
+            ModelKind::ParakeetTdtV3,
+            ModelKind::ParakeetTdtV2,
+            ModelKind::ParakeetUnified,
+            ModelKind::Nemotron,
         ] {
-            for language in ["", "zh", "en"] {
-                assert!(kind.supports_language(language));
+            assert!(kind.supports_language(""));
+            for invalid in ["unsupported", "en-US", "en\r\nmodel=other", "JA"] {
+                assert!(!kind.supports_language(invalid));
             }
-            for language in ["ja", "ko", "yue"] {
-                assert_eq!(
-                    kind.supports_language(language),
-                    kind == ModelKind::SenseVoice
-                );
+        }
+        assert!(ModelKind::Whisper.supports_language("ja"));
+        assert!(!ModelKind::Whisper.supports_language("yue"));
+        assert!(ModelKind::WhisperTurbo.supports_language("yue"));
+        assert!(ModelKind::WhisperTurbo.supports_language("haw"));
+        for &(language, _) in voiceport_core::language::LANGUAGES {
+            if language.is_empty() {
+                continue;
             }
-            assert!(!kind.supports_language("unsupported"));
+            assert_eq!(
+                ModelKind::ParakeetTdtV3.supports_language(language),
+                PARAKEET_V3_LANGUAGES.contains(&language)
+            );
+            assert_eq!(
+                ModelKind::Nemotron.supports_language(language),
+                NEMOTRON_LANGUAGES.contains(&language)
+            );
+            assert_eq!(
+                ModelKind::ParakeetTdtV2.supports_language(language),
+                language == "en"
+            );
+            assert_eq!(
+                ModelKind::ParakeetUnified.supports_language(language),
+                language == "en"
+            );
+        }
+        assert_eq!(PARAKEET_V3_LANGUAGES.len(), 25);
+        assert_eq!(NEMOTRON_LANGUAGES.len(), 28);
+        for adaptation_only in ["el", "lt", "lv", "mt", "sl", "he", "th", "nn"] {
+            assert!(!ModelKind::Nemotron.supports_language(adaptation_only));
+        }
+    }
+    #[test]
+    fn transducer_discovery_requires_joiner_and_exact_streaming_runtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = installed(temp.path());
+        for (id, directory, kind) in [
+            (PARAKEET_TDT_V3, "parakeet-tdt-v3", ModelKind::ParakeetTdtV3),
+            (PARAKEET_TDT_V2, "parakeet-tdt-v2", ModelKind::ParakeetTdtV2),
+            (
+                PARAKEET_UNIFIED,
+                "parakeet-unified-en",
+                ModelKind::ParakeetUnified,
+            ),
+            (NEMOTRON, "nemotron-3.5", ModelKind::Nemotron),
+        ] {
+            let directory = temp.path().join(directory);
+            std::fs::create_dir(&directory).unwrap();
+            for file in ["encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt"] {
+                std::fs::write(directory.join(file), [1]).unwrap();
+            }
+            assert!(Model::discover(directory.clone(), &runtime, kind).is_err());
+            std::fs::write(directory.join("joiner.int8.onnx"), [1]).unwrap();
+            let legacy = Model::discover(directory.clone(), &runtime, kind);
+            assert_eq!(legacy.is_ok(), !kind.streaming());
+            let modern = temp.path().join(format!("modern-{}", kind.native_mode()));
+            std::fs::create_dir(&modern).unwrap();
+            std::fs::write(modern.join("package.json"), br#"{"version":"2.0.1"}"#).unwrap();
+            for file in ["libsherpa-onnx-c-api.dylib", "libonnxruntime.dylib"] {
+                std::fs::write(modern.join(file), [0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0, 0, 1]).unwrap();
+            }
+            let catalog = Catalog::discover(temp.path(), &modern, id, "aarch64");
+            let source = catalog.snapshot(id).unwrap();
+            assert_eq!(source.streaming(), kind.streaming());
+            #[cfg(target_os = "macos")]
+            {
+                let descriptor = source.descriptor();
+                assert!(descriptor.capabilities.batch);
+                assert_eq!(descriptor.capabilities.streaming, kind.streaming());
+                assert!(!descriptor.capabilities.system_preview);
+            }
         }
     }
     #[test]

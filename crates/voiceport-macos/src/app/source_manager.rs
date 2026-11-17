@@ -5,6 +5,7 @@ mod draft;
 mod editor;
 mod library;
 mod presentation;
+pub(in crate::app) use editor::{Editor as CloudEditor, show_cloud};
 pub(super) use library::Library as Manager;
 
 fn alert(d: &Delegate, title: &str, detail: &str, buttons: &[&str]) -> Retained<NSAlert> {

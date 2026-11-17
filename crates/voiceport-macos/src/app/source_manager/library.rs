@@ -107,6 +107,8 @@ fn description(p: &Manifest) -> &'static str {
         Adapter::Paraformer => "本地模型 · 边说边预览；到偏好设置的“语音模型”下载安装",
         Adapter::Whisper => "本地模型 · 停止后转写；到偏好设置的“语音模型”下载安装",
         Adapter::SenseVoice => "本地五语言模型 · 停止后转写；到“语音模型”下载安装",
+        Adapter::Parakeet => "Parakeet 本地模型 · 到“语音模型”下载安装",
+        Adapter::Nemotron => "Nemotron 3.5 本地多语言流式 · 到“语音模型”下载安装",
         Adapter::Http => "填写地址、模型和密钥，连接兼容音频转写 API",
         Adapter::Jsonl => "本地插件 · 填写配置后启用",
     }

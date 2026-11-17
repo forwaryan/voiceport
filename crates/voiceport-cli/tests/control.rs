@@ -144,7 +144,7 @@ fn probe_and_dictation_invalid_options_fail_before_ipc() {
             "--accept-upload",
         ],
         vec!["sources", "probe", "chatgpt", "--language"],
-        vec!["sources", "probe", "chatgpt", "--language", "fr"],
+        vec!["sources", "probe", "chatgpt", "--language", "xx"],
         vec![
             "sources",
             "probe",
@@ -172,7 +172,7 @@ fn probe_and_dictation_invalid_options_fail_before_ipc() {
             "--source",
             "chatgpt",
             "--language",
-            "fr",
+            "xx",
         ],
         vec!["sources", "unknown", "--help"],
     ] {
@@ -199,7 +199,7 @@ fn parsed_options_reach_only_the_explicit_synthetic_server() {
                 "sources",
                 "probe",
                 "--language",
-                "en",
+                "ja",
                 "--all",
                 "--accept-upload",
             ],
@@ -223,7 +223,7 @@ fn parsed_options_reach_only_the_explicit_synthetic_server() {
                 "dictation",
                 "start",
                 "--language",
-                "en",
+                "fr",
                 "--source",
                 "chatgpt",
             ],
@@ -284,7 +284,7 @@ fn parsed_options_reach_only_the_explicit_synthetic_server() {
                 "batch",
             ) => {
                 assert!(source.is_none());
-                assert_eq!(language, "en");
+                assert_eq!(language, "ja");
                 assert!(*accept_upload);
             }
             (
@@ -317,7 +317,7 @@ fn parsed_options_reach_only_the_explicit_synthetic_server() {
             }
             (Action::DictationStart { source, language }, "dictation") => {
                 assert_eq!(source, "chatgpt");
-                assert_eq!(language, "en");
+                assert_eq!(language, "fr");
             }
             (Action::SourcesSave { name, .. }, "name") => {
                 assert_eq!(name.as_deref(), Some("--json"))

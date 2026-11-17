@@ -25,6 +25,36 @@ impl Control {
     pub(super) fn preparing(&self) -> bool {
         self.background.is_some()
     }
+    fn start_operation(
+        &mut self,
+        c: &mut Controller,
+        source: SessionSource,
+        language: String,
+        sample: bool,
+    ) -> Response {
+        let plugin = matches!(source, SessionSource::Plugin(_));
+        let accepted = if sample {
+            c.test_pinned(source, language)
+        } else {
+            c.start_pinned(source, language, false)
+        };
+        let Some(generation) = accepted else {
+            return err(
+                "invalid_state",
+                "Source and language could not start a new session; no recording or upload started.",
+            );
+        };
+        let id = uuid::Uuid::new_v4().to_string();
+        self.operation = Some(Operation {
+            id: id.clone(),
+            generation,
+            cancelled: false,
+            plugin,
+            sample,
+            result: None,
+        });
+        Response::ok(json!({"operation":id,"state":phase(c.state.phase),"delivery":"none"}))
+    }
 }
 struct Operation {
     id: String,
@@ -180,13 +210,13 @@ impl Delegate {
                     } else {
                         let mut reply = busy();
                         self.with_controller(|c| {
-                            if c.busy() || self.ivars().quitting.get() || self.ivars().pending_hotkey.borrow().is_some() { return; }
-                            let plugin = matches!(source, SessionSource::Plugin(_));
-                            if sample { c.test_pinned(source, language); }
-                            else { c.start_pinned(source, language, false); }
-                            let id = uuid::Uuid::new_v4().to_string();
-                            control.operation = Some(Operation { id:id.clone(), generation:c.state.generation(), cancelled:false, plugin, sample, result:None });
-                            reply = Response::ok(json!({"operation":id,"state":phase(c.state.phase),"delivery":"none"}));
+                            if c.busy()
+                                || self.ivars().quitting.get()
+                                || self.ivars().pending_hotkey.borrow().is_some()
+                            {
+                                return;
+                            }
+                            reply = control.start_operation(c, source, language, sample);
                         });
                         reply
                     }
@@ -338,7 +368,7 @@ impl Delegate {
                 }
             }
             Action::DictationStart { source, language } => {
-                if !matches!(language.as_str(), "" | "zh" | "en") {
+                if !voiceport_core::language::supported(&language) {
                     err("invalid_request", "Unsupported language.")
                 } else if crate::audio::Recorder::permission_status().0 != "authorized" {
                     err(
@@ -653,6 +683,41 @@ fn manage(action: Action, catalog: Vec<Value>) -> Outcome {
 #[cfg(test)]
 mod operation_tests {
     use super::*;
+    #[test]
+    fn rejected_start_never_registers_or_replaces_an_operation() {
+        for previous_operation in [false, true] {
+            crate::controller::tests::check_control_start_rejection(|c, source, generation| {
+                let mut control = Control::default();
+                if previous_operation {
+                    control.operation = Some(Operation {
+                        id: "previous-cli".into(),
+                        generation,
+                        cancelled: false,
+                        plugin: false,
+                        sample: false,
+                        result: None,
+                    });
+                }
+                let response = control.start_operation(c, source, "ja".into(), false);
+                assert_eq!(
+                    response.error.as_ref().map(|error| error.code.as_str()),
+                    Some("invalid_state"),
+                    "rejected {:?} start must not claim an operation: {response:?}",
+                    c.state.phase,
+                );
+                assert!(response.data.get("operation").is_none());
+                assert!(response.data.get("text").is_none());
+                if previous_operation {
+                    let old = control.operation.as_ref().unwrap();
+                    assert_eq!(old.id, "previous-cli");
+                    assert_eq!(old.generation, generation);
+                    assert!(old.result.is_none());
+                } else {
+                    assert!(control.operation.is_none());
+                }
+            });
+        }
+    }
     #[test]
     fn retry_owns_only_the_matching_failed_recording_and_gets_a_new_id() {
         crate::controller::tests::check_control_retry(|c, generation| {

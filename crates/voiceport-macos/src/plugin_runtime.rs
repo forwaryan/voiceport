@@ -168,7 +168,7 @@ pub async fn http(
         .ok_or("未配置模型标识。")?;
     let language = match language {
         "" => None,
-        "zh" | "en" => Some(language.to_owned()),
+        code if voiceport_core::language::supported(code) => Some(code.to_owned()),
         _ => return Err("语言代码无效。".into()),
     };
     let client = reqwest::Client::builder()

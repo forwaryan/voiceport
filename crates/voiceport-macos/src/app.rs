@@ -395,7 +395,7 @@ define_class!(
             self.with_controller(|c| {
                 if c.busy() { return; }
                 let selected = self.ivars().language.get().map(|control| control.indexOfSelectedItem()).unwrap_or(0);
-                c.language = match selected { 1 => "zh", 2 => "en", _ => "" }.into();
+                c.language = voiceport_core::language::code(selected as usize).into();
                 unsafe { NSUserDefaults::standardUserDefaults().setObject_forKey(Some(&NSString::from_str(&c.language)), ns_string!("language")); }
             }); self.refresh();
         }
@@ -567,7 +567,7 @@ impl Delegate {
         controller.language = defaults
             .stringForKey(ns_string!("language"))
             .map(|s| s.to_string())
-            .filter(|s| matches!(s.as_str(), "" | "zh" | "en"))
+            .filter(|s| voiceport_core::language::supported(s))
             .unwrap_or_default();
         controller.source_id = defaults
             .stringForKey(ns_string!("transcriptionSource"))
@@ -879,7 +879,7 @@ impl Delegate {
             (
                 188.,
                 "识别语言",
-                "自动检测、中文或 English；Paraformer 为中英双语。",
+                "选择模型或服务支持的语言；自动检测仅覆盖其实际支持范围。",
             ),
             (
                 134.,
@@ -909,7 +909,10 @@ impl Delegate {
         let _ = self.ivars().automatic.set(automatic);
         let language = self.popup(
             page,
-            &["自动检测", "中文", "English"],
+            &voiceport_core::language::LANGUAGES
+                .iter()
+                .map(|(_, name)| *name)
+                .collect::<Vec<_>>(),
             sel!(cycleLanguage:),
             rect(424., 180., 132., 30.),
         );
@@ -1269,11 +1272,7 @@ impl Delegate {
             }
         }
         if let Some(control) = self.ivars().language.get() {
-            let selected = match c.language.as_str() {
-                "zh" => 1,
-                "en" => 2,
-                _ => 0,
-            };
+            let selected = voiceport_core::language::index(&c.language) as isize;
             // Re-selecting even the same item dismisses an open native menu.
             // Common-mode timer ticks must leave active control tracking alone.
             if control.indexOfSelectedItem() != selected {

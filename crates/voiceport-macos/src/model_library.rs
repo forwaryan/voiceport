@@ -19,6 +19,13 @@ mod catalog;
 #[cfg(test)]
 mod tests;
 pub use catalog::MODELS;
+pub fn runtime_bytes() -> u64 {
+    catalog::RUNTIME_ARCHIVE.bytes
+        + catalog::RUNTIME_NOTICES
+            .iter()
+            .map(|a| a.bytes)
+            .sum::<u64>()
+}
 
 #[derive(Debug)]
 pub struct Asset {
@@ -42,6 +49,14 @@ impl Definition {
     pub fn bytes(&self) -> u64 {
         self.assets.iter().map(|f| f.bytes).sum()
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Installation {
+    Missing,
+    Current,
+    Legacy,
+    Incompatible,
 }
 
 #[derive(Clone, Debug)]
@@ -71,14 +86,61 @@ impl Paths {
         self.root.join(format!("runtime-{RUNTIME_VERSION}"))
     }
     pub fn discover(&self, d: &Definition) -> Result<Model, String> {
-        Model::discover(self.model(d), &self.runtime_or_orca(), d.kind)
+        let directory = self.model(d);
+        for asset in d.assets {
+            let metadata = directory
+                .join(asset.name)
+                .symlink_metadata()
+                .map_err(io_error)?;
+            if !metadata.is_file() || metadata.len() != asset.bytes {
+                return Err("模型副本格式或版本不兼容，请重新安装固定 ONNX 文件集。".into());
+            }
+        }
+        Model::discover(directory, &self.runtime_for_kind(d.kind), d.kind)
+    }
+    /// A legacy ONNX copy can remain usable while the UI offers a transactional
+    /// reinstall to add current provenance. Incompatible files are never selected.
+    pub fn installation(&self, d: &Definition) -> Installation {
+        let directory = self.model(d);
+        if directory.symlink_metadata().is_err() {
+            return Installation::Missing;
+        }
+        if self.discover(d).is_err() {
+            return Installation::Incompatible;
+        }
+        let receipt = directory.join("VOICEPORT_MODEL.json");
+        let current = file_matches(&receipt, &installation_receipt(d));
+        if current
+            && bundled_notices(d.kind)
+                .iter()
+                .all(|(name, text)| file_matches(&directory.join(name), text.as_bytes()))
+        {
+            Installation::Current
+        } else {
+            Installation::Legacy
+        }
     }
     pub fn runtime_or_orca(&self) -> PathBuf {
         let own = self.runtime();
         if crate::local_models::validate_runtime(&own, std::env::consts::ARCH).is_ok() {
             own
         } else {
-            PathBuf::from(crate::local_models::RUNTIME_DIRECTORY)
+            let legacy = self.root.join(format!(
+                "runtime-{}",
+                crate::local_models::LEGACY_RUNTIME_VERSION
+            ));
+            if crate::local_models::validate_runtime(&legacy, std::env::consts::ARCH).is_ok() {
+                legacy
+            } else {
+                PathBuf::from(crate::local_models::RUNTIME_DIRECTORY)
+            }
+        }
+    }
+    pub fn runtime_for_kind(&self, kind: ModelKind) -> PathBuf {
+        if matches!(kind, ModelKind::ParakeetUnified | ModelKind::Nemotron) {
+            self.runtime()
+        } else {
+            self.runtime_or_orca()
         }
     }
 }
@@ -372,8 +434,10 @@ async fn install(
     progress: &Mutex<Progress>,
 ) -> Result<String, String> {
     let target = paths.model(d);
-    if target.symlink_metadata().is_ok() {
-        return Err("此模型目录已存在；如需重新安装，请先删除 VoicePort 中的副本。".into());
+    if let Ok(metadata) = target.symlink_metadata()
+        && (!metadata.is_dir() || metadata.file_type().is_symlink())
+    {
+        return Err("模型目录类型异常，未执行替换。".into());
     }
     let stage = tempfile::Builder::new()
         .prefix(".install-")
@@ -381,8 +445,12 @@ async fn install(
         .map_err(io_error)?;
     let client = client()?;
     // Import is offline: never fetch executable dependencies without a download action.
-    if crate::local_models::validate_runtime(&paths.runtime_or_orca(), std::env::consts::ARCH)
-        .is_err()
+    if crate::local_models::validate_runtime_for(
+        &paths.runtime_for_kind(d.kind),
+        std::env::consts::ARCH,
+        d.kind,
+    )
+    .is_err()
     {
         match operation {
             Operation::Download => install_runtime(paths, &client, cancel, progress).await?,
@@ -421,24 +489,108 @@ async fn install(
         }
         offset += asset.bytes;
     }
-    // Fixed bundled notices accompany both downloads and offline imports.
-    let notices = match d.kind {
-        ModelKind::SenseVoice => {
-            Some((catalog::SENSEVOICE_LICENSE, catalog::SENSEVOICE_ATTRIBUTION))
-        }
-        ModelKind::Whisper | ModelKind::WhisperTurbo => {
-            Some((catalog::WHISPER_LICENSE, catalog::WHISPER_ATTRIBUTION))
-        }
-        ModelKind::Paraformer => None,
-    };
-    if let Some((license, attribution)) = notices {
-        fs::write(stage.path().join("MODEL_LICENSE.txt"), license).map_err(io_error)?;
-        fs::write(stage.path().join("ATTRIBUTION.txt"), attribution).map_err(io_error)?;
+    // Both downloads and offline imports carry the same fixed license, notices,
+    // conversion attribution and exact artifact identity.
+    for (name, text) in bundled_notices(d.kind) {
+        fs::write(stage.path().join(name), text).map_err(io_error)?;
     }
-    Model::discover(stage.path().into(), &paths.runtime_or_orca(), d.kind)?;
+    fs::write(
+        stage.path().join("VOICEPORT_MODEL.json"),
+        installation_receipt(d),
+    )
+    .map_err(io_error)?;
+    Model::discover(stage.path().into(), &paths.runtime_for_kind(d.kind), d.kind)?;
     check(cancel)?;
-    fs::rename(stage.path(), &target).map_err(io_error)?;
+    publish_model(stage.path(), &target)?;
     Ok(format!("{} 已安装。点击“使用”后将在本机识别。", d.name))
+}
+fn file_matches(path: &Path, expected: &[u8]) -> bool {
+    use std::os::unix::fs::OpenOptionsExt;
+    (|| -> std::io::Result<bool> {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() != expected.len() as u64 {
+            return Ok(false);
+        }
+        let mut bytes = vec![0; expected.len()];
+        file.read_exact(&mut bytes)?;
+        Ok(bytes == expected)
+    })()
+    .unwrap_or(false)
+}
+fn installation_receipt(d: &Definition) -> Vec<u8> {
+    serde_json::to_vec_pretty(&serde_json::json!({
+        "format": 1,
+        "source_id": d.id,
+        "runtime": RUNTIME_VERSION,
+        "assets": d.assets.iter().map(|a| serde_json::json!({
+            "name": a.name, "bytes": a.bytes, "sha256": a.sha256, "url": a.url,
+        })).collect::<Vec<_>>(),
+    }))
+    .expect("static installation receipt")
+}
+pub(crate) fn bundled_notices(kind: ModelKind) -> Vec<(&'static str, &'static str)> {
+    let (license, attribution) = match kind {
+        ModelKind::SenseVoice => (catalog::SENSEVOICE_LICENSE, catalog::SENSEVOICE_ATTRIBUTION),
+        ModelKind::Whisper | ModelKind::WhisperTurbo => {
+            (catalog::WHISPER_LICENSE, catalog::WHISPER_ATTRIBUTION)
+        }
+        ModelKind::ParakeetTdtV3 => (catalog::CC_BY_4_LICENSE, catalog::PARAKEET_V3_ATTRIBUTION),
+        ModelKind::ParakeetTdtV2 => (catalog::CC_BY_4_LICENSE, catalog::PARAKEET_V2_ATTRIBUTION),
+        ModelKind::ParakeetUnified => (
+            catalog::NVIDIA_OPEN_MODEL_LICENSE,
+            catalog::PARAKEET_UNIFIED_ATTRIBUTION,
+        ),
+        ModelKind::Nemotron => (catalog::OPENMDW_LICENSE, catalog::NEMOTRON_ATTRIBUTION),
+        ModelKind::Paraformer => return vec![],
+    };
+    let mut result = vec![
+        ("MODEL_LICENSE.txt", license),
+        ("ATTRIBUTION.txt", attribution),
+    ];
+    if kind == ModelKind::ParakeetUnified {
+        result.push((
+            "Notice.txt",
+            "Licensed by NVIDIA Corporation under the NVIDIA Open Model License\n",
+        ));
+    }
+    result
+}
+fn publish_model(stage: &Path, target: &Path) -> Result<(), String> {
+    if let Ok(metadata) = target.symlink_metadata() {
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err("模型目录类型异常，保留现有副本。".into());
+        }
+        // A single filesystem transaction swaps fully verified staging with the
+        // existing directory. On error the old model remains at target. On success
+        // TempDir owns the old directory and removes it when install returns.
+        use std::os::unix::ffi::OsStrExt;
+        let from =
+            std::ffi::CString::new(stage.as_os_str().as_bytes()).map_err(|_| "无效模型路径。")?;
+        let to =
+            std::ffi::CString::new(target.as_os_str().as_bytes()).map_err(|_| "无效模型路径。")?;
+        if unsafe {
+            libc::renameatx_np(
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                libc::RENAME_SWAP,
+            )
+        } != 0
+        {
+            return Err(format!(
+                "无法原子替换模型，保留现有副本：{}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    } else {
+        fs::rename(stage, target).map_err(io_error)?;
+    }
+    Ok(())
 }
 fn remove(paths: &Paths, d: &Definition, cancel: &AtomicBool) -> Result<String, String> {
     check(cancel)?;
@@ -459,8 +611,14 @@ async fn install_runtime(
 ) -> Result<(), String> {
     use catalog::{RUNTIME_ARCHIVE, RUNTIME_FILES, RUNTIME_INTEGRITY};
     let target = paths.runtime();
-    if target.symlink_metadata().is_ok() {
-        return Err("识别引擎目录损坏，请检查 VoicePort 模型目录。".into());
+    if crate::local_models::validate_runtime(&target, std::env::consts::ARCH).is_ok() {
+        return Ok(());
+    }
+    if target
+        .symlink_metadata()
+        .is_ok_and(|m| !m.is_dir() || m.file_type().is_symlink())
+    {
+        return Err("识别引擎目录类型异常，未执行替换。".into());
     }
     let stage = tempfile::Builder::new()
         .prefix(".engine-")
@@ -530,6 +688,6 @@ async fn install_runtime(
     }
     crate::local_models::validate_runtime(&extracted, std::env::consts::ARCH)?;
     check(cancel)?;
-    fs::rename(extracted, target).map_err(io_error)?;
+    publish_model(&extracted, &target)?;
     Ok(())
 }

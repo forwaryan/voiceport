@@ -270,7 +270,7 @@ impl Controller {
         ids: &[String],
         language: String,
     ) -> Result<(), String> {
-        if !matches!(language.as_str(), "" | "zh" | "en") {
+        if !voiceport_core::language::supported(&language) {
             return Err("Unsupported source test language.".into());
         }
         if self.busy() || self.discovering() {
@@ -357,19 +357,15 @@ impl Controller {
             );
         }
     }
-    /// Prepared on a background thread; never changes GUI source/language/preferences.
+    /// Start a background-pinned source without changing GUI preferences.
+    /// Only an accepted start returns a generation that a CLI operation may own.
     pub(crate) fn start_pinned(
         &mut self,
         source: SessionSource,
         language: String,
         automatic: bool,
-    ) {
-        self.start_pinned_with_permissions(
-            source,
-            language,
-            automatic,
-            Recorder::permission_status,
-        );
+    ) -> Option<u64> {
+        self.start_pinned_with_permissions(source, language, automatic, Recorder::permission_status)
     }
     fn start_pinned_with_permissions(
         &mut self,
@@ -377,19 +373,19 @@ impl Controller {
         language: String,
         automatic: bool,
         permissions: impl FnOnce() -> (&'static str, &'static str),
-    ) {
-        if let Some((generation, use_speech)) = self.prepare_start(source, language, automatic) {
-            // CLI operations consume existing grants only. Speech is optional;
-            // an undecided grant must not open an authorization dialog.
-            let (microphone, speech) = permissions();
-            let _ = self.events_tx.send((
-                generation,
-                AudioEvent::Permissions {
-                    microphone: microphone == "authorized",
-                    speech: use_speech && speech == "authorized",
-                },
-            ));
-        }
+    ) -> Option<u64> {
+        let (generation, use_speech) = self.prepare_start(source, language, automatic)?;
+        // CLI operations consume existing grants only. Speech is optional;
+        // an undecided grant must not open an authorization dialog.
+        let (microphone, speech) = permissions();
+        let _ = self.events_tx.send((
+            generation,
+            AudioEvent::Permissions {
+                microphone: microphone == "authorized",
+                speech: use_speech && speech == "authorized",
+            },
+        ));
+        Some(generation)
     }
     fn prepare_start(
         &mut self,
@@ -407,6 +403,12 @@ impl Controller {
         target: Option<&crate::delivery::model::ApplicationTarget>,
     ) -> Option<(u64, bool)> {
         if self.busy() {
+            return None;
+        }
+        if !voiceport_core::language::supported(&language)
+            || matches!(&source, SessionSource::Local(model) if !model.kind.supports_language(&language))
+        {
+            self.message = "所选模型不支持此语言，请更改语言或模型。".into();
             return None;
         }
         self.delivery.clear();
@@ -459,18 +461,16 @@ impl Controller {
                 return;
             }
         };
-        self.test_pinned(source, self.language.clone());
+        let _ = self.test_pinned(source, self.language.clone());
     }
-    pub(crate) fn test_pinned(&mut self, source: SessionSource, language: String) {
+    pub(crate) fn test_pinned(&mut self, source: SessionSource, language: String) -> Option<u64> {
         if self.busy() {
-            return;
+            return None;
         }
         self.delivery.clear();
         self.recording = None;
         self.transcript.clear();
-        let Some(generation) = self.state.begin() else {
-            return;
-        };
+        let generation = self.state.begin()?;
         self.state.permissions(generation, true);
         self.state.transcribe();
         self.testing = true;
@@ -478,6 +478,7 @@ impl Controller {
         self.recorded_source = source;
         self.recorded_language = language;
         self.submit();
+        Some(generation)
     }
     pub fn stop(&mut self) {
         if self.state.phase != Phase::Recording {
@@ -1324,6 +1325,7 @@ pub(crate) mod stop_failure_regression {
             encoder: "/synthetic/encoder".into(),
             decoder: "/synthetic/decoder".into(),
             tokens: "/synthetic/tokens".into(),
+            joiner: None,
         });
         c.recording = c.recorder.lease();
         let control = controlled_worker(c, 1);
@@ -1390,6 +1392,7 @@ pub(crate) mod stop_failure_regression {
             encoder: "/synthetic/encoder".into(),
             decoder: "/synthetic/decoder".into(),
             tokens: "/synthetic/tokens".into(),
+            joiner: None,
         });
         // Same production preparation used by start_pinned; substitute only the
         // permission/device boundary, never invoke an OS permission request.
@@ -1482,9 +1485,11 @@ pub(crate) mod tests {
                     } else {
                         local_source()
                     };
-                    c.start_pinned_with_permissions(source, "zh".into(), false, || {
-                        (microphone, speech)
-                    });
+                    let accepted =
+                        c.start_pinned_with_permissions(source, "zh".into(), false, || {
+                            (microphone, speech)
+                        });
+                    assert_eq!(accepted, Some(c.state.generation()));
                     let (generation, event) = c.events.try_recv().unwrap();
                     assert_eq!(generation, c.state.generation());
                     assert_eq!(
@@ -1518,7 +1523,70 @@ pub(crate) mod tests {
             encoder: "/synthetic/encoder".into(),
             decoder: "/synthetic/decoder".into(),
             tokens: "/synthetic/tokens".into(),
+            joiner: None,
         })
+    }
+    #[test]
+    fn unsupported_model_language_is_rejected_before_recording_preparation() {
+        let mut c = Controller::new();
+        let source = local_source(); // Fixed bilingual Paraformer fixture; no model/device I/O.
+        assert!(
+            c.prepare_start(source.clone(), "ja".into(), false)
+                .is_none()
+        );
+        assert_eq!(c.state.phase, Phase::Idle);
+        assert!(matches!(c.recorded_source, SessionSource::ChatGpt));
+        assert!(c.recording.is_none());
+        assert!(c.message.contains("不支持此语言"));
+        let (_, speech) = c.prepare_start(source.clone(), "zh".into(), false).unwrap();
+        assert!(!speech);
+        assert_eq!(c.recorded_source, source);
+        assert_eq!(c.recorded_language, "zh");
+    }
+    pub(crate) fn check_control_start_rejection(
+        mut start: impl FnMut(&mut Controller, SessionSource, u64),
+    ) {
+        for phase in [Phase::Ready, Phase::Failed, Phase::Idle] {
+            let temp = tempfile::tempdir().unwrap();
+            let recording = Arc::new(
+                crate::storage::Storage::at(
+                    temp.path()
+                        .canonicalize()
+                        .unwrap()
+                        .join(crate::storage::NAMESPACE),
+                )
+                .create_recording()
+                .unwrap(),
+            );
+            let mut c = Controller::new();
+            let generation = c.state.begin().unwrap();
+            c.state.phase = phase;
+            c.state.retry_available = phase == Phase::Failed;
+            c.transcript = "synthetic previous transcript".into();
+            c.recorded_source = SessionSource::ChatGpt;
+            c.recorded_language = "en".into();
+            c.allow_delivery = true;
+            if phase == Phase::Failed {
+                c.recording = Some(recording.clone());
+            }
+            start(&mut c, local_source(), generation);
+            assert_eq!(c.state.generation(), generation);
+            assert_eq!(c.state.phase, phase);
+            assert_eq!(c.transcript, "synthetic previous transcript");
+            assert_eq!(c.recorded_source, SessionSource::ChatGpt);
+            assert_eq!(c.recorded_language, "en");
+            assert!(c.allow_delivery);
+            assert_eq!(c.state.retry_available, phase == Phase::Failed);
+            if phase == Phase::Failed {
+                assert!(Arc::ptr_eq(c.recording.as_ref().unwrap(), &recording));
+                assert!(c.can_retry_recording());
+            } else {
+                assert!(c.recording.is_none());
+            }
+            assert!(c.events.try_recv().is_err());
+            assert!(c.worker.is_none() && c.active.is_none());
+            assert!(c.message.contains("不支持此语言"));
+        }
     }
     #[test]
     fn retry_snapshots_original_local_source_and_language_without_cloud_dispatch() {

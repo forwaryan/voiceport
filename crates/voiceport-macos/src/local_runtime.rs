@@ -17,8 +17,10 @@ unsafe extern "C" {
         directory: *const c_char,
         encoder: *const c_char,
         decoder: *const c_char,
+        joiner: *const c_char,
         tokens: *const c_char,
         language: *const c_char,
+        version: *const c_char,
         mode: i32,
         error: *mut c_char,
         capacity: usize,
@@ -49,8 +51,15 @@ impl Native {
         let directory = string(&model.runtime)?;
         let encoder = string(&model.encoder)?;
         let decoder = string(&model.decoder)?;
+        let joiner = model.joiner.as_deref().map(string).transpose()?;
         let tokens = string(&model.tokens)?;
-        let language = CString::new(language).unwrap();
+        let language = CString::new(if model.kind == ModelKind::Nemotron && language == "no" {
+            "nb-NO"
+        } else {
+            language
+        })
+        .unwrap();
+        let version = CString::new(crate::local_models::runtime_version(&model.runtime)?).unwrap();
         let mut error = [0 as c_char; 1024];
         // SAFETY: The exact versioned C header defines all native configuration layouts.
         // Inputs remain alive until creation returns; ownership of handles stays here.
@@ -59,8 +68,10 @@ impl Native {
                 directory.as_ptr(),
                 encoder.as_ptr(),
                 decoder.as_ptr(),
+                joiner.as_ref().map_or(std::ptr::null(), |p| p.as_ptr()),
                 tokens.as_ptr(),
                 language.as_ptr(),
+                version.as_ptr(),
                 model.kind.native_mode(),
                 error.as_mut_ptr(),
                 error.len(),
@@ -177,7 +188,7 @@ impl Session {
         check_cancel(cancel)?;
         self.heard_audio |= samples.iter().any(|s| s.abs() > 0.0001);
         match self.kind {
-            ModelKind::Paraformer => {
+            ModelKind::Paraformer | ModelKind::ParakeetUnified | ModelKind::Nemotron => {
                 if !samples.is_empty() {
                     self.native.feed(samples)?;
                     self.native.decode_ready(cancel)?;
@@ -196,7 +207,11 @@ impl Session {
                     }
                 }
             }
-            ModelKind::Whisper | ModelKind::WhisperTurbo | ModelKind::SenseVoice => {
+            ModelKind::Whisper
+            | ModelKind::WhisperTurbo
+            | ModelKind::SenseVoice
+            | ModelKind::ParakeetTdtV3
+            | ModelKind::ParakeetTdtV2 => {
                 if self.offline.len() + samples.len() > MAX_SAMPLES {
                     return Err("本地音频超过 180 秒。".into());
                 }
@@ -216,7 +231,7 @@ impl Session {
             return Err("未检测到可转写的声音，请重新录音。".into());
         }
         match self.kind {
-            ModelKind::Paraformer => {
+            ModelKind::Paraformer | ModelKind::ParakeetUnified | ModelKind::Nemotron => {
                 let padding = vec![0.0; RATE * 8 / 10];
                 // Flush the final model context before InputFinished. Padding is never
                 // endpoint-committed separately, so the last segment is appended once.
@@ -226,7 +241,11 @@ impl Session {
                 self.native.decode_ready(cancel)?;
                 self.transcript.commit(&self.native.result()?);
             }
-            ModelKind::Whisper | ModelKind::WhisperTurbo | ModelKind::SenseVoice => {
+            ModelKind::Whisper
+            | ModelKind::WhisperTurbo
+            | ModelKind::SenseVoice
+            | ModelKind::ParakeetTdtV3
+            | ModelKind::ParakeetTdtV2 => {
                 let mut offset = 0;
                 while offset < self.offline.len() {
                     check_cancel(cancel)?;
@@ -302,13 +321,17 @@ pub(crate) fn probe(
     check_cancel(cancel)?;
     let silence = vec![0.0; RATE];
     match model.kind {
-        ModelKind::Paraformer => {
+        ModelKind::Paraformer | ModelKind::ParakeetUnified | ModelKind::Nemotron => {
             native.feed(&silence)?;
             native.status(unsafe { vp_local_finish(native.0.as_ptr()) })?;
             native.decode_ready(cancel)?;
             native.result()?;
         }
-        ModelKind::Whisper | ModelKind::WhisperTurbo | ModelKind::SenseVoice => {
+        ModelKind::Whisper
+        | ModelKind::WhisperTurbo
+        | ModelKind::SenseVoice
+        | ModelKind::ParakeetTdtV3
+        | ModelKind::ParakeetTdtV2 => {
             Native::json(unsafe {
                 vp_local_offline(native.0.as_ptr(), silence.as_ptr(), silence.len() as i32)
             })?;
@@ -325,6 +348,8 @@ mod tests {
         let mut error = [0 as c_char; 256];
         let pointer = unsafe {
             vp_local_open(
+                std::ptr::null(),
+                std::ptr::null(),
                 std::ptr::null(),
                 std::ptr::null(),
                 std::ptr::null(),
@@ -351,6 +376,7 @@ mod tests {
             runtime: "/nonexistent-synthetic-runtime".into(),
             encoder: "/nonexistent-synthetic-encoder".into(),
             decoder: "/nonexistent-synthetic-decoder".into(),
+            joiner: None,
             tokens: "/nonexistent-synthetic-tokens".into(),
         };
         let cancel = CancellationToken::new();
@@ -388,7 +414,10 @@ mod tests {
             else {
                 panic!("expected installed model");
             };
-            for language in ["", "zh", "en"] {
+            for language in ["", "zh", "en"]
+                .into_iter()
+                .filter(|language| model.kind.supports_language(language))
+            {
                 let start = std::time::Instant::now();
                 probe(&model, language, &CancellationToken::new()).unwrap();
                 println!(
@@ -412,7 +441,14 @@ mod tests {
         let id = std::env::var("VOICEPORT_TEST_MODEL").expect("explicit expanded model ID");
         assert!(matches!(
             id.as_str(),
-            crate::local_models::SENSEVOICE | crate::local_models::WHISPER_TURBO
+            crate::local_models::PARAFORMER
+                | crate::local_models::WHISPER
+                | crate::local_models::SENSEVOICE
+                | crate::local_models::WHISPER_TURBO
+                | crate::local_models::PARAKEET_TDT_V3
+                | crate::local_models::PARAKEET_TDT_V2
+                | crate::local_models::PARAKEET_UNIFIED
+                | crate::local_models::NEMOTRON
         ));
         let mut bytes = vec![];
         std::fs::File::open(&fixture)
@@ -451,10 +487,17 @@ mod tests {
             text.to_lowercase().contains("yellow"),
             "unexpected public fixture ASR: {text}"
         );
-        assert!(
-            partials.is_empty(),
-            "offline models must not claim streaming previews"
-        );
+        if model.kind.streaming() {
+            assert!(
+                partials.iter().any(|text| !text.trim().is_empty()),
+                "streaming preview missing"
+            );
+        } else {
+            assert!(
+                partials.is_empty(),
+                "offline models must not claim streaming previews"
+            );
+        }
         let (input, incoming) = crate::local_audio::channel();
         crate::audio::read_pcm(&fixture, |packet| input.send(packet)).unwrap();
         input.finish();

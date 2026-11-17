@@ -24,6 +24,7 @@ fn entry(id: &str) -> Entry {
             encoder: PathBuf::new(),
             decoder: PathBuf::new(),
             tokens: PathBuf::new(),
+            joiner: None,
         })),
     }
 }
