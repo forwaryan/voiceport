@@ -91,7 +91,7 @@ Nemotron 的原始模型准确对应 [`nvidia/nemotron-3.5-asr-streaming-0.6b`](
 - Paraformer：自动、`zh`、`en`。
 - SenseVoice：自动、`zh`、`en`、`ja`、`ko`、`yue`。
 - Whisper Tiny：99 种 Whisper 语言；Turbo：100 种，增加 `yue`。显式语言作为 Whisper 解码提示。
-- Parakeet TDT v3：`bg`、`hr`、`cs`、`da`、`nl`、`en`、`et`、`fi`、`fr`、`de`、`el`、`hu`、`it`、`lv`、`lt`、`mt`、`no`、`pl`、`pt`、`ro`、`ru`、`sk`、`sl`、`es`、`sv`；模型自身自动识别，选择代码用于兼容性校验。
+- Parakeet TDT v3：`bg`、`hr`、`cs`、`da`、`nl`、`en`、`et`、`fi`、`fr`、`de`、`el`、`hu`、`it`、`lv`、`lt`、`mt`、`pl`、`pt`、`ro`、`ru`、`sk`、`sl`、`es`、`sv`、`uk`；模型自身自动识别，选择代码用于兼容性校验。
 - TDT v2 与 Unified EN：自动或 `en`。
 - Nemotron 3.5：`en`、`es`、`fr`、`it`、`pt`、`nl`、`de`、`tr`、`ru`、`ar`、`hi`、`ja`、`ko`、`vi`、`uk`、`pl`、`sv`、`cs`、`no`、`da`、`bg`、`fi`、`hr`、`sk`、`zh`、`hu`、`ro`、`et`，或自动。上游区域变体归并成稳定代码；八个仅供 adaptation/fine-tuning 的语言区域不计为开箱支持。
 
