@@ -161,7 +161,6 @@ impl Manager {
         *state.rendered.borrow_mut() = fingerprint;
         state.actions.borrow_mut().clear();
         let scroll = state.scroll.get().unwrap();
-        let width = scroll.contentSize().width;
         let sources: Vec<(usize, &Source)> = store
             .as_ref()
             .map(|s| {
@@ -172,30 +171,45 @@ impl Manager {
                     .collect()
             })
             .unwrap_or_default();
-        let height = ((sources.len() + 2) as f64 * 116. + 48.).max(scroll.contentSize().height);
-        let view = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., width, height));
+        let height =
+            (202. + sources.len() as f64 * ROW_HEIGHT + 60.).max(scroll.contentSize().height);
+        let view = NSView::initWithFrame(
+            NSView::alloc(self.mtm()),
+            rect(0., 0., scroll.contentSize().width, height),
+        );
+        scroll.setDocumentView(Some(&view));
+        let width = scroll.contentSize().width - 12.; // Leave room for overlay scrollers.
+        view.setFrameSize(NSSize::new(width, height));
+        let card_width = (width - 24.) / 2.;
         for (i, preset) in [Preset::GptTranscribe, Preset::Compatible]
             .into_iter()
             .enumerate()
         {
-            let y = height - (i + 1) as f64 * 116.;
-            self.owner()
-                .surface(&view, rect(4., y + 4., width - 8., 108.));
-            self.owner().label(
+            let x = 6. + i as f64 * (card_width + 12.);
+            presentation::surface(
+                self.owner(),
+                &view,
+                rect(x, height - 140., card_width, 128.),
+            );
+            let icon = self.owner().icon(
+                &view,
+                if i == 0 { "waveform" } else { "server.rack" },
+                rect(x + 18., height - 57., 24., 24.),
+            );
+            icon.setContentTintColor(Some(&NSColor::controlAccentColor()));
+            let name = self.owner().label(
                 &view,
                 preset.name(),
-                rect(18., y + 72., width - 220., 26.),
+                rect(x + 54., height - 57., card_width - 72., 27.),
                 17.,
             );
+            name.setFont(Some(&NSFont::systemFontOfSize_weight(17., unsafe {
+                NSFontWeightMedium
+            })));
             self.owner().caption(
                 &view,
                 preset.description(),
-                rect(18., y + 27., width - 220., 42.),
-            );
-            self.owner().caption(
-                &view,
-                "质量：未测量",
-                rect(width - 198., y + 72., 178., 24.),
+                rect(x + 18., height - 98., card_width - 36., 32.),
             );
             self.cloud_button(
                 &view,
@@ -205,7 +219,7 @@ impl Manager {
                     "设置兼容服务…"
                 },
                 Action::Add(preset),
-                rect(width - 172., y + 28., 150., 30.),
+                rect(x + 14., height - 135., card_width - 28., 26.),
                 ready,
                 if i == 0 {
                     "voiceport.cloud.add-gpt"
@@ -214,22 +228,42 @@ impl Manager {
                 },
             );
         }
+        let heading = self.owner().label(
+            &view,
+            &format!("已保存的配置  {}", sources.len()),
+            rect(12., height - 182., width - 24., 24.),
+            13.,
+        );
+        heading.setFont(Some(&NSFont::systemFontOfSize_weight(13., unsafe {
+            NSFontWeightMedium
+        })));
         for (row, (index, source)) in sources.iter().enumerate() {
-            let y = height - (row + 3) as f64 * 116.;
-            self.owner()
-                .surface(&view, rect(4., y + 4., width - 8., 108.));
-            self.owner().label(
+            let y = height - 202. - (row + 1) as f64 * ROW_HEIGHT;
+            let panel = presentation::surface(
+                self.owner(),
+                &view,
+                rect(6., y + 4., width - 12., ROW_HEIGHT - 8.),
+            );
+            if selected == source.id {
+                panel.setBorderColor(&NSColor::controlAccentColor().colorWithAlphaComponent(0.55));
+                panel.setBorderWidth(1.);
+            }
+            let name = self.owner().label(
                 &view,
                 &source.name,
-                rect(18., y + 76., width - 260., 23.),
+                rect(22., y + 66., width - 44., 23.),
                 15.,
             );
+            name.setMaximumNumberOfLines(1);
+            name.setToolTip(Some(&NSString::from_str(&source.name)));
             let endpoint = cloud_models::destination(source);
-            self.owner().caption(
+            let destination = self.owner().caption(
                 &view,
                 &format!("音频目的地：{endpoint}"),
-                rect(18., y + 48., width - 260., 26.),
+                rect(22., y + 40., width - 44., 23.),
             );
+            destination.setMaximumNumberOfLines(1);
+            destination.setToolTip(Some(&NSString::from_str(&endpoint)));
             let valid = store
                 .as_ref()
                 .is_ok_and(|s| s.validate_source(source).is_ok());
@@ -241,12 +275,12 @@ impl Manager {
                 "已配置 · 连接未检测"
             };
             self.owner()
-                .caption(&view, status, rect(18., y + 18., width - 260., 22.));
+                .caption(&view, status, rect(22., y + 16., width - 308., 22.));
             self.cloud_button(
                 &view,
                 "编辑…",
                 Action::Edit(*index),
-                rect(width - 242., y + 35., 74., 30.),
+                rect(width - 242., y + 12., 74., 30.),
                 ready,
                 &format!("voiceport.cloud.edit.{}", source.id),
             );
@@ -254,7 +288,7 @@ impl Manager {
                 &view,
                 "移除…",
                 Action::Remove(source.id.clone()),
-                rect(width - 166., y + 35., 74., 30.),
+                rect(width - 166., y + 12., 74., 30.),
                 ready,
                 &format!("voiceport.cloud.remove.{}", source.id),
             );
@@ -266,7 +300,7 @@ impl Manager {
                     "使用"
                 },
                 Action::Use(source.id.clone()),
-                rect(width - 90., y + 35., 70., 30.),
+                rect(width - 90., y + 12., 70., 30.),
                 ready && valid && selected != source.id,
                 &format!("voiceport.cloud.use.{}", source.id),
             );
@@ -275,16 +309,21 @@ impl Manager {
             self.owner().caption(
                 &view,
                 &format!("来源配置读取失败：{error}"),
-                rect(18., 4., width - 36., 40.),
+                rect(22., height - 266., width - 44., 58.),
             );
-        } else {
+        } else if sources.is_empty() {
+            self.owner().label(
+                &view,
+                "还没有云端配置",
+                rect(22., height - 224., width - 44., 24.),
+                14.,
+            );
             self.owner().caption(
                 &view,
-                "保存不测试连接。语言由服务支持范围决定；质量尚未进行同音频评估。",
-                rect(18., 4., width - 36., 40.),
+                "从上方选择一种服务，保存后再点击「使用」。",
+                rect(22., height - 252., width - 44., 24.),
             );
         }
-        scroll.setDocumentView(Some(&view));
         view.scrollPoint(NSPoint::new(0., height));
     }
 }
