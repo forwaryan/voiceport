@@ -272,26 +272,26 @@ pub static MODELS: &[Definition] = &[
     },
 ];
 pub const RUNTIME_ARCHIVE: Asset = Asset {
-    name: "sherpa-onnx 2.0.1 · 本地识别引擎",
+    name: "sherpa-onnx-darwin-arm64-2.0.1.tgz",
     url: "https://registry.npmjs.org/sherpa-onnx-darwin-arm64/-/sherpa-onnx-darwin-arm64-2.0.1.tgz",
     bytes: 10013200,
     sha256: "afc9415260e232c4dadc25a29a8645acb0ba06ef989060d32274f4c749a4830e",
 };
 pub const RUNTIME_INTEGRITY: &str =
     "agXmbbwiVPUSMViMhWhYAt59iG21ui7x6HxQFU35XzHOfQe9x6Pg9V160Pzak/66x0ePMjixsLUtMaaUrLfCwQ==";
-pub const RUNTIME_NOTICES: &[Asset] = &[
-    Asset {
-        name: "LICENSE-ONNX-Runtime.txt",
-        url: "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.28.2/LICENSE",
-        bytes: 1073,
-        sha256: "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c",
-    },
-    Asset {
-        name: "ThirdPartyNotices-ONNX-Runtime.txt",
-        url: "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.28.2/ThirdPartyNotices.txt",
-        bytes: 325054,
-        sha256: "0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2",
-    },
+pub const RUNTIME_NOTICES: &[(&str, &[u8])] = &[
+    (
+        "LICENSE-sherpa-onnx.txt",
+        include_bytes!("../local_runtime/LICENSE"),
+    ),
+    (
+        "LICENSE-ONNX-Runtime.txt",
+        include_bytes!("../local_runtime/LICENSE-ONNX-Runtime.txt"),
+    ),
+    (
+        "ThirdPartyNotices-ONNX-Runtime.txt",
+        include_bytes!("../local_runtime/ThirdPartyNotices-ONNX-Runtime.txt"),
+    ),
 ];
 pub const RUNTIME_FILES: &[&str] = &[
     "package.json",

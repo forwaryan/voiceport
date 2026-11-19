@@ -13,14 +13,14 @@
 | Parakeet Unified EN | 663.0 MB | 英语 | 流式预览，560 ms 缓冲上下文 |
 | Nemotron 3.5 | 682.2 MB | 28 个可选择语言代码，包含中、英、日、韩 | 多语言流式预览，560 ms 缓存上下文 |
 
-大小为固定 ONNX int8 文件集的十进制下载量，另计共享识别引擎约 **10.3 MB**；不使用其他应用的 GGUF 大小。560 ms 是模型上下文配置，实际 CPU 识别延迟取决于设备。窗口质量统一显示「未测量」；没有同音频准确率或速度排名。语言选择不兼容时显示「不支持所选语言」，并在准备录音前拒绝启动。
+大小为固定 ONNX int8 文件集的十进制下载量，另计共享识别引擎约 **10.0 MB**。560 ms 是模型上下文配置，实际 CPU 识别延迟取决于设备。窗口质量统一显示「未测量」；没有同音频准确率或速度排名。语言选择不兼容时显示「不支持所选语言」，并在准备录音前拒绝启动。
 
 本地识别支持 **Apple Silicon / arm64 macOS**。音频留在本机，不读取云端登录；下载需要联网，识别无需联网。下载、导入和更新不会自动更改转写来源，点击「使用」后才切换。模型缺失或识别失败会报告错误，不会自动上传云端。
 
 ## 下载、导入、更新与删除
 
 1. 在「全部模型」选择「下载」。首次会安装 sherpa-onnx **2.0.1** 共享引擎，也可先点击「安装识别引擎」，再离线导入模型。
-2. 窗口显示当前文件、进度和已下载大小；「取消下载」会取消当前任务并清理暂存文件。关闭窗口时若有任务，先请求取消并等待后台清理。
+2. 窗口显示当前文件、进度和已下载大小。下载失败时会显示文件名及原因。「取消下载」会取消当前任务并清理暂存文件。关闭窗口时若有任务，先请求取消并等待后台清理。
 3. 安装完成后点击「使用」。来源和语言保存在 VoicePort 偏好中，不修改 Orca 设置。「已安装」可筛选本机已有的来源。
 4. 「导入…」选择固定 ONNX 文件集所在文件夹。VoicePort 复制并核验每件文件的大小和 SHA-256；不执行其中脚本，不修改原文件。导入本身不联网；缺少兼容引擎时先明确安装引擎。
 5. 「旧副本可用 · 可更新」表示权重仍可使用，但缺少当前安装回执或完整随附资料。可以继续「使用」，或点「更新」。当前自有副本也提供「重装」；不可用副本提供「更新 / 重装」。
@@ -82,7 +82,7 @@ VoicePort 独立存储，不要求安装 Orca：
 
 Nemotron 的原始模型准确对应 [`nvidia/nemotron-3.5-asr-streaming-0.6b`](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/tree/ea30d66debe3740a08b573244286791d423d6b3e)，没有用旧的仅英语 Nemotron 替代。Parakeet 原始模型分别是 `nvidia/parakeet-tdt-0.6b-v3`、`nvidia/parakeet-tdt-0.6b-v2`、`nvidia/parakeet-unified-en-0.6b`；原模型 revision、完整许可和 ONNX 导出/量化修改说明随副本保留。
 
-引擎为 npm `sherpa-onnx-darwin-arm64@2.0.1`，实际版本来源 git `af2d8d81dbfa61c4cea4c568da78f3982edca005`。归档 10,013,200 bytes，连同固定 ONNX Runtime 1.28.2 许可和 notices 共 10,339,327 bytes；同时核验 SHA-256 与 registry SHA-512 integrity。只提取白名单 `package.json` 和两个 dylib，不运行 npm、Node 或包脚本。引擎保留 sherpa Apache-2.0、ONNX Runtime MIT 及其第三方 notices。
+引擎为 npm `sherpa-onnx-darwin-arm64@2.0.1`，实际版本来源 git `af2d8d81dbfa61c4cea4c568da78f3982edca005`。归档下载量为 10,013,200 bytes，同时核验 SHA-256 与 registry SHA-512 integrity。安装只提取白名单内的 `package.json` 和两个 dylib。应用随附 sherpa Apache-2.0 许可、ONNX Runtime 1.28.2 MIT 许可及第三方声明，安装时写入引擎目录。
 
 ## 语言、识别与权限
 

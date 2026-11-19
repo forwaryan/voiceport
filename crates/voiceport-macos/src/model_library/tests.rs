@@ -11,9 +11,10 @@ fn cancellation_interrupts_stalled_network_before_read_timeout() {
             trigger.store(true, Ordering::Release);
         });
         let pending = std::future::pending::<Result<(), reqwest::Error>>();
-        let result = tokio::time::timeout(Duration::from_secs(2), network(pending, &cancel))
-            .await
-            .unwrap();
+        let result =
+            tokio::time::timeout(Duration::from_secs(2), network(pending, &cancel, "test"))
+                .await
+                .unwrap();
         assert!(result.unwrap_err().contains("取消"));
         setter.await.unwrap();
     });
@@ -21,11 +22,12 @@ fn cancellation_interrupts_stalled_network_before_read_timeout() {
 
 #[test]
 fn transfer_checks_http_size_hash_and_truncation() {
-    for (body, length, expected_ok) in [
-        ("abc", "3", true),
-        ("xyz", "3", false),
-        ("abcd", "4", false),
-        ("ab", "3", false),
+    for (status, body, length, expected_error) in [
+        ("200 OK", "abc", "3", None),
+        ("200 OK", "xyz", "3", Some("完整性校验失败")),
+        ("200 OK", "abcd", "4", Some("大小与模型目录不符")),
+        ("200 OK", "ab", "3", Some("连接失败或中断")),
+        ("404 Not Found", "", "0", Some("HTTP 404 Not Found")),
     ] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/model", listener.local_addr().unwrap());
@@ -38,28 +40,42 @@ fn transfer_checks_http_size_hash_and_truncation() {
             assert!(stream.read(&mut request).unwrap() > 0);
             write!(
                 stream,
-                "HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{body}"
+                "HTTP/1.1 {status}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{body}"
             )
             .unwrap();
         });
         let temp = tempfile::tempdir().unwrap();
         let asset = Asset {
-            name: "test",
+            name: "encoder.int8.onnx",
             url: Box::leak(url.into_boxed_str()),
             bytes: 3,
             sha256: HASH,
         };
+        let destination = temp.path().join(asset.name);
+        let progress = Mutex::new(Progress::default());
         let result = runtime().block_on(download(
             &reqwest::Client::new(),
             &asset,
-            &temp.path().join("download"),
+            &destination,
             &AtomicBool::new(false),
-            &Mutex::new(Progress::default()),
+            &progress,
             0,
             3,
         ));
         worker.join().unwrap();
-        assert_eq!(result.is_ok(), expected_ok, "body={body}");
+        if let Some(expected_error) = expected_error {
+            let error = result.unwrap_err();
+            assert!(error.contains(asset.name), "{error}");
+            assert!(error.contains(expected_error), "{error}");
+        } else {
+            result.unwrap();
+        }
+        if status == "404 Not Found" {
+            assert!(!destination.exists());
+            let progress = progress.into_inner().unwrap();
+            assert!(progress.message.contains(asset.name));
+            assert_eq!((progress.completed, progress.total), (0, 3));
+        }
     }
 }
 
@@ -160,7 +176,9 @@ fn official_download_installs_engine_and_model_and_decodes_silence() {
     assert_eq!(model.runtime, paths.runtime());
     crate::local_runtime::probe(&model, "", &voiceport_core::CancellationToken::new()).unwrap();
     assert_eq!(stages(&paths), 0);
-    assert!(paths.runtime().join("LICENSE-sherpa-onnx.txt").is_file());
+    for (name, contents) in catalog::RUNTIME_NOTICES {
+        assert_eq!(fs::read(paths.runtime().join(name)).unwrap(), *contents);
+    }
     assert_eq!(paths.installation(definition), Installation::Current);
     for (name, text) in bundled_notices(definition.kind) {
         assert_eq!(
@@ -168,12 +186,6 @@ fn official_download_installs_engine_and_model_and_decodes_silence() {
             text
         );
     }
-    assert!(
-        paths
-            .runtime()
-            .join("ThirdPartyNotices-ONNX-Runtime.txt")
-            .is_file()
-    );
     if definition.kind == ModelKind::SenseVoice {
         assert_eq!(
             fs::read_to_string(paths.model(definition).join("MODEL_LICENSE.txt")).unwrap(),
@@ -616,8 +628,33 @@ fn model_licenses_and_exact_multilingual_nemotron_provenance_are_bundled() {
     assert!(catalog::NEMOTRON_ATTRIBUTION.contains("nvidia/nemotron-3.5-asr-streaming-0.6b/tree/"));
     assert!(!catalog::NEMOTRON_ATTRIBUTION.contains("nemotron-speech-streaming-en"));
     assert!(catalog::OPENMDW_LICENSE.contains("all copyright notices and other notices of origin"));
-    assert_eq!(runtime_bytes(), 10339327);
 }
+
+#[test]
+fn runtime_download_counts_only_the_archive_and_bundles_pinned_onnx_notices() {
+    assert_eq!(runtime_bytes(), 10_013_200);
+    for (filename, expected) in [
+        (
+            "LICENSE-ONNX-Runtime.txt",
+            "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c",
+        ),
+        (
+            "ThirdPartyNotices-ONNX-Runtime.txt",
+            "0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2",
+        ),
+    ] {
+        let (_, contents) = catalog::RUNTIME_NOTICES
+            .iter()
+            .find(|(name, _)| *name == filename)
+            .unwrap();
+        assert_eq!(
+            hex(ring::digest::digest(&SHA256, contents).as_ref()),
+            expected,
+            "{filename}"
+        );
+    }
+}
+
 #[test]
 fn lock_excludes_second_writer_and_releases_after_drop() {
     let temp = tempfile::tempdir().unwrap();
