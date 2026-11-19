@@ -21,10 +21,6 @@ mod tests;
 pub use catalog::MODELS;
 pub fn runtime_bytes() -> u64 {
     catalog::RUNTIME_ARCHIVE.bytes
-        + catalog::RUNTIME_NOTICES
-            .iter()
-            .map(|a| a.bytes)
-            .sum::<u64>()
 }
 
 #[derive(Debug)]
@@ -298,12 +294,15 @@ fn client() -> Result<reqwest::Client, String> {
 async fn network<T>(
     future: impl std::future::Future<Output = Result<T, reqwest::Error>>,
     cancel: &AtomicBool,
+    filename: &str,
 ) -> Result<T, String> {
     tokio::pin!(future);
     loop {
         check(cancel)?;
         tokio::select! {
-            result = &mut future => return result.map_err(|_| "模型下载连接失败或中断，请检查网络后重试。".into()),
+            result = &mut future => return result.map_err(|_| {
+                format!("下载 {filename} 失败：连接失败或中断，请检查网络后重试。")
+            }),
             _ = tokio::time::sleep(Duration::from_millis(100)) => {},
         }
     }
@@ -318,48 +317,39 @@ async fn download(
     total: u64,
 ) -> Result<(), String> {
     check(cancel)?;
-    let mut response = network(client.get(asset.url).send(), cancel)
-        .await?
-        .error_for_status()
-        .map_err(|e| {
-            format!(
-                "模型下载失败：{}",
-                e.status()
-                    .map_or_else(|| "网络错误".into(), |s| s.to_string())
-            )
-        })?;
-    if response.content_length().is_some_and(|n| n != asset.bytes) {
-        return Err("下载文件大小与模型目录不符，已停止安装。".into());
+    let filename = asset.name;
+    let message = format!("正在下载 {filename}");
+    update(progress, message.clone(), offset, total);
+    let mut response = network(client.get(asset.url).send(), cancel, filename).await?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("下载 {filename} 失败（HTTP {status}）。"));
     }
+    if response.content_length().is_some_and(|n| n != asset.bytes) {
+        return Err(format!("{filename} 大小与模型目录不符，未安装。"));
+    }
+    let save_error = |error| format!("无法保存 {filename}：{error}");
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)
-        .map_err(io_error)?;
+        .map_err(save_error)?;
     let mut hash = Context::new(&SHA256);
     let mut bytes = 0u64;
     loop {
-        check(cancel)?;
-        let Some(chunk) = network(response.chunk(), cancel).await? else {
+        let Some(chunk) = network(response.chunk(), cancel, filename).await? else {
             break;
         };
         bytes = bytes
             .checked_add(chunk.len() as u64)
-            .ok_or("下载文件过大。")?;
-        if bytes > asset.bytes {
-            return Err("下载文件超过预期大小。".into());
-        }
-        file.write_all(&chunk).map_err(io_error)?;
+            .filter(|&size| size <= asset.bytes)
+            .ok_or_else(|| format!("{filename} 超过预期大小，未安装。"))?;
+        file.write_all(&chunk).map_err(save_error)?;
         hash.update(&chunk);
-        update(
-            progress,
-            format!("正在下载 {}", asset.name),
-            offset + bytes,
-            total,
-        );
+        update(progress, message.clone(), offset + bytes, total);
     }
     verify(asset, bytes, hash.finish().as_ref())?;
-    file.sync_all().map_err(io_error)?;
+    file.sync_all().map_err(save_error)?;
     check(cancel)
 }
 fn hex(bytes: &[u8]) -> String {
@@ -609,7 +599,7 @@ async fn install_runtime(
     cancel: &AtomicBool,
     progress: &Mutex<Progress>,
 ) -> Result<(), String> {
-    use catalog::{RUNTIME_ARCHIVE, RUNTIME_FILES, RUNTIME_INTEGRITY};
+    use catalog::{RUNTIME_ARCHIVE, RUNTIME_FILES, RUNTIME_INTEGRITY, RUNTIME_NOTICES};
     let target = paths.runtime();
     if crate::local_models::validate_runtime(&target, std::env::consts::ARCH).is_ok() {
         return Ok(());
@@ -632,9 +622,10 @@ async fn install_runtime(
         cancel,
         progress,
         0,
-        RUNTIME_ARCHIVE.bytes,
+        runtime_bytes(),
     )
     .await?;
+    update(progress, "正在安装本地识别引擎…".into(), 0, 0);
     let mut input = File::open(&archive).map_err(io_error)?;
     let mut hash = Context::new(&SHA512);
     let mut buffer = [0u8; 128 * 1024];
@@ -653,7 +644,6 @@ async fn install_runtime(
     fs::create_dir(&extracted).map_err(io_error)?;
     for name in RUNTIME_FILES {
         check(cancel)?;
-        update(progress, "正在安装本地识别引擎…".into(), 0, 0);
         // Read only known regular members to stdout; tar never writes archive paths.
         let output = std::process::Command::new("/usr/bin/tar")
             .args(["-xOf"])
@@ -669,22 +659,9 @@ async fn install_runtime(
         }
         fs::write(extracted.join(name), &output.stdout).map_err(io_error)?;
     }
-    fs::write(
-        extracted.join("LICENSE-sherpa-onnx.txt"),
-        include_str!("local_runtime/LICENSE"),
-    )
-    .map_err(io_error)?;
-    for notice in catalog::RUNTIME_NOTICES {
-        download(
-            client,
-            notice,
-            &extracted.join(notice.name),
-            cancel,
-            progress,
-            0,
-            notice.bytes,
-        )
-        .await?;
+    for (name, contents) in RUNTIME_NOTICES {
+        check(cancel)?;
+        fs::write(extracted.join(name), contents).map_err(io_error)?;
     }
     crate::local_models::validate_runtime(&extracted, std::env::consts::ARCH)?;
     check(cancel)?;
