@@ -94,19 +94,25 @@ impl Paths {
         }
         Model::discover(directory, &self.runtime_for_kind(d.kind), d.kind)
     }
+    pub(crate) fn discover_owned(&self, d: &Definition) -> Option<Result<Model, String>> {
+        self.model(d).symlink_metadata().ok()?;
+        Some(self.discover(d))
+    }
     /// A legacy ONNX copy can remain usable while the UI offers a transactional
     /// reinstall to add current provenance. Incompatible files are never selected.
-    pub fn installation(&self, d: &Definition) -> Installation {
+    pub(crate) fn inspect_installation(
+        &self,
+        d: &Definition,
+    ) -> (Installation, Option<Result<Model, String>>) {
+        let model = match self.discover_owned(d) {
+            None => return (Installation::Missing, None),
+            Some(Err(error)) => return (Installation::Incompatible, Some(Err(error))),
+            Some(Ok(model)) => model,
+        };
         let directory = self.model(d);
-        if directory.symlink_metadata().is_err() {
-            return Installation::Missing;
-        }
-        if self.discover(d).is_err() {
-            return Installation::Incompatible;
-        }
         let receipt = directory.join("VOICEPORT_MODEL.json");
         let current = file_matches(&receipt, &installation_receipt(d));
-        if current
+        let status = if current
             && bundled_notices(d.kind)
                 .iter()
                 .all(|(name, text)| file_matches(&directory.join(name), text.as_bytes()))
@@ -114,7 +120,11 @@ impl Paths {
             Installation::Current
         } else {
             Installation::Legacy
-        }
+        };
+        (status, Some(Ok(model)))
+    }
+    pub fn installation(&self, d: &Definition) -> Installation {
+        self.inspect_installation(d).0
     }
     pub fn runtime_or_orca(&self) -> PathBuf {
         let own = self.runtime();
@@ -141,15 +151,38 @@ impl Paths {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct Progress {
-    pub message: String,
-    pub completed: u64,
-    pub total: u64,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Progress {
+    Stage(String),
+    Transfer {
+        message: String,
+        completed: u64,
+        total: u64,
+    },
+}
+impl Progress {
+    fn stage(progress: &Mutex<Self>, message: impl Into<String>) {
+        *progress.lock().unwrap_or_else(|p| p.into_inner()) = Self::Stage(message.into());
+    }
+}
+
+struct Transfer {
+    subject: &'static str,
+    offset: u64,
+    total: u64,
+}
+impl Transfer {
+    fn report(&self, progress: &Mutex<Progress>, message: &str, bytes: u64) {
+        *progress.lock().unwrap_or_else(|p| p.into_inner()) = Progress::Transfer {
+            message: message.into(),
+            completed: self.offset + bytes,
+            total: self.total,
+        };
+    }
 }
 pub struct Job {
     cancel: Arc<AtomicBool>,
-    pub progress: Arc<Mutex<Progress>>,
+    progress: Arc<Mutex<Progress>>,
     receiver: mpsc::Receiver<Result<String, String>>,
 }
 #[derive(Clone)]
@@ -166,7 +199,13 @@ impl Job {
         operation: Operation,
     ) -> Result<Self, String> {
         let cancel = Arc::new(AtomicBool::new(false));
-        let progress = Arc::new(Mutex::new(Progress::default()));
+        let preparing = match operation {
+            Operation::Engine => "正在准备识别引擎…",
+            Operation::Download => "正在准备下载模型…",
+            Operation::Import(_) => "正在准备导入模型…",
+            Operation::Remove => "正在删除 VoicePort 模型副本…",
+        };
+        let progress = Arc::new(Mutex::new(Progress::Stage(preparing.into())));
         let (sender, receiver) = mpsc::sync_channel(1);
         let c = cancel.clone();
         let p = progress.clone();
@@ -209,6 +248,12 @@ impl Job {
     }
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Release);
+    }
+    pub fn progress(&self) -> Progress {
+        self.progress
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
     pub fn poll(&self) -> Option<Result<String, String>> {
         match self.receiver.try_recv() {
@@ -274,13 +319,6 @@ fn check(cancel: &AtomicBool) -> Result<(), String> {
         Ok(())
     }
 }
-fn update(progress: &Mutex<Progress>, message: String, completed: u64, total: u64) {
-    *progress.lock().unwrap_or_else(|p| p.into_inner()) = Progress {
-        message,
-        completed,
-        total,
-    };
-}
 fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .https_only(true)
@@ -313,13 +351,13 @@ async fn download(
     destination: &Path,
     cancel: &AtomicBool,
     progress: &Mutex<Progress>,
-    offset: u64,
-    total: u64,
+    transfer: Transfer,
 ) -> Result<(), String> {
     check(cancel)?;
     let filename = asset.name;
-    let message = format!("正在下载 {filename}");
-    update(progress, message.clone(), offset, total);
+    let subject = transfer.subject;
+    Progress::stage(progress, format!("正在连接以下载{subject}：{filename}…"));
+    let message = format!("正在下载{subject}：{filename}");
     let mut response = network(client.get(asset.url).send(), cancel, filename).await?;
     let status = response.status();
     if !status.is_success() {
@@ -346,8 +384,9 @@ async fn download(
             .ok_or_else(|| format!("{filename} 超过预期大小，未安装。"))?;
         file.write_all(&chunk).map_err(save_error)?;
         hash.update(&chunk);
-        update(progress, message.clone(), offset + bytes, total);
+        transfer.report(progress, &message, bytes);
     }
+    Progress::stage(progress, format!("正在校验并保存{subject}：{filename}…"));
     verify(asset, bytes, hash.finish().as_ref())?;
     file.sync_all().map_err(save_error)?;
     check(cancel)
@@ -371,11 +410,13 @@ fn import_file(
     target: &Path,
     cancel: &AtomicBool,
     progress: &Mutex<Progress>,
-    offset: u64,
-    total: u64,
+    transfer: Transfer,
 ) -> Result<(), String> {
     use std::os::unix::fs::OpenOptionsExt;
     check(cancel)?;
+    let filename = asset.name;
+    Progress::stage(progress, format!("正在打开模型文件：{filename}…"));
+    let message = format!("正在复制模型文件：{filename}");
     // A FIFO without a writer must not block before the descriptor type check.
     let mut input = OpenOptions::new()
         .read(true)
@@ -405,13 +446,9 @@ fn import_file(
         }
         output.write_all(&buffer[..count]).map_err(io_error)?;
         hash.update(&buffer[..count]);
-        update(
-            progress,
-            format!("正在导入 {}", asset.name),
-            offset + bytes,
-            total,
-        );
+        transfer.report(progress, &message, bytes);
     }
+    Progress::stage(progress, format!("正在校验并保存模型：{filename}…"));
     verify(asset, bytes, hash.finish().as_ref())?;
     output.sync_all().map_err(io_error)?;
     check(cancel)
@@ -453,6 +490,11 @@ async fn install(
     let total = d.bytes();
     let mut offset = 0;
     for asset in d.assets {
+        let transfer = Transfer {
+            subject: "模型",
+            offset,
+            total,
+        };
         match &operation {
             Operation::Download => {
                 download(
@@ -461,8 +503,7 @@ async fn install(
                     &stage.path().join(asset.name),
                     cancel,
                     progress,
-                    offset,
-                    total,
+                    transfer,
                 )
                 .await?
             }
@@ -472,13 +513,13 @@ async fn install(
                 &stage.path().join(asset.name),
                 cancel,
                 progress,
-                offset,
-                total,
+                transfer,
             )?,
             Operation::Remove | Operation::Engine => unreachable!(),
         }
         offset += asset.bytes;
     }
+    Progress::stage(progress, "正在校验模型并写入许可…");
     // Both downloads and offline imports carry the same fixed license, notices,
     // conversion attribution and exact artifact identity.
     for (name, text) in bundled_notices(d.kind) {
@@ -490,6 +531,7 @@ async fn install(
     )
     .map_err(io_error)?;
     Model::discover(stage.path().into(), &paths.runtime_for_kind(d.kind), d.kind)?;
+    Progress::stage(progress, "正在发布模型副本…");
     check(cancel)?;
     publish_model(stage.path(), &target)?;
     Ok(format!("{} 已安装。点击“使用”后将在本机识别。", d.name))
@@ -621,15 +663,19 @@ async fn install_runtime(
         &archive,
         cancel,
         progress,
-        0,
-        runtime_bytes(),
+        Transfer {
+            subject: "识别引擎",
+            offset: 0,
+            total: runtime_bytes(),
+        },
     )
     .await?;
-    update(progress, "正在安装本地识别引擎…".into(), 0, 0);
+    Progress::stage(progress, "正在校验识别引擎归档…");
     let mut input = File::open(&archive).map_err(io_error)?;
     let mut hash = Context::new(&SHA512);
     let mut buffer = [0u8; 128 * 1024];
     loop {
+        check(cancel)?;
         let n = input.read(&mut buffer).map_err(io_error)?;
         if n == 0 {
             break;
@@ -640,6 +686,7 @@ async fn install_runtime(
     {
         return Err("识别引擎校验失败。".into());
     }
+    Progress::stage(progress, "正在解包并校验识别引擎…");
     let extracted = stage.path().join("runtime");
     fs::create_dir(&extracted).map_err(io_error)?;
     for name in RUNTIME_FILES {
@@ -664,6 +711,7 @@ async fn install_runtime(
         fs::write(extracted.join(name), contents).map_err(io_error)?;
     }
     crate::local_models::validate_runtime(&extracted, std::env::consts::ARCH)?;
+    Progress::stage(progress, "正在发布识别引擎…");
     check(cancel)?;
     publish_model(&extracted, &target)?;
     Ok(())

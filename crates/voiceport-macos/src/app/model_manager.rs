@@ -2,13 +2,16 @@
 use super::*;
 use crate::model_library::{Definition, Installation, Job, MODELS, Operation, Paths};
 use block2::RcBlock;
+use local_state::{LocalRefresh, ModelView, PrimaryAction, RefreshReason};
 use objc2::Message;
-use std::path::PathBuf;
+use std::{os::unix::fs::MetadataExt, path::PathBuf, time::Instant};
 mod cloud;
+mod local_state;
 mod presentation;
 use presentation::ROW_HEIGHT;
 
 struct Row {
+    index: usize,
     definition: &'static Definition,
     view: Retained<NSView>,
     surface: Retained<NSBox>,
@@ -20,9 +23,25 @@ struct Row {
     details: Retained<NSButton>,
     remove: Retained<NSButton>,
 }
+#[derive(PartialEq, Eq)]
+struct LocalView {
+    rows: Vec<ModelView>,
+    current_title: String,
+    source_id: String,
+    language: String,
+    installed_only: bool,
+    ready: bool,
+    working: Option<&'static str>,
+    cancelling: bool,
+    engine_ready: bool,
+}
+
 pub(super) struct State {
     owner: Retained<Delegate>,
     paths: Paths,
+    orca_root: Option<PathBuf>,
+    local_refresh: RefCell<LocalRefresh>,
+    local_view: RefCell<Option<LocalView>>,
     cloud: cloud::State,
     page_tabs: OnceCell<Retained<NSSegmentedControl>>,
     caption: OnceCell<Retained<NSTextField>>,
@@ -40,6 +59,7 @@ pub(super) struct State {
     current: OnceCell<Retained<NSTextField>>,
     summary: OnceCell<Retained<NSTextField>>,
     progress: OnceCell<Retained<NSProgressIndicator>>,
+    progress_display: RefCell<presentation::ProgressDisplay>,
     active_model: Cell<Option<&'static str>>,
     cancelling: Cell<bool>,
     job: RefCell<Option<Job>>,
@@ -67,6 +87,7 @@ define_class!(
         fn will_close(&self, _notification: &NSNotification) {
             let keep_alive = self.retain();
             if keep_alive.ivars().closed.replace(true) { return; }
+            presentation::render_progress(&keep_alive, presentation::ProgressDisplay::Hidden);
             keep_alive.window().setDelegate(None);
             let owner = &keep_alive.ivars().owner;
             owner.ivars().model_manager.borrow_mut().take();
@@ -83,20 +104,37 @@ define_class!(
         #[unsafe(method(modelPrimary:))]
         fn primary_action(&self, sender: &NSButton) {
             let Some(d) = self.definition(sender) else { return; };
-            if !self.ready() { return; }
-            let usable = self.ivars().owner.ivars().controller.borrow().as_ref()
-                .is_some_and(|c| c.catalog.snapshot(d.id).is_ok());
-            if usable && !self.ivars().owner.ivars().controller.borrow().as_ref().is_some_and(|c| d.kind.supports_language(&c.language)) {
-                self.notice("此模型不支持所选语言，请更改语言后使用。"); return;
+            let Some(shown) = self.model_view(d).map(|view| view.primary) else { return; };
+            if !self.recheck_local() { return; }
+            if self.model_view(d).is_none_or(|view| view.primary != shown) {
+                self.notice("模型状态已更新，请确认后重试。");
+                return;
             }
-            if usable {
-                self.ivars().owner.with_controller(|c| self.ivars().owner.set_source(c, d.id.into()));
-                self.refresh(); self.ivars().owner.refresh();
-            } else { self.start(d, Operation::Download); }
+            match shown {
+                PrimaryAction::Use => {
+                    let owner = &self.ivars().owner;
+                    if !owner.ivars().controller.borrow().as_ref().is_some_and(|c| d.kind.supports_language(&c.language)) {
+                        self.notice("此模型不支持所选语言，请更改语言后使用。");
+                        return;
+                    }
+                    owner.with_controller(|c| owner.set_source(c, d.id.into()));
+                    self.refresh();
+                    owner.refresh();
+                }
+                PrimaryAction::Download | PrimaryAction::Reinstall => self.start(d, Operation::Download),
+                PrimaryAction::AwaitCatalog => {}
+            }
         }
         #[unsafe(method(modelUpdate:))]
         fn update_action(&self, sender: &NSButton) {
-            if let Some(d) = self.definition(sender) { self.start(d, Operation::Download); }
+            let Some(d) = self.definition(sender) else { return; };
+            if self.recheck_local() {
+                if self.model_view(d).is_some_and(|view| view.owned() && view.primary == PrimaryAction::Use) {
+                    self.start(d, Operation::Download);
+                } else {
+                    self.notice("模型副本状态已更新，请确认后重试。");
+                }
+            }
         }
         #[unsafe(method(modelDetails:))]
         fn details_action(&self, sender: &NSButton) {
@@ -128,7 +166,15 @@ define_class!(
         #[unsafe(method(modelCancel:))]
         fn cancel_action(&self, _sender: Option<&AnyObject>) { self.cancel_job(); }
         #[unsafe(method(modelEngine:))]
-        fn engine_action(&self, _sender: Option<&AnyObject>) { self.start(&MODELS[0], Operation::Engine); }
+        fn engine_action(&self, _sender: Option<&AnyObject>) {
+            if self.recheck_local() {
+                if self.ivars().local_view.borrow().as_ref().is_some_and(|view| view.engine_ready) {
+                    self.notice("识别引擎已安装。");
+                } else {
+                    self.start(&MODELS[0], Operation::Engine);
+                }
+            }
+        }
         #[unsafe(method(modelLanguage:))]
         fn language_action(&self, _sender: Option<&AnyObject>) {
             if !self.ready() { return; }
@@ -146,7 +192,31 @@ impl Manager {
         self.ivars().window.get().unwrap()
     }
     pub(super) fn bring_forward(&self) {
-        self.window().makeKeyAndOrderFront(None);
+        self.refresh_for(RefreshReason::Open);
+        if !self.ivars().closed.get() {
+            self.window().makeKeyAndOrderFront(None);
+        }
+    }
+    fn cloud_page(&self) -> bool {
+        self.ivars().page_tabs.get().unwrap().selectedSegment() == 1
+    }
+    fn recheck_local(&self) -> bool {
+        if !self.ready() || self.cloud_page() {
+            return false;
+        }
+        self.refresh_for(RefreshReason::Action);
+        let ready = self.ready();
+        if !ready {
+            self.notice("正在刷新模型来源，检查完成后请重试。");
+        }
+        ready
+    }
+    fn model_view(&self, d: &Definition) -> Option<std::cell::Ref<'_, ModelView>> {
+        let index = MODELS.iter().position(|definition| definition.id == d.id)?;
+        std::cell::Ref::filter_map(self.ivars().local_view.borrow(), |view| {
+            view.as_ref().map(|view| &view.rows[index])
+        })
+        .ok()
     }
     fn definition(&self, button: &NSButton) -> Option<&'static Definition> {
         usize::try_from(button.tag())
@@ -176,8 +246,11 @@ impl Manager {
         if let Some(job) = self.ivars().job.borrow().as_ref() {
             job.cancel();
             self.ivars().cancelling.set(true);
+            presentation::render_progress(
+                self,
+                presentation::ProgressDisplay::from_job(None, true),
+            );
             self.ivars().cancel.get().unwrap().setEnabled(false);
-            self.notice("正在取消并清理临时文件…");
         }
     }
     pub(super) fn shutdown(&self) {
@@ -209,15 +282,16 @@ impl Manager {
             Ok(job) => {
                 self.ivars().active_model.set(active_model);
                 self.ivars().cancelling.set(false);
-                self.ivars().progress.get().unwrap().setDoubleValue(0.);
                 *self.ivars().job.borrow_mut() = Some(job);
-                self.notice("正在准备模型文件…");
             }
             Err(error) => self.notice(&error),
         }
         self.refresh();
     }
     pub(super) fn refresh(&self) {
+        self.refresh_for(RefreshReason::Tick);
+    }
+    fn refresh_for(&self, mut reason: RefreshReason) {
         if self.ivars().closed.get() {
             return;
         }
@@ -226,43 +300,47 @@ impl Manager {
             self.ivars().job.borrow_mut().take();
             self.ivars().active_model.set(None);
             self.ivars().cancelling.set(false);
+            reason = RefreshReason::JobFinished;
             self.notice(&match result {
                 Ok(message) => message,
                 Err(error) => error,
             });
             self.ivars().owner.with_controller(|c| c.refresh_catalog());
         }
+        self.refresh_progress();
         if self.ivars().shutting_down.get() && self.ivars().job.borrow().is_none() {
             self.shutdown();
             return;
         }
-        if let Some(job) = self.ivars().job.borrow().as_ref() {
-            let progress = job
-                .progress
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone();
-            if progress.total > 0 {
-                self.ivars().progress.get().unwrap().setDoubleValue(
-                    (progress.completed as f64 * 100. / progress.total as f64).clamp(0., 100.),
-                );
-            }
-            if !progress.message.is_empty() && !self.ivars().cancelling.get() {
-                self.notice(&if progress.total > 0 {
-                    format!(
-                        "{} · {:.0}% · {:.1} / {:.1} MB",
-                        progress.message,
-                        progress.completed as f64 * 100. / progress.total as f64,
-                        progress.completed as f64 / 1_000_000.,
-                        progress.total as f64 / 1_000_000.
-                    )
-                } else {
-                    progress.message
-                });
-            }
+
+        let cloud_page = self.cloud_page();
+        let local_visible =
+            !cloud_page && (reason == RefreshReason::Open || self.window().isVisible());
+        let sampled = self.ivars().local_refresh.borrow_mut().sample(
+            Instant::now(),
+            local_visible,
+            reason,
+            || {
+                local_state::LocalDisk::probe(
+                    &self.ivars().paths,
+                    self.ivars().orca_root.as_deref(),
+                )
+            },
+        );
+        if sampled && self.ready() {
+            let disk = self.ivars().local_refresh.borrow();
+            self.ivars().owner.with_controller(|c| {
+                if disk
+                    .disk
+                    .as_ref()
+                    .unwrap()
+                    .catalog_differs(&c.catalog, &c.source_id)
+                {
+                    c.refresh_catalog();
+                }
+            });
         }
         let ready = self.ready();
-        let cloud_page = self.ivars().page_tabs.get().unwrap().selectedSegment() == 1;
         self.ivars().scroll.get().unwrap().setHidden(cloud_page);
         self.ivars().tabs.get().unwrap().setHidden(cloud_page);
         self.ivars().engine.get().unwrap().setHidden(cloud_page);
@@ -291,48 +369,106 @@ impl Manager {
             } else {
                 "模型来源与许可见详情；更新失败保留旧副本。识别质量尚未测量。"
             }));
-        let engine_ready = crate::local_models::validate_runtime(
-            &self.ivars().paths.runtime(),
-            std::env::consts::ARCH,
-        )
-        .is_ok();
-        let engine = self.ivars().engine.get().unwrap();
-        engine.setEnabled(ready && !engine_ready);
-        engine.setTitle(&NSString::from_str(if engine_ready {
-            "识别引擎已安装"
-        } else {
-            "安装识别引擎"
-        }));
         let slot = self.ivars().owner.ivars().controller.borrow();
         let Some(c) = slot.as_ref() else {
             return;
         };
-        if cloud_page {
-            self.render_cloud(&c.source_id, ready && self.cloud_store().is_ok());
+        self.ivars().language.get().unwrap().setEnabled(ready);
+        let index = voiceport_core::language::index(&c.language) as isize;
+        let language = self.ivars().language.get().unwrap();
+        if language.indexOfSelectedItem() != index {
+            language.selectItemAtIndex(index);
         }
         let current = c.catalog.entries.iter().find(|e| e.id == c.source_id);
+        let title = current.map(|e| e.title.as_str()).unwrap_or("尚不可用");
+        if cloud_page {
+            self.ivars().local_view.borrow_mut().take();
+            self.set_current(title);
+            self.set_summary("添加或选择服务", 24.);
+            self.render_cloud(&c.source_id, ready && self.cloud_store().is_ok());
+            return;
+        }
+
+        if !local_visible {
+            self.ivars().local_view.borrow_mut().take();
+            return;
+        }
+        let disk = self.ivars().local_refresh.borrow();
+        let disk = disk.disk.as_ref().unwrap();
+        let rows: Vec<_> = MODELS
+            .iter()
+            .zip(&disk.rows)
+            .map(|(definition, row)| row.view(&c.catalog, definition.id))
+            .collect();
+        let current_title = if let Some(row) = MODELS
+            .iter()
+            .zip(&rows)
+            .find_map(|(definition, row)| (definition.id == c.source_id).then_some(row))
+        {
+            let title = crate::local_models::title(&c.source_id);
+            match row.primary {
+                PrimaryAction::Use => title.into(),
+                PrimaryAction::AwaitCatalog => format!("{title}（正在刷新）"),
+                _ => format!("{title}（不可用）"),
+            }
+        } else {
+            title.into()
+        };
+        let view = LocalView {
+            rows,
+            current_title,
+            source_id: c.source_id.clone(),
+            language: c.language.clone(),
+            installed_only: self.ivars().tabs.get().unwrap().selectedSegment() == 1,
+            ready,
+            working: self.ivars().active_model.get(),
+            cancelling: self.ivars().cancelling.get(),
+            engine_ready: disk.engine_ready,
+        };
+        if self.ivars().local_view.borrow().as_ref() != Some(&view) {
+            self.render_local(&view);
+            self.ivars().local_view.replace(Some(view));
+        }
+    }
+    fn refresh_progress(&self) {
+        let iv = self.ivars();
+        let cancelling = iv.cancelling.get();
+        let job = iv.job.borrow();
+        let progress = job.as_ref().filter(|_| !cancelling).map(Job::progress);
+        presentation::render_progress(
+            self,
+            presentation::ProgressDisplay::from_job(progress, cancelling),
+        );
+        let cancel = iv.cancel.get().unwrap();
+        cancel.setHidden(job.is_none());
+        cancel.setEnabled(job.is_some() && !cancelling);
+    }
+    fn set_current(&self, title: &str) {
         self.ivars()
             .current
             .get()
             .unwrap()
-            .setStringValue(&NSString::from_str(&format!(
-                "当前来源：{}",
-                current.map(|e| e.title.as_str()).unwrap_or("尚不可用")
-            )));
-        let installed_only = self.ivars().tabs.get().unwrap().selectedSegment() == 1;
-        let rows = self.ivars().rows.borrow();
-        let visible = rows
+            .setStringValue(&NSString::from_str(&format!("当前来源：{title}")));
+    }
+    fn set_summary(&self, text: &str, x: f64) {
+        let summary = self.ivars().summary.get().unwrap();
+        summary.setStringValue(&NSString::from_str(text));
+        summary.setFrameOrigin(NSPoint::new(x, summary.frame().origin.y));
+    }
+    fn render_local(&self, view: &LocalView) {
+        self.set_current(&view.current_title);
+        let engine = self.ivars().engine.get().unwrap();
+        engine.setEnabled(view.ready && !view.engine_ready);
+        engine.setTitle(if view.engine_ready {
+            ns_string!("识别引擎已安装")
+        } else {
+            ns_string!("安装识别引擎")
+        });
+        let installed_only = view.installed_only;
+        let visible = view
+            .rows
             .iter()
-            .filter(|row| {
-                !installed_only
-                    || c.catalog.snapshot(row.definition.id).is_ok()
-                    || self
-                        .ivars()
-                        .paths
-                        .model(row.definition)
-                        .symlink_metadata()
-                        .is_ok()
-            })
+            .filter(|row| !installed_only || row.installed())
             .count();
         let list = self.ivars().list.get().unwrap();
         let list_height = (visible as f64 * ROW_HEIGHT)
@@ -344,43 +480,34 @@ impl Manager {
         let empty = self.ivars().empty.get().unwrap();
         empty.setFrameOrigin(NSPoint::new(28., list_height - 104.));
         empty.setHidden(visible != 0);
-        let summary = self.ivars().summary.get().unwrap();
-        summary.setStringValue(&NSString::from_str(&if cloud_page {
-            "添加或选择服务".into()
-        } else if installed_only {
-            format!("{visible} 款已安装")
-        } else {
-            format!("{visible} 款可选")
-        }));
-        let summary_frame = summary.frame();
-        summary.setFrameOrigin(NSPoint::new(
-            if cloud_page { 24. } else { 206. },
-            summary_frame.origin.y,
-        ));
+        self.set_summary(
+            &if installed_only {
+                format!("{visible} 款已安装")
+            } else {
+                format!("{visible} 款可选")
+            },
+            206.,
+        );
         let mut position = 0;
-        for row in rows.iter() {
-            let own = self
-                .ivars()
-                .paths
-                .model(row.definition)
-                .symlink_metadata()
-                .is_ok();
-            let source = c.catalog.snapshot(row.definition.id);
-            let usable = source.is_ok();
-            let selected = c.source_id == row.definition.id;
-            let hidden = installed_only && !usable && !own;
+        for row in self.ivars().rows.borrow().iter() {
+            let model = &view.rows[row.index];
+            let own = model.owned();
+            let usable = model.primary == PrimaryAction::Use;
+            let selected = view.source_id == row.definition.id;
+            let hidden = installed_only && !model.installed();
             row.view.setHidden(hidden);
-            if !hidden {
-                row.view.setFrameOrigin(NSPoint::new(
-                    0.,
-                    list_height - (position + 1) as f64 * ROW_HEIGHT,
-                ));
-                position += 1;
+            if hidden {
+                continue;
             }
-            let installation = self.ivars().paths.installation(row.definition);
-            let working = self.ivars().active_model.get() == Some(row.definition.id);
+            row.view.setFrameOrigin(NSPoint::new(
+                0.,
+                list_height - (position + 1) as f64 * ROW_HEIGHT,
+            ));
+            position += 1;
+            let installation = model.installation;
+            let working = view.working == Some(row.definition.id);
             let status = if working {
-                if self.ivars().cancelling.get() {
+                if view.cancelling {
                     "正在取消…"
                 } else {
                     "正在处理文件…"
@@ -399,12 +526,14 @@ impl Manager {
                 } else {
                     "已安装 · 复用 Orca"
                 }
+            } else if model.primary == PrimaryAction::AwaitCatalog {
+                "正在刷新来源…"
             } else if own {
                 "文件或引擎不可用"
             } else {
                 "未安装"
             };
-            let compatible = row.definition.kind.supports_language(&c.language);
+            let compatible = row.definition.kind.supports_language(&view.language);
             row.compatibility
                 .setStringValue(&NSString::from_str(if compatible {
                     ""
@@ -432,18 +561,27 @@ impl Manager {
             row.surface.setBorderColor(&border_color);
             row.surface
                 .setBorderWidth(if selected && usable { 1. } else { 0.5 });
-            row.import.setHidden(own || usable);
+            row.import
+                .setHidden(model.primary != PrimaryAction::Download);
             row.remove.setHidden(!own);
-            row.primary.setTitle(&NSString::from_str(if usable {
-                if selected { "使用中" } else { "使用" }
-            } else if own {
-                "更新 / 重装"
-            } else {
-                "下载"
-            }));
             row.primary
-                .setEnabled(ready && !(usable && selected) && (!usable || compatible));
-            row.import.setEnabled(ready && !own);
+                .setTitle(&NSString::from_str(match model.primary {
+                    PrimaryAction::Use if selected => "使用中",
+                    PrimaryAction::Use => "使用",
+                    PrimaryAction::Download => "下载",
+                    PrimaryAction::Reinstall => "更新 / 重装",
+                    PrimaryAction::AwaitCatalog => "正在刷新…",
+                }));
+            row.primary.setEnabled(
+                view.ready
+                    && match model.primary {
+                        PrimaryAction::Use => !selected && compatible,
+                        PrimaryAction::Download | PrimaryAction::Reinstall => true,
+                        PrimaryAction::AwaitCatalog => false,
+                    },
+            );
+            row.import
+                .setEnabled(view.ready && model.primary == PrimaryAction::Download);
             row.update.setHidden(!own || !usable);
             row.update.setTitle(&NSString::from_str(
                 if installation == Installation::Legacy {
@@ -452,40 +590,19 @@ impl Manager {
                     "重装"
                 },
             ));
-            row.update.setEnabled(ready && own && usable);
+            row.update.setEnabled(view.ready && own && usable);
             row.update.setToolTip(Some(ns_string!(
                 "校验完整的新副本后再替换；失败或取消会保留旧副本。"
             )));
-            row.details.setEnabled(ready);
-            row.remove.setEnabled(ready && own && !selected);
+            row.details.setEnabled(view.ready);
+            row.remove.setEnabled(view.ready && own && !selected);
             row.remove.setToolTip(Some(&NSString::from_str(if selected {
                 "请先选择其他转写来源，再删除此模型。"
             } else {
                 "仅删除 VoicePort 的副本；不会改动 Orca 文件。"
             })));
             row.status
-                .setToolTip(Some(&NSString::from_str(&source.err().unwrap_or_default())));
-        }
-        self.ivars()
-            .cancel
-            .get()
-            .unwrap()
-            .setEnabled(self.ivars().job.borrow().is_some() && !self.ivars().cancelling.get());
-        self.ivars()
-            .progress
-            .get()
-            .unwrap()
-            .setHidden(self.ivars().job.borrow().is_none());
-        self.ivars().language.get().unwrap().setEnabled(ready);
-        self.ivars()
-            .cancel
-            .get()
-            .unwrap()
-            .setHidden(self.ivars().job.borrow().is_none());
-        let index = voiceport_core::language::index(&c.language) as isize;
-        let language = self.ivars().language.get().unwrap();
-        if language.indexOfSelectedItem() != index {
-            language.selectItemAtIndex(index);
+                .setToolTip(Some(&NSString::from_str(&model.reason)));
         }
     }
     fn show_details(&self, d: &'static Definition) {
@@ -539,8 +656,21 @@ impl Manager {
         *self.ivars().alert.borrow_mut() = Some(alert.clone());
         alert.beginSheetModalForWindow_completionHandler(self.window(), Some(&callback));
     }
+    fn can_import(&self, d: &Definition) -> bool {
+        if !self.recheck_local() {
+            return false;
+        }
+        if self
+            .model_view(d)
+            .is_some_and(|view| view.primary == PrimaryAction::Download)
+        {
+            return true;
+        }
+        self.notice("模型状态已更新，请确认后重试。");
+        false
+    }
     fn choose_import(&self, d: &'static Definition) {
-        if !self.ready() {
+        if !self.can_import(d) {
             return;
         }
         let panel = NSOpenPanel::openPanel(self.mtm());
@@ -563,6 +693,7 @@ impl Manager {
                 .map(|p| PathBuf::from(p.to_string()));
             if response == NSModalResponseOK
                 && let Some(path) = chosen
+                && manager.can_import(d)
             {
                 manager.start(d, Operation::Import(path));
             }
@@ -571,9 +702,9 @@ impl Manager {
         *self.ivars().panel.borrow_mut() = Some(panel.clone());
         panel.beginSheetModalForWindow_completionHandler(self.window(), &callback);
     }
-    fn confirm_remove(&self, d: &'static Definition) {
-        if !self.ready() {
-            return;
+    fn removable_model(&self, d: &Definition) -> Option<(u64, u64)> {
+        if !self.ready() || self.cloud_page() {
+            return None;
         }
         let selected = self
             .ivars()
@@ -585,8 +716,23 @@ impl Manager {
             .is_some_and(|c| c.source_id == d.id);
         if selected {
             self.notice("请先选择其他转写来源，再删除此模型。");
-            return;
+            return None;
         }
+        let path = self.ivars().paths.model(d);
+        match path.symlink_metadata() {
+            Ok(metadata) if metadata.is_dir() => Some((metadata.dev(), metadata.ino())),
+            _ => {
+                self.ivars().local_refresh.borrow_mut().invalidate();
+                self.refresh();
+                self.notice("VoicePort 模型副本已变更或无法删除，请检查目录状态。");
+                None
+            }
+        }
+    }
+    fn confirm_remove(&self, d: &'static Definition) {
+        let Some(identity) = self.removable_model(d) else {
+            return;
+        };
         let alert = NSAlert::new(self.mtm());
         alert.setMessageText(&NSString::from_str(&format!("删除 {}？", d.name)));
         alert.setInformativeText(ns_string!(
@@ -597,8 +743,15 @@ impl Manager {
         let manager = self.retain();
         let callback = RcBlock::new(move |response| {
             manager.ivars().alert.borrow_mut().take();
-            if response == NSAlertSecondButtonReturn {
-                manager.start(d, Operation::Remove);
+            if response == NSAlertSecondButtonReturn
+                && let Some(current) = manager.removable_model(d)
+            {
+                if current == identity {
+                    manager.start(d, Operation::Remove);
+                } else {
+                    manager.ivars().local_refresh.borrow_mut().invalidate();
+                    manager.notice("VoicePort 模型副本已替换，请重新确认后删除。");
+                }
             }
             manager.refresh();
         });
@@ -647,6 +800,9 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
     let manager = Manager::alloc(owner.mtm()).set_ivars(State {
         owner: owner.retain(),
         paths,
+        orca_root: crate::local_models::orca_model_root(),
+        local_refresh: RefCell::default(),
+        local_view: RefCell::default(),
         cloud: cloud::State::new()?,
         page_tabs: OnceCell::new(),
         caption: OnceCell::new(),
@@ -664,6 +820,7 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
         current: OnceCell::new(),
         summary: OnceCell::new(),
         progress: OnceCell::new(),
+        progress_display: RefCell::new(presentation::ProgressDisplay::Hidden),
         active_model: Cell::new(None),
         cancelling: Cell::new(false),
         job: RefCell::new(None),
@@ -676,7 +833,6 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
     presentation::build(&manager, owner);
     owner.ivars().managing_models.set(true);
     *owner.ivars().model_manager.borrow_mut() = Some(manager.clone());
-    manager.refresh();
     manager.window().center();
     manager.bring_forward();
     Ok(())

@@ -25,6 +25,14 @@ mod source_probes;
 const COPY_SUCCESS: &str = "文字已复制。";
 const COPY_FAILURE: &str = "复制失败，请选中文字手动复制。";
 
+fn copy_feedback(text: &str, copy: impl FnOnce(&str) -> bool) -> &'static str {
+    if copy(text) {
+        COPY_SUCCESS
+    } else {
+        COPY_FAILURE
+    }
+}
+
 /// Only a completed, nonempty transcription can have a delivery warning.
 /// The stage comes from the session policy, never from diagnostic text.
 fn completed_delivery_failure(
@@ -299,12 +307,16 @@ define_class!(
         }
         #[unsafe(method(copyText:))]
         fn copy_action(&self, _sender: Option<&AnyObject>) {
-            self.with_controller(|c| { c.message = if Delivery::copy(&c.transcript) { COPY_SUCCESS } else { COPY_FAILURE }.into(); }); self.refresh();
+            self.with_controller(|c| { c.message = copy_feedback(&c.transcript, Delivery::copy).into(); }); self.refresh();
         }
+        #[unsafe(method(copyQuickRecovery:))]
+        fn copy_quick_recovery_action(&self, _sender: Option<&AnyObject>) { self.copy_quick_recovery(); }
         #[unsafe(method(showQuickPanel:))]
         fn quick_panel_action(&self, _sender: Option<&AnyObject>) { self.toggle_quick_panel(); }
         #[unsafe(method(selectQuickSource:))]
         fn quick_source_action(&self, sender: &NSButton) { self.select_quick_source(sender); }
+        #[unsafe(method(resolveQuickSource:))]
+        fn quick_source_guidance_action(&self, _sender: Option<&AnyObject>) { self.resolve_quick_source(); }
         #[unsafe(method(quickManageSources:))]
         fn quick_manage_action(&self, _sender: Option<&AnyObject>) {
             self.close_quick_panel();

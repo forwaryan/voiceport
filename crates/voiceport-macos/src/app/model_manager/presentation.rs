@@ -1,6 +1,88 @@
 //! Native model catalog presentation; installation and source ownership stay in Manager.
 use super::*;
-use crate::local_models::ModelKind;
+use crate::{local_models::ModelKind, model_library::Progress};
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ProgressDisplay {
+    Hidden,
+    Indeterminate(String),
+    Transfer {
+        message: String,
+        completed: u64,
+        total: u64,
+    },
+}
+
+impl ProgressDisplay {
+    pub(super) fn from_job(progress: Option<Progress>, cancelling: bool) -> Self {
+        if cancelling {
+            return Self::Indeterminate("正在取消并清理临时文件…".into());
+        }
+        match progress {
+            None => Self::Hidden,
+            Some(
+                Progress::Stage(message)
+                | Progress::Transfer {
+                    message, total: 0, ..
+                },
+            ) => Self::Indeterminate(message),
+            Some(Progress::Transfer {
+                message,
+                completed,
+                total,
+            }) => Self::Transfer {
+                message,
+                completed,
+                total,
+            },
+        }
+    }
+
+    fn animation_change(&self, previous: &Self) -> Option<bool> {
+        let indeterminate = matches!(self, Self::Indeterminate(_));
+        let was_indeterminate = matches!(previous, Self::Indeterminate(_));
+        (indeterminate != was_indeterminate).then_some(indeterminate)
+    }
+}
+
+pub(super) fn render_progress(manager: &Manager, display: ProgressDisplay) {
+    let mut previous = manager.ivars().progress_display.borrow_mut();
+    if *previous == display {
+        return;
+    }
+    let indicator = manager.ivars().progress.get().unwrap();
+    let animation_change = display.animation_change(&previous);
+    if animation_change == Some(false) {
+        unsafe { indicator.stopAnimation(None) };
+        indicator.setIndeterminate(false);
+    }
+    match &display {
+        ProgressDisplay::Hidden => indicator.setHidden(true),
+        ProgressDisplay::Indeterminate(message) => {
+            manager.notice(message);
+            if animation_change == Some(true) {
+                indicator.setIndeterminate(true);
+                indicator.setHidden(false);
+                unsafe { indicator.startAnimation(None) };
+            }
+        }
+        ProgressDisplay::Transfer {
+            message,
+            completed,
+            total,
+        } => {
+            let percentage = (*completed as f64 * 100. / *total as f64).clamp(0., 100.);
+            indicator.setDoubleValue(percentage);
+            indicator.setHidden(false);
+            manager.notice(&format!(
+                "{message} · {percentage:.0}% · {:.1} / {:.1} MB",
+                *completed as f64 / 1_000_000.,
+                *total as f64 / 1_000_000.,
+            ));
+        }
+    }
+    *previous = display;
+}
 
 pub(super) const ROW_HEIGHT: f64 = 104.;
 
@@ -165,6 +247,7 @@ fn row(
         button.setAccessibilityLabel(Some(&NSString::from_str(&format!("{}：{label}", d.name))));
     }
     Row {
+        index,
         definition: d,
         view,
         surface: panel,
@@ -376,8 +459,10 @@ pub(super) fn build(manager: &Manager, owner: &Delegate) {
     divider(owner, &view, rect(28., 68., width - 56., 0.5));
     let progress = NSProgressIndicator::initWithFrame(
         NSProgressIndicator::alloc(owner.mtm()),
-        rect(28., 69., width - 56., 3.),
+        rect(28., 64., width - 56., 12.),
     );
+    progress.setStyle(NSProgressIndicatorStyle::Bar);
+    progress.setControlSize(NSControlSize::Small);
     progress.setIndeterminate(false);
     progress.setMinValue(0.);
     progress.setMaxValue(100.);
@@ -391,7 +476,7 @@ pub(super) fn build(manager: &Manager, owner: &Delegate) {
     );
     let cancel = manager.button(
         &view,
-        "取消下载",
+        "取消任务",
         sel!(modelCancel:),
         rect(width - 124., 29., 96., 28.),
     );
@@ -413,4 +498,70 @@ pub(super) fn build(manager: &Manager, owner: &Delegate) {
     manager.ivars().cancel.set(cancel).ok();
     manager.ivars().language.set(language).ok();
     manager.ivars().window.set(window).ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_modes_follow_bytes_stages_cancellation_and_exit() {
+        let stage = |message: &str| Some(Progress::Stage(message.into()));
+        let transfer = |message: &str, completed, total| {
+            Some(Progress::Transfer {
+                message: message.into(),
+                completed,
+                total,
+            })
+        };
+        let render = ProgressDisplay::from_job;
+        for message in [
+            "正在准备识别引擎…",
+            "正在解包并校验识别引擎…",
+            "正在发布模型副本…",
+        ] {
+            assert_eq!(
+                render(stage(message), false),
+                ProgressDisplay::Indeterminate(message.into())
+            );
+        }
+        assert_eq!(
+            render(transfer("未知", 3, 0), false),
+            ProgressDisplay::Indeterminate("未知".into())
+        );
+        assert_eq!(
+            render(transfer("正在下载识别引擎", 6, 6), false),
+            ProgressDisplay::Transfer {
+                message: "正在下载识别引擎".into(),
+                completed: 6,
+                total: 6,
+            }
+        );
+        assert_eq!(
+            render(transfer("正在下载模型", 2, 8), false),
+            ProgressDisplay::Transfer {
+                message: "正在下载模型".into(),
+                completed: 2,
+                total: 8,
+            }
+        );
+        assert_eq!(
+            render(transfer("正在下载模型", 2, 8), true),
+            ProgressDisplay::Indeterminate("正在取消并清理临时文件…".into())
+        );
+        assert_eq!(render(None, false), ProgressDisplay::Hidden);
+        let mut last = ProgressDisplay::Hidden;
+        for (next, animation) in [
+            (render(stage("准备引擎"), false), Some(true)),
+            (render(transfer("传输引擎", 6, 6), false), Some(false)),
+            (render(stage("解包引擎"), false), Some(true)),
+            (render(stage("准备模型"), false), None),
+            (render(transfer("传输模型", 2, 8), false), Some(false)),
+            (render(None, true), Some(true)),
+            (render(None, false), Some(false)),
+        ] {
+            assert_eq!(next.animation_change(&last), animation);
+            last = next;
+        }
+    }
 }
