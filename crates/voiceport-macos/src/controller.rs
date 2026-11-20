@@ -311,6 +311,13 @@ impl Controller {
             .then(|| self.delivery.failure_stage())
             .flatten()
     }
+    pub(crate) fn has_unconfirmed_paste(&self) -> bool {
+        self.allow_delivery
+            && !self.testing
+            && self.delivery.uses_clipboard()
+            && !self.delivery.has_pending()
+            && self.delivery.receipt().state == crate::delivery::model::DeliveryState::Submitted
+    }
     pub fn toggle(&mut self) {
         if self.state.phase == Phase::Recording {
             self.stop();

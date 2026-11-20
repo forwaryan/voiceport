@@ -1,6 +1,10 @@
 use super::*;
 use std::net::TcpListener;
 
+fn preparing() -> Progress {
+    Progress::Stage("正在准备…".into())
+}
+
 #[test]
 fn cancellation_interrupts_stalled_network_before_read_timeout() {
     runtime().block_on(async {
@@ -52,15 +56,18 @@ fn transfer_checks_http_size_hash_and_truncation() {
             sha256: HASH,
         };
         let destination = temp.path().join(asset.name);
-        let progress = Mutex::new(Progress::default());
+        let progress = Mutex::new(preparing());
         let result = runtime().block_on(download(
-            &reqwest::Client::new(),
+            &reqwest::Client::builder().no_proxy().build().unwrap(),
             &asset,
             &destination,
             &AtomicBool::new(false),
             &progress,
-            0,
-            3,
+            Transfer {
+                subject: "模型",
+                offset: 0,
+                total: 3,
+            },
         ));
         worker.join().unwrap();
         if let Some(expected_error) = expected_error {
@@ -70,13 +77,69 @@ fn transfer_checks_http_size_hash_and_truncation() {
         } else {
             result.unwrap();
         }
+        let progress = progress.into_inner().unwrap();
         if status == "404 Not Found" {
             assert!(!destination.exists());
-            let progress = progress.into_inner().unwrap();
-            assert!(progress.message.contains(asset.name));
-            assert_eq!((progress.completed, progress.total), (0, 3));
+            assert!(
+                matches!(progress, Progress::Stage(message) if message.contains(asset.name) && message.contains("连接"))
+            );
+        } else if expected_error.is_none() {
+            assert!(
+                matches!(progress, Progress::Stage(message) if message.contains(asset.name) && message.contains("校验"))
+            );
         }
     }
+}
+
+#[test]
+fn partial_download_reports_scoped_bytes_and_cancels_while_waiting_for_more() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/engine", listener.local_addr().unwrap());
+    let (release, hold) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        assert!(stream.read(&mut [0; 4096]).unwrap() > 0);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\na")
+            .unwrap();
+        let _ = hold.recv_timeout(Duration::from_secs(5));
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let asset = Asset {
+        name: "engine.tgz",
+        url: Box::leak(url.into_boxed_str()),
+        bytes: 3,
+        sha256: HASH,
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let cancel = AtomicBool::new(false);
+    let progress = Mutex::new(preparing());
+    runtime().block_on(async {
+        let destination = temp.path().join(asset.name);
+        let mut fetch = std::pin::pin!(download(&client, &asset, &destination, &cancel, &progress,
+            Transfer { subject: "识别引擎", offset: 0, total: 3 }));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                tokio::select! {
+                    result = &mut fetch => panic!("transfer finished before cancellation: {result:?}"),
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                        if matches!(&*progress.lock().unwrap(), Progress::Transfer { message, completed: 1, total: 3 }
+                            if message.contains("识别引擎") && message.contains(asset.name)) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }).await.unwrap();
+        cancel.store(true, Ordering::Release);
+        let error = tokio::time::timeout(Duration::from_secs(2), &mut fetch).await.unwrap().unwrap_err();
+        assert!(error.contains("取消"));
+    });
+    release.send(()).unwrap();
+    worker.join().unwrap();
 }
 
 const HASH: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
@@ -141,7 +204,7 @@ fn official_download_installs_engine_and_model_and_decodes_silence() {
             &paths,
             &client().unwrap(),
             &AtomicBool::new(false),
-            &Mutex::new(Progress::default()),
+            &Mutex::new(preparing()),
         ))
         .unwrap();
     let import = std::env::var_os("VOICEPORT_TEST_IMPORT_DIR").map(PathBuf::from);
@@ -169,7 +232,7 @@ fn official_download_installs_engine_and_model_and_decodes_silence() {
             definition,
             operation,
             &AtomicBool::new(false),
-            &Mutex::new(Progress::default()),
+            &Mutex::new(preparing()),
         ))
         .unwrap();
     let model = paths.discover(definition).unwrap();
@@ -258,7 +321,7 @@ fn stages(paths: &Paths) -> usize {
 fn import_publishes_verified_copy_without_modifying_source() {
     let (_temp, paths, source) = fixture();
     let cancel = AtomicBool::new(false);
-    let progress = Mutex::new(Progress::default());
+    let progress = Mutex::new(preparing());
     runtime()
         .block_on(install(
             &paths,
@@ -317,7 +380,7 @@ fn corrupt_incomplete_cancelled_and_symlink_imports_never_publish() {
                     &TEST_MODEL,
                     Operation::Import(source),
                     &cancel,
-                    &Mutex::new(Progress::default())
+                    &Mutex::new(preparing())
                 ))
                 .is_err(),
             "{case}"
@@ -398,7 +461,7 @@ fn every_catalog_model_import_requires_complete_matching_files() {
                 &definition,
                 Operation::Import(source.clone()),
                 &AtomicBool::new(false),
-                &Mutex::new(Progress::default()),
+                &Mutex::new(preparing()),
             ));
             assert_eq!(
                 result.is_ok(),
@@ -524,7 +587,7 @@ fn failed_reinstallation_preserves_usable_copy_and_staging_is_removed() {
                 &TEST_MODEL,
                 Operation::Import(source.clone()),
                 &AtomicBool::new(false),
-                &Mutex::new(Progress::default()),
+                &Mutex::new(preparing()),
             ))
             .unwrap();
         let before = fs::read(paths.model(&TEST_MODEL).join("VOICEPORT_MODEL.json")).unwrap();
@@ -544,7 +607,7 @@ fn failed_reinstallation_preserves_usable_copy_and_staging_is_removed() {
                 &TEST_MODEL,
                 Operation::Import(source),
                 &AtomicBool::new(case == "cancelled"),
-                &Mutex::new(Progress::default()),
+                &Mutex::new(preparing()),
             ))
             .unwrap_err();
         assert!(!error.is_empty());
@@ -576,7 +639,7 @@ fn installation_distinguishes_current_legacy_incompatible_and_special_notices() 
             &TEST_MODEL,
             Operation::Import(source),
             &AtomicBool::new(false),
-            &Mutex::new(Progress::default()),
+            &Mutex::new(preparing()),
         ))
         .unwrap();
     assert_eq!(paths.installation(&TEST_MODEL), Installation::Current);

@@ -150,6 +150,48 @@ pub struct Catalog {
     pub entries: Vec<Entry>,
 }
 
+const ORCA_HOME_ERROR: &str = "无法定位 Orca 模型目录。请检查 HOME。";
+
+pub(crate) fn orca_model_root() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(|home| PathBuf::from(home).join("Library/Application Support/orca/speech-models"))
+}
+
+pub(crate) struct OrcaDiscovery<'a>(Result<(&'a Path, PathBuf), String>);
+
+impl<'a> OrcaDiscovery<'a> {
+    fn new(root: &'a Path, runtime: PathBuf, architecture: &str) -> Self {
+        Self(validate_runtime(&runtime, architecture).map(|()| (root, runtime)))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn system(
+        root: Option<&'a Path>,
+        paths: Option<&crate::model_library::Paths>,
+    ) -> Self {
+        let result = (|| {
+            let root = root.ok_or(ORCA_HOME_ERROR)?;
+            let metadata = root.metadata().map_err(|error| error.to_string())?;
+            if !metadata.is_dir() {
+                return Err(format!("Orca 模型路径不是目录：{}", root.display()));
+            }
+            let runtime = paths.map_or_else(
+                || PathBuf::from(RUNTIME_DIRECTORY),
+                |paths| paths.runtime_or_orca(),
+            );
+            validate_runtime(&runtime, std::env::consts::ARCH)?;
+            Ok((root, runtime))
+        })();
+        Self(result)
+    }
+
+    pub(crate) fn discover(&self, directory: &str, kind: ModelKind) -> Result<Model, String> {
+        let (root, runtime) = self.0.as_ref().map_err(Clone::clone)?;
+        Model::discover(root.join(directory), runtime, kind)
+    }
+}
+
 impl Catalog {
     pub fn pending(saved: &str) -> Self {
         let mut catalog = Self {
@@ -163,7 +205,12 @@ impl Catalog {
         catalog
     }
     pub fn discover(root: &Path, runtime: &Path, saved: &str, architecture: &str) -> Self {
-        let runtime_check = validate_runtime(runtime, architecture);
+        Self::discover_orca(
+            &OrcaDiscovery::new(root, runtime.into(), architecture),
+            saved,
+        )
+    }
+    fn discover_orca(orca: &OrcaDiscovery<'_>, saved: &str) -> Self {
         let mut catalog = Self {
             entries: vec![cloud()],
         };
@@ -189,16 +236,8 @@ impl Catalog {
             ),
             (NEMOTRON, "nemotron-3.5", ModelKind::Nemotron),
         ] {
-            let result = runtime_check
-                .clone()
-                .and_then(|_| Model::discover(root.join(directory), runtime, kind));
-            match result {
-                Ok(model) => catalog.entries.push(Entry {
-                    id: id.into(),
-                    title: title(id).into(),
-                    detail: description(id).into(),
-                    source: Ok(SessionSource::Local(model)),
-                }),
+            match orca.discover(directory, kind) {
+                Ok(model) => catalog.entries.push(local_entry(id, model)),
                 Err(error) if id == saved => catalog.entries.push(unavailable(id, &error)),
                 Err(_) => {}
             }
@@ -210,51 +249,41 @@ impl Catalog {
         }
         catalog
     }
+    #[cfg(target_os = "macos")]
     pub fn system(saved: &str) -> Self {
-        let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else {
-            let mut catalog = Self::pending(saved);
-            if saved != CHATGPT {
-                catalog.entries[1] = unavailable(saved, "无法定位 Orca 模型目录。请检查 HOME。");
-            }
-            return catalog;
-        };
-        #[cfg(target_os = "macos")]
-        let runtime = crate::model_library::Paths::system()
-            .map(|paths| paths.runtime_or_orca())
-            .unwrap_or_else(|_| PathBuf::from(RUNTIME_DIRECTORY));
-        #[cfg(not(target_os = "macos"))]
-        let runtime = PathBuf::from(RUNTIME_DIRECTORY);
-        let catalog = Self::discover(
-            &PathBuf::from(home).join("Library/Application Support/orca/speech-models"),
-            &runtime,
-            saved,
-            std::env::consts::ARCH,
-        );
-        #[cfg(target_os = "macos")]
-        {
-            let mut catalog = catalog;
-            if let Ok(paths) = crate::model_library::Paths::system() {
-                for definition in crate::model_library::MODELS {
-                    if paths.model(definition).symlink_metadata().is_ok() {
-                        let result = paths.discover(definition);
-                        let entry = match result {
-                            Ok(model) => Entry {
-                                id: definition.id.into(),
-                                title: title(definition.id).into(),
-                                detail: description(definition.id).into(),
-                                source: Ok(SessionSource::Local(model)),
-                            },
-                            Err(error) => unavailable(definition.id, &error),
-                        };
-                        catalog.entries.retain(|e| e.id != definition.id);
-                        catalog.entries.push(entry);
-                    }
+        let root = orca_model_root();
+        let paths = crate::model_library::Paths::system().ok();
+        let orca = OrcaDiscovery::system(root.as_deref(), paths.as_ref());
+        let mut catalog = Self::discover_orca(&orca, saved);
+        if let Some(paths) = paths {
+            for definition in crate::model_library::MODELS {
+                if let Some(result) = paths.discover_owned(definition) {
+                    let entry = match result {
+                        Ok(model) => local_entry(definition.id, model),
+                        Err(error) => unavailable(definition.id, &error),
+                    };
+                    catalog.entries.retain(|e| e.id != definition.id);
+                    catalog.entries.push(entry);
                 }
             }
-            catalog.load_configured(saved);
-            catalog
         }
-        #[cfg(not(target_os = "macos"))]
+        catalog.load_configured(saved);
+        catalog
+    }
+    #[cfg(not(target_os = "macos"))]
+    pub fn system(saved: &str) -> Self {
+        if let Some(root) = orca_model_root() {
+            return Self::discover(
+                &root,
+                Path::new(RUNTIME_DIRECTORY),
+                saved,
+                std::env::consts::ARCH,
+            );
+        }
+        let mut catalog = Self::pending(saved);
+        if saved != CHATGPT {
+            catalog.entries[1] = unavailable(saved, ORCA_HOME_ERROR);
+        }
         catalog
     }
     #[cfg(target_os = "macos")]
@@ -389,12 +418,23 @@ fn cloud() -> Entry {
         source: Ok(SessionSource::ChatGpt),
     }
 }
+fn local_entry(id: &str, model: Model) -> Entry {
+    Entry {
+        id: id.into(),
+        title: title(id).into(),
+        detail: description(id).into(),
+        source: Ok(SessionSource::Local(model)),
+    }
+}
+pub(crate) fn unavailable_reason(id: &str, reason: &str) -> String {
+    format!("{}不可用：{reason}", title(id))
+}
 fn unavailable(id: &str, reason: &str) -> Entry {
     Entry {
         id: id.into(),
         title: format!("{}（不可用）", title(id)),
         detail: format!("{reason} 不会自动切换来源；请刷新或重新选择。"),
-        source: Err(format!("{}不可用：{reason}", title(id))),
+        source: Err(unavailable_reason(id, reason)),
     }
 }
 pub fn title(id: &str) -> &str {
