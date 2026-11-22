@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -23,6 +24,9 @@ class VerificationRunTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
+        lock_parent = self.root / 'locks'
+        lock_parent.mkdir()
+        self.enterContext(patch.object(runner, '_SUITE_LOCK_PARENT', lock_parent))
 
     def run_python(self, code, **kwargs):
         return runner.run_check([sys.executable, '-I', '-c', code], self.root / 'stdout.log',
@@ -258,6 +262,133 @@ class VerificationRunTests(unittest.TestCase):
                 raise RuntimeError('fixture failure')
         with runner.suite_lock(self.root):
             pass
+
+    def test_host_lock_rejects_symlinks_before_touching_checkout(self):
+        directory = self.root / 'locks' / f'voiceport-verification-{os.geteuid()}'
+        target = self.root / 'target'
+        target.mkdir(mode=0o700)
+        directory.symlink_to(target, target_is_directory=True)
+        with self.assertRaises(OSError), runner.full_suite_lock(self.root):
+            self.fail('lock accepted a symlinked directory')
+        self.assertEqual(list(target.iterdir()), [])
+
+        directory.unlink()
+        directory.mkdir(mode=0o700)
+        sentinel = target / 'sentinel'
+        sentinel.write_text('original content')
+        (directory / 'verification.lock').symlink_to(sentinel)
+        with self.assertRaises(OSError), runner.full_suite_lock(self.root):
+            self.fail('lock accepted a symlinked file')
+        self.assertEqual(sentinel.read_text(), 'original content')
+        self.assertFalse((self.root / '.voiceport').exists())
+
+    def test_full_entry_points_exclude_other_checkouts_until_suite_finishes(self):
+        bootstrap = f'''
+from pathlib import Path
+import sys
+import time
+sys.path.insert(0, {str(SCRIPTS)!r})
+import verification_run as runner
+import ci_checks
+import verify
+
+runner._SUITE_LOCK_PARENT = Path(sys.argv[1])
+verify.ROOT = ci_checks.ROOT = root = Path.cwd()
+entry = sys.argv[2]
+release = root / 'release'
+child = """
+from pathlib import Path
+import time
+Path('started').touch()
+deadline = time.monotonic() + 15
+while not Path('release').exists():
+    if time.monotonic() >= deadline:
+        raise SystemExit('fixture release not received')
+    time.sleep(.01)
+"""
+command = [sys.executable, '-I', '-B', '-c', child]
+
+def check(args, evidence, report):
+    result, _ = runner.run_check(command, evidence / 'stdout', evidence / 'stderr', cwd=root, timeout=20)
+    report['checks'].append(result)
+    report.update(passed=result['passed'], interrupted=result['interrupted'])
+
+cleanup = runner.cleanup_group
+
+def pause_cleanup(process):
+    (root / 'cleaning').touch()
+    deadline = time.monotonic() + 15
+    while not (root / 'finish-cleanup').exists():
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(.01)
+    return cleanup(process)
+
+if entry == 'verify':
+    verify.verify_checks = check
+    runner.cleanup_group = pause_cleanup
+    sys.argv = ['verify.py', '--evidence-directory', str(root / '.voiceport/evidence')]
+    sys.exit(verify.main())
+ci_checks.check_commands = lambda root, evidence: [('fixture', command)]
+ci_checks.validate_packaging_reports = lambda evidence: {{}}
+sys.exit(ci_checks.main(['--workers', '1', '--timeout', '20']))
+'''
+        lock_parent = self.root / 'locks'
+        alias = self.root / 'locks-alias'
+        alias.symlink_to(lock_parent, target_is_directory=True)
+
+        def invocation(root, entry, lock_path):
+            temp = root / 'tmp'
+            temp.mkdir(exist_ok=True)
+            env = dict(os.environ, TMPDIR=str(temp), CODEX_HOME=str(root / 'codex'), GITHUB_STEP_SUMMARY='')
+            argv = [sys.executable, '-I', '-B', '-c', bootstrap, str(lock_path), entry]
+            return argv, {'cwd': root, 'env': env}
+
+        for holder_entry, contender_entry in [('verify', 'ci'), ('ci', 'verify')]:
+            with self.subTest(holder=holder_entry, contender=contender_entry):
+                holder = self.root / f'{holder_entry}-holder'
+                contender = self.root / f'{holder_entry}-contender'
+                holder.mkdir()
+                contender.mkdir()
+                (contender / 'release').touch()
+                holder_argv, holder_options = invocation(holder, holder_entry, lock_parent)
+                argv, options = invocation(contender, contender_entry, alias)
+                with (holder / 'entry.log').open('w+') as log, subprocess.Popen(
+                        holder_argv, **holder_options, stdout=log, stderr=log) as process:
+                    def wait_for(phase):
+                        deadline = time.monotonic() + 8
+                        while not (holder / phase).exists():
+                            if process.poll() is not None or time.monotonic() >= deadline:
+                                log.seek(0)
+                                self.fail(f'holder did not reach {phase}: {log.read()}')
+                            time.sleep(.01)
+
+                    verify_holder = holder_entry == 'verify'
+                    try:
+                        wait_for('started')
+                        if verify_holder:
+                            process.send_signal(signal.SIGTERM)
+                            wait_for('cleaning')
+                            process.send_signal(signal.SIGINT)
+                        refused = subprocess.run(argv, **options, capture_output=True, text=True, timeout=8)
+                        self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
+                        self.assertIn('another full verification', refused.stderr)
+                        self.assertFalse((contender / 'started').exists())
+                        self.assertFalse((contender / '.voiceport/evidence').exists())
+                        self.assertIsNone(process.poll(), 'holder exited before the contention check')
+                    finally:
+                        gate = 'finish-cleanup' if (holder / 'cleaning').exists() else 'release'
+                        (holder / gate).touch()
+                        process.wait(timeout=22)
+                    self.assertEqual(process.returncode, 130 if verify_holder else 0)
+                    if verify_holder:
+                        report = json.loads((holder / '.voiceport/evidence/report.json').read_text())
+                        self.assertEqual(report['status'], 'interrupted')
+                        self.assertEqual(report['checks'][0]['exit_code'], -signal.SIGTERM)
+                accepted = subprocess.run(argv, **options, capture_output=True, text=True, timeout=8)
+                self.assertEqual(accepted.returncode, 0, accepted)
+                self.assertTrue((contender / 'started').is_file())
+                self.assertTrue((contender / '.voiceport/evidence').is_dir())
 
     def test_progress_report_exists_before_check_and_failure_stops_following_checks(self):
         checkout = self.root / 'checkout'

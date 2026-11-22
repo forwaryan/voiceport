@@ -1,6 +1,6 @@
 # VoicePort 工作会话入口
 
-共用规则以 [多会话 Loop 契约](../../docs/LOOP_METHODS.md) 为准，身份、最终轮 gate 和完整命令集中在 [全角色会话轮换](../../.claude/COORDINATOR_ROTATION.md)。本目录提供真实 Orca 分派的角色提示词和交接模板，本身不启动模型或安装后台循环。开发自检/验收须同时遵守 [执行、证据与资源](../../docs/LOOP_EXECUTION.md)：只读账本查询/摘要 audit、稳定非空完成证据、同 checkout 完整 suite 互斥、逐步报告、完整日志与超时进程组清理。
+共用规则以 [多会话 Loop 契约](../../docs/LOOP_METHODS.md) 为准，身份、最终轮 gate 和完整命令集中在 [全角色会话轮换](../../.claude/COORDINATOR_ROTATION.md)。本目录提供真实 Orca 分派的角色提示词和交接模板，本身不启动模型或安装后台循环。开发自检/验收须同时遵守 [执行、证据与资源](../../docs/LOOP_EXECUTION.md)：只读账本查询/摘要 audit、稳定非空完成证据、同机同用户跨 checkout 的完整套件互斥与旧 checkout 锁兼容、逐步报告、完整日志与超时进程组清理。
 
 直接打开、无 Run 且非任何托管 worker 的顶层会话，安装 loop 前先写自己的精确私有 session-contract JSON（goal、完整 loop_prompt、authorization、paused 布尔值、active_tools 列表），按中央文档 session-register；真实加载与穷尽 all-Run worker-list/registry 的非 worker 证明缺失时阻塞。最后一轮 notes/停止全部自有调度 → session-retire → 单次 session-launch → 新实际 initial0 会话 session-claim → session-close 精确旧 terminal，确认 PTY 停止后才恢复原授权 loop。既有最终轮可补精确 contract/register，不能清零计数；登记前须结算工具使 active_tools 真实为 []；冻结契约仅是原始登记快照，退任前仍须重新检查/结算当前工具，将真实结果、最新用户约束和剩余工作写有界 notes。不授予新 Run 或无关 Git 权限。以下角色分派仍由真实协调者控制，托管 worker 不自行 launch 或装 loop。
 
@@ -18,9 +18,9 @@ CLI 窗口轮换单次显式 `--surface terminal`，不修改全局偏好，只�
 | 效果评估者 | [evaluator.md](evaluator.md) | 按需以独立会话核对用户效果、真实环境与 A/B 覆盖 |
 
 1. 协调者将角色提示词和已填的 [HANDOFF 模板](templates/HANDOFF.md) 合成私有 spec；不得只发送一条“看某文件”而缺少目标、文件范围和验收条件。
-2. 通过当前 orchestration 技能的真实 `worker-start` 分派，保存宿主返回的 Run/Task/Dispatch 和投递回执；原会话返修与复核用 dispatch 定向 send，按新回执更新身份。
+2. 收到目标或 worker 回报时，协调者先核对同 Run 的 ready Task 与当前资源。原授权和资源允许时，将两个以上互不依赖、各自可验证的工项分别 `worker-start`，每个 Task 一个 owner，默认最多 3 个活动 worker。保存真实 Run/Task/Dispatch 与投递回执，原会话返修与复核用 dispatch 定向 send，按新回执更新身份。
 3. worker 开始时读共用契约、自己的角色文件与本次私有交接包，遵守实际 preamble 的 Task/Dispatch；没有具体已分派任务时结束当前轮等待。
-4. 每个角色只做分派范围。实现与协议文档可在无冲突的文件集合上并行，验收等待所有影响最终版本的写者结束并冻结；自检不能替代独立验收。
+4. 只读任务可共享工作区并各用私有证据目录，并行写任务独占各自的 Orca worktree。协调者收齐写者交付和必要证据后集成冻结；不同会话独立验收实际冻结版本。
 5. 完成发送一次有明确 outcome 的 worker_done，确认后结束当前轮；只记录文件不算已发送交接。worker 不另起角色、子代理或独立定时 loop。
 
 私有角色注册约定为 `.voiceport/roles.md`，交接记录为 `.voiceport/handoffs/`，证据为 `.voiceport/evidence/`；角色导航由协调者按真实回执维护。轮换 helper 只执行中央文档限定的登记、交接和投递，不自动分配任意角色或产品任务。现场句柄、回执和音频不写入本目录。产品当前状态只查 `.voiceport/loop-state.json`，不在注册文件另存一份产品状态。

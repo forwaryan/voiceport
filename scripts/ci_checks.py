@@ -15,8 +15,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True  # -I ignores PYTHONDONTWRITEBYTECODE at interpreter startup.
 sys.path.insert(0, str(ROOT / 'scripts'))
-from verification_run import (cleanup_group, deferred_termination, group_exists,
-                              signal_group, suite_lock, termination_signals, timestamp, write_report)
+from verification_run import (cleanup_group, deferred_termination, full_suite_lock, group_exists,
+                              signal_group, termination_signals, timestamp, write_report)
 
 
 def flatten(suite):
@@ -466,7 +466,7 @@ def main(argv=None):
                 return unittest_owner(args.unittest_args, args.ownership_report)
             if args.packaging_shard:
                 return packaging_shard(args.packaging_shard, args.packaging_report, ROOT)
-            with suite_lock(ROOT):
+            with full_suite_lock(ROOT):
                 base = ROOT / '.voiceport/evidence'
                 base.mkdir(parents=True, exist_ok=True)
                 evidence = Path(tempfile.mkdtemp(prefix='ci-checks-', dir=base))

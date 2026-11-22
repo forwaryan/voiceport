@@ -6,9 +6,9 @@
 
 轮换时把实际 Run/Task/Dispatch、原开发角色沿革、同一 product_attempt/freeze、命令/退出码/证据、活动工具与未做项写入 `.voiceport/handoffs/session-rotation-ACTUAL_SESSION_ID.md`（最多 48KB），执行 `python3 -I .claude/hooks/coordinator_rotation.py checkpoint --session ACTUAL_SESSION_ID` 后结束当前轮；原生 Codex 可用同命令的单行 `--notes-text` 保存。checkpoint 只升级交接，不完成未做完的任务，不发虚假 worker_done；协调者对精确旧 dispatch 作 guarded stop 并取得 exited/释放证明后，才以 `worker-start` 开新上下文。不能用 send 恢复已达上限 transcript；保留同一 Run/产品 attempt 和真实 role/Task/Dispatch lineage。冻结输入修订须先由协调者明确中断旧评审，再建立新冻结，旧证据不改写；主协调者继续 loop，worker 不自启循环。详见 [轮换交接模板](templates/HANDOFF.md#f-全角色上下文轮换)。
 
-1. 检查其他会话改动归属，仅在允许文件中实现。遇共享文件冲突或需要越界，向协调者报告所需文件、依赖和具体方案，等待归属调整；不覆盖、重置或夹带他人改动。
+1. 核对可写 worktree 的独占归属，仅在允许文件中实现。所需文件或工作区归属有冲突时，向协调者报告所需范围、依赖和方案；归属确认后再写。
 2. 优先处理原验证退回的反例。在原会话复现具体输入与错误；修复 bug 要证明旧实现是在目标断言失败，编译失败/skip 不算复现。实现最小必要变化，补与实际风险有关的测试，不降低原验收标准。
-3. 代码按影响自检；产品交付的完整离线入口为 `python3 -I scripts/verify.py`，需无 I/O 启动 smoke 时加 `--app-smoke`。纯文档做内容/链接/命令/差异检查即可。记录实际命令、真实退出码、环境、完整日志路径和证据；失败/超时/取消与清理状态分开写，保留首次失败和全部 attempts，明确哪些只是引用。完整 verify 入口按 [执行约束](../../docs/LOOP_EXECUTION.md) 使用同 checkout 互斥锁和全新证据目录，日志直接写盘并逐项保存报告；锁冲突等待实际 owner 结束，不删锁绕过。超时或清理未知先查自己启动的资源，不直接重跑。
+3. 代码按影响自检；产品交付的完整离线入口为 `python3 -I scripts/verify.py`，需无 I/O 启动 smoke 时加 `--app-smoke`。纯文档做内容/链接/命令/差异检查即可。记录实际命令、真实退出码、环境、完整日志路径和证据；失败/超时/取消与清理状态分开写，保留首次失败和全部 attempts，明确哪些只是引用。按 [执行约束](../../docs/LOOP_EXECUTION.md) 与协调者分配的资源时段运行重型套件。`verify.py` 和 `ci_checks.py` 的完整入口在同机同用户间跨 checkout 互斥，冲突直接退出，待协调者核实实际持有者已清理后再安排。定向轻量验证按预算执行。超时或清理未知先查自己启动的资源，再决定是否重跑。
 4. 所有结果标为开发自检，分别说明真实麦克风、云端、Orca 接收和 A/B 是否执行。没有外部条件就如实写阻塞/未测，不把可构建、策略替身或 Command+V 发出当成用户已收到。
 5. 交付实际修改/新增/删除文件、基线、工作区、版本摘要与可读取差异，包含未跟踪文件；以实际 inputs-before 清单说明覆盖范围；schema 2 已含 README/docs/automation/scripts/Tests 等，另列 `.claude/`、`.codex/`、根 planning 与 `.planning/` 等未覆盖的相关输入。收到冻结要求后停止写入冻结输入，后续修正先交协调者作废旧版本。
 6. 交接写明已完成、自检证据、残余问题和建议下一步，由协调者在所有写者结束后冻结并发独立验证。你不能宣布独立通过、finish VP、提交或推送未经授权的内容。返修仍由你处理，使用新 preamble 的身份，不能复用旧 attempt 结果。

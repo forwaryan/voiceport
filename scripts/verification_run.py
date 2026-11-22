@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Owned offline verification processes, disk logs and one suite per checkout."""
+"""Owned offline verification processes, disk logs and full-suite locks."""
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
@@ -12,6 +12,11 @@ import stat
 import subprocess
 import tempfile
 import time
+
+
+# Use the system's POSIX /tmp, including the Darwin alias to /private/tmp.
+# A checkout, TMPDIR or CODEX_HOME must never select a different lock domain.
+_SUITE_LOCK_PARENT = Path('/tmp')
 
 
 def timestamp():
@@ -37,6 +42,39 @@ def write_report(path, report):
         temporary.unlink(missing_ok=True)
 
 
+def _acquire_suite_lock(fd, conflict):
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        raise ValueError(conflict) from error
+
+
+@contextmanager
+def full_suite_lock(root):
+    """Claim this user's machine slot and the legacy checkout slot before running."""
+    uid = os.geteuid()
+    directory = _SUITE_LOCK_PARENT / f'voiceport-verification-{uid}'
+    directory.mkdir(exist_ok=True, mode=0o700)
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(directory_fd)
+        if info.st_uid != uid or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ValueError(f'verification lock directory must be owned by effective UID {uid} with mode 0700: {directory}')
+        fd = os.open('verification.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != uid
+                    or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+                raise ValueError(f'verification lock must be an owner-only regular file without hard links: {directory / "verification.lock"}')
+            _acquire_suite_lock(fd, 'another full verification is active for this user on this host; retry after its actual completion')
+            with suite_lock(root):
+                yield
+        finally:
+            os.close(fd)
+    finally:
+        os.close(directory_fd)
+
+
 @contextmanager
 def suite_lock(root):
     """Fail promptly instead of running two full suites against the same checkout."""
@@ -46,10 +84,7 @@ def suite_lock(root):
     with os.fdopen(fd, 'r+') as lock:
         if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
             raise ValueError('verification lock must be a regular file')
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise ValueError('another full verification owns this checkout; wait for its actual completion') from error
+        _acquire_suite_lock(lock.fileno(), 'another full verification owns this checkout; wait for its actual completion')
         lock.seek(0)
         lock.truncate()
         json.dump({'pid': os.getpid(), 'started_at': timestamp()}, lock)
