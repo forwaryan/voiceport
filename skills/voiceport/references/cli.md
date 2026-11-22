@@ -21,7 +21,7 @@ Missing Python, failed helper execution, invalid output and the 45-second outer 
 
 ## App commands (macOS)
 
-- `status` or `app status`: state, busy, pending/warning, discovering, selected source, language, version, bundle path, PID, socket and permission metadata. While stopping, `pending:true` and `warning:"cancellation_pending"` do not claim cleanup has completed. No permission prompt, auth read, transcript, target content or audio. `data.source_probe` reports the active CLI probe ID (null for GUI probes), engine `busy`, and `cleanup_pending`; these are independent of dictation's `state` and `pending`. `data.input` adds the GUI automatic-input preference, a content-free failure stage, and the last explicit start route. Hotkey start metadata includes only captured/dispatch application PID and bundle ID plus a fixed outcome code, never field text. A start blocked before recording reports failed rather than leaving a previous ready state looking like a successful new recording.
+- `status` or `app status`: state, busy, pending/warning, discovering, selected source, language, version, bundle path, PID, socket and permission metadata. While stopping, `pending:true` and `warning:"cancellation_pending"` do not claim cleanup has completed. No permission prompt, auth read, transcript, target content or audio. `data.source_probe` reports the active CLI probe ID (null for GUI probes), engine `busy`, and `cleanup_pending`; these are independent of dictation's `state` and `pending`. `data.input` adds the GUI automatic-input preference, a content-free failure stage, and the last GUI start route. Hotkey start metadata includes only captured/dispatch application PID and bundle ID plus a fixed outcome code, never field text. A start blocked before recording reports failed rather than leaving a previous ready state looking like a successful new recording.
 - `app show [--settings]`: show the running App window, optionally on its settings page.
 - `app quit`: graceful idle-only quit; busy or configuration work returns `busy`. It never force-kills an instance.
 
@@ -29,7 +29,9 @@ Launch is explicit and external: invoke the intended bundle's `Contents/MacOS/vo
 
 ### Delivery status
 
-`data.input.method` names the selected GUI delivery path, not its result. `clipboard_final` is the final clipboard route, including the guarded WeChat main-window fallback. It uses Command+V without opening menus. Selection alone does not mean the paste event was submitted, and submission does not confirm the target received text. Check `input.failure_stage` and the App version; older App builds used `wechat_menu_paste` for the old menu path. CLI dictation does not deliver text automatically.
+`data.input.method` records the path selected for automatic GUI delivery. The App resets `method` and `failure_stage` when a new automatic delivery begins target capture. Panel-only and CLI dictation can still show an earlier delivery's values. `data.input.start` is an independent start trace. Use the CLI operation's `delivery:"none"` to identify its delivery mode.
+
+`clipboard_final` is the final clipboard route, including the guarded WeChat main-window fallback. It uses Command+V without opening menus. A selected route may still wait, fail or be cancelled. Paste event submission leaves target receipt unverified. Check the running App version when interpreting the route. Older App builds used `wechat_menu_paste` for the previous menu path.
 
 ## Sources and plugins
 

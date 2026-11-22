@@ -66,9 +66,9 @@ voiceport --json --socket /private/tmp/vp-example/control.sock status
 voiceport --json --socket /private/tmp/vp-example/control.sock app show --settings
 ```
 
-Verify `bundle_path`/PID and keep that socket fixed. Check `permissions` and `input.automatic`, `input.method`, `input.failure_stage` and `input.start` for the preference, delivery stage and start route. Showing settings does not change permissions or start recording. Do not fetch a transcript, target field contents, credentials or audio for routine diagnosis.
+Verify `bundle_path`/PID and keep that socket fixed. Check `permissions`, `input.automatic` and `input.start`. `input.method` and `input.failure_stage` can still describe an earlier delivery after a panel-only or CLI dictation. Showing settings does not change permissions or start recording. Do not fetch a transcript, target field contents, credentials or audio for routine diagnosis.
 
-CLI dictation intentionally has `delivery:"none"`. For GUI dictation, troubleshoot QQ or WeChat target input separately from the source providing recognition. See [Delivery status](cli.md#delivery-status) in the bundled CLI reference (`voiceport skills get cli`) before interpreting `input.method`. `qq doctor` checks installation only. Report the observed stage and settings; do not automatically reprobe, reupload, retry transcription or record again to diagnose delivery.
+CLI dictation intentionally has `delivery:"none"`. For GUI dictation, troubleshoot QQ or WeChat target input separately from the source providing recognition. Use the bundled [Delivery status](cli.md#delivery-status) reference (`voiceport skills get cli`) to interpret the fields. `qq doctor` checks installation only. Report the settings and any observed delivery stage. If you cannot tell which dictation produced the delivery fields, say so. Do not automatically reprobe, reupload, retry transcription or record again to diagnose delivery.
 
 ## Isolated App validation
 

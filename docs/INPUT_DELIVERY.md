@@ -52,7 +52,9 @@ WebKit 网页可能声明 AX 文字接口可写，却不把 `AXSelectedText` 更
 
 `voiceport --json status` 的 `data.input.method` 表示 GUI 选用的投递路径，不表示文字已经送出。缺少焦点字段的微信主窗口通过保护检查后，与其他兼容控件共用 `clipboard_final`。当前路径提交 Command+V，不打开「编辑」菜单；旧版的 `wechat_menu_paste` 仅用于辨认旧 App 的菜单路径。排查前先核对 `version`、`bundle_path` 与 PID。
 
-选路、提交和接收是三件事。选定 `clipboard_final` 后仍可能等待、取消或失败；事件实际提交后，内部回执最多记为 `submitted`，不代表目标控件收到文字。`status` 不返回完整 `DeliveryReceipt`，可结合 `data.input.failure_stage` 排查。CLI 听写操作保留 `delivery:"none"`，不会替 GUI 执行自动输入。
+`data.input.method` 和 `data.input.failure_stage` 来自 App 保留的投递状态。自动投递开始捕获目标时会重置这两个字段。仅面板听写和 CLI 听写跳过目标捕获，因此字段可能仍显示较早一轮的路径和失败阶段。`data.input.start` 单独记录最近一次 GUI 启动请求的路径，无法用来确认这些投递字段属于同一轮。CLI 听写操作始终为 `delivery:"none"`。
+
+选定 `clipboard_final` 后仍可能等待、取消或失败。事件实际提交后，内部回执最多记为 `submitted`，目标控件是否收到文字需要另行确认。`status` 不返回完整 `DeliveryReceipt`。
 
 ### 统一回执与重复结果
 

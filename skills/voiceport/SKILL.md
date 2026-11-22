@@ -55,7 +55,7 @@ For a failed retained recording, inspect result data for `state:"failed"`, curre
 
 ## Step 5: Diagnose recognized text not reaching a target
 
-Read `status` on the same socket and check bundle path/PID, `permissions`, and `input.automatic`, `input.method`, `input.failure_stage` and `input.start`. Use `app show --settings` to expose the intended instance's settings when requested. CLI dictation deliberately uses `delivery:"none"`; obtaining text does not mean it was inserted. For GUI input failures, distinguish the source App that recognizes speech from the target App receiving text. QQ/WeChat target failures do not imply a missing source plugin, and `qq doctor` checks installation only. Do not read target text or transcripts for routine diagnostics, change permissions, reprobe sources or reupload audio automatically. See [references/workflows.md](references/workflows.md#recognized-text-not-delivered).
+Read `status` on the same socket and check bundle path/PID, `permissions`, `input.automatic` and `input.start`. The [delivery status fields](references/cli.md#delivery-status) `input.method` and `input.failure_stage` can carry over from an earlier automatic delivery. Use `app show --settings` to expose the intended instance's settings when requested. CLI dictation deliberately uses `delivery:"none"`. For GUI input failures, distinguish the source App that recognizes speech from the target App receiving text. QQ/WeChat target failures do not imply a missing source plugin, and `qq doctor` checks installation only. Do not read target text or transcripts for routine diagnostics, change permissions, reprobe sources or reupload audio automatically. See [references/workflows.md](references/workflows.md#recognized-text-not-delivered).
 
 ## Error handling
 
