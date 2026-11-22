@@ -32,7 +32,7 @@
 
 先按当前 orchestration 技能解析实际可执行文件并运行 `skills get orchestration`。下面的 `ORCA` 是文档占位符，须替换成技能选定的可执行文件；不是 shell 变量或新增命令。使用实际安装版本的 `--help`，不猜参数。
 
-协调者把角色提示词与已填交接模板组合成自包含私有 spec，再执行一次 `ORCA orchestration worker-start --spec-file <spec路径> --worktree current --agent <已启用agent>`。只有文件范围无冲突才能共享工作区；需要隔离时由 Orca 创建工作区。记录实际 start 回执及其 `next`；若未确认接收，不能把 spec 文件称为已交接。start 失败先读 `failedStage` 及技能的 recovery-and-cleanup 参考，不能盲目再发一个 spec 创建重复任务。
+协调者把角色提示词与已填交接模板组合成自包含私有 spec。已有 Task 用第3.1节的 `--task` 启动；直接按 spec 启动时执行一次 `ORCA orchestration worker-start --run <原Run> --spec-file <spec路径> --worktree <实际选择> --agent <已启用agent>`。只读任务可以用 `current` 共享工作区并各用私有证据目录；并行写入验收输入的任务使用已确认独占的精确选择器，或用 `new-child` 由 Orca 创建独占 worktree。记录实际 start 回执及其 `next`；若未确认接收，不能把 spec 文件称为已交接。start 失败先读 `failedStage` 及技能的 recovery-and-cleanup 参考，不能盲目再发一个 spec 创建重复任务。
 
 worker 严格采用本次 preamble 的 from/task/dispatch；问题用 `ask` 后结束当前轮，阻塞用 escalation。完成仅发送一次 `worker_done --outcome succeeded|failed`，附真实报告路径和文件列表；正文为已做、发现、剩余三句。未完成不能报 succeeded。收到确认后结束当前轮等待；失败按回执恢复，不能假装已送达。worker 不自行启动子代理、其他 worker 或计时循环。
 
@@ -41,7 +41,7 @@ worker 严格采用本次 preamble 的 from/task/dispatch；问题用 `ask` 后�
 ## 3. 分派、依赖与冻结
 
 1. 协调者恢复用户最新目标、暂停条件、[方案](SOLUTION.md)、根 planning 记录、产品状态及 `git status/diff`。先处理返修、待验证和中断事项，再选择依赖已 done 的一个 ready 产品任务，调用 `start` 保存 attempt。所有 worker 只读账本，不调用 start/finish/retry/reopen/pause/resume。
-2. 每个工作任务写清目标、产品关联、输入依赖、允许文件、禁止文件、工作区、完成证据、原开发/原验证角色和下一接收者。开发与协议工作可并行，前提是写文件集合不相交；根 planning、任务定义、方案与账本归协调者。需要越界修改先交回协调者调整归属。
+2. 每个工作任务写清目标、产品关联、输入依赖、允许文件、禁止文件、工作区、完成证据、原开发/原验证角色和下一接收者。开发与协议工作有独立交付时可在各自独占的 Orca worktree 并行；根 planning、任务定义、方案与账本归协调者。需要越界修改先交回协调者调整归属。
 3. Orca Task 的 deps 只表示工作任务依赖；VP depends_on 由产品账本约束。协调者同时核对两层依赖，不把 worker_done 视为 VP done。并行的开发和协议工作都结束、协调者需要的集成/文档更新也完成后，才形成最终验收版本。
 4. 冻结包包括工作区、基线提交、完整相关文件清单（含未跟踪文件、新增文件、删除项）、实际内容摘要、可读取的完整差异或快照、验收标准和自检证据。已提交且干净的版本可用完整 SHA；有未提交内容时 HEAD 不足以标识交付。冻结编号只作导航，必须核对实际字节。
 5. 独立验证会话只在收到冻结包后开始。共享工作区时所有写者停止修改冻结输入；隔离工作区需核对实际内容与清单相同，不能只 checkout HEAD 丢掉未跟踪实现。测试产物写构建/证据目录，不改冻结源文件。
@@ -55,9 +55,11 @@ worker 严格采用本次 preamble 的 from/task/dispatch；问题用 `ask` 后�
 
 用户于2026-11-09明确要求“把远端的CI也使用loop修复一下，让loop规则改一改，可以派个任务给多个agent，可以参考magpie具体是咋做的，完善一下我们自己”。执行为一个逻辑修复关联多个独立 Task/Dispatch；不新增“一个 Orca Task 同时多个 owner”或并行多个 running 产品故事的能力。每项 worker 使用自己的真实 preamble，协调者独占产品账本与角色关联。
 
-是否分派取决于独立问题：存在相异失败假设、跨平台环境、实现与独立审查冲突、必须查明的外部设计时才拆分；已知文件中的常规修正通常一个开发者加必要独立复核即可。默认最多3个活动 worker，协调者事前记录 CPU/内存/完整测试资源预算与结束条件；超出时须有具体独立工作及预算理由，用户/assignment 的更严限制优先。一个主机同一时刻只安排一个重型完整测试，由协调者分配时段；`verify.py` 已对同一 checkout 的完整入口实现互斥锁，第二套明确拒绝启动。锁不是全主机全局锁，也不约束其他 checkout 或手工命令，跨工作区仍须协调资源；定向轻量测试是否并行按资源判断。
+每次接到目标或 worker 回报，协调者先核对实际 ready Task、两层依赖、未结算 dispatch、可用槽位、工作区归属与验证资源。有两个以上互不依赖、各有可观察验收标准的工项，且原授权和资源允许时，在同一 Run 分别派发并行执行。已有相关任务先核对其状态与 owner。只有一个就绪工项或资源不足时，按实际依赖和优先级推进。默认最多 3 个活动 worker，事前记录 CPU、内存、构建与完整套件预算及结束条件；超出默认值须有原授权和具体资源依据，更严的用户/assignment 限制优先。
 
-按已安装版本的 orchestration guide 加载 `references/coordinator-loop.md`；只有确需 group 消息时加载 `references/messaging-and-gates.md`。可用 `task-create --spec-file <路径> --deps <JSON数组> --run <原Run>` 建不同任务，`task-list --ready --brief --run <原Run>` 发现已就绪任务，再逐一 `worker-start --task <该任务> --worktree <实际选择> --agent <已启用agent>`；这些是协调者动作，worker 无此授权不得自行派发。保存真实回执再关联角色。`--parent` 可表达上层逻辑任务关联，不能代替 `--deps` 或产品依赖；不把未实施的 group 共享所有权当能力。group 只用于有意广播给本 Run 的存活 worker，`worker_done` 与 heartbeat 不能发 group，结果仍逐 Task/Dispatch 结算。
+协调者为本地重型完整套件、手工重型构建或测试安排独占资源时段，轻量定向检查按预算并行。`verify.py` 和 `ci_checks.py` 的完整入口在同机同一 effective UID 下跨 checkout 互斥，并继续兼容同 checkout 的旧锁；冲突直接退出，等待已知持有者的实际结束回执后再安排。远端 CI 可按实际工作流与 runner 容量并行，取消和通过分别保留，精确合并门槛以第8节为准。详见 [验证资源范围](LOOP_EXECUTION.md#验证逐项写盘退出与清理分开记录)。
+
+按已安装版本的 orchestration guide 加载 `references/coordinator-loop.md`；只有确需 group 消息时加载 `references/messaging-and-gates.md`。可用 `task-create --spec-file <路径> --deps <JSON数组> --run <原Run>` 建不同任务，`task-list --ready --brief --run <原Run>` 发现已就绪任务，再逐一 `worker-start --run <原Run> --task <该任务> --worktree <实际选择> --agent <已启用agent>`；这些是协调者动作，worker 无此授权不得自行派发。保存真实回执再关联角色。`--parent` 可表达上层逻辑任务关联，不能代替 `--deps` 或产品依赖；不把未实施的 group 共享所有权当能力。group 只用于有意广播给本 Run 的存活 worker，`worker_done` 与 heartbeat 不能发 group，结果仍逐 Task/Dispatch 结算。
 
 一个可用的分解如下，按实际需要删掉多余角色，而非固定启动四人：
 
@@ -83,13 +85,13 @@ ci_binding: <第8节定义；无关联时写原因，不伪造run/attempt>
 scheduler_handoff: <第5节定义；worker应为none，不创建timer>
 ```
 
-共享工作区仅在允许文件集合不相交时并行；任何会改同一文件或共享构建/index/分支的工作须串行或 Orca 隔离。一个文件同一工作区只给一个写者，协调者不替 worker 编辑其未交付部分。独立审查期间冻结包不可变；并行修复在自己的隔离工作区或私有 candidate 中准备，不能修改旧输入、读未完成报告或合并他人半成品。集成只有在旧评审明确完成，或显式中断且保留暂定结论/证据后进行；协调者收齐交付、核对字节/范围、集成并生成新冻结，原验证复核变化与相邻行为。旧冻结结论只属于旧版本，不能自动沿用。
+共享 worktree 适合只读诊断、评审或验证，各自使用独占的证据目录和互不干扰的构建输出。修改验收输入的并行任务各自独占 Orca worktree；同一可写 worktree 串行移交前先确认原写者停止写入并释放，HEAD/index/checkout 由获授权的协调者管理。必须修改同一输入且依赖前一产物时按 deps 串行。协调者收齐所有相关写者以及必要只读前置任务的交付与证据，核对实际改动、输入字节和范围后再集成冻结。独立审查期间冻结包不可变；同期修复写自己的隔离工作区或私有 candidate。旧评审明确完成或显式中断并保留结果后，才可集成并重冻，原验证者复核新实际版本及相邻行为。
 
 worker 结束事件先核对身份、依赖和产物哈希，分别记录开发、自检、独立 scope 与远端接受。不同假设有冲突时，把区分性反例发回原逻辑角色；不以投票或多份相同日志代替判断。原角色无法恢复或需自然轮换时显式保留 lineage；协调者不重跑已委派的独立测试来替代等待。需要取消/替换时按当前 recovery 执行精确 guarded stop，实际 exited/资源释放前不能把该写范围派给替代者；没有新事件不重复启动、不以静默判断终止。
 
 ## 4. 独立验证与效果评估
 
-代码按变化运行针对性测试和反例；产品交付版本的完整离线入口为 `python3 -I scripts/verify.py`，需要无 I/O 菜单启动 smoke 时使用 `--app-smoke`。完整验证使用全新证据目录、同 checkout 排他锁、逐项落盘报告和完整 stdout/stderr；超时/正常终止信号清理自己启动的进程组，退出码与 timeout/cleanup 证明分开记录，失败后不启动后续检查。进程逃离组、SIGKILL/宿主崩溃和清理未知不能据此声称已清理，恢复先核对实际资源。详情见 [执行、证据与资源](LOOP_EXECUTION.md)。离线工具覆盖核心/控制器/状态测试、release 构建、CLI、bundle 和差异检查；无 I/O smoke 不等于真实录音。验证者自己读取实现并执行必要反例，可以引用同一版本可信的完整结果，但必须区分亲自执行与引用，说明无需重跑全套的依据。Bug 的旧实现须在预期行为断言处失败，依赖缺失、编译失败和 skip 不算复现。
+代码按变化运行针对性测试和反例；产品交付版本的完整离线入口为 `python3 -I scripts/verify.py`，需要无 I/O 菜单启动 smoke 时使用 `--app-smoke`。完整验证使用全新证据目录、同用户跨 checkout 与原 checkout 排他锁、逐项落盘报告和完整 stdout/stderr；超时/正常终止信号清理自己启动的进程组，退出码与 timeout/cleanup 证明分开记录，失败后不启动后续检查。进程逃离组、SIGKILL/宿主崩溃和清理未知不能据此声称已清理，恢复先核对实际资源。详情见 [执行、证据与资源](LOOP_EXECUTION.md)。离线工具覆盖核心/控制器/状态测试、release 构建、CLI、bundle 和差异检查；无 I/O smoke 不等于真实录音。验证者自己读取实现并执行必要反例，可以引用同一版本可信的完整结果，但必须区分亲自执行与引用，说明无需重跑全套的依据。Bug 的旧实现须在预期行为断言处失败，依赖缺失、编译失败和 skip 不算复现。
 
 纯文档改动检查实际内容、相对链接、角色和命令接口、差异及隐私边界，无须重复产品构建。开发者自检不能替代独立验证；评估者也不能替代代码验收。
 
@@ -241,10 +243,12 @@ watch 没有 `--attempt` 参数，结束后必须用 run view/API 重新核对�
 | [code-standards Tests](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/docs/code-standards.md#L27-L35)：测试须在旧代码失败、主分支红测试要诊断、结束测试启动的资源、时序测试查实际原因 | 采用有行为反例、资源清理、原因分类；不照搬 Go 命令或所有改动必须新增测试 |
 | [reviewed head](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/docs/code-standards.md#L109-L124)：记录运行版本、match-head、push 后重审；取消不算通过 | 第8节要求当前精确 head/test commit/run/attempt；Magpie 的 release 条款允许包含它的后续提交绿色，我们为本次 CI 修复采用更严格的精确版本，不能称为原样继承 |
 | [worktree ownership](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/docs/code-standards.md#L230-L238)：不 checkout/commit/清理别人的工作区或日志 | 采用归属；工作区创建按 Orca 接口，不照抄 raw git worktree 命令 |
-| [LESSONS 完整日志/资源预算](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/LESSONS.md#L356-L385) 与 [重试绿保留首次红](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/LESSONS.md#L812-L814) | 保存完整失败与 attempts；重型测试串行。LESSONS 明说 suite lock 仍有执行缺口，不宣称我们已实现锁 |
+| [LESSONS 完整日志/资源预算](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/LESSONS.md#L356-L385) 与 [重试绿保留首次红](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/LESSONS.md#L812-L814) | 保存完整失败与 attempts，重型测试串行。该上游版本的 LESSONS 明说 suite lock 仍有执行缺口 |
 | [subsystem review](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/docs/subsystems/README.md#L24-L47)：契约变更同 PR 更新，文档不证明实现 | 方案/协议与实际实现分别核对，规则不冒充已部署的并发/CI 验收 gate |
 | [实际 Test workflow](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/.github/workflows/test.yml#L9-L25)：main 与 PR 的取消策略不同、矩阵保留失败；[Windows 目标检查](https://github.com/yetone/magpie/blob/b1e8eb15a668bbccfcd46977c75602ceaa4d66b3/.github/workflows/test.yml#L110-L147) 区分编译和原生执行 | 借鉴显式平台/取消证据；未更改 VoicePort workflow，不从其注释或规则推断我们的远端已绿 |
 
 检索了固定仓库完整文件树及 AGENTS/CLAUDE、LESSONS、code standards、contribution 文档、全部8个 workflow、Makefile、race-shards、相关 plugin/agent 文档的必要片段；未在该检查范围发现与 Orca Run/Task/Dispatch、自动 CI 返修 DAG、scheduler 交接相当的开发协调运行时。plugin lifecycle/model routing/tool loop 是产品机制，不据此声称它实现了多人拥有一个 Task；未安装/执行其代码，也未核查外部私有/服务端或其他仓库的 nightly 调度。第3.1节的角色/DAG/并发预算、第5节的双调度兼容措施、第8节的精确版本接受和单次基础设施重试是按用户要求与本机接口作的项目建议，不归因给 Magpie。
 
-本项目新增的可执行改进集中在 [执行、证据与资源](LOOP_EXECUTION.md)：账本 finish 的稳定非空证据摘要、只读 status/audit，以及验证 runner 的同 checkout 排他锁、逐步报告、磁盘完整日志、实际退出/超时/进程组清理。LoopTests 包含对应行为反例。`loop_state.py` 的 finish 仍不验证 CI 内容、required checks 或角色独立性；不能把字节完整性和进程组检查当作这些接受条件。后续 CI 接受校验应以错误 head/base/run/attempt、漏 job、missing/skip/cancel、重试首次红、schema/权限未知、伪造独立角色及并发写冲突等行为反例验收；轮换 helper 的调度停止与 ownership gate 按中央文档当前接口核对，验证关注错误 owner、失败/未知 CronDelete、遗漏自有 job、stop 后续订、最终 fence 与继任重复安装。隔离 fixture/mock 只证明对应逻辑，不据此声称实际完整压缩/原生调度生命周期，不添加只查文案词句的测试。纯规则交付检查内容/相对链接/接口/差异，本轮真实测试结果由实际执行者另附；旧冻结评审闭合后再集成、重冻、独立规则评审及正常精确 HEAD CI/Git，旧快照和失败证据保留。
+本轮并行分派采用 Magpie 固定提交 `270235adbb44a9a3d0c195c87388ab77ed4b43dc` 的工作区归属、评审后按 SHA 合并、重型并跑超时与 CI 并行/取消做法。VoicePort 在第3.1节落实同 Run 分派，以第8节既有规则约束合并。上游自用 loop 调度参数未知。具体来源、锁覆盖和执行证据约束见 [执行、证据与资源](LOOP_EXECUTION.md)。
+
+本项目的可执行约束包括账本 finish 的稳定非空证据摘要、只读 status/audit，以及两条完整验证入口的同用户跨 checkout 与原 checkout 排他锁、逐步报告、磁盘完整日志、实际退出/超时/进程组清理。LoopTests 包含对应行为反例。`loop_state.py` 的 finish 仍不验证 CI 内容、required checks 或角色独立性；不能把字节完整性和进程组检查当作这些接受条件。后续 CI 接受校验应以错误 head/base/run/attempt、漏 job、missing/skip/cancel、重试首次红、schema/权限未知、伪造独立角色及并发写冲突等行为反例验收；轮换 helper 的调度停止与 ownership gate 按中央文档当前接口核对，验证关注错误 owner、失败/未知 CronDelete、遗漏自有 job、stop 后续订、最终 fence 与继任重复安装。隔离 fixture/mock 只证明对应逻辑，不据此声称实际完整压缩/原生调度生命周期，不添加只查文案词句的测试。纯规则交付检查内容/相对链接/接口/差异，本轮真实测试结果由实际执行者另附；旧冻结评审闭合后再集成、重冻、独立规则评审及正常精确 HEAD CI/Git，旧快照和失败证据保留。

@@ -17,6 +17,8 @@ RUNNER = ROOT / 'scripts/ci_checks.py'
 SPEC = importlib.util.spec_from_file_location('ci_checks', RUNNER)
 ci_checks = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ci_checks)
+import verification_run as runner
+
 PYTHON = [sys.executable, '-I', '-B']
 ENV = dict(os.environ, CARGO_NET_OFFLINE='true', PYTHONDONTWRITEBYTECODE='1')
 BOOTSTRAP = f'''import importlib.util, pathlib, sys
@@ -31,6 +33,7 @@ class RunnerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='voiceport-ci-checks-test-')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.enterContext(patch.object(runner, '_SUITE_LOCK_PARENT', self.root))
         self.evidence = self.root / 'evidence'
         self.evidence.mkdir()
 
@@ -451,8 +454,9 @@ sys.exit(m.unittest_owner({arguments!r}, pathlib.Path({str(receipt)!r})))
         self.assertIn(str(self.evidence), text)
 
     def test_suite_lock_prevents_concurrent_main_and_main_has_no_build(self):
-        with ci_checks.suite_lock(self.root), patch.object(ci_checks, 'ROOT', self.root), contextlib.redirect_stderr(io.StringIO()):
+        with runner.suite_lock(self.root), patch.object(ci_checks, 'ROOT', self.root), contextlib.redirect_stderr(io.StringIO()) as errors:
             self.assertEqual(ci_checks.main([]), 1)
+        self.assertIn('owns this checkout', errors.getvalue())
         self.assertFalse((self.root / '.voiceport/evidence').exists())
         for workers in (0, 4):
             with self.assertRaises(ValueError):
@@ -464,6 +468,7 @@ class PackagingShardTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='voiceport-ci-shards-test-')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.enterContext(patch.object(runner, '_SUITE_LOCK_PARENT', self.root))
         self.tests = self.root / 'Tests/PackagingTests'
         self.tests.mkdir(parents=True)
         self.events = self.root / 'events'
@@ -644,14 +649,29 @@ class Duplicate(unittest.TestCase):
             reports.append(evidence)
         self.assertNotEqual(*reports)
 
-    def test_internal_cli_dispatches_shard_in_its_own_process(self):
-        report = self.root / 'cli.json'
-        code = BOOTSTRAP + f'm.ROOT = pathlib.Path({str(self.root)!r})\nsys.exit(m.main(sys.argv[1:]))'
-        result = subprocess.run(PYTHON + ['-c', code, '--packaging-shard', 'bundle', '--packaging-report', str(report)],
-                                env=ENV, capture_output=True, timeout=10)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(json.loads(report.read_text())['passed'])
-        self.assertFalse((self.root / '.voiceport/verification.lock').exists(), 'child must not reacquire parent suite lock')
+    def test_internal_cli_runs_shard_and_unittest_owner_while_parent_holds_suite_lock(self):
+        code = BOOTSTRAP + f'''
+import verification_run
+m.ROOT = verification_run._SUITE_LOCK_PARENT = pathlib.Path({str(self.root)!r})
+sys.exit(m.main(sys.argv[1:]))
+'''
+        packaging = self.root / 'cli-packaging.json'
+        ownership = self.root / 'cli-ownership.json'
+        cases = [
+            ['--packaging-shard', 'bundle', '--packaging-report', str(packaging)],
+            ['--ownership-report', str(ownership), '--unittest-args', 'discover', '-s', str(self.tests)],
+        ]
+        with runner.full_suite_lock(self.root):
+            for args in cases:
+                with self.subTest(args=args):
+                    result = subprocess.run(PYTHON + ['-c', code, *args], cwd=self.root,
+                                            env=ENV, capture_output=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(packaging.read_text())['passed'])
+        receipt = json.loads(ownership.read_text())
+        self.assertTrue(receipt['complete'])
+        self.assertTrue(receipt['cleanup_confirmed'])
+        self.assertFalse((self.root / '.voiceport/evidence').exists())
 
 
 if __name__ == '__main__':

@@ -446,10 +446,29 @@ class RevisionBoundaries(unittest.TestCase):
                     cargo.write_text('#!/bin/sh\nif [ "$1" = test ]; then echo changed >> "' + str(tree / 'README.md') + '"; echo "0 failed"; exit 0; fi\nexit 7\n')
                     cargo.chmod(0o755)
                     env['PATH'] = str(tools) + os.pathsep + env['PATH']
-                result = subprocess.run(['python3', '-I', str(tree / 'scripts/verify.py'), '--app-smoke'],
-                                        cwd=scope, env=env, capture_output=True, timeout=30)
-                report = json.loads(next((tree / '.voiceport/evidence/vp012-revision-01').glob('verify-*/report.json')).read_text())
-                self.assertEqual(result.returncode, 1, result.stdout.decode() + result.stderr.decode())
+                # This synthetic suite can run inside a real full suite. Give
+                # the copied runner its own lock domain while exercising its CLI.
+                bootstrap = """
+from pathlib import Path
+import runpy
+import sys
+entry = Path(sys.argv.pop(1))
+sys.path.insert(0, str(entry.parent))
+import verification_run
+verification_run._SUITE_LOCK_PARENT = Path.cwd()
+runpy.run_path(str(entry), run_name='__main__')
+"""
+                evidence = scope / 'evidence'
+                result = subprocess.run(
+                    [sys.executable, '-I', '-B', '-c', bootstrap, str(tree / 'scripts/verify.py'),
+                     '--app-smoke', '--evidence-directory', str(evidence)],
+                    cwd=scope, env=env, capture_output=True, timeout=30,
+                )
+                diagnostics = result.stdout.decode() + result.stderr.decode()
+                self.assertEqual(result.returncode, 1, diagnostics)
+                report_path = evidence / 'report.json'
+                self.assertTrue(report_path.is_file(), diagnostics)
+                report = json.loads(report_path.read_text())
                 self.assertFalse(report['passed'])
                 if case == 'initial-link':
                     self.assertEqual(report['checks'], [])

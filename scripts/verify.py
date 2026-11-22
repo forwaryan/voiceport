@@ -14,7 +14,7 @@ import uuid
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from product_inventory import inventory
-from verification_run import deferred_termination, run_check, suite_lock, termination_signals, write_report
+from verification_run import deferred_termination, full_suite_lock, run_check, termination_signals, write_report
 
 
 def evidence_path(path):
@@ -36,7 +36,7 @@ def main():
     parser.add_argument('--app-directory', type=pathlib.Path, help='new owned package path; default is a temporary bundle')
     args = parser.parse_args()
     try:
-        with suite_lock(ROOT), termination_signals():
+        with termination_signals(), full_suite_lock(ROOT):
             return verify(args)
     except (ValueError, OSError) as error:
         print('verification: ' + str(error), file=sys.stderr)

@@ -40,7 +40,7 @@ relationship: <implements | verifies | evaluates | supports>
 product_dependencies: <来自 automation/tasks.json；不适用需说明>
 orca_dependencies: <实际前置 task ID 与完成事实；没有填空数组>
 predecessor_assignment: <返修/复核时旧身份与反例报告路径>
-workspace: <共享但文件隔离，或 Orca 创建的实际独立工作区>
+workspace: <实际 Orca worktree 路径；只读共享且证据分离，写入验收输入时记录独占 owner>
 allowed_files: <明确文件或目录；包括可写的私有证据范围>
 forbidden_files: <至少明确其他 worker 文件、账本、根 planning 和未授权范围>
 acceptance: <可观察、可判定的本次完成条件；不得弱化 VP 标准>
@@ -48,11 +48,12 @@ authorized_actions: <本地读写/测试等；真实账号/录音/提交/外部�
 required_checks: <与影响相关的检查及真实环境条件>
 completion_evidence: <文件清单、版本、自检或独立报告、命令与退出码>
 next_receiver: <原协调者角色；冻结后才交独立验证>
-join_before_freeze: <必须结束的所有开发/协议/集成写者及核对方式>
+join_before_freeze: <所有相关写者和必要前置任务的交付、证据及写者结束确认>
+verification_budget: <本机轻量检查或重型完整套件、资源时段、主机与 owner；有远端 CI 时附实际 run 关联>
 pause_reference: <当前暂停来源及约束；无暂停也须核对>
 ```
 
-发送前协调者检查允许集合无冲突、依赖满足、原角色可达。runtime run/task/dispatch 只能在 worker-start 实际返回后填注册；worker 使用注入的 preamble，不执行 spec 中伪造的 from/Task/Dispatch。接收与结果记录含 UTC 时间，文件写出本身不算送达。
+收到目标或 worker 回报后，协调者先核对同 Run 的真实 ready Task、依赖、未结算 dispatch 与资源。两个以上互不依赖且可验证的工项，在原授权及资源允许时分别分派，每个 Task 记录唯一 owner。发送前核对允许集合、工作区归属和原角色可达性。runtime run/task/dispatch 只能在 worker-start 实际返回后填注册；worker 使用注入的 preamble，不执行 spec 中伪造的 from/Task/Dispatch。接收与结果记录含 UTC 时间，文件写出本身不算送达。
 
 ## C. 最终冻结包：所有相关写者结束后填写
 
@@ -72,7 +73,7 @@ inventory_rule: <如何发现相关新增/删除项，列明排除构建/证据/
 source_sha256: <若引用 verify.py，给其真实摘要和报告路径>
 additional_document_hashes: <按实际输入清单补 `.claude/`、`.codex/`、根 planning、`.planning/` 等；schema 2 已含 docs/README，不重复宣称未覆盖>
 self_checks: <开发自检的命令、真实退出码、输出/报告路径及运行版本；取消/超时/未执行分开记录>
-verification_resources: <新证据目录、同 checkout suite lock owner、active_check、真实 PID/进程组及清理确认/未知；不清理他人资源>
+verification_resources: <证据目录、完整套件实际持有者和同用户主机/checkout 锁状态、active_check、真实 PID/进程组及清理确认或未知>
 failure_history: <首次失败与全部 attempt 日志、诊断、责任人和剩余预算；后续绿色不覆盖首次失败>
 evidence_integrity: <finish 保存的报告路径/SHA-256/字节数；audit intact/changed/missing/unsealed；字节完整不等于独立验收>
 acceptance: <原验收标准、反例和必需真实场景>

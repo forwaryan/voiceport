@@ -8,11 +8,11 @@
 
 以下产品账本、派发和 Git 步骤只适用于已有对应授权的主协调者；其维护方案、账本、注册、冻结和 Git，真实开发、独立验证及按需支撑会话处理无写入冲突的任务。每轮只读 automation/loops/coordinator.md、docs/LOOP_METHODS.md 和私有当前状态的必要片段，核对 owner、暂停、原 Run/产品 attempt、各角色真实 session 与已发生副作用。一次仅一个 running 产品故事；一个逻辑修复可拆成分别拥有 Task/Dispatch 的诊断、实现、独立复核及必要研究，不把一个 Task 同时派给多个 owner。
 
-优先处理真实 worker 事件、返修和待验证项。按依赖启动可独立推进且有具体必要性的任务，写清 role/predecessor、工作区、输入哈希、文件归属、产物和并发预算；常规已知文件工作不为凑人数分派。每个文件/工作区只有明确写者，共享工作区允许文件集合不相交的写入，HEAD/index/checkout 由协调者独占。独立冻结评审保持不可变；同期返修只在 Orca 隔离工作区或私有 candidate 中进行，不修改、读取或合并他人的未完成产物；旧评审明确结束或中断后才集成并重冻。协调者不替已分派的验证者执行独立检查。
+收到目标或 worker 回报先核对真实 ready Task、依赖、现有 dispatch、可用 worker 槽位、工作区归属和验证资源。优先处理返修和待验证项；有两个以上互不依赖、各自可验证的工项且资源及原授权允许时，在同一 Run 分别派发，默认最多 3 个活动 worker。每个 spec 写清 role/predecessor、工作区、输入哈希、唯一写者、产物和预算。只读工作可共享工作区并各用私有证据目录；并行写入验收输入的任务各自独占 Orca worktree，HEAD/index/checkout 由协调者管理。收齐所有相关写者的交付与必要证据后才集成冻结，并将实际版本交不同会话独立验收；同期返修仅写隔离 worktree 或私有 candidate，旧评审明确结束或中断后才集成重冻。详见 [分派规则](../docs/LOOP_METHODS.md#31-一个逻辑问题多个独立归属的工作任务)。
 
 有已授权且可立即执行的下一步，就在当前轮继续推进；调查小结、文档更新或派发任务都不是等待理由。派发后先完成自己不依赖其结果的工作，只有全部剩余步骤确实等待尚未返回的任务时才结束当前轮，靠 Orca 事件唤醒；只有宿主明确要求 check 才执行该条命令，不用消费邮箱的轮询、不重复启动。远端 CI 用宿主跟踪的后台 gh run watch EXACT_RUN --exit-status 等待完成，保存后台句柄、命令和退出码，先推进其他独立步骤，无独立可执行步骤时才结束轮等待工具完成事件；之后重新核对 run/attempt/HEAD，watch 本身不证明精确版本通过。协调者比较不同假设和反例，把返修/复核交回原逻辑角色并保留真实续接身份；原角色到上限时按正常轮换接续。
 
-开发执行按 [证据与资源约束](../docs/LOOP_EXECUTION.md)：账本 status/audit 只读，finish 须非空稳定证据并保存内容摘要；audit 中历史 unsealed/缺失/变化不补造为通过。完整 verify 同 checkout 互斥、全新日志目录、逐步报告，超时/中断只清理自己启动的进程组，真实退出与清理未知分开记录。失败后不启动后续检查，不覆写首次失败或删锁重跑；输入清单已含 README/docs 等，另冻 `.claude/`、`.codex/` 和相关 planning。
+开发执行按 [证据与资源约束](../docs/LOOP_EXECUTION.md)：账本 status/audit 只读，finish 须非空稳定证据并保存内容摘要；audit 中历史 unsealed/缺失/变化不补造为通过。同一主机同一 effective UID 的完整 `verify.py` 和 `ci_checks.py` 跨 checkout 互斥，保留原 checkout 锁。冲突直接退出，不启动检查、不新建证据、不排队或设 timer；协调者按实际资源安排本地重型套件和轻量定向检查，远端 CI 按实际工作流和 runner 容量判断。套件使用全新日志目录和逐步报告；超时/中断只清理自己启动的进程组，真实退出与清理未知分开记录。失败后不启动后续检查，不覆写首次失败或删锁重跑；输入清单已含 README/docs 等，另冻 `.claude/`、`.codex/` 和相关 planning。
 
 CI 属于完成闭环。逐次绑定仓库、分支、完整提交、PR head/base、实际测试提交及其关系、workflow/run/job/attempt 和必需检查名，保存完整实际日志、退出码、checks 与 artifacts 清单、失败和取消回执。用证据区分代码、测试判据、基础设施、环境和不稳定测试；本地复现目标失败，最小定向修复，独立复核，安全边界 commit/push，再等待新精确 HEAD 的远端检查和复核/合并条件。新失败回到修复，缺失、pending、cancelled、skipped、别的 HEAD/run 绿色或本地绿色都不算完成。不删/跳过控制，不靠广泛重试或放宽超时转绿；仅有明确基础设施证据时，每次故障最多一次同 SHA 重试，事前记原因/预算、保留全部 attempt，重试失败停止重复并诊断。完整约束与命令见 docs/LOOP_METHODS.md 第8节。
 
@@ -22,7 +22,7 @@ CI 属于完成闭环。逐次绑定仓库、分支、完整提交、PR head/bas
 
 用户已授权未来正常轮换自动执行，不要求手动开窗或粘贴继任提示词；CLI 窗口轮换单次显式 --surface terminal，不改全局偏好，只接受 terminal outcome；实际权限/信任拒绝仍阻塞，不能换会话/工具绕过。直接顶层 requested 后保存精确 session-rotation 笔记、停止全部自有调度，session-retire 后仅一次 session-launch；继任凭不同实际 session/terminal、fresh initial0、晚于 launch 的真实 transcript 执行 session-claim --session NEW --source OLD --token TOKEN，再 session-close --session NEW --source OLD --terminal EXACT_OLD，确认 PTY 停止前不做产品/loop。既有最终轮未注册者可补自己的精确 contract/register，保留原计数；冻结 active_tools 非空的退任阻塞不得手改解锁。已注册 Run 协调者则按 retire/单次 launch/同 Run claim/close-retired 路径，另核对递增 Run generation；旧全局 lease 须由同一实际 owner/Run 在 active/requested 且未尝试 transfer 时，先 `python3 -I .claude/hooks/coordinator_rotation.py upgrade-legacy --session ACTUAL_SESSION --run ACTUAL_RUN`；核验真实身份/generation/incarnation、保留计数/epoch/原 prompt/沿革后转 per-Run，再带 --run 退任并精确关闭。已尝试 transfer、已有 Run lease 或沿革不明则阻塞，不能继续旧弱流程或重置状态。worker checkpoint 升级后结束轮，由协调者确认旧 dispatch exited/释放再新开上下文；新 terminal 或旧 dispatch follow-up 不等于新 session。保留实际适用的 Run/attempt/角色沿革/冻结/证据与未完 CI、Git、watch、调度步骤；未知副作用只保存回执并有界核对。hook 加模型程序不是崩溃监督器，隔离自检不是完整自然压缩生命周期接受，结构化 launch 送达也不是 PTY 证明。
 
-每个有源码、测试或文档产出的阶段检查归属、分逻辑 commit、push 功能分支、更新 PR；只有当前精确 HEAD 的必需 CI、独立复核及正常仓库条件满足才自主合并，使用已评审 SHA 的 match-head 保护，不 force/admin。无活动 writer/冻结冲突的安全点 fetch、切 main、pull --ff-only 并核对 origin/main；新开发从最新 main 建分支，不丢改动、不跨多轮积压。开发进度可先交付，但不能把失败 checkpoint、worker_done 或提交合并当产品验收。
+每个有源码、测试或文档产出的阶段检查归属、分逻辑 commit、push 功能分支、更新 PR；按 [精确版本合并门槛](../docs/LOOP_METHODS.md#84-完成门槛与-git-接续) 核对当前 PR head/base、已评审完整 SHA、实际测试提交和必需 CI、独立复核及正常仓库条件，再用 `gh pr merge --match-head-commit <已评审完整SHA>` 合并，禁止 force/admin。无活动 writer/冻结冲突的安全点 fetch、切 main、pull --ff-only 并核对 origin/main；新开发从最新 main 建分支，不丢改动、不跨多轮积压。开发进度可先交付，但不能把失败 checkpoint、worker_done 或提交合并当产品验收。
 
 每次合并后按 [worktree 清理规则](rules/loop-worktree-cleanup.md) 检查并清理对应目录，保留主工作区。必须核对分支独有提交、暂存/未暂存修改及未跟踪文件，证明所有待保留代码、测试、配置和文档已完整进入当前 main，且没有仍依赖目录的活动任务或冻结验证；删除前再次确认来源未变化、保留必要证据，再通过 Orca 精确删除并复核。任何内容尚未合入 main、仅部分合入或合入关系不明，一定不能删除；功能分支提交、PR待合并、备份和临时整合快照均不替代合入。squash/cherry-pick/后续修复须核对实际合并与内容关系，不以目录旧、任务完成或干净状态代替证明。完整流程见 [第6.1节](../docs/LOOP_METHODS.md#61-合入-main-后清理-worktree)，原已登记完整 loop 契约保持不变。
 
