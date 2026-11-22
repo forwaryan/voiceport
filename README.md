@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/forwaryan/voiceport/releases/tag/v0.3.12"><img src="docs/images/badges/preview.svg" alt="开发预览版 v0.3.12" width="186" height="28"></a>
+  <a href="https://github.com/forwaryan/voiceport/releases/tag/v0.3.13"><img src="docs/images/badges/preview.svg" alt="开发预览版 v0.3.13" width="186" height="28"></a>
   <a href="https://www.rust-lang.org/tools/install"><img src="docs/images/badges/rust.svg" alt="Rust 1.95+" width="136" height="28"></a>
   <a href="#平台支持"><img src="docs/images/badges/macos.svg" alt="macOS 13+ / ARM64" width="196" height="28"></a>
   <a href="LICENSE"><img src="docs/images/badges/license.svg" alt="MIT License" width="136" height="28"></a>
@@ -46,7 +46,7 @@ VoicePort 是一个**插件化的语音能力转接器**：把不同 App 已有�
 - **接入更多来源**：除 App 适配器外，也支持兼容 HTTP 服务、本地模型；新增来源不需要改动目标应用。
 - **保持同一套操作**：选来源、点光标、按快捷键说话，再按一次结束。你检查文字并自行发送。
 
-**当前支持 macOS 13+ / Apple Silicon，可下载开发预览包或从源码构建。** 每种来源需要可用的接入方式，目标输入框也有兼容条件；预览包使用 ad-hoc 签名，尚无经过公证的正式发行包。Intel 与 Windows 状态见 [平台支持](#平台支持)。
+**当前支持 macOS 13+ / Apple Silicon，可下载开发预览包或从源码构建。** 每种来源需要可用的接入方式，目标输入框也有兼容条件；当前预览包使用 VoicePort Local Signing 自签名，未经 Apple 公证。Intel 与 Windows 状态见 [平台支持](#平台支持)。
 
 ## 通过插件接入 App
 
