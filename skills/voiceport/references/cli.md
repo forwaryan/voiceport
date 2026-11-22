@@ -23,10 +23,13 @@ Missing Python, failed helper execution, invalid output and the 45-second outer 
 
 - `status` or `app status`: state, busy, pending/warning, discovering, selected source, language, version, bundle path, PID, socket and permission metadata. While stopping, `pending:true` and `warning:"cancellation_pending"` do not claim cleanup has completed. No permission prompt, auth read, transcript, target content or audio. `data.source_probe` reports the active CLI probe ID (null for GUI probes), engine `busy`, and `cleanup_pending`; these are independent of dictation's `state` and `pending`. `data.input` adds the GUI automatic-input preference, a content-free failure stage, and the last explicit start route. Hotkey start metadata includes only captured/dispatch application PID and bundle ID plus a fixed outcome code, never field text. A start blocked before recording reports failed rather than leaving a previous ready state looking like a successful new recording.
 - `app show [--settings]`: show the running App window, optionally on its settings page.
-- `data.input.method` is `clipboard_final` for final-only clipboard delivery, including WeChat's guarded main-window fallback. It posts a layout-aware Command+V without opening menus and acknowledges event submission, not verified field contents; final text remains in the clipboard. Older builds reported `wechat_menu_paste` for their visible native-menu path. CLI dictation still disables automatic delivery and never uses this path.
 - `app quit`: graceful idle-only quit; busy or configuration work returns `busy`. It never force-kills an instance.
 
 Launch is explicit and external: invoke the intended bundle's `Contents/MacOS/voiceport-app` or open that exact bundle after checking its path/version. There is no `app launch` command. For isolated tests, supply the socket/config environment to that exact child process before launch. Do not control a production App while validating a test copy.
+
+### Delivery status
+
+`data.input.method` names the selected GUI delivery path, not its result. `clipboard_final` is the final clipboard route, including the guarded WeChat main-window fallback. It uses Command+V without opening menus. Selection alone does not mean the paste event was submitted, and submission does not confirm the target received text. Check `input.failure_stage` and the App version; older App builds used `wechat_menu_paste` for the old menu path. CLI dictation does not deliver text automatically.
 
 ## Sources and plugins
 

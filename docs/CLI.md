@@ -55,7 +55,7 @@ voiceport --json sources probe-cancel OPERATION
 
 先用同一 `--socket` 读取 `status`，核对 `bundle_path`/PID、`permissions` 和 `input.automatic`、`input.method`、`input.failure_stage`、`input.start`；需要展示设置时用 `app show --settings`。这些诊断不读取转写文字、目标字段内容、凭据或音频，也不申请权限。CLI 听写始终为 `delivery:"none"`，成功取得结果不表示已输入目标 App。
 
-GUI 的来源 App 负责识别，目标 App 接收文字，两者独立。QQ/微信目标输入失败应排查投递状态，不当作新来源接入问题；`qq doctor` 也只检查安装。`wechat_menu_paste` 只表示受保护的原生菜单粘贴请求已发出，文字保留在剪贴板，不证明目标字段内容。不要为排查投递自动探测来源、重传音频、重试识别或重新录音。完整步骤见[排查流程](../skills/voiceport/references/workflows.md#recognized-text-not-delivered)。
+GUI 的来源 App 负责识别，目标 App 接收文字。QQ 或微信目标输入失败时，先按[投递排查流程](../skills/voiceport/references/workflows.md#recognized-text-not-delivered)检查原目标；不要自动探测来源、重传音频、重试识别或重新录音。微信当前与旧版路径、选路字段和接收证据的区别，见[投递状态契约](INPUT_DELIVERY.md#cli-状态字段与投递回执)。
 
 ## QQ 安装诊断
 

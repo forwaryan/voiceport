@@ -68,7 +68,7 @@ voiceport --json --socket /private/tmp/vp-example/control.sock app show --settin
 
 Verify `bundle_path`/PID and keep that socket fixed. Check `permissions` and `input.automatic`, `input.method`, `input.failure_stage` and `input.start` for the preference, delivery stage and start route. Showing settings does not change permissions or start recording. Do not fetch a transcript, target field contents, credentials or audio for routine diagnosis.
 
-CLI dictation intentionally has `delivery:"none"`: a successful result is not an insertion. For GUI dictation, the source App providing recognition and target App receiving text are independent; QQ/WeChat target input failures belong to delivery diagnosis, not new-source onboarding. `wechat_menu_paste` acknowledges the guarded native Paste request, leaves final text in the clipboard and does not verify field contents. `qq doctor` checks QQ installation only, not input delivery or transcription connectivity. Report the observed stage and settings; do not automatically reprobe, reupload, retry transcription or record again to diagnose delivery.
+CLI dictation intentionally has `delivery:"none"`. For GUI dictation, troubleshoot QQ or WeChat target input separately from the source providing recognition. See [Delivery status](cli.md#delivery-status) in the bundled CLI reference (`voiceport skills get cli`) before interpreting `input.method`. `qq doctor` checks installation only. Report the observed stage and settings; do not automatically reprobe, reupload, retry transcription or record again to diagnose delivery.
 
 ## Isolated App validation
 

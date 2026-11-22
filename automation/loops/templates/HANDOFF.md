@@ -97,6 +97,7 @@ freeze_id_and_manifest: <实际验证版本；未进入冻结阶段说明不适�
 started_at_utc: <实际开始>
 finished_at_utc: <实际结束>
 files_modified: <仅本角色实际修改/新增/删除的文件>
+behavior_review: <触发、改前/改后、同类入口及预期不变项、权威文档和实际验证层级；仅文档纠偏时注明运行时未变>
 checks_executed: <逐项命令、实际退出码、输出摘要与证据路径>
 checks_cited: <引用者、路径、版本及无需重复执行的依据；不冒称亲自执行>
 counterexamples: <输入、预期、实际结果及旧实现目标断言失败/修复证据>

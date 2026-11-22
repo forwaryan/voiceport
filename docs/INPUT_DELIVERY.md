@@ -48,7 +48,15 @@ WebKit 网页可能声明 AX 文字接口可写，却不把 `AXSelectedText` 更
 
 ## 统一投递状态与重复回调
 
-所有输入路径使用同一份不含正文的 `DeliveryReceipt`；`Delivery::receipt()` 在目标会话结束或失败后继续保留回执。`compatibility_delivery_probe` 的 `deliveryReceipt` 输出同一结构，不会因为合成接收器另行报告收到文字而升级生产路径的确认级别。
+### CLI 状态字段与投递回执
+
+`voiceport --json status` 的 `data.input.method` 表示 GUI 选用的投递路径，不表示文字已经送出。缺少焦点字段的微信主窗口通过保护检查后，与其他兼容控件共用 `clipboard_final`。当前路径提交 Command+V，不打开「编辑」菜单；旧版的 `wechat_menu_paste` 仅用于辨认旧 App 的菜单路径。排查前先核对 `version`、`bundle_path` 与 PID。
+
+选路、提交和接收是三件事。选定 `clipboard_final` 后仍可能等待、取消或失败；事件实际提交后，内部回执最多记为 `submitted`，不代表目标控件收到文字。`status` 不返回完整 `DeliveryReceipt`，可结合 `data.input.failure_stage` 排查。CLI 听写操作保留 `delivery:"none"`，不会替 GUI 执行自动输入。
+
+### 统一回执与重复结果
+
+所有输入路径使用同一份不含正文的 `DeliveryReceipt`；`Delivery::receipt()` 在目标会话结束或失败后继续保留回执。`compatibility_delivery_probe` 的 `deliveryReceipt` 输出同一结构，不会因为合成接收器另行报告收到文字而升级生产路径的确认级别。实现见 [`Delivery::accept_capture` / `receipt`](../crates/voiceport-macos/src/delivery.rs)、[`ClipboardTarget::paste`](../crates/voiceport-macos/src/delivery/native/clipboard.rs) 和 [App `status` 输出](../crates/voiceport-macos/src/app/control.rs)。
 
 | 状态 | 含义 |
 | --- | --- |
@@ -78,7 +86,7 @@ WebKit 网页可能声明 AX 文字接口可写，却不把 `AXSelectedText` 更
 
 ## 验证范围
 
-共享最终粘贴状态机的回归覆盖预览不写入、仅提交一次、Unicode/控制字符处理、焦点/权限/安全输入/剪贴板变更、取消和未知失败不重放。新增回归覆盖直接及异步准备后的通用路径选择。
+[共享最终粘贴回归](../crates/voiceport-macos/tests/wechat_paste.rs)覆盖预览不写入、仅提交一次、Unicode/控制字符处理、焦点/权限/安全输入/剪贴板变更、取消和未知失败不重放。[投递回执回归](../crates/voiceport-macos/tests/delivery_receipt.rs)用 `clipboard_submission_is_not_confirmation_and_uncertainty_cannot_retry` 区分提交与确认。原生投递的库内回归另覆盖直接及异步准备后的通用路径选择。
 
 `compatibility_fixture` 是只接受键盘和粘贴、不提供 AX 文字编辑接口的专用合成目标，支持 `custom`、`editable-cell`、`readonly-cell`、`button`、`secure` 五种模式。`compatibility_delivery_probe` 仅在该目标 bundle、PID 和初始合成回执均匹配时调用生产 Delivery；通过目标自身的接收回执核对文字，事件提交不单独算成功。探针不录音、不上传、不向真实用户输入框写入。
 
