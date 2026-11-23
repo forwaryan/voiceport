@@ -160,11 +160,12 @@ external/periodic 的引用与用户授权由执行者核对，hook 只验证声
 
 2026-11-15 用户明确授权：每次合并代码后可以删除对应 worktree；有代码未合入 `main` 的 worktree 一定不能删除。常驻入口为 [.claude/rules/loop-worktree-cleanup.md](../.claude/rules/loop-worktree-cleanup.md)，默认 [.claude/loop.md](../.claude/loop.md) 与自定义 loop 均须遵守。该规则沿用第6节和第8节的合并/验证条件，不以清理任务绕过它们。
 
-1. 每次合并后检查对应目录，而非按名称或存放时长批量删除。读取实际分支、HEAD、`main` SHA，分别检查分支独有提交、暂存区、未暂存差异、全部未跟踪文件及新增/删除/重命名/模式变化；源码、测试、配置和文档等待保留内容全部纳入。
-2. 证明全部改动已进入当前 `main`。普通合并核对提交祖先关系；squash、cherry-pick 或旧工作区已被新版包含时，结合真实合并记录与逐文件/差异内容核对，保留 `main` 后续修复，不能将老文件覆盖回去。工作区干净、任务完成、PR创建/待合并、代码仅在功能分支或另有备份/快照都不足以删除。
-3. 有任一未合入内容、部分合入、来源变化或无法确认的差异，立即保留目录；在授权内继续合并，或记录缺少的具体条件。不得通过 reset、清空目录或强制删除消除待合入代码。保存快照只能支持恢复，不能替代进入 `main` 的证明。
-4. 确认相关写者、worker、构建及冻结验证已结束并释放该目录；必要原始证据移到不会随 worktree 删除的位置。删除前再次核对实际内容与合入证明，记录精确路径/选择器、来源 HEAD 和内容摘要、目标 `main` SHA 及对应合并依据。
-5. 使用 `orca-cli` 已安装版本支持的精确 worktree 删除入口，保留主工作区，不顺带删除无关分支或任务。保存真实删除回执，再核对 Orca、Git worktree 列表和文件系统；未知结果先查真实状态，不重复副作用。活动任务尚未释放或权限/暂停阻塞时保留目录，待条件满足再清理。
+1. 从本次合并对应的工作区及其交付记录出发。用 `orca worktree show` 取得实际 `address.environment` 和 `address.worktree`，优先使用返回的 `identity:` 选择器。对照同一执行环境的路径、Git HEAD、实际分支和 `git worktree list --porcelain`，确认是该交付的非主 Git worktree。协调者核对会话、任务、工作区及日志的归属，取得交还记录。相关 worker、写者、构建、验证和其他依赖均须结算并释放，冻结评审须结束或由有权限的协调者明确中断。检查、删除和结果核对期间不重新分派该工作区。任一归属、占用、权限或暂停状态不明时保留目录。
+2. 固定来源 HEAD 和包含实际合并结果的当前 `main` SHA。用 `git log MAIN_SHA..SOURCE_HEAD` 查分支独有提交，用 `git -c core.fileMode=true -c core.fsmonitor=false status --porcelain=v2 --untracked-files=all --ignored=matching --ignore-submodules=none`、`git diff --cached --binary HEAD` 和 `git -c core.fileMode=true -c core.fsmonitor=false diff --binary` 查实际内容。另用 `git ls-files -v` 查小写标记（assume-unchanged）及 `S`/`s`（skip-worktree）。逐个核对这些路径的实际内容和模式与索引是否一致，缺失路径须查明是否由稀疏检出造成。读不到或无法确认就保留 worktree。有忽略目录时深入检查其中的待交付内容、日志、测试原始产物和私有证据。
+3. 结合实际合并记录，确定本次交付涉及的文件，再证明提交、暂存、未暂存及未跟踪的所有待保留内容已进入固定的 `main`。无论合并方式，逐项核对内容、模式、删除和重命名，以及冲突解决或后续修复对它们的影响。普通合并再用 `git merge-base --is-ancestor SOURCE_HEAD MAIN_SHA` 核对提交关系。祖先关系本身无法证明冲突解决时保留了来源改动。工作区干净、任务完成、PR 待合并、功能分支提交或仅有备份均不满足条件。部分合入、证据不明或来源仍在变化时保留目录，并记录具体待办。
+4. 在目标目录外的私有记录目录保留必要的原始验证日志、失败及回执。归档后从新址读回，核对路径、字节数与内容摘要。记录执行环境和精确工作区身份、路径、本地分支及其 SHA（若为 detached 则注明）、来源 HEAD/内容摘要、目标 `main` SHA、合入依据、交还及释放回执、归档位置与摘要。紧邻删除前再次核对身份、内容、`main` 和占用，发现变化即重新评估。
+5. 用 `orca status --environment ENV --json` 核对该执行环境的 `result.runtime.capabilities` 含 `worktree.remove-branch-policy.v1`，确认默认保留本地分支。能力缺失或查询失败时保留目录。先在上述私有记录记下实际尝试的命令，再用 `orca worktree rm --environment ENV --worktree WORKTREE --json` 单次移除。`ENV` 和 `WORKTREE` 取自步骤 1 的实际地址。省略 `--force`、`--delete-branch` 和 `--run-hooks`。普通移除被拒绝时保留目录和实际错误，从归属或内容证据着手处理。
+6. 保存实际退出码和完整 Orca 回执，在同一执行环境核对 Orca 对应实例不在列表、Git worktree 注册中没有目标路径、该目录确实不存在，并核对原本地分支仍在。任一结果不一致、失败或回执未知，先查原尝试和实际状态，记录已知副作用与缺少的证明。
 
 本节是 loop 的执行约束，不改写已登记原始 loop 提示词或恢复契约；新限制随当前任务及交接继续保留。
 
@@ -231,6 +232,8 @@ watch 没有 `--attempt` 参数，结束后必须用 run view/API 重新核对�
 合并后保存实际 merge 回执及 commit，按仓库要求跟踪合并提交的后续必需 CI；若它失败，继续同一逻辑修复链，不能用 PR 先前绿结束 main 修复。无其他活动 writer/冻结冲突且工作区归属已核清时 fetch、切 main、pull --ff-only，核对 origin/main；新开发从最新 main 建分支。产品 story 的 finish 仍按当前 attempt/验收 scope 执行，提交、远端接受、合并、同步与真实产品场景分开记；没有授权的真实麦克风/音频上传/凭据/真实输入/生产 App 操作不扩展执行。
 
 ## 9. Magpie 的已核实借鉴与本项目新增决策
+
+2026-11-23 核查 Magpie 固定提交 `834415c80979972e8c85d05142200190521d83dd`。其协作规范将 checkout、worktree 和其中的日志归给建立它们的会话。运行中的 `keepProjectTrees` 观察 Git 工作区增减并同步 Magpie 自己管理的配置与记录。测试模拟 Git 工作区已被移除，再核对 Magpie 记录随之更新。VoicePort 采用会话归属和事后核对，删除前的合入证明、证据归档、Orca 精确移除及分支保留由 [第6.1节](#61-合入-main-后清理-worktree) 负责。[协作规范](https://github.com/yetone/magpie/blob/834415c80979972e8c85d05142200190521d83dd/docs/code-standards.md#L247-L255) · [运行入口](https://github.com/yetone/magpie/blob/834415c80979972e8c85d05142200190521d83dd/internal/library/instructions.go#L904-L907) · [同步实现](https://github.com/yetone/magpie/blob/834415c80979972e8c85d05142200190521d83dd/internal/library/project_scope.go#L448-L484) · [移除后的测试](https://github.com/yetone/magpie/blob/834415c80979972e8c85d05142200190521d83dd/internal/library/project_scope_test.go#L254-L263)
 
 2026-11-10 追加核查固定提交 `86825005e26412ab05533de668b654942b226b98`：[handoff.go](https://github.com/yetone/magpie/blob/86825005e26412ab05533de668b654942b226b98/internal/handoff/handoff.go#L1-L12) 与 [AwaitAck/Ack](https://github.com/yetone/magpie/blob/86825005e26412ab05533de668b654942b226b98/internal/handoff/handoff_unix.go#L185-L202) 实现网关监听 socket 的进程交接；新进程实际提供服务后明确 ACK，旧进程才放手，缺失/超时则仍由旧进程服务。本项目采用“先证明继任就绪，再关闭精确前代”的顺序：真实 fresh session claim 是接管确认，launch 投递回执本身不足；只有继任实际目标核对和前代精确 PTY 退出回执满足后才允许工作/恢复一份原授权 loop。未知结果保留现场，不重复启动。这里没有移植 socket/FD，也不将 Magpie 称为模型上下文轮换器。
 
