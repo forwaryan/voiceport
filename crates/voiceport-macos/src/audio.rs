@@ -28,6 +28,7 @@ use std::sync::{Arc, Mutex};
 pub const MAXIMUM_SECONDS: u64 = 180;
 const OUTPUT_RATE: f64 = 24_000.0;
 const MAXIMUM_OUTPUT_FRAMES: u64 = 24_000 * MAXIMUM_SECONDS;
+const MAXIMUM_TAP_FRAMES: u32 = 1_048_576;
 const AAC: u32 = u32::from_be_bytes(*b"aac ");
 
 type EventSender = Sender<(u64, AudioEvent)>;
@@ -580,7 +581,7 @@ impl SinkState {
     fn consume(&mut self, buffer: &AVAudioPCMBuffer, speech_active: bool) -> Result<bool, String> {
         unsafe {
             if buffer.format() != self.format
-                || buffer.frameLength() > 1_048_576
+                || buffer.frameLength() > MAXIMUM_TAP_FRAMES
                 || buffer.frameLength() > buffer.frameCapacity()
             {
                 return Err("麦克风音频格式不可用。".into());
@@ -686,11 +687,78 @@ fn prefix(input: &AVAudioPCMBuffer, frames: u32) -> Result<Retained<AVAudioPCMBu
     }
 }
 
+/// CoreAudio can drop unlabeled channels when converting directly to mono.
+/// An unlabeled stereo format still has the standard left/right convention.
+fn needs_explicit_downmix(format: &AVAudioFormat) -> bool {
+    const USE_DESCRIPTIONS: u32 = 0;
+    const DISCRETE_IN_ORDER: u32 = 147 << 16;
+    const UNKNOWN_LAYOUT: u32 = 0xffff << 16;
+    const UNKNOWN_LABEL: u32 = u32::MAX;
+    const DISCRETE_LABEL: u32 = 400;
+
+    unsafe {
+        let channels = format.channelCount() as usize;
+        if channels < 2 {
+            return false;
+        }
+        let Some(layout) = format.channelLayout() else {
+            return channels > 2;
+        };
+        let tag = layout.layoutTag();
+        if tag == USE_DESCRIPTIONS {
+            let raw = layout.layout().as_ptr();
+            if (*raw).mNumberChannelDescriptions as usize != channels {
+                return false;
+            }
+            // The native layout contains a variable-length description array.
+            let descriptions = std::slice::from_raw_parts(
+                std::ptr::addr_of!((*raw).mChannelDescriptions[0]),
+                channels,
+            );
+            return descriptions.iter().all(|description| {
+                let label = description.mChannelLabel;
+                label == UNKNOWN_LABEL || label == DISCRETE_LABEL || label >> 16 == 1
+            });
+        }
+        matches!(tag & 0xffff_0000, DISCRETE_IN_ORDER | UNKNOWN_LAYOUT)
+    }
+}
+
+fn mix_to_mono(
+    input: &AVAudioPCMBuffer,
+    format: &AVAudioFormat,
+) -> Result<Retained<AVAudioPCMBuffer>, String> {
+    let (channels, frames) = pcm_frames(input, MAXIMUM_TAP_FRAMES as usize)?;
+    let length = frames.len() as u32;
+    let output = unsafe {
+        AVAudioPCMBuffer::initWithPCMFormat_frameCapacity(AVAudioPCMBuffer::alloc(), format, length)
+    }
+    .ok_or("无法分配音频缓冲区。")?;
+    unsafe {
+        output.setFrameLength(length);
+        let samples =
+            std::slice::from_raw_parts_mut((*output.floatChannelData()).as_ptr(), length as usize);
+        for (sample, frame) in samples.iter_mut().zip(frames) {
+            // Without speaker roles, give each channel equal weight and keep headroom.
+            let sum = frame[..channels]
+                .iter()
+                .map(|value| f64::from(*value))
+                .sum::<f64>();
+            *sample = (sum / channels as f64) as f32;
+            if !sample.is_finite() {
+                return Err("PCM 混音产生无效数值。".into());
+            }
+        }
+    }
+    Ok(output)
+}
+
 /// Owned exclusively by the sink after construction. Conversion drains before
 /// releasing the sole AVAudioFile retain, which closes and finalizes its header.
 struct AacWriter {
     file: Option<Retained<AVAudioFile>>,
     converter: Option<Retained<AVAudioConverter>>,
+    mix_format: Option<Retained<AVAudioFormat>>,
     output_format: Retained<AVAudioFormat>,
     frames: u64,
 }
@@ -725,9 +793,21 @@ impl AacWriter {
             )
             .map_err(native_error)?;
             let output_format = file.processingFormat();
+            let mix_format = if needs_explicit_downmix(input_format) {
+                Some(
+                    AVAudioFormat::initStandardFormatWithSampleRate_channels(
+                        AVAudioFormat::alloc(),
+                        input_format.sampleRate(),
+                        1,
+                    )
+                    .ok_or("无法创建单声道录音格式。")?,
+                )
+            } else {
+                None
+            };
             let converter = AVAudioConverter::initFromFormat_toFormat(
                 AVAudioConverter::alloc(),
-                input_format,
+                mix_format.as_deref().unwrap_or(input_format),
                 &output_format,
             )
             .ok_or("无法转换麦克风音频格式。")?;
@@ -735,12 +815,20 @@ impl AacWriter {
             Ok(Self {
                 file: Some(file),
                 converter: Some(converter),
+                mix_format,
                 output_format,
                 frames: 0,
             })
         }
     }
     fn write(&mut self, input: &AVAudioPCMBuffer) -> Result<(), String> {
+        let mixed;
+        let input = if let Some(format) = &self.mix_format {
+            mixed = mix_to_mono(input, format)?;
+            &mixed
+        } else {
+            input
+        };
         let capacity = unsafe {
             ((input.frameLength() as f64 * OUTPUT_RATE / input.format().sampleRate()).ceil() as u32)
                 .checked_add(256)
@@ -844,15 +932,31 @@ fn file_url(path: &Path) -> Result<Retained<NSURL>, String> {
 /// resampling happen later on the inference worker.
 fn copy_pcm(buffer: &AVAudioPCMBuffer) -> Result<crate::local_audio::Packet, String> {
     use crate::local_audio::{MAX_PACKET_FRAMES, Packet};
+    let (channels, frames) = pcm_frames(buffer, MAX_PACKET_FRAMES)?;
+    let mut samples = Vec::with_capacity(frames.len() * channels);
+    for frame in frames {
+        samples.extend_from_slice(&frame[..channels]);
+    }
+    let packet = Packet {
+        rate: unsafe { buffer.format().sampleRate() },
+        channels,
+        samples,
+    };
+    packet.validate()?;
+    Ok(packet)
+}
+
+/// Borrow native samples only for the lifetime of the callback's PCM buffer.
+fn pcm_frames(
+    buffer: &AVAudioPCMBuffer,
+    maximum_frames: usize,
+) -> Result<(usize, impl ExactSizeIterator<Item = [f32; 8]> + '_), String> {
     unsafe {
         let format = buffer.format();
         validate_format(&format)?;
         let frames = buffer.frameLength() as usize;
         let channels = format.channelCount() as usize;
-        if frames == 0
-            || frames > MAX_PACKET_FRAMES
-            || buffer.frameLength() > buffer.frameCapacity()
-        {
+        if frames == 0 || frames > maximum_frames || buffer.frameLength() > buffer.frameCapacity() {
             return Err("本地 PCM 缓冲区大小无效。".into());
         }
         let common = format.commonFormat();
@@ -878,16 +982,16 @@ fn copy_pcm(buffer: &AVAudioPCMBuffer) -> Result<crate::local_audio::Packet, Str
                 return Err("本地 PCM 缓冲区不完整。".into());
             }
         }
-        let mut samples = Vec::with_capacity(frames * channels);
-        for frame in 0..frames {
-            for channel in 0..channels {
+        let frames = (0..frames).map(move |frame| {
+            let mut samples = [0.; 8];
+            for (channel, sample) in samples[..channels].iter_mut().enumerate() {
                 let (native, index) = if interleaved {
                     (&buffers[0], frame * channels + channel)
                 } else {
                     (&buffers[channel], frame)
                 };
                 let pointer = native.mData.cast::<u8>().add(index * width);
-                let sample = match common {
+                *sample = match common {
                     AVAudioCommonFormat::PCMFormatFloat32 => pointer.cast::<f32>().read_unaligned(),
                     AVAudioCommonFormat::PCMFormatFloat64 => {
                         pointer.cast::<f64>().read_unaligned() as f32
@@ -900,16 +1004,10 @@ fn copy_pcm(buffer: &AVAudioPCMBuffer) -> Result<crate::local_audio::Packet, Str
                     }
                     _ => unreachable!(),
                 };
-                samples.push(sample);
             }
-        }
-        let packet = Packet {
-            rate: format.sampleRate(),
-            channels,
-            samples,
-        };
-        packet.validate()?;
-        Ok(packet)
+            samples
+        });
+        Ok((channels, frames))
     }
 }
 
@@ -1382,6 +1480,114 @@ mod tests {
             .unwrap()
         };
         assert!(unsafe { file.length() } as u64 <= MAXIMUM_OUTPUT_FRAMES);
+    }
+
+    #[test]
+    fn unlabeled_microphone_channels_survive_aac_encoding() {
+        use objc2_avf_audio::AVAudioChannelLayout;
+
+        // CoreAudio's layout header followed by three channel descriptions.
+        // The built-in input reports three unknown labels and zero coordinates.
+        let mut descriptions = [0_u32; 3 + 3 * 5];
+        descriptions[2] = 3;
+        for description in descriptions[3..].chunks_exact_mut(5) {
+            description[0] = u32::MAX; // kAudioChannelLabel_Unknown
+        }
+        let layouts = unsafe {
+            [
+                AVAudioChannelLayout::initWithLayout(
+                    AVAudioChannelLayout::alloc(),
+                    NonNull::new(descriptions.as_mut_ptr().cast()).unwrap(),
+                ),
+                AVAudioChannelLayout::initWithLayoutTag(
+                    AVAudioChannelLayout::alloc(),
+                    (147 << 16) | 3, // kAudioChannelLayoutTag_DiscreteInOrder
+                )
+                .unwrap(),
+            ]
+        };
+        for layout in layouts {
+            for (common_format, interleaved) in [
+                (AVAudioCommonFormat::PCMFormatFloat32, false),
+                (AVAudioCommonFormat::PCMFormatInt16, true),
+            ] {
+                let format = unsafe {
+                    AVAudioFormat::initWithCommonFormat_sampleRate_interleaved_channelLayout(
+                        AVAudioFormat::alloc(),
+                        common_format,
+                        48_000.,
+                        interleaved,
+                        &layout,
+                    )
+                };
+                for active_channel in [None, Some(0), Some(1), Some(2)] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let path = temp.path().join("synthetic.m4a");
+                    let mut writer = AacWriter::new(&path, &format).unwrap();
+                    let input = unsafe {
+                        AVAudioPCMBuffer::initWithPCMFormat_frameCapacity(
+                            AVAudioPCMBuffer::alloc(),
+                            &format,
+                            1024,
+                        )
+                    }
+                    .unwrap();
+                    for offset in (0..24_000u32).step_by(1024) {
+                        let frames = (24_000 - offset).min(1024);
+                        unsafe {
+                            input.setFrameLength(frames);
+                            for frame in 0..frames as usize {
+                                let tone = (f64::from(offset + frame as u32)
+                                    * std::f64::consts::TAU
+                                    * 440.
+                                    / 48_000.)
+                                    .sin() as f32
+                                    * 0.15;
+                                for channel in 0..3 {
+                                    let value = if active_channel == Some(channel) {
+                                        tone
+                                    } else {
+                                        0.
+                                    };
+                                    if interleaved {
+                                        (*input.int16ChannelData())
+                                            .as_ptr()
+                                            .add(frame * 3 + channel)
+                                            .write((value * 32768.) as i16);
+                                    } else {
+                                        (*input.floatChannelData().add(channel))
+                                            .as_ptr()
+                                            .add(frame)
+                                            .write(value);
+                                    }
+                                }
+                            }
+                        }
+                        writer.write(&input).unwrap();
+                    }
+                    writer.finish().unwrap();
+                    validate_aac(&path).unwrap();
+                    let mut decoded = Vec::new();
+                    read_pcm(&path, |packet| {
+                        assert_eq!((packet.rate, packet.channels), (24_000., 1));
+                        decoded.extend(packet.samples);
+                        Ok(())
+                    })
+                    .unwrap();
+                    assert!((11_900..=12_100).contains(&decoded.len()));
+                    let peak = decoded.into_iter().map(f32::abs).fold(0., f32::max);
+                    let tag = unsafe { layout.layoutTag() };
+                    if active_channel.is_some() {
+                        assert!(
+                            peak > 0.03,
+                            "layout {tag}, {active_channel:?}, interleaved={interleaved}, peak={peak}"
+                        );
+                    } else {
+                        assert!(peak < 0.00001, "silence must stay silent, peak={peak}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
