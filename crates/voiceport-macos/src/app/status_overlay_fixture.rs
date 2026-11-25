@@ -13,9 +13,10 @@ use objc2_app_kit::NSApplicationActivationPolicy;
 use objc2_foundation::{NSBundle, NSObject, NSRange, NSTimer};
 use std::{
     cell::RefCell,
-    os::unix::fs::MetadataExt,
+    ffi::CStr,
+    io::{self, Read},
+    os::unix::{fs::MetadataExt, net::UnixStream},
     panic::{AssertUnwindSafe, catch_unwind},
-    process::Command,
     ptr::NonNull,
     time::{Duration, Instant},
 };
@@ -101,10 +102,16 @@ struct ConsoleSession {
 
 impl ConsoleSession {
     fn authorize(boot_id: &str, session_id: &str) -> Result<Self, &'static str> {
-        if sysctl("kern.hv_vmm_present").as_deref() != Some("1") {
+        let mut vmm = [0; size_of::<libc::c_int>()];
+        if read_sysctl(c"kern.hv_vmm_present", &mut vmm) != Some(vmm.len())
+            || libc::c_int::from_ne_bytes(vmm) != 1
+        {
             return Err("macOS virtual guest was not detected");
         }
-        if boot_id.is_empty() || sysctl("kern.bootsessionuuid").as_deref() != Some(boot_id) {
+        let mut boot = [0; 128];
+        let uuid = read_sysctl(c"kern.bootsessionuuid", &mut boot)
+            .and_then(|len| CStr::from_bytes_with_nul(&boot[..len]).ok());
+        if boot_id.is_empty() || uuid.map(CStr::to_bytes) != Some(boot_id.as_bytes()) {
             return Err("guest boot UUID does not match the authorization");
         }
         let session_id = session_id.parse().map_err(|_| "invalid Aqua session ID")?;
@@ -145,7 +152,8 @@ impl ConsoleSession {
         if dictionary.is_null() {
             return false;
         }
-        // CGSession.h declares these keys as CFString and the return value is owned.
+        // CGSession.h uses CFString keys. kCGSessionOnConsoleKey expands to
+        // kCGSSessionOnConsoleKey. CGSessionCopyCurrentDictionary returns an owned value.
         let dictionary =
             unsafe { CFDictionary::<CFString, CFType>::wrap_under_create_rule(dictionary) };
         let session_uid = dictionary
@@ -158,37 +166,123 @@ impl ConsoleSession {
                 .and_then(|value| value.downcast::<CFBoolean>())
                 .is_some_and(bool::from)
         };
+        let unlocked = dictionary
+            .find(CFString::new("CGSSessionScreenIsLocked"))
+            .is_none_or(|value| {
+                value
+                    .downcast::<CFBoolean>()
+                    .is_some_and(|flag| !bool::from(flag))
+            });
         session_uid == Some(i64::from(self.uid))
-            && is_true("kCGSessionOnConsoleKey")
+            && is_true("kCGSSessionOnConsoleKey")
             && is_true("kCGSessionLoginDoneKey")
+            && unlocked
     }
 }
 
-fn sysctl(name: &str) -> Option<String> {
-    let result = Command::new("/usr/sbin/sysctl")
-        .args(["-n", name])
-        .output()
-        .ok()?;
-    if !result.status.success() {
-        return None;
+fn read_sysctl(name: &CStr, buffer: &mut [u8]) -> Option<usize> {
+    let mut len = buffer.len();
+    // The two read-only queries need no child processes outside the runner's group.
+    let status = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (status == 0 && len <= buffer.len()).then_some(len)
+}
+
+fn refuse(reason: &str) -> ! {
+    eprintln!("status-overlay-focus: refused before AppKit ({reason})");
+    std::process::exit(UNAVAILABLE);
+}
+
+fn watch_launcher(path: &str) -> io::Result<()> {
+    // The app may belong to LaunchServices rather than the wrapper's process
+    // group. Give it a hard deadline and exit on loss of this run's socket.
+    unsafe {
+        libc::signal(libc::SIGALRM, libc::SIG_DFL);
+        libc::alarm(20);
     }
-    Some(std::str::from_utf8(&result.stdout).ok()?.trim().to_owned())
+    let mut stream = UnixStream::connect(path)?;
+    let mut byte = [0];
+    stream.read_exact(&mut byte)?;
+    if byte != [1] {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid launch acknowledgement",
+        ));
+    }
+    std::thread::Builder::new()
+        .spawn(move || {
+            let _ = stream.read_exact(&mut byte);
+            // Exit only this process, even if its AppKit main thread is blocked.
+            unsafe { libc::_exit(1) };
+        })
+        .map(drop)
 }
 
 /// The gate runs before NSApplication is created. Only the dedicated guest may activate.
-pub(crate) fn run(mtm: MainThreadMarker, boot_id: &str, session_id: &str) -> ! {
+pub(crate) fn run(mtm: MainThreadMarker, boot_id: &str, session_id: &str, launch: &[String]) -> ! {
+    let attest_only = match launch {
+        [] => false,
+        [mode] if mode == "--attest-aqua" => true,
+        [mode, path] if mode == "--launch-socket" => {
+            if watch_launcher(path).is_err() {
+                refuse("the private launch supervisor was unavailable");
+            }
+            false
+        }
+        _ => refuse("invalid fixture launch mode"),
+    };
     let console = match ConsoleSession::authorize(boot_id, session_id) {
         Ok(console) => console,
-        Err(reason) => {
-            eprintln!("status-overlay-focus: refused before AppKit ({reason})");
-            std::process::exit(UNAVAILABLE);
-        }
+        Err(reason) => refuse(reason),
     };
+    if attest_only {
+        let desktop = NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .is_some_and(|front| {
+                front.isActive()
+                    && front.activationPolicy() == NSApplicationActivationPolicy::Regular
+                    && front.bundleIdentifier().is_some_and(|id| {
+                        !matches!(
+                            id.to_string().as_str(),
+                            "" | "com.apple.loginwindow"
+                                | "com.apple.SecurityAgent"
+                                | "com.apple.ScreenSaver.Engine"
+                                | "com.apple.screensaver"
+                        )
+                    })
+            });
+        if !desktop {
+            refuse("the launcher has no active regular Aqua desktop application");
+        }
+        println!("status-overlay-focus: launcher Aqua session and fixture bundle verified");
+        std::process::exit(0);
+    }
     println!(
         "status-overlay-focus: isolated guest, active Aqua session and fixture bundle verified"
     );
     let app = NSApplication::sharedApplication(mtm);
-    if !app.setActivationPolicy(NSApplicationActivationPolicy::Regular) {
+    let initial = app.activationPolicy();
+    let regular = NSApplicationActivationPolicy::Regular;
+    let request = if !launch.is_empty() && initial == regular {
+        "already-regular"
+    } else if app.setActivationPolicy(regular) {
+        "accepted"
+    } else {
+        "rejected"
+    };
+    let current = app.activationPolicy();
+    println!(
+        "status-overlay-focus: activation_policy initial={} current={} request={request}",
+        initial.0, current.0
+    );
+    if request == "rejected" || current != regular {
         eprintln!("status-overlay-focus: AppKit rejected the regular activation policy");
         std::process::exit(UNAVAILABLE);
     }
