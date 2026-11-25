@@ -54,6 +54,9 @@ pub use app::first_run_field_fixture;
 #[cfg(target_os = "macos")]
 #[doc(hidden)]
 pub use app::isolated_shortcut_regression;
+#[cfg(all(target_os = "macos", debug_assertions, feature = "item45-acceptance"))]
+#[doc(hidden)]
+pub use app::item45_acceptance::run as item45_acceptance;
 #[cfg(target_os = "macos")]
 pub use app::run;
 #[cfg(all(target_os = "macos", debug_assertions))]

@@ -1,0 +1,81 @@
+name: Item 45 isolated Aqua
+on:
+  push:
+    branches: [ci/item45-aqua-diag-2a4a9cf]
+
+permissions:
+  contents: read
+
+jobs:
+  aqua:
+    if: github.event.created && !github.event.deleted && github.run_attempt == 1
+    runs-on: macos-15
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Check the reserved guest and source
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'status=$?; printf "item45 guest-check-failed exit=%s\n" "$status"; exit "$status"' ERR
+          exec 2>/dev/null 2>"$RUNNER_TEMP/item45-guest-check.err"
+          # Route failed predicates through ERR on Bash 3.2 as well.
+          arch=$(uname -m)
+          [[ $arch == arm64 ]] || false
+          version=$(sw_vers -productVersion)
+          [[ $version == 15.* ]] || false
+          virtualized=$(/usr/sbin/sysctl -n kern.hv_vmm_present)
+          [[ $virtualized == 1 ]] || false
+          parent=$(git rev-parse HEAD^)
+          [[ $parent == 2a4a9cf21ebfb92243bc28d410f800d7d85bd91d ]] || false
+          head=$(git rev-parse HEAD)
+          [[ $head == "$GITHUB_SHA" ]] || false
+          changes=$(git status --porcelain)
+          [[ -z $changes ]] || false
+      - name: Fetch locked dependencies
+        shell: bash
+        run: |
+          trap 'status=$?; printf "item45 dependency-fetch-failed exit=%s\n" "$status"; exit "$status"' ERR
+          exec 2>/dev/null 2>"$RUNNER_TEMP/item45-dependencies.err"
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt >"$RUNNER_TEMP/item45-dependencies.out"
+          cargo +1.95.0 fetch --locked >>"$RUNNER_TEMP/item45-dependencies.out"
+      - name: Run the dedicated fixture through LaunchServices
+        shell: bash
+        run: |
+          set -euo pipefail
+          failure=aqua-bootstrap-failed
+          trap 'status=$?; printf "item45 %s exit=%s\n" "$failure" "$status"; exit "$status"' ERR
+          exec 2>/dev/null 2>"$RUNNER_TEMP/item45-launch.err"
+          boot=$(/usr/sbin/sysctl -n kern.bootsessionuuid)
+          uid=$(id -u)
+          asid=$(/bin/launchctl print "gui/$uid" | /usr/bin/awk '$1 == "asid" && $2 == "=" {print $3}')
+          [[ $asid =~ ^[0-9]+$ ]] || false
+          tree=$(git rev-parse HEAD^{tree})
+          export RUSTUP_TOOLCHAIN=1.95.0
+          failure=aqua-verification-failed
+          python3 -I -B scripts/item45_acceptance/verify.py aqua --verify-hosted \
+            --expected-tree "$tree" --authorized-isolated-vm "$boot" "$asid" \
+            --out "$RUNNER_TEMP/item45-evidence" --target "$RUNNER_TEMP/item45-target"
+      - name: Summarize allowlisted observations
+        if: always()
+        shell: bash
+        run: |
+          trap 'status=$?; printf "item45 aqua-summary-failed exit=%s\n" "$status"; exit "$status"' ERR
+          exec 2>/dev/null 2>"$RUNNER_TEMP/item45-summary.err"
+          python3 -I -B scripts/item45_acceptance/verify.py summarize "$RUNNER_TEMP/item45-evidence"
+      - name: Preserve fixture menu frames only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: item45-owned-menu-frames
+          path: |
+            ${{ runner.temp }}/item45-evidence/frames/rate-50.png
+            ${{ runner.temp }}/item45-evidence/frames/stale-50.png
+            ${{ runner.temp }}/item45-evidence/frames/reopened-75.png
+            ${{ runner.temp }}/item45-evidence/frames/retry-25.png
+            ${{ runner.temp }}/item45-evidence/frames/verifying-100.png
+          if-no-files-found: ignore
+          retention-days: 3

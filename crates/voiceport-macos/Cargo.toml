@@ -34,6 +34,13 @@ name = "first_run_native"
 path = "tests/first_run_native.rs"
 harness = false
 
+[features]
+item45-acceptance = []
+
+[[example]]
+name = "item45_update_menu"
+required-features = ["item45-acceptance"]
+
 [dependencies]
 voiceport-control = { path = "../voiceport-control" }
 voiceport-core = { path = "../voiceport-core" }

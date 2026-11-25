@@ -1,5 +1,8 @@
-use super::{CommandFailed, RELEASES_PAGE, Result, Update, bounded_output};
-use reqwest::{StatusCode, redirect::Policy};
+use super::{
+    CommandFailed, DownloadProgress, RELEASES_PAGE, Result, Update, bounded_output,
+    bounded_output_with_progress,
+};
+use reqwest::{Response, StatusCode, header, redirect::Policy};
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
@@ -26,8 +29,12 @@ enum PublicError {
     Response,
 }
 
-async fn get(url: &str, limit: u64, download: bool) -> std::result::Result<Vec<u8>, PublicError> {
-    let redirect = if download {
+async fn get(
+    url: &str,
+    limit: u64,
+    progress: Option<&DownloadProgress>,
+) -> std::result::Result<Vec<u8>, PublicError> {
+    let redirect = if progress.is_some() {
         Policy::custom(|attempt| {
             let url = attempt.url();
             if attempt.previous().len() <= 3
@@ -57,11 +64,11 @@ async fn get(url: &str, limit: u64, download: bool) -> std::result::Result<Vec<u
         .timeout(REQUEST_TIMEOUT)
         .build()
         .map_err(|_| PublicError::Connection)?;
-    let mut response = client
+    let response = client
         .get(url)
         .header(
-            reqwest::header::ACCEPT,
-            if download {
+            header::ACCEPT,
+            if progress.is_some() {
                 "application/octet-stream"
             } else {
                 "application/vnd.github+json"
@@ -92,8 +99,27 @@ async fn get(url: &str, limit: u64, download: bool) -> std::result::Result<Vec<u
         }
         _ => return Err(PublicError::Response),
     }
-    if response.content_length().is_some_and(|size| size > limit) {
+    read_body(response, limit, progress).await
+}
+
+async fn read_body(
+    mut response: Response,
+    limit: u64,
+    progress: Option<&DownloadProgress>,
+) -> std::result::Result<Vec<u8>, PublicError> {
+    let length = response.content_length();
+    if length.is_some_and(|size| size > limit) {
         return Err(PublicError::Response);
+    }
+    if let Some(progress) = progress {
+        // Public URLs address the asset by name. If the response does not
+        // give a usable size, an earlier release lookup may describe another asset.
+        let headers = response.headers();
+        if !headers.contains_key(header::CONTENT_RANGE)
+            && !headers.contains_key(header::CONTENT_ENCODING)
+        {
+            progress.set_total(length);
+        }
     }
     let mut bytes = Vec::new();
     while let Some(chunk) = response
@@ -105,16 +131,55 @@ async fn get(url: &str, limit: u64, download: bool) -> std::result::Result<Vec<u
             return Err(PublicError::Response);
         }
         bytes.extend_from_slice(&chunk);
+        if let Some(progress) = progress {
+            progress.received(bytes.len() as u64);
+        }
     }
     Ok(bytes)
 }
 
-fn public_get(url: &str, limit: u64, download: bool) -> std::result::Result<Vec<u8>, PublicError> {
+#[cfg(all(debug_assertions, feature = "item45-acceptance"))]
+pub(super) fn fixture_loopback_body(
+    port: u16,
+    limit: u64,
+    progress: &DownloadProgress,
+) -> Result<Vec<u8>> {
+    let read = || -> std::result::Result<Vec<u8>, PublicError> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| PublicError::Connection)?
+            .block_on(async {
+                let client = reqwest::Client::builder()
+                    .no_proxy()
+                    .redirect(Policy::none())
+                    .timeout(Duration::from_secs(36))
+                    .build()
+                    .map_err(|_| PublicError::Connection)?;
+                let response = client
+                    .get(format!("http://127.0.0.1:{port}/item45"))
+                    .send()
+                    .await
+                    .map_err(|_| PublicError::Connection)?;
+                if response.status() != StatusCode::OK {
+                    return Err(PublicError::Response);
+                }
+                read_body(response, limit, Some(progress)).await
+            })
+    };
+    read().map_err(|_| "合成回环下载中断。")
+}
+
+fn public_get(
+    url: &str,
+    limit: u64,
+    progress: Option<&DownloadProgress>,
+) -> std::result::Result<Vec<u8>, PublicError> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| PublicError::Connection)?
-        .block_on(get(url, limit, download))
+        .block_on(get(url, limit, progress))
 }
 
 fn executable(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
@@ -204,12 +269,16 @@ pub(super) fn latest(home: &Path) -> Result<(Vec<u8>, Source)> {
     let response = public_get(
         &format!("https://api.github.com/{LATEST}"),
         MAX_METADATA,
-        false,
+        None,
     );
     latest_with(home, response, github_client)
 }
 
-pub(super) fn download(home: &Path, update: &Update) -> Result<Vec<u8>> {
+pub(super) fn download(
+    home: &Path,
+    update: &Update,
+    progress: &DownloadProgress,
+) -> Result<Vec<u8>> {
     match &update.source {
         Source::Public => public_get(
             &format!(
@@ -217,20 +286,26 @@ pub(super) fn download(home: &Path, update: &Update) -> Result<Vec<u8>> {
                 update.tag, update.asset_name
             ),
             update.bytes,
-            true,
+            Some(progress),
         )
         .map_err(|_| "无法从 GitHub 下载更新包，请检查网络或查看发布页。"),
-        Source::Cli(gh) => bounded_output(
-            &mut github(
-                gh,
-                home,
-                &format!("{REPO}/releases/assets/{}", update.id),
-                "Accept: application/octet-stream",
-            ),
-            update.bytes,
-            REQUEST_TIMEOUT,
-        )
-        .map_err(|_| "GitHub CLI 下载失败，请检查 GitHub 登录状态、仓库权限和网络。"),
+        Source::Cli(gh) => {
+            // gh emits the body without headers. This endpoint pins the same
+            // asset ID whose validated size we received with the release.
+            progress.set_total(Some(update.bytes));
+            bounded_output_with_progress(
+                &mut github(
+                    gh,
+                    home,
+                    &format!("{REPO}/releases/assets/{}", update.id),
+                    "Accept: application/octet-stream",
+                ),
+                update.bytes,
+                REQUEST_TIMEOUT,
+                Some(progress.clone()),
+            )
+            .map_err(|_| "GitHub CLI 下载失败，请检查 GitHub 登录状态、仓库权限和网络。")
+        }
     }
 }
 
