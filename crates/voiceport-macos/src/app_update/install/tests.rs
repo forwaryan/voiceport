@@ -104,6 +104,21 @@ fn fixture_target(home: &Path) -> PersonalInstall {
 }
 
 #[test]
+fn a_rejected_handoff_keeps_the_staged_package_available_for_retry() {
+    let mut staged = Staged::fixture("99.0.0");
+    let path = staged.directory.path().join("candidate");
+    fs::write(&path, b"staged candidate").unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            staged.handoff(Path::new("not-an-installation")).err(),
+            Some(MANUAL_ONLY)
+        );
+        assert_eq!(staged.version, "99.0.0");
+        assert_eq!(fs::read(&path).unwrap(), b"staged candidate");
+    }
+}
+
+#[test]
 fn swap_keeps_the_previous_bundle_and_does_not_touch_adjacent_data() {
     let temp = tempfile::tempdir_in("/private/tmp").unwrap();
     let target = fixture_target(temp.path());
@@ -129,11 +144,23 @@ fn swap_keeps_the_previous_bundle_and_does_not_touch_adjacent_data() {
     assert_eq!(fs::read(data.join("model")).unwrap(), b"untouched");
     assert!(verified_swap(&target, &lock.directory, old_stage.path(), &previous, &next).is_err());
     assert_eq!(fs::read(installed.join("new")).unwrap(), b"update");
-    verified_swap(&target, &lock.directory, old_stage.path(), &next, &previous).unwrap();
-    assert_eq!(
-        fs::read(installed.join("old")).unwrap(),
-        b"keep for rollback"
-    );
+
+    let launch = reopen_verified(&target, &next, |path| {
+        assert_eq!(path, installed);
+        assert_eq!(fs::read(path.join("new")).unwrap(), b"update");
+        Ok(())
+    });
+    finish_launch(launch, false, || {
+        verified_swap(&target, &lock.directory, old_stage.path(), &next, &previous).unwrap();
+        reopen_verified(&target, &previous, |path| {
+            assert_eq!(path, installed);
+            assert_eq!(fs::read(path.join("old")).unwrap(), b"keep for rollback");
+            Ok(())
+        })
+    })
+    .unwrap();
+    assert_eq!(fs::read(staged.join("new")).unwrap(), b"update");
+    assert_eq!(fs::read(data.join("model")).unwrap(), b"untouched");
 }
 
 #[test]

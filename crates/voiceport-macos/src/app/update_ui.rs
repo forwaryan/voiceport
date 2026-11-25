@@ -29,7 +29,75 @@ enum State {
     Offered(Update, Option<&'static str>),
     Downloading(Receiver<app_update::Result<Staged>>, Option<&'static str>),
     Ready(Staged, Option<&'static str>),
+    Installing,
     Notice(Notice),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RetainedResult {
+    None,
+    Text,
+    Audio,
+    TextAndAudio,
+}
+
+impl RetainedResult {
+    fn when_idle(c: &Controller) -> Result<Self, &'static str> {
+        match c.state.phase {
+            Phase::Permissions => return Err("听写正在准备。请等准备结束或取消听写。"),
+            Phase::Recording => return Err("正在录音。请先停止并转写，或取消听写。"),
+            Phase::Transcribing => return Err("正在转写。请等转写完成或取消听写。"),
+            Phase::Delivering => return Err("正在投递文字。请等待投递完成。"),
+            Phase::Stopping => {
+                return Err("听写正在结束或清理。请等待。如面板提示清理待确认，可按提示处理。");
+            }
+            Phase::Idle | Phase::Ready | Phase::Failed => {}
+        }
+        if c.source_tests.busy() {
+            return Err("来源测试正在运行或清理。请等待或在来源测试中停止测试。");
+        }
+        if c.microphone_test_running() {
+            return Err("麦克风正在测试。请在设置中停止测试或等待结束。");
+        }
+        if c.busy() {
+            return Err("文字投递尚未完成。请等待当前任务结束。");
+        }
+        if c.discovering() {
+            return Err("正在检查本地模型。请等检查完成。");
+        }
+        let text = !c.transcript.trim().is_empty()
+            || c.raw_transcript
+                .as_ref()
+                .is_some_and(|text| !text.trim().is_empty());
+        Ok(match (text, c.has_retained_recording()) {
+            (false, false) => Self::None,
+            (true, false) => Self::Text,
+            (false, true) => Self::Audio,
+            (true, true) => Self::TextAndAudio,
+        })
+    }
+
+    fn guidance(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Text => {
+                Some("本次退出会清除仍保留在 VoicePort 中的文字。请先查看并保存需要保留的文字。")
+            }
+            Self::Audio => {
+                Some("本次退出会释放失败的录音，重启后无法再重试。可以先回到听写页面重试转写。")
+            }
+            Self::TextAndAudio => Some(
+                "本次退出会清除仍保留的文字并释放失败的录音。请先保存需要保留的文字，或重试转写。",
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InstallSnapshot {
+    generation: u64,
+    retained: RetainedResult,
+    cli_result: bool,
 }
 
 enum Cached {
@@ -119,6 +187,7 @@ impl State {
                 ),
             },
             Self::Downloading(..) => "正在下载并校验更新…".into(),
+            Self::Installing => "正在处理更新安装…".into(),
             Self::Ready(candidate, failure) => match failure {
                 None => format!("安装 v{} 并重启…", candidate.version),
                 Some(_) => format!(
@@ -204,7 +273,7 @@ impl Delegate {
             item.setToolTip(detail.as_deref());
             item.setEnabled(!matches!(
                 update.state,
-                State::Checking { .. } | State::Downloading(..)
+                State::Checking { .. } | State::Downloading(..) | State::Installing
             ));
         }
         if let Some(item) = self.ivars().update_refresh_item.get() {
@@ -243,7 +312,7 @@ impl Delegate {
         let mut update = self.ivars().update.borrow_mut();
         if matches!(
             update.state,
-            State::Checking { .. } | State::Downloading(..)
+            State::Checking { .. } | State::Downloading(..) | State::Installing
         ) {
             return;
         }
@@ -358,70 +427,128 @@ impl Delegate {
         self.update_menu();
     }
 
-    fn may_install_update(&self) -> bool {
+    fn update_install_snapshot(&self) -> Result<InstallSnapshot, &'static str> {
         let ivars = self.ivars();
-        !ivars.quitting.get()
-            && !self.settings_locked()
-            && ivars.permission_rx.borrow().is_none()
-            && ivars.pending_hotkey.borrow().is_none()
-            && self.control_quiet_for_update()
-            && ivars.controller.try_borrow().is_ok_and(|c| {
-                c.as_ref()
-                    .is_some_and(|c| c.state.phase == Phase::Idle && !c.busy() && !c.discovering())
-            })
+        if ivars.quitting.get() {
+            return Err("VoicePort 正在退出。请重新打开应用后再安装。");
+        }
+        if self.settings_locked() {
+            return Err("请先完成或关闭来源、模型、快捷键或听写设置中的操作。");
+        }
+        if !ivars
+            .permission_rx
+            .try_borrow()
+            .is_ok_and(|rx| rx.is_none())
+        {
+            return Err("请先完成权限检查。");
+        }
+        if !ivars
+            .pending_hotkey
+            .try_borrow()
+            .is_ok_and(|key| key.is_none())
+        {
+            return Err("快捷键听写正在准备。请松开快捷键，等待准备结束或取消听写。");
+        }
+        let slot = ivars
+            .controller
+            .try_borrow()
+            .map_err(|_| "听写状态正在变化，请稍候。")?;
+        let c = slot.as_ref().ok_or("VoicePort 尚未就绪，请稍候。")?;
+        Ok(InstallSnapshot {
+            generation: c.state.generation(),
+            retained: RetainedResult::when_idle(c)?,
+            cli_result: self.retained_cli_result_for_update()?,
+        })
     }
 
-    fn install_update(&self) {
-        let (version, failure) = match &self.ivars().update.borrow().state {
-            State::Ready(candidate, failure) => (candidate.version.clone(), *failure),
-            _ => return,
+    fn update_install_blocked(&self, reason: &str) {
+        self.update_message(
+            "目前不能重启",
+            &format!("{reason}\n\n更新包仍已准备好。请处理后从菜单再次选择安装。"),
+            false,
+        );
+    }
+
+    fn confirm_update_install(&self, version: &str, failure: Option<&str>) -> bool {
+        let before = match self.update_install_snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(reason) => {
+                self.update_install_blocked(reason);
+                return false;
+            }
         };
-        if !self.may_install_update() {
-            self.update_message("目前不能重启", "请等听写和其他任务结束；先保存需要保留的转写文字，再清除结果或处理失败的录音。更新包仍已准备好。", false);
-            return;
-        }
-        let mut detail =
-            "VoicePort 将正常退出并重新打开。安装不修改模型、设置或转写数据；旧应用包会保留。"
-                .to_owned();
+        let mut detail = "VoicePort 将退出并重新打开。会保留模型、设置和旧应用包。".to_owned();
         if let Some(reason) = failure {
             detail = format!(
                 "{}\n刷新失败：{reason}\n\n{detail}",
-                cached_versions(&current_version(), &version)
+                cached_versions(&current_version(), version)
             );
         }
-        if alert(
+        let guidance = before.retained.guidance();
+        if let Some(guidance) = guidance {
+            detail.push_str("\n\n");
+            detail.push_str(guidance);
+        }
+        if before.cli_result {
+            detail.push_str("\n\n退出会清除命令行转写结果。请先用原操作编号运行 voiceport dictation result 保存文字。");
+        }
+        let (buttons, confirm): (&[&str], _) = if guidance.is_some() {
+            (
+                &["查看听写", "稍后", "放弃并安装"],
+                NSAlertThirdButtonReturn,
+            )
+        } else if before.cli_result {
+            (&["稍后", "放弃并安装"], NSAlertSecondButtonReturn)
+        } else {
+            (&["安装并重启", "稍后"], NSAlertFirstButtonReturn)
+        };
+        let choice = alert(
             self.mtm(),
             &format!("安装 VoicePort v{version}？"),
             &detail,
-            &["安装并重启", "稍后"],
-        ) != NSAlertFirstButtonReturn
-        {
-            return;
+            buttons,
+        );
+        if guidance.is_some() && choice == NSAlertFirstButtonReturn {
+            self.show_window();
+            self.select_page(false);
         }
-        // AppKit's modal loop runs ticks. A hotkey, CLI request or settings action
-        // may have started since opening the confirmation. Never terminate it.
-        if !self.may_install_update() {
-            self.update_message(
-                "VoicePort 已有未完成任务",
-                "本次未安装。请在空闲后重新选择「安装并重启」。",
-                false,
-            );
-            return;
+        if choice != confirm {
+            return false;
         }
-        let (installed, _) = location();
-        let State::Ready(staged, _) = std::mem::take(&mut self.ivars().update.borrow_mut().state)
-        else {
-            return;
-        };
-        self.update_menu();
-        match staged.handoff(Path::new(&installed)) {
-            Ok(commit) => *self.ivars().update_commit.borrow_mut() = Some(commit),
-            Err(error) => {
-                self.update_message("无法安装更新", error, true);
-                return;
+        // A native modal loop can run a hotkey, CLI or settings action.
+        // Never apply an earlier confirmation to a different dictation result.
+        match self.update_install_snapshot() {
+            Ok(after) if after == before => true,
+            Ok(_) => {
+                self.update_install_blocked("听写或保留内容已变化。请重新查看并确认。");
+                false
+            }
+            Err(reason) => {
+                self.update_install_blocked(reason);
+                false
             }
         }
-        NSApplication::sharedApplication(self.mtm()).terminate(None);
+    }
+
+    fn install_update(&self, mut staged: Staged, failure: Option<&'static str>) {
+        self.update_menu();
+        if self.confirm_update_install(&staged.version, failure) {
+            let (installed, _) = location();
+            match staged.handoff(Path::new(&installed)) {
+                Ok(commit) => {
+                    *self.ivars().update_commit.borrow_mut() = Some(commit);
+                    NSApplication::sharedApplication(self.mtm()).terminate(None);
+                    return;
+                }
+                Err(error) => self.update_message(
+                    "无法安装更新",
+                    &format!("{error}\n\n可以从菜单重试安装或重新检查更新。"),
+                    true,
+                ),
+            }
+        }
+        self.ivars().update.borrow_mut().state = State::Ready(staged, failure);
+        self.update_menu();
     }
 
     pub(super) fn update_action(&self) {
@@ -436,8 +563,13 @@ impl Delegate {
                 self.offer_update();
             }
             State::Ready(..) => {
+                let State::Ready(staged, failure) =
+                    std::mem::replace(&mut update.state, State::Installing)
+                else {
+                    unreachable!()
+                };
                 drop(update);
-                self.install_update();
+                self.install_update(staged, failure);
             }
             State::Notice(_) => {
                 let State::Notice(notice) = std::mem::take(&mut update.state) else {
@@ -523,6 +655,32 @@ impl Delegate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restart_checks_live_tasks_and_actual_retained_text_instead_of_terminal_phase() {
+        let mut c = Controller::new();
+        for phase in [Phase::Idle, Phase::Ready, Phase::Failed] {
+            c.state.phase = phase;
+            c.transcript.clear();
+            c.raw_transcript = None;
+            assert_eq!(RetainedResult::when_idle(&c), Ok(RetainedResult::None));
+            c.transcript = "synthetic result".into();
+            assert_eq!(RetainedResult::when_idle(&c), Ok(RetainedResult::Text));
+            c.transcript.clear();
+            c.raw_transcript = Some("synthetic original".into());
+            assert_eq!(RetainedResult::when_idle(&c), Ok(RetainedResult::Text));
+        }
+        for phase in [
+            Phase::Permissions,
+            Phase::Recording,
+            Phase::Transcribing,
+            Phase::Delivering,
+            Phase::Stopping,
+        ] {
+            c.state.phase = phase;
+            assert!(RetainedResult::when_idle(&c).is_err(), "{phase:?}");
+        }
+    }
 
     #[test]
     fn menu_reports_the_current_version_while_checking_and_on_failure() {

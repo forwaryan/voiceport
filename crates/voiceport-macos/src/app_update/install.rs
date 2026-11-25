@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 use tempfile::{Builder, TempDir};
 use voiceport_control::{Action, transport};
 
+mod acl;
+
 const APP: &str = "VoicePort.app";
 const ID: &str = "io.github.forwaryan.voiceport";
 const MAIN: &str = "Contents/MacOS/voiceport-app";
@@ -43,14 +45,14 @@ impl Staged {
         }
     }
 
-    pub(crate) fn handoff(self, installed: &Path) -> Result<ChildStdin> {
+    pub(crate) fn handoff(&mut self, installed: &Path) -> Result<ChildStdin> {
         let target = PersonalInstall::current(installed)?;
         target.staging_bundle(self.directory.path())?;
         if target.verify()? != self.original {
             return Err("已安装应用发生变化，请重新检查更新。");
         }
         let executable = installed.join(MAIN);
-        let original = self.original;
+        let original = &self.original;
         let other = self.directory.path();
         let mut helper = Command::new(&executable)
             .arg("--apply-staged-update")
@@ -66,7 +68,7 @@ impl Staged {
             .spawn()
             .map_err(|_| "无法启动更新程序；已安装应用未改变。")?;
         let commit = helper.stdin.take().expect("piped helper stdin");
-        let _ = self.directory.keep();
+        self.directory.disable_cleanup(true);
         Ok(commit)
     }
 }
@@ -198,12 +200,21 @@ pub(crate) fn can_install_in_app(path: &Path) -> bool {
 }
 
 fn owned_directory(path: &Path, uid: libc::uid_t, private: bool) -> Result<BundleId> {
-    let meta = fs::symlink_metadata(path).map_err(|_| MANUAL_ONLY)?;
-    if !real(path)
-        || !meta.is_dir()
+    let directory = open_directory(path).map_err(|_| MANUAL_ONLY)?;
+    let id = owned_directory_fd(&directory, uid, private)?;
+    if !real(path) || BundleId::read(path).map_err(|_| MANUAL_ONLY)? != id {
+        return Err(MANUAL_ONLY);
+    }
+    Ok(id)
+}
+
+fn owned_directory_fd(directory: &File, uid: libc::uid_t, private: bool) -> Result<BundleId> {
+    let meta = directory.metadata().map_err(|_| MANUAL_ONLY)?;
+    if !meta.is_dir()
         || meta.uid() != uid
         || meta.mode() & 0o022 != 0
         || private && meta.mode() & 0o777 != 0o700
+        || !matches!(acl::has_no_acl_grants(directory.as_raw_fd()), Ok(true))
     {
         return Err(MANUAL_ONLY);
     }
@@ -413,6 +424,7 @@ pub(super) fn stage(target: &PersonalInstall, version: &str, bytes: &[u8]) -> Re
         .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(target.parent())
         .map_err(|_| "应用程序目录不可写，请手动更新。")?;
+    owned_directory(directory.path(), target.uid, true)?;
     extract(bytes, directory.path())?;
     let candidate = target.staging_bundle(directory.path())?;
     preflight(&target.app, &candidate, version)?;
@@ -459,18 +471,13 @@ fn verified_swap(
     staged_id: &BundleId,
 ) -> Result<()> {
     let moved = "安装位置已变化；未替换应用。";
-    let candidate_parent = open_directory(stage_dir).map_err(|_| moved)?;
-    let verified_stage = owned_directory(stage_dir, target.uid, true)?;
+    let candidate_parent = open_directory(stage_dir).map_err(|_| MANUAL_ONLY)?;
+    let verified_stage = BundleId::read(stage_dir).map_err(|_| MANUAL_ONLY)?;
     let bundle = target.staging_bundle(stage_dir)?;
-    let fd_id = |file: &File| {
-        file.metadata()
-            .map(|m| BundleId::from_metadata(&m))
-            .map_err(|_| moved)
-    };
-    if fd_id(installed_parent)? != target.parent_id
-        || fd_id(&candidate_parent)? != verified_stage
-        || &target.verify()? != installed_id
+    if &target.verify()? != installed_id
         || &BundleId::read(&bundle)? != staged_id
+        || owned_directory_fd(installed_parent, target.uid, false)? != target.parent_id
+        || owned_directory_fd(&candidate_parent, target.uid, true)? != verified_stage
     {
         return Err(moved);
     }
@@ -510,10 +517,10 @@ fn lock_installation(target: &PersonalInstall) -> Result<InstallLock> {
     target.verify()?;
     let parent = target.parent();
     let unavailable = "另一个安装任务正在运行或安装目录不可用。";
-    let lock = open_directory(parent).map_err(|_| unavailable)?;
+    let lock = open_directory(parent).map_err(|_| MANUAL_ONLY)?;
     lock.try_lock().map_err(|_| unavailable)?;
-    if BundleId::from_metadata(&lock.metadata().map_err(|_| unavailable)?) != target.parent_id {
-        return Err(unavailable);
+    if owned_directory_fd(&lock, target.uid, false)? != target.parent_id {
+        return Err(MANUAL_ONLY);
     }
     // The old installer exclusively creates this marker without taking the
     // directory flock. Hold both until replacement, launch and rollback settle.

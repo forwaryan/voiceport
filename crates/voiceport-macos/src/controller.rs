@@ -834,6 +834,9 @@ impl Controller {
             }
         }
     }
+    pub(crate) fn has_retained_recording(&self) -> bool {
+        self.recording.is_some()
+    }
     pub(crate) fn can_retry_recording(&self) -> bool {
         !self.busy()
             && self.active.is_none()
