@@ -331,8 +331,7 @@ impl Delegate {
             && event.r#type() == NSEventType::RightMouseUp
             && let Some(menu) = self.ivars().context_menu.get()
         {
-            self.close_quick_panel();
-            NSMenu::popUpContextMenu_withEvent_forView(menu, &event, &button);
+            self.pop_up_status_menu(menu, &event, &button);
             return;
         }
         if self
@@ -346,6 +345,21 @@ impl Delegate {
             self.show_quick_panel();
         }
     }
+    pub(super) fn prepare_status_menu(&self) {
+        self.close_quick_panel();
+        self.update_menu();
+    }
+
+    pub(super) fn pop_up_status_menu(
+        &self,
+        menu: &NSMenu,
+        event: &NSEvent,
+        button: &NSStatusBarButton,
+    ) {
+        self.prepare_status_menu();
+        NSMenu::popUpContextMenu_withEvent_forView(menu, event, button);
+    }
+
     pub(super) fn show_quick_panel(&self) {
         if self.ivars().quitting.get() {
             return;
