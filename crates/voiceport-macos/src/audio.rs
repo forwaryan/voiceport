@@ -24,6 +24,11 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+#[path = "audio_diagnostics.rs"]
+pub(crate) mod diagnostics;
+use diagnostics::{CaptureDiagnostics, CaptureObservation, InputSignal, StageTimer};
 
 pub const MAXIMUM_SECONDS: u64 = 180;
 const OUTPUT_RATE: f64 = 24_000.0;
@@ -55,6 +60,7 @@ pub struct Recorder {
     speech: Option<Speech>,
     recording: Option<Arc<Recording>>,
     events: Option<Arc<Events>>,
+    capture_diagnostics: Option<CaptureDiagnostics>,
     finalized: bool,
     failure: Option<String>,
     _main_thread: PhantomData<Rc<()>>,
@@ -74,6 +80,7 @@ impl Recorder {
             speech: None,
             recording: None,
             events: None,
+            capture_diagnostics: None,
             finalized: false,
             failure: None,
             _main_thread: PhantomData,
@@ -147,8 +154,11 @@ impl Recorder {
         sender: EventSender,
         local: Option<crate::local_audio::Input>,
     ) -> Result<bool, String> {
-        main_thread()?;
+        main_thread()
+            .inspect_err(|_| self.capture_diagnostics = Some(CaptureDiagnostics::default()))?;
         self.cancel();
+        self.capture_diagnostics = Some(CaptureDiagnostics::default());
+        let capture_started = StageTimer::start(Instant::now);
         let media_type = unsafe { AVMediaTypeAudio }.ok_or("系统音频接口不可用。")?;
         if unsafe { AVCaptureDevice::authorizationStatusForMediaType(media_type) }
             != AVAuthorizationStatus::Authorized
@@ -204,6 +214,7 @@ impl Recorder {
                     frames: 0,
                     accepting: true,
                     valid: true,
+                    diagnostics: CaptureObservation::new(capture_started),
                     writer: Some(writer),
                     request,
                     local,
@@ -242,8 +253,24 @@ impl Recorder {
         })();
         if result.is_err() {
             self.cancel();
+            self.mark_capture_unknown();
+        } else {
+            self.capture_diagnostics = None;
         }
         result
+    }
+
+    /// The settled capture snapshot survives stop, cancellation, and release
+    /// until the next start attempt. The caller owns the session association.
+    #[allow(dead_code)] // Read by the controller when the receipt is integrated.
+    pub(crate) fn capture_diagnostics(&self) -> Option<CaptureDiagnostics> {
+        self.capture_diagnostics
+    }
+
+    fn mark_capture_unknown(&mut self) {
+        self.capture_diagnostics
+            .get_or_insert_with(CaptureDiagnostics::default)
+            .signal = InputSignal::Unknown;
     }
 
     /// Revoke callback delivery, stop/remove the tap, drain conversion, close the
@@ -270,6 +297,7 @@ impl Recorder {
                 .and_then(|_| validate_aac(recording.path()))
             {
                 self.failure = Some(error.clone());
+                self.mark_capture_unknown();
                 return Err(error);
             }
             self.finalized = true;
@@ -302,10 +330,12 @@ impl Recorder {
                 engine.inputNode().removeTapOnBus(0);
             }
         }
-        if let Some(sink) = self.sink.take()
-            && let Err(error) = sink.finish()
-        {
-            self.failure = Some(error);
+        if let Some(sink) = self.sink.take() {
+            let (result, diagnostics) = sink.finish();
+            self.capture_diagnostics = Some(diagnostics);
+            if let Err(error) = result {
+                self.failure = Some(error);
+            }
         }
         if let Some(mut speech) = self.speech.take() {
             speech.cancel();
@@ -515,6 +545,7 @@ struct SinkState {
     frames: u64,
     accepting: bool,
     valid: bool,
+    diagnostics: CaptureObservation,
     writer: Option<AacWriter>,
     request: Option<Retained<SFSpeechAudioBufferRecognitionRequest>>,
     local: Option<crate::local_audio::Input>,
@@ -537,12 +568,14 @@ impl Sink {
             if !state.accepting {
                 return;
             }
+            state.diagnostics.callback();
             match state.consume(buffer, self.speech_active.load(Ordering::Acquire)) {
                 Ok(true) => Some(AudioEvent::LimitReached),
                 Ok(false) => state.local_error.take().map(AudioEvent::Failed),
                 Err(error) => {
                     state.valid = false;
                     state.accepting = false;
+                    state.diagnostics.unavailable();
                     Some(AudioEvent::Failed(format!(
                         "录音写入失败，请重新录音：{error}"
                     )))
@@ -553,12 +586,14 @@ impl Sink {
             self.events.send(event);
         }
     }
-    fn finish(&self) -> Result<(), String> {
+    fn finish(&self) -> (Result<(), String>, CaptureDiagnostics) {
         self.speech_active.store(false, Ordering::Release);
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| "录音写入锁失效。".to_owned())?;
+        let Ok(mut state) = self.state.lock() else {
+            return (
+                Err("录音写入锁失效。".into()),
+                CaptureDiagnostics::default(),
+            );
+        };
         state.accepting = false;
         state.end_speech();
         if let Some(local) = state.local.take() {
@@ -570,11 +605,14 @@ impl Sink {
             .map_or(Ok(()), |mut writer| writer.finish());
         if result.is_err() {
             state.valid = false;
+            state.diagnostics.unavailable();
         }
-        if !state.valid || state.frames == 0 {
-            return Err("无法写入完整录音，请重新录音。".into());
-        }
-        result
+        let result = if !state.valid || state.frames == 0 {
+            Err("无法写入完整录音，请重新录音。".into())
+        } else {
+            result
+        };
+        (result, state.diagnostics.snapshot())
     }
 }
 impl SinkState {
@@ -590,6 +628,15 @@ impl SinkState {
                 (buffer.frameLength() as u64).min(self.maximum_frames.saturating_sub(self.frames));
             if count == 0 {
                 return Ok(false);
+            }
+            // Observe only the frames accepted by the current recording limit,
+            // before any mixing. Missing observations cannot alter writer/ASR input.
+            match pcm_samples(buffer, MAXIMUM_TAP_FRAMES as usize) {
+                Ok(pcm) => {
+                    self.diagnostics
+                        .observe(count as usize, pcm.channels, pcm.sample, Instant::now)
+                }
+                Err(_) => self.diagnostics.unavailable(),
             }
             let copy;
             let input = if count < buffer.frameLength() as u64 {
@@ -631,7 +678,7 @@ impl SinkState {
     }
 }
 
-fn validate_format(format: &AVAudioFormat) -> Result<(), String> {
+fn validate_format(format: &AVAudioFormat) -> Result<(), &'static str> {
     unsafe {
         let rate = format.sampleRate();
         let channels = format.channelCount();
@@ -642,7 +689,7 @@ fn validate_format(format: &AVAudioFormat) -> Result<(), String> {
             || description.as_ref().mFormatID != u32::from_be_bytes(*b"lpcm")
             || description.as_ref().mBytesPerFrame == 0
         {
-            return Err("麦克风音频格式不可用。".into());
+            return Err("麦克风音频格式不可用。");
         }
     }
     Ok(())
@@ -946,31 +993,57 @@ fn copy_pcm(buffer: &AVAudioPCMBuffer) -> Result<crate::local_audio::Packet, Str
     Ok(packet)
 }
 
-/// Borrow native samples only for the lifetime of the callback's PCM buffer.
 fn pcm_frames(
     buffer: &AVAudioPCMBuffer,
     maximum_frames: usize,
 ) -> Result<(usize, impl ExactSizeIterator<Item = [f32; 8]> + '_), String> {
+    let PcmSamples {
+        channels,
+        frames,
+        sample,
+    } = pcm_samples(buffer, maximum_frames)?;
+    let frames = (0..frames).map(move |frame| {
+        let mut samples = [0.; 8];
+        for (channel, value) in samples[..channels].iter_mut().enumerate() {
+            *value = sample(frame, channel) as f32;
+        }
+        samples
+    });
+    Ok((channels, frames))
+}
+
+struct PcmSamples<Sample> {
+    channels: usize,
+    frames: usize,
+    sample: Sample,
+}
+
+/// Borrow native samples only for the lifetime of the callback's PCM buffer.
+/// Full precision lets the observer distinguish digital zero from subnormal PCM.
+fn pcm_samples(
+    buffer: &AVAudioPCMBuffer,
+    maximum_frames: usize,
+) -> Result<PcmSamples<impl Fn(usize, usize) -> f64 + '_>, &'static str> {
     unsafe {
         let format = buffer.format();
         validate_format(&format)?;
         let frames = buffer.frameLength() as usize;
         let channels = format.channelCount() as usize;
         if frames == 0 || frames > maximum_frames || buffer.frameLength() > buffer.frameCapacity() {
-            return Err("本地 PCM 缓冲区大小无效。".into());
+            return Err("本地 PCM 缓冲区大小无效。");
         }
         let common = format.commonFormat();
         let width = match common {
             AVAudioCommonFormat::PCMFormatFloat32 | AVAudioCommonFormat::PCMFormatInt32 => 4,
             AVAudioCommonFormat::PCMFormatFloat64 => 8,
             AVAudioCommonFormat::PCMFormatInt16 => 2,
-            _ => return Err("本地转写不支持麦克风的 PCM 格式。".into()),
+            _ => return Err("本地转写不支持麦克风的 PCM 格式。"),
         };
         let interleaved = format.isInterleaved();
         let list = buffer.audioBufferList().as_ref();
         let count = if interleaved { 1 } else { channels };
         if list.mNumberBuffers as usize != count {
-            return Err("本地 PCM 通道布局无效。".into());
+            return Err("本地 PCM 通道布局无效。");
         }
         let buffers = std::slice::from_raw_parts(list.mBuffers.as_ptr(), count);
         for native in buffers {
@@ -979,35 +1052,36 @@ fn pcm_frames(
                 || native.mData.is_null()
                 || (native.mDataByteSize as usize) < frames * native_channels * width
             {
-                return Err("本地 PCM 缓冲区不完整。".into());
+                return Err("本地 PCM 缓冲区不完整。");
             }
         }
-        let frames = (0..frames).map(move |frame| {
-            let mut samples = [0.; 8];
-            for (channel, sample) in samples[..channels].iter_mut().enumerate() {
-                let (native, index) = if interleaved {
-                    (&buffers[0], frame * channels + channel)
-                } else {
-                    (&buffers[channel], frame)
-                };
-                let pointer = native.mData.cast::<u8>().add(index * width);
-                *sample = match common {
-                    AVAudioCommonFormat::PCMFormatFloat32 => pointer.cast::<f32>().read_unaligned(),
-                    AVAudioCommonFormat::PCMFormatFloat64 => {
-                        pointer.cast::<f64>().read_unaligned() as f32
-                    }
-                    AVAudioCommonFormat::PCMFormatInt16 => {
-                        pointer.cast::<i16>().read_unaligned() as f32 / 32768.0
-                    }
-                    AVAudioCommonFormat::PCMFormatInt32 => {
-                        pointer.cast::<i32>().read_unaligned() as f32 / 2147483648.0
-                    }
-                    _ => unreachable!(),
-                };
+        let sample = move |frame: usize, channel: usize| {
+            assert!(frame < frames && channel < channels);
+            let (native, index) = if interleaved {
+                (&buffers[0], frame * channels + channel)
+            } else {
+                (&buffers[channel], frame)
+            };
+            let pointer = native.mData.cast::<u8>().add(index * width);
+            match common {
+                AVAudioCommonFormat::PCMFormatFloat32 => {
+                    f64::from(pointer.cast::<f32>().read_unaligned())
+                }
+                AVAudioCommonFormat::PCMFormatFloat64 => pointer.cast::<f64>().read_unaligned(),
+                AVAudioCommonFormat::PCMFormatInt16 => {
+                    f64::from(pointer.cast::<i16>().read_unaligned()) / 32768.0
+                }
+                AVAudioCommonFormat::PCMFormatInt32 => {
+                    f64::from(pointer.cast::<i32>().read_unaligned()) / 2147483648.0
+                }
+                _ => unreachable!(),
             }
-            samples
-        });
-        Ok((channels, frames))
+        };
+        Ok(PcmSamples {
+            channels,
+            frames,
+            sample,
+        })
     }
 }
 
@@ -1134,6 +1208,7 @@ pub(crate) mod stop_failure_fixture {
                 frames: 0,
                 accepting: true,
                 valid: true,
+                diagnostics: CaptureObservation::new(StageTimer::start(Instant::now)),
                 writer: Some(writer),
                 request: None,
                 local: None,
@@ -1298,6 +1373,208 @@ mod tests {
         (format, input)
     }
 
+    fn diagnostic_sink(
+        recording: &Recording,
+        format: &Retained<AVAudioFormat>,
+        generation: u64,
+    ) -> (Arc<Sink>, std::sync::mpsc::Receiver<(u64, AudioEvent)>) {
+        let writer = AacWriter::new(recording.path(), format).unwrap();
+        recording.secure_audio_file().unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sink = Arc::new(Sink {
+            state: Mutex::new(SinkState {
+                format: format.clone(),
+                maximum_frames: 48000,
+                frames: 0,
+                accepting: true,
+                valid: true,
+                diagnostics: CaptureObservation::new(StageTimer::start(Instant::now)),
+                writer: Some(writer),
+                request: None,
+                local: None,
+                local_error: None,
+            }),
+            events: Arc::new(Events {
+                generation,
+                sender,
+                active: AtomicBool::new(true),
+            }),
+            speech_active: Arc::new(AtomicBool::new(false)),
+        });
+        (sink, receiver)
+    }
+
+    #[test]
+    fn capture_distinguishes_no_callbacks_empty_buffers_and_pre_mix_signal() {
+        let temp = tempfile::tempdir().unwrap();
+        let store =
+            storage::Storage::at(temp.path().canonicalize().unwrap().join(storage::NAMESPACE));
+        let (format, buffer) = synthetic_buffer(48_000., 2, 4800);
+        for (case, amplitudes, frames, expected) in [
+            ("no callback", [0., 0.], None, InputSignal::NoCallbacks),
+            ("empty", [0., 0.], Some(0), InputSignal::NoFrames),
+            (
+                "silence",
+                [0., -0.],
+                Some(4800),
+                InputSignal::DigitalSilence,
+            ),
+            (
+                "quiet",
+                [0.0001, 0.0001],
+                Some(4800),
+                InputSignal::LowEnergy,
+            ),
+            ("one side", [0., 0.05], Some(4800), InputSignal::Signal),
+            (
+                "opposite phase",
+                [0.05, -0.05],
+                Some(4800),
+                InputSignal::Signal,
+            ),
+        ] {
+            let recording = store.create_recording().unwrap();
+            let (sink, events) = diagnostic_sink(&recording, &format, 82);
+            if let Some(frames) = frames {
+                unsafe {
+                    buffer.setFrameLength(frames);
+                    for (channel, amplitude) in amplitudes.into_iter().enumerate() {
+                        let data = (*buffer.floatChannelData().add(channel)).as_ptr();
+                        for frame in 0..frames as usize {
+                            let tone =
+                                (frame as f32 * 440. * std::f32::consts::TAU / 48_000.).sin();
+                            data.add(frame).write(amplitude * tone);
+                        }
+                    }
+                }
+                sink.consume(&buffer);
+            }
+            let (result, diagnostics) = sink.finish();
+            let frames_observed = frames.unwrap_or(0);
+            assert_eq!(result.is_ok(), frames_observed > 0, "{case}");
+            assert_eq!(diagnostics.signal, expected, "{case}");
+            assert_eq!(
+                diagnostics.callbacks,
+                Some(u64::from(frames.is_some())),
+                "{case}"
+            );
+            assert_eq!(
+                diagnostics.observed_frames,
+                Some(frames_observed.into()),
+                "{case}"
+            );
+            assert_eq!(
+                diagnostics.timings.capture_first_frame.is_some(),
+                frames_observed > 0,
+                "{case}"
+            );
+            assert_eq!(diagnostics.timings.preparation, None);
+            assert_eq!(diagnostics.timings.transcription, None);
+            assert_eq!(diagnostics.timings.delivery, None);
+            assert!(events.try_recv().is_err(), "{case}");
+        }
+    }
+
+    #[test]
+    fn capture_ignores_signal_beyond_the_recording_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let recording =
+            storage::Storage::at(temp.path().canonicalize().unwrap().join(storage::NAMESPACE))
+                .create_recording()
+                .unwrap();
+        let (format, buffer) = synthetic_buffer(48_000., 1, 4800);
+        let (sink, events) = diagnostic_sink(&recording, &format, 82);
+        sink.state.lock().unwrap().maximum_frames = 2400;
+        unsafe {
+            let samples = (*buffer.floatChannelData()).as_ptr();
+            samples.write_bytes(0, 2400);
+        }
+        sink.consume(&buffer);
+        let (result, diagnostics) = sink.finish();
+        result.unwrap();
+        assert_eq!(diagnostics.signal, InputSignal::DigitalSilence);
+        assert_eq!(diagnostics.observed_frames, Some(2400));
+        assert_eq!(
+            events.try_iter().collect::<Vec<_>>(),
+            [(82, AudioEvent::LimitReached)]
+        );
+    }
+
+    #[test]
+    fn float64_observation_retains_nonzero_below_float32_precision() {
+        let format = unsafe {
+            AVAudioFormat::initWithCommonFormat_sampleRate_channels_interleaved(
+                AVAudioFormat::alloc(),
+                AVAudioCommonFormat::PCMFormatFloat64,
+                48_000.,
+                1,
+                true,
+            )
+            .unwrap()
+        };
+        let buffer = unsafe {
+            AVAudioPCMBuffer::initWithPCMFormat_frameCapacity(AVAudioPCMBuffer::alloc(), &format, 1)
+                .unwrap()
+        };
+        unsafe {
+            buffer.setFrameLength(1);
+            let buffer_list = buffer.mutableAudioBufferList();
+            let native = &buffer_list.as_ref().mBuffers[0];
+            native.mData.cast::<f64>().write_unaligned(1e-100);
+        }
+        assert_eq!(copy_pcm(&buffer).unwrap().samples, [0.0]);
+        let pcm = pcm_samples(&buffer, 1).unwrap();
+        let mut diagnostics = CaptureObservation::new(StageTimer::start(Instant::now));
+        diagnostics.callback();
+        diagnostics.observe(pcm.frames, pcm.channels, pcm.sample, Instant::now);
+        assert_eq!(diagnostics.snapshot().signal, InputSignal::LowEnergy);
+    }
+
+    #[test]
+    fn stopped_or_cancelled_capture_keeps_only_its_own_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let store =
+            storage::Storage::at(temp.path().canonicalize().unwrap().join(storage::NAMESPACE));
+        let (format, good) = synthetic_buffer(48_000., 2, 4800);
+        let (_, wrong_format) = synthetic_buffer(48_000., 1, 4800);
+        let mut first = Recorder::new();
+        let recording = Arc::new(store.create_recording().unwrap());
+        let (old, old_events) = diagnostic_sink(&recording, &format, 82);
+        first.recording = Some(recording);
+        first.sink = Some(old.clone());
+        first.events = Some(old.events.clone());
+        assert_eq!(first.capture_diagnostics(), None);
+        old.consume(&good);
+        first.cancel();
+        assert!(first.lease().is_none());
+        let cancelled = first.capture_diagnostics().unwrap();
+        assert_eq!(cancelled.signal, InputSignal::Signal);
+        assert_eq!(cancelled.callbacks, Some(1));
+        first.cancel();
+
+        let mut second = Recorder::new();
+        let recording = Arc::new(store.create_recording().unwrap());
+        let (current, events) = diagnostic_sink(&recording, &format, 83);
+        second.recording = Some(recording);
+        second.sink = Some(current.clone());
+        second.events = Some(current.events.clone());
+        old.consume(&wrong_format);
+        current.consume(&wrong_format);
+        assert!(matches!(events.try_recv(), Ok((83, AudioEvent::Failed(_)))));
+        assert!(old_events.try_recv().is_err());
+        second.stop_native();
+        assert!(second.failure.is_some());
+        let failed = second.capture_diagnostics().unwrap();
+        assert_eq!(failed.signal, InputSignal::Unknown);
+        assert_eq!(failed.callbacks, Some(1));
+        assert_eq!(failed.observed_frames, Some(0));
+        assert_eq!(failed.timings.capture_first_frame, None);
+        second.cancel();
+        assert_eq!(second.capture_diagnostics(), Some(failed));
+        assert_eq!(first.capture_diagnostics(), Some(cancelled));
+        assert_eq!(old.finish().1, cancelled);
+    }
+
     #[test]
     fn sink_trims_limit_once_and_rejects_late_buffers_after_finalization() {
         let temp = tempfile::tempdir().unwrap();
@@ -1317,6 +1594,7 @@ mod tests {
                 frames: 0,
                 accepting: true,
                 valid: true,
+                diagnostics: CaptureObservation::new(StageTimer::start(Instant::now)),
                 writer: Some(writer),
                 request: None,
                 local: Some(local),
@@ -1337,8 +1615,19 @@ mod tests {
             receiver.try_iter().collect::<Vec<_>>(),
             [(42, AudioEvent::LimitReached)]
         );
-        sink.finish().unwrap();
+        let (result, diagnostics) = sink.finish();
+        result.unwrap();
+        assert_eq!(diagnostics.signal, InputSignal::Signal);
+        assert_eq!(diagnostics.callbacks, Some(2));
+        assert_eq!(diagnostics.observed_frames, Some(5001));
+        let expected = copy_pcm(&input).unwrap();
         let packets: Vec<_> = incoming.receiver.try_iter().collect();
+        assert_eq!(packets.len(), 2);
+        assert_eq!(packets[0].samples, expected.samples);
+        assert_eq!(
+            packets[1].samples,
+            expected.samples[..201 * expected.channels]
+        );
         assert_eq!(
             packets
                 .iter()
@@ -1353,6 +1642,7 @@ mod tests {
         sink.consume(&input);
         assert_eq!(std::fs::read(recording.path()).unwrap(), bytes);
         assert!(receiver.try_recv().is_err());
+        assert_eq!(sink.finish().1, diagnostics);
     }
 
     #[test]
@@ -1383,6 +1673,7 @@ mod tests {
                 frames: 0,
                 accepting: true,
                 valid: true,
+                diagnostics: CaptureObservation::new(StageTimer::start(Instant::now)),
                 writer: Some(writer),
                 request: None,
                 local: Some(local),
@@ -1401,7 +1692,9 @@ mod tests {
         );
         assert!(incoming.check().is_err());
         assert!(sink.state.lock().unwrap().valid);
-        sink.finish().unwrap();
+        let (result, diagnostics) = sink.finish();
+        result.unwrap();
+        assert_eq!(diagnostics.signal, InputSignal::Signal);
         recording.validate_finalized().unwrap();
         validate_aac(recording.path()).unwrap();
         let mut frames = 0;
@@ -1431,6 +1724,7 @@ mod tests {
                 frames: 0,
                 accepting: true,
                 valid: true,
+                diagnostics: CaptureObservation::new(StageTimer::start(Instant::now)),
                 writer: Some(writer),
                 request: None,
                 local: None,
@@ -1448,7 +1742,9 @@ mod tests {
             receiver.try_recv(),
             Ok((99, AudioEvent::Failed(_)))
         ));
-        assert!(sink.finish().is_err());
+        let (result, diagnostics) = sink.finish();
+        assert!(result.is_err());
+        assert_eq!(diagnostics.signal, InputSignal::Unknown);
         assert!(!sink.state.lock().unwrap().valid);
         sink.consume(&input);
         assert!(receiver.try_recv().is_err());

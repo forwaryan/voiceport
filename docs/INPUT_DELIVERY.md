@@ -52,9 +52,19 @@ WebKit 网页可能声明 AX 文字接口可写，却不把 `AXSelectedText` 更
 
 `voiceport --json status` 的 `data.input.method` 表示 GUI 选用的投递路径，不表示文字已经送出。缺少焦点字段的微信主窗口通过保护检查后，与其他兼容控件共用 `clipboard_final`。当前路径提交 Command+V，不打开「编辑」菜单；旧版的 `wechat_menu_paste` 仅用于辨认旧 App 的菜单路径。排查前先核对 `version`、`bundle_path` 与 PID。
 
-`data.input.method` 和 `data.input.failure_stage` 来自 App 保留的投递状态。自动投递开始捕获目标时会重置这两个字段。仅面板听写和 CLI 听写跳过目标捕获，因此字段可能仍显示较早一轮的路径和失败阶段。`data.input.start` 单独记录最近一次 GUI 启动请求的路径，无法用来确认这些投递字段属于同一轮。CLI 听写操作始终为 `delivery:"none"`。
+`data.input.method` 和 `data.input.failure_stage` 来自 App 保留的投递状态。自动投递开始捕获目标时会重置这两个字段。仅面板听写和 CLI 听写跳过目标捕获，因此字段可能仍显示较早一轮的路径和失败阶段。`data.input.start` 记录最近一次 GUI 启动请求的路径，分配标识后可用 `input.start.session` 与新回执关联。CLI 听写操作始终为 `delivery:"none"`。
 
-选定 `clipboard_final` 后仍可能等待、取消或失败。事件实际提交后，内部回执最多记为 `submitted`，目标控件是否收到文字需要另行确认。`status` 不返回完整 `DeliveryReceipt`。
+`data.input.gui_receipt` 是最近一次 GUI 听写的只读回执。首次 GUI 听写前为 `null`，旧版 App 可能缺少该字段。以 App 实例和 `session` 关联一轮听写，`generation` 标记当前转写尝试。明确被拒绝的 GUI 启动也获得新标识并报告 `not_started`。手动重试保留 `session`、使用新 `generation`，只重试转写并保留原投递证据。CLI 听写与来源测试保留最近的 GUI 回执，CLI 自身仍使用独立 operation ID。
+
+- `automatic` 是原请求的自动输入设置，`method` 和 `failure_stage` 属于该轮。`block_reason` 给出固定原因，例如 `panel_only`、`retry_panel_only`、`start_rejected`、`source_unavailable`、`unsupported_language`、`microphone_denied`、`capture_failed`、`transcription_failed`、`empty_transcript` 或 `cancelled`。自动投递的具体阻止阶段由 `failure_stage` 给出，例如 `focus`、`ownership` 或 `readback`。
+- `transcription` 独立标记 `not_started`、`pending`、`completed`、`empty`、`failed` 或 `cancelled`。已完成转写后取消未结算的投递时，转写状态仍表示结果已取得。
+- `delivery` 包含下表中的状态和操作计数。对于 `clipboard_final`，选路后仍可能等待、取消或失败。事件提交后的 `submitted` 表示请求已发出，接收效果需要另行检查。
+
+同用户 IPC 的 schema 仍为 1。回执只含进程内标识、固定状态和原因、投递方法及次数。`input.start` 保留启动路径和对应的 `session`，旧的目标 PID 和 bundle 字段返回 `null`。空白最终结果不提交新的输入，有效的已确认 AX 预览仍仅在拥有原范围且未被改动时可安全恢复。
+
+`data.input.gui_diagnostics` 使用相同 `session` 和 `generation`。`capture` 在实际采集封存后报告采集 `generation`、可观测的回调数与帧数，以及 `no_callbacks`、`no_frames`、`digital_silence`、`low_energy`、`signal` 或 `unknown`。信号档基于混音前的采集数据，转写返回空文字时仍保留有声记录。重试保留原录音的采集代次及首帧耗时，后续耗时只属于新的尝试。
+
+`timings` 使用单调时钟，单位为毫秒。`capture_first_frame_ms` 从 Recorder 开始准备到首个有效输入帧，`preparation_ms` 从自动输入目标捕获开始到准备结算，`transcription_ms` 从转写 worker 接手到该次结果，`delivery_ms` 从非空最终结果进入自动投递到投递尝试结算。阶段可以重叠。缺少开始或结束证据时返回 `null`。
 
 ### 统一回执与重复结果
 

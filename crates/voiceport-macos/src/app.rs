@@ -216,6 +216,7 @@ struct Ivars {
     prepare_permissions: OnceCell<Retained<NSButton>>,
     accessibility: OnceCell<Retained<NSButton>>,
     hotkey_error: RefCell<Option<String>>,
+    hotkey_registration_failure: Cell<Option<voiceport_control::readiness::Hotkey>>,
 }
 define_class!(
     #[unsafe(super = NSObject)]
@@ -288,10 +289,12 @@ define_class!(
                     if !c.busy() && c.state.phase != Phase::Recording {
                         *self.ivars().last_start_trace.borrow_mut() = Some(serde_json::json!({
                             "origin":"window_or_menu", "outcome":"ui_start",
-                            "dispatch_pid":NSWorkspace::sharedWorkspace().frontmostApplication().map(|app|app.processIdentifier()),
+                            "dispatch_pid":null,
                         }));
+                        self.start_with_trace(c, Controller::toggle);
+                    } else {
+                        c.toggle();
                     }
-                    c.toggle();
                 });
             }
             self.refresh();
@@ -309,8 +312,6 @@ define_class!(
         fn copy_action(&self, _sender: Option<&AnyObject>) {
             self.with_controller(|c| { c.message = copy_feedback(&c.transcript, Delivery::copy).into(); }); self.refresh();
         }
-        #[unsafe(method(copyQuickRecovery:))]
-        fn copy_quick_recovery_action(&self, _sender: Option<&AnyObject>) { self.copy_quick_recovery(); }
         #[unsafe(method(showQuickPanel:))]
         fn quick_panel_action(&self, _sender: Option<&AnyObject>) { self.toggle_quick_panel(); }
         #[unsafe(method(selectQuickSource:))]
@@ -626,7 +627,13 @@ impl Delegate {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let mut hotkey = crate::hotkey::GlobalHotKey::new(tx);
-        hotkey.register(shortcut)?;
+        hotkey.register(shortcut).map_err(|error| {
+            self.ivars()
+                .hotkey_registration_failure
+                .set(Some(error.state()));
+            error.to_string()
+        })?;
+        self.ivars().hotkey_registration_failure.set(None);
         // Commit only after Carbon accepted the candidate. Dropping the old
         // owner and queue discards stale presses from the previous binding.
         *self.ivars().hotkey.borrow_mut() = Some(hotkey);

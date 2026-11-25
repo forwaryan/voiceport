@@ -27,6 +27,7 @@ mod local_runtime;
 #[allow(dead_code, unused_imports)]
 #[path = "../src"]
 mod plugin_dependencies {
+    pub(crate) mod delivery;
     pub(crate) mod model_library;
     pub(crate) mod plugin_credentials;
     pub(crate) mod plugin_process;
@@ -36,7 +37,8 @@ mod plugin_dependencies {
 }
 #[cfg(target_os = "macos")]
 use plugin_dependencies::{
-    model_library, plugin_credentials, plugin_process, plugin_runtime, source_probe, source_tests,
+    delivery, model_library, plugin_credentials, plugin_process, plugin_runtime, source_probe,
+    source_tests,
 };
 #[cfg(target_os = "macos")]
 #[allow(dead_code, unused_imports)] // Its libtest-only imports are inert in this harness.
@@ -47,7 +49,7 @@ mod proxy;
 #[path = "../src/storage.rs"]
 mod storage;
 #[cfg(target_os = "macos")]
-use voiceport_macos::{delivery, lifecycle, plugins};
+use voiceport_macos::{lifecycle, plugins};
 
 #[cfg(target_os = "macos")]
 fn main() {
@@ -64,10 +66,11 @@ fn main() {
             "cancel",
             "local-stop-failure",
             "cli-session",
+            "gui-delivery",
         ],
         [flag, case] if flag == "--case" => vec![case],
         _ => panic!(
-            "expected no arguments or --case zero|stop-first|poll-first|retry|cancel|local-stop-failure|cli-session"
+            "expected no arguments or --case zero|stop-first|poll-first|retry|cancel|local-stop-failure|cli-session|gui-delivery"
         ),
     };
     for case in cases {

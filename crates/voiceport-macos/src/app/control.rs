@@ -11,6 +11,7 @@ use std::{
 };
 use voiceport_control::{
     Action, Response,
+    readiness::Hotkey,
     transport::{Pending, Server},
 };
 
@@ -251,9 +252,49 @@ impl Delegate {
         let response = match action {
             Action::Status => {
                 let (microphone, speech) = crate::audio::Recorder::permission_status();
-                Response::ok(
-                    json!({"state":phase(c.state.phase),"busy":c.busy()||locked,"pending":c.state.phase==Phase::Stopping,"warning":if c.state.phase==Phase::Stopping {Some("cancellation_pending")} else {None},"discovering":c.discovering(),"source":c.source_id,"language":c.language,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"bundle_path":NSBundle::mainBundle().bundlePath().to_string(),"socket":voiceport_control::transport::path_from_env().ok(),"permissions":{"microphone":microphone,"speech":speech,"accessibility":Delivery::trusted()},"input":{"automatic":c.automatic,"method":c.input_method(),"failure_stage":c.input_failure_stage(),"start":self.ivars().last_start_trace.borrow().as_ref()},"operation":control.operation.as_ref().filter(|o|o.result.is_none()).map(|o|&o.id),"source_probe":{"operation":control.probe.as_ref().and_then(|probe|probe.active_id()),"busy":c.source_tests.busy(),"cleanup_pending":c.source_tests.cleanup_pending()}}),
-                )
+                let hotkey = if self.ivars().editing_shortcut.get() {
+                    Hotkey::Suspended
+                } else if self.ivars().hotkey.borrow().is_some() {
+                    Hotkey::Registered
+                } else {
+                    self.ivars()
+                        .hotkey_registration_failure
+                        .get()
+                        .unwrap_or(Hotkey::Unknown)
+                };
+                Response::ok(json!({
+                    "state": phase(c.state.phase),
+                    "busy": c.busy() || locked,
+                    "pending": c.state.phase == Phase::Stopping,
+                    "warning": (c.state.phase == Phase::Stopping).then_some("cancellation_pending"),
+                    "discovering": c.discovering(),
+                    "source": c.source_id,
+                    "language": c.language,
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "pid": std::process::id(),
+                    "bundle_path": NSBundle::mainBundle().bundlePath().to_string(),
+                    "socket": voiceport_control::transport::path_from_env().ok(),
+                    "permissions": {
+                        "microphone": microphone,
+                        "speech": speech,
+                        "accessibility": Delivery::trusted(),
+                    },
+                    "hotkey": {"registration": hotkey},
+                    "input": {
+                        "automatic": c.automatic,
+                        "method": c.input_method(),
+                        "failure_stage": c.input_failure_stage(),
+                        "start": self.ivars().last_start_trace.borrow().as_ref(),
+                        "gui_receipt": c.gui_dictation_receipt(),
+                        "gui_diagnostics": c.gui_dictation_diagnostics(),
+                    },
+                    "operation": control.operation.as_ref().filter(|o| o.result.is_none()).map(|o| &o.id),
+                    "source_probe": {
+                        "operation": control.probe.as_ref().and_then(|probe| probe.active_id()),
+                        "busy": c.source_tests.busy(),
+                        "cleanup_pending": c.source_tests.cleanup_pending(),
+                    },
+                }))
             }
             Action::SourcesProbeResult { operation } => match &mut control.probe {
                 Some(probe) if probe.id == operation => probe.result(c),

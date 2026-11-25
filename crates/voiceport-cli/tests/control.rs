@@ -185,7 +185,10 @@ fn probe_and_dictation_invalid_options_fail_before_ipc() {
 #[test]
 fn parsed_options_reach_only_the_explicit_synthetic_server() {
     use std::time::{Duration, Instant};
-    use voiceport_control::{Action, Response, transport::Server};
+    use voiceport_control::{
+        Action, DeliveryReceipt, DeliveryState, GuiDictationReceipt, Response, TranscriptionState,
+        transport::Server,
+    };
     let temp = tempfile::tempdir_in("/tmp").unwrap();
     let socket = temp
         .path()
@@ -194,6 +197,18 @@ fn parsed_options_reach_only_the_explicit_synthetic_server() {
         .join("private/control.sock");
     let server = Server::bind(&socket).unwrap();
     for (args, kind) in [
+        (vec!["status"], "legacy-status"),
+        (vec!["app", "status"], "gui-status"),
+        (
+            vec![
+                "status",
+                "--expect-bundle",
+                "/synthetic/VoicePort.app",
+                "--expect-pid",
+                "19",
+            ],
+            "readiness",
+        ),
         (
             vec![
                 "sources",
@@ -275,6 +290,7 @@ fn parsed_options_reach_only_the_explicit_synthetic_server() {
             std::thread::sleep(Duration::from_millis(2));
         };
         match (&pending.request.action, kind) {
+            (Action::Status, "legacy-status" | "gui-status" | "readiness") => {}
             (
                 Action::SourcesProbe {
                     source,
@@ -327,12 +343,55 @@ fn parsed_options_reach_only_the_explicit_synthetic_server() {
             }
             _ => panic!("Wrong request for {kind}"),
         }
-        pending.respond(Response::ok(serde_json::json!({"synthetic":true})));
+        let data = match kind {
+            "legacy-status" => serde_json::json!({"input": {"method": "clipboard_final"}}),
+            "gui-status" => serde_json::json!({"input": {
+                "method": "clipboard_final",
+                "gui_receipt": GuiDictationReceipt {
+                    session: 5,
+                    generation: 5,
+                    automatic: true,
+                    transcription: TranscriptionState::Completed,
+                    delivery: DeliveryReceipt {
+                        state: DeliveryState::Submitted,
+                        submitted_operations: 1,
+                        confirmed_operations: 0,
+                        stopped: false,
+                    },
+                    method: Some("clipboard_final".into()),
+                    failure_stage: None,
+                    block_reason: None,
+                },
+            }}),
+            "readiness" => serde_json::json!({
+                "bundle_path": "/synthetic/VoicePort.app", "pid": 19,
+                "permissions": {"microphone": "authorized", "speech": "denied", "accessibility": true},
+                "input": {"automatic": true}, "hotkey": {"registration": "conflict"},
+            }),
+            _ => serde_json::json!({"synthetic": true}),
+        };
+        pending.respond(Response::ok(data.clone()));
         let output = child.wait_with_output().unwrap();
         assert!(output.status.success(), "{output:?}");
         assert!(output.stderr.is_empty());
-        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(result["data"]["synthetic"], true);
+        let mut result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["schema_version"], 1);
+        if kind == "readiness" {
+            let readiness = result["data"]
+                .as_object_mut()
+                .unwrap()
+                .remove("readiness")
+                .unwrap();
+            assert_eq!(readiness["instance"], "matched");
+            assert_eq!(readiness["microphone"], "granted");
+            assert_eq!(readiness["hotkey"], "conflict");
+            assert_eq!(
+                readiness["next_steps"],
+                serde_json::json!(["change_shortcut"])
+            );
+            assert!(server.next().is_none());
+        }
+        assert_eq!(result["data"], data);
     }
 }
 #[cfg(target_os = "macos")]
@@ -350,6 +409,35 @@ fn explicit_missing_instance_returns_actionable_json_without_fallback() {
         3,
     );
     assert_eq!(response["error"]["code"], "app_not_running");
+    let projected = json(
+        &[
+            "--json",
+            "--socket",
+            socket.to_str().unwrap(),
+            "app",
+            "status",
+            "--expect-bundle",
+            "/synthetic/VoicePort.app",
+        ],
+        3,
+    );
+    assert_eq!(projected["error"]["code"], "app_not_running");
+    assert_eq!(projected["data"]["readiness"]["instance"], "not_running");
+    assert_eq!(projected["data"]["readiness"]["microphone"], "unknown");
+    for options in [
+        vec!["--expect-bundle", "relative.app"],
+        vec!["--expect-pid", "19"],
+        vec![
+            "--expect-bundle",
+            "/synthetic/VoicePort.app",
+            "--expect-pid",
+            "0",
+        ],
+    ] {
+        let mut args = vec!["--json", "--socket", socket.to_str().unwrap(), "status"];
+        args.extend(options);
+        assert_eq!(json(&args, 2)["error"]["code"], "invalid_arguments");
+    }
     assert!(!socket.exists());
     assert!(!socket.parent().unwrap().exists());
 }

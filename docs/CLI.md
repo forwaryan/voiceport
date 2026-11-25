@@ -53,7 +53,9 @@ voiceport --json sources probe-cancel OPERATION
 
 ## 已识别但未输入
 
-先用同一 `--socket` 读取 `status`，核对 `bundle_path`/PID、`permissions`、`input.automatic` 和 `input.start`。`input.method` 和 `input.failure_stage` 可能沿用较早一轮自动投递的值，详见下方投递状态契约。需要展示设置时用 `app show --settings`。这些诊断不读取转写文字、目标字段内容、凭据或音频，也不申请权限。CLI 听写始终为 `delivery:"none"`。
+先用同一 `--socket` 读取 `status`，核对 `bundle_path`、PID 和 `permissions`，然后查看 `input.gui_receipt` 的 `session`、`generation`、转写和投递状态。`input.automatic` 与 `input.start` 仍用于检查设置和启动路径。旧版 App 可能缺少 `gui_receipt`，旧 `input.method` 和 `input.failure_stage` 可能沿用此前一轮的值。需要展示设置时用 `app show --settings`。CLI 听写始终为 `delivery:"none"`。
+
+`voiceport --json --socket ABSOLUTE_SOCKET status --expect-bundle ABSOLUTE_APP [--expect-pid PID]` 从一次状态查询计算 `data.readiness`。它核对预期 App 实例，给出麦克风、可选语音预览、辅助功能、快捷键状态及可执行的检查项。路径必须为绝对路径，PID 可选。它沿用原 `status` 的退出码和同用户 IPC；旧 App 缺失的字段报告 `unknown`。诊断只读取现有权限与状态。 [CLI 指南](../skills/voiceport/references/cli.md#app-commands-macos)
 
 GUI 的来源 App 负责识别，目标 App 接收文字。QQ 或微信目标输入失败时，先按[投递排查流程](../skills/voiceport/references/workflows.md#recognized-text-not-delivered)检查原目标；不要自动探测来源、重传音频、重试识别或重新录音。微信当前与旧版路径、选路字段和接收证据的区别，见[投递状态契约](INPUT_DELIVERY.md#cli-状态字段与投递回执)。
 
