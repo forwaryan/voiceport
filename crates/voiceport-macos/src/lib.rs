@@ -6,6 +6,10 @@ mod cloud_models;
 #[cfg(target_os = "macos")]
 mod controller;
 #[cfg(target_os = "macos")]
+mod dictation_dictionary;
+#[cfg(target_os = "macos")]
+mod dictation_workflows;
+#[cfg(target_os = "macos")]
 mod hotkey;
 #[cfg(target_os = "macos")]
 mod input_target;
@@ -38,6 +42,12 @@ mod source_service;
 mod source_tests;
 #[cfg(target_os = "macos")]
 mod status_icon;
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub use app::first_run_field_fixture;
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub use app::isolated_shortcut_regression;
 #[cfg(target_os = "macos")]
 pub use app::run;
 #[cfg(target_os = "macos")]

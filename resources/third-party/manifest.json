@@ -236,16 +236,16 @@
   "lock_only_policy": "Not in this native target metadata graph; not labelled shipped or linked. Cargo.lock records public source/checksum. These excluded-platform packages are not included as runtime license material.",
   "build_inputs": {
     "Cargo.toml": "fd8e2d4b4dcedb058236448b233b29e6d33b2289cbd2f0c780d2a880108bb18f",
-    "Cargo.lock": "87e20454b95bb7cebc1e1470b255f427384d2f909ff0cc08a02c271081a4749c",
+    "Cargo.lock": "883646c87c79180cf02829de28a17a25fe6aa2ce7683fb3452d9ed467c539c8e",
     "crates/voiceport-cli/Cargo.toml": "e8c786edb99eb1dcddd7f33cf04878dea4f57792dea66c8e62dca8cc9758d541",
     "crates/voiceport-control/Cargo.toml": "a00a503f6d28be7bd668815b0633777e368bfe273a8b88d0545f6fbf12069942",
     "crates/voiceport-core/Cargo.toml": "1c57e8973ff392e21970f70fcc63cd100132f16e4f4aa428c6102ffba15e9eaf",
-    "crates/voiceport-macos/Cargo.toml": "b4af1fa74e9c17c3a5baf5e0acc30450736ae6e21598052c04a8b7f186285699",
+    "crates/voiceport-macos/Cargo.toml": "b2e0820a78ded2646ee649856943a893f43024147eb7d92a14df6495a27f3068",
     "crates/voiceport-windows/Cargo.toml": "65492ef3b0a058b1091695626dd63ebe82167fb48bb2dddd66f0ca007a52d50d"
   },
   "schema": 1,
   "target": "aarch64-apple-darwin",
-  "cargo_lock_sha256": "87e20454b95bb7cebc1e1470b255f427384d2f909ff0cc08a02c271081a4749c",
+  "cargo_lock_sha256": "883646c87c79180cf02829de28a17a25fe6aa2ce7683fb3452d9ed467c539c8e",
   "policy": "Overinclusive source materials. runtime means reachable normal target dependency, NOT proof every object is linked; build includes proc macros/build tools; dev and other-platform/lock-only are separately labelled. Complete notice-bearing source files are supplementary attribution material, not build inputs.",
   "packages": [
     {
@@ -3937,7 +3937,9 @@
       "enabled_features": [
         "AudioHardware",
         "AudioHardwareDeprecated",
-        "objc2"
+        "alloc",
+        "objc2",
+        "std"
       ],
       "source_manifest": "cargo-registry/objc2-core-audio-0.3.2/Cargo.toml",
       "materials": [

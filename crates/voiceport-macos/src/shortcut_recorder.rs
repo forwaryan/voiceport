@@ -7,11 +7,14 @@ use objc2_foundation::{
 };
 use std::cell::{Cell, OnceCell};
 
+type ShortcutCheck = dyn Fn(Shortcut) -> Result<(), String>;
+
 #[derive(Default)]
 struct RecorderIvars {
     candidate: Cell<Option<Shortcut>>,
     label: OnceCell<Retained<NSTextField>>,
     save: OnceCell<Retained<NSButton>>,
+    check: OnceCell<Box<ShortcutCheck>>,
 }
 
 define_class!(
@@ -48,7 +51,11 @@ define_class!(
 );
 
 impl Recorder {
-    fn new(mtm: MainThreadMarker, save: Retained<NSButton>) -> Retained<Self> {
+    fn new(
+        mtm: MainThreadMarker,
+        save: Retained<NSButton>,
+        check: impl Fn(Shortcut) -> Result<(), String> + 'static,
+    ) -> Retained<Self> {
         let recorder = Self::alloc(mtm).set_ivars(RecorderIvars::default());
         let recorder: Retained<Self> = unsafe {
             msg_send![super(recorder), initWithFrame: NSRect::new(NSPoint::new(0., 0.), NSSize::new(340., 74.))]
@@ -63,6 +70,7 @@ impl Recorder {
         let _ = recorder.ivars().label.set(label);
         save.setEnabled(false);
         let _ = recorder.ivars().save.set(save);
+        let _ = recorder.ivars().check.set(Box::new(check));
         recorder
     }
 
@@ -85,40 +93,55 @@ impl Recorder {
                 modifiers |= bit;
             }
         }
-        let result = Shortcut::new(event.keyCode(), modifiers);
-        self.ivars().candidate.set(result.ok());
+        let (candidate, message) = match Shortcut::new(event.keyCode(), modifiers) {
+            Ok(shortcut) => match self.ivars().check.get().expect("recorder initialized")(shortcut)
+            {
+                Ok(()) => (
+                    Some(shortcut),
+                    format!("{}\n已识别；可保存，或继续试按另一组。", shortcut.label()),
+                ),
+                Err(reason) => (None, format!("{}\n{reason}", shortcut.label())),
+            },
+            Err(reason) => (None, reason.into()),
+        };
+        self.ivars().candidate.set(candidate);
         if let Some(save) = self.ivars().save.get() {
-            save.setEnabled(result.is_ok());
+            save.setEnabled(candidate.is_some());
         }
         if let Some(label) = self.ivars().label.get() {
-            label.setStringValue(&NSString::from_str(&match result {
-                Ok(shortcut) => format!("{}\n点击保存，或继续按另一组。", shortcut.label()),
-                Err(error) => error.into(),
-            }));
+            label.setStringValue(&NSString::from_str(&message));
         }
         true
     }
 }
 
-pub(crate) fn record(mtm: MainThreadMarker, current: Shortcut) -> Option<Shortcut> {
+pub(crate) fn record(
+    mtm: MainThreadMarker,
+    current: Shortcut,
+    check: impl Fn(Shortcut) -> Result<(), String> + 'static,
+) -> Option<Shortcut> {
     let alert = NSAlert::new(mtm);
-    alert.setMessageText(ns_string!("自定义开始 / 停止快捷键"));
+    alert.setMessageText(ns_string!("编辑听写快捷键"));
     alert.setInformativeText(&NSString::from_str(&format!(
-        "当前：{}\n请按住 Control、Option 或 Command，再按一个键；可加 Shift。\n按 Esc 取消。设置期间不会开始听写。", current.label()
+        "当前：{}\n请按住 Control、Option 或 Command，再按一个键；可加 Shift。\n试按不会开始听写。按 Esc 或点击取消可保留原设置。", current.label()
     )));
-    let recorder = Recorder::new(mtm, alert.addButtonWithTitle(ns_string!("保存")));
-    alert.addButtonWithTitle(ns_string!("取消"));
+    let recorder = Recorder::new(mtm, alert.addButtonWithTitle(ns_string!("保存")), check);
+    let cancel = alert.addButtonWithTitle(ns_string!("取消"));
+    cancel.setKeyEquivalent(ns_string!("\u{1b}"));
     alert.setAccessoryView(Some(&recorder));
     // AppKit attaches the accessory during layout; establish focus afterwards.
     alert.layout();
     let window = alert.window();
     window.setInitialFirstResponder(Some(&recorder));
     window.makeFirstResponder(Some(&recorder));
-    if alert.runModal() == NSAlertFirstButtonReturn {
-        recorder.ivars().candidate.get()
-    } else {
-        None
-    }
+    let response = alert.runModal();
+    accepted_candidate(response, recorder.ivars().candidate.get())
+}
+
+fn accepted_candidate(response: NSModalResponse, candidate: Option<Shortcut>) -> Option<Shortcut> {
+    (response == NSAlertFirstButtonReturn)
+        .then_some(candidate)
+        .flatten()
 }
 
 #[cfg(test)]
@@ -128,7 +151,14 @@ pub(crate) fn regression(mtm: MainThreadMarker) {
     let _app = NSApplication::sharedApplication(mtm);
     let alert = NSAlert::new(mtm);
     let save = alert.addButtonWithTitle(ns_string!("保存"));
-    let recorder = Recorder::new(mtm, save.clone());
+    let occupied = Shortcut::new(38, CONTROL | OPTION).unwrap();
+    let recorder = Recorder::new(mtm, save.clone(), move |shortcut| {
+        if shortcut == occupied {
+            Err("全局快捷键已被占用。".into())
+        } else {
+            Ok(())
+        }
+    });
     alert.setAccessoryView(Some(&recorder));
     // AppKit attaches the accessory during layout; establish focus afterwards.
     alert.layout();
@@ -148,6 +178,36 @@ pub(crate) fn regression(mtm: MainThreadMarker) {
         Some(Shortcut::new(40, CONTROL | OPTION).unwrap())
     );
     assert!(save.isEnabled());
+    assert!(
+        recorder
+            .ivars()
+            .label
+            .get()
+            .unwrap()
+            .stringValue()
+            .to_string()
+            .contains("⌃⌥K")
+    );
+    assert_eq!(
+        accepted_candidate(NSAlertSecondButtonReturn, recorder.ivars().candidate.get()),
+        None
+    );
+    assert!(
+        accepted_candidate(NSAlertFirstButtonReturn, recorder.ivars().candidate.get()).is_some()
+    );
+    assert!(recorder.capture(&event(38, flags, false)));
+    assert!(
+        recorder
+            .ivars()
+            .label
+            .get()
+            .unwrap()
+            .stringValue()
+            .to_string()
+            .contains("已被占用")
+    );
+    assert!(!save.isEnabled());
+    assert!(recorder.capture(&event(40, flags, false)));
     // Bare and Shift-only input invalidate the prior candidate and disable Save.
     for flags in [NSEventModifierFlags::empty(), NSEventModifierFlags::Shift] {
         assert!(recorder.capture(&event(40, flags, false)));
@@ -171,6 +231,6 @@ pub(crate) fn regression(mtm: MainThreadMarker) {
     assert!(window.makeFirstResponder(Some(&*save)));
     assert!(!recorder.performKeyEquivalent(&event(40, NSEventModifierFlags::Command, false)));
     println!(
-        "shortcut_recorder: native focus, Command routing, validation, repeat and dialog navigation passed; no window shown or key posted"
+        "shortcut_recorder: native focus, Command routing, test press, conflict, cancellation and repeat passed; no window shown or key posted"
     );
 }

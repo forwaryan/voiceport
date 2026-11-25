@@ -237,6 +237,19 @@ impl Delegate {
             self.dispatch_control(&mut control, pending);
         }
     }
+    pub(super) fn hotkey_registration(&self) -> Hotkey {
+        if self.ivars().editing_shortcut.get() {
+            Hotkey::Suspended
+        } else if self.ivars().hotkey.borrow().is_some() {
+            Hotkey::Registered
+        } else {
+            self.ivars()
+                .hotkey_registration_failure
+                .get()
+                .unwrap_or(Hotkey::Unknown)
+        }
+    }
+
     fn dispatch_control(&self, control: &mut Control, mut pending: Pending) {
         let action = std::mem::replace(&mut pending.request.action, Action::Status);
         let mut slot = self.ivars().controller.borrow_mut();
@@ -252,16 +265,7 @@ impl Delegate {
         let response = match action {
             Action::Status => {
                 let (microphone, speech) = crate::audio::Recorder::permission_status();
-                let hotkey = if self.ivars().editing_shortcut.get() {
-                    Hotkey::Suspended
-                } else if self.ivars().hotkey.borrow().is_some() {
-                    Hotkey::Registered
-                } else {
-                    self.ivars()
-                        .hotkey_registration_failure
-                        .get()
-                        .unwrap_or(Hotkey::Unknown)
-                };
+                let hotkey = self.hotkey_registration();
                 Response::ok(json!({
                     "state": phase(c.state.phase),
                     "busy": c.busy() || locked,

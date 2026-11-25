@@ -87,7 +87,7 @@ pub(super) fn render_progress(manager: &Manager, display: ProgressDisplay) {
 pub(super) const ROW_HEIGHT: f64 = 104.;
 
 pub(super) fn list_frame(width: f64, height: f64) -> NSRect {
-    rect(20., 76., width - 40., height - 246.)
+    rect(20., 76., width - 40., height - 282.)
 }
 
 pub(super) fn surface(owner: &Delegate, view: &NSView, frame: NSRect) -> Retained<NSBox> {
@@ -183,8 +183,12 @@ fn row(
         &view,
         &format!(
             "{} · {} · {}",
-            d.recommendation,
             languages(d),
+            if d.kind.streaming() {
+                "实时预览"
+            } else {
+                "停止后出字"
+            },
             model_size(d.bytes())
         ),
         rect(18., 17., width - 246., 20.),
@@ -378,7 +382,7 @@ pub(super) fn build(manager: &Manager, owner: &Delegate) {
     manager.ivars().summary.set(summary).ok();
     owner.caption(
         &view,
-        "识别语言",
+        "听写语言",
         rect(width - 250., height - 152., 58., 22.),
     );
     let language = NSPopUpButton::initWithFrame_pullsDown(
@@ -398,6 +402,55 @@ pub(super) fn build(manager: &Manager, owner: &Delegate) {
     language.setAccessibilityIdentifier(Some(ns_string!("voiceport.models.language")));
     view.addSubview(&language);
 
+    let browse_bar = NSView::initWithFrame(
+        NSView::alloc(owner.mtm()),
+        rect(24., height - 194., width - 48., 28.),
+    );
+    view.addSubview(&browse_bar);
+    let popup = |frame, label: &str, identifier: &str| {
+        let control =
+            NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(owner.mtm()), frame, false);
+        unsafe {
+            control.setTarget(Some(manager));
+            control.setAction(Some(sel!(modelFilter:)));
+        }
+        control.setFont(Some(&NSFont::systemFontOfSize(12.)));
+        control.setAccessibilityLabel(Some(&NSString::from_str(label)));
+        control.setAccessibilityIdentifier(Some(&NSString::from_str(identifier)));
+        browse_bar.addSubview(&control);
+        control
+    };
+    let column = (width - 48.) / 3.;
+    let filter = popup(
+        rect(0., 0., column - 6., 28.),
+        "按支持的语言筛选",
+        "voiceport.models.browse-language",
+    );
+    filter.addItemWithTitle(ns_string!("所有语言"));
+    for (_, title) in &voiceport_core::language::LANGUAGES[1..] {
+        filter.addItemWithTitle(&NSString::from_str(title));
+    }
+    let preview = popup(
+        rect(column, 0., column - 6., 28.),
+        "按实时预览筛选",
+        "voiceport.models.browse-preview",
+    );
+    for title in ["全部预览方式", "支持实时预览", "停止后出字"] {
+        preview.addItemWithTitle(&NSString::from_str(title));
+    }
+    let order = popup(
+        rect(column * 2., 0., column, 28.),
+        "列表排序",
+        "voiceport.models.browse-order",
+    );
+    for title in ["默认顺序", "下载量：从小到大", "下载量：从大到小"] {
+        order.addItemWithTitle(&NSString::from_str(title));
+    }
+    manager.ivars().browse_bar.set(browse_bar).ok();
+    manager.ivars().browse_language.set(filter).ok();
+    manager.ivars().browse_preview.set(preview).ok();
+    manager.ivars().browse_order.set(order).ok();
+
     let frame = list_frame(width, height);
     let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(owner.mtm()), frame);
     scroll.setHasVerticalScroller(true);
@@ -414,17 +467,10 @@ pub(super) fn build(manager: &Manager, owner: &Delegate) {
     scroll.setDocumentView(Some(&list));
     let row_width = scroll.contentSize().width - 12.; // Keep overlay scrollers off the actions.
     list.setFrameSize(NSSize::new(row_width, list_height));
-    let mut definitions: Vec<_> = MODELS.iter().enumerate().collect();
-    definitions.sort_by_key(|(_, d)| match d.id {
-        crate::local_models::SENSEVOICE => 0,
-        crate::local_models::WHISPER_TURBO => 1,
-        crate::local_models::PARAFORMER => 2,
-        _ => 3,
-    });
-    let rows = definitions
-        .into_iter()
+    let rows = MODELS
+        .iter()
         .enumerate()
-        .map(|(position, (index, d))| {
+        .map(|(index, d)| {
             row(
                 manager,
                 owner,
@@ -433,7 +479,7 @@ pub(super) fn build(manager: &Manager, owner: &Delegate) {
                 index,
                 rect(
                     0.,
-                    list_height - (position + 1) as f64 * ROW_HEIGHT,
+                    list_height - (index + 1) as f64 * ROW_HEIGHT,
                     row_width,
                     ROW_HEIGHT,
                 ),
@@ -442,7 +488,7 @@ pub(super) fn build(manager: &Manager, owner: &Delegate) {
         .collect();
     let empty = owner.label(
         &list,
-        "还没有安装模型\n切换到「全部模型」，选择下载或导入。",
+        "没有符合条件的模型。请修改筛选，或切换到「全部模型」。",
         rect(28., list_height - 104., row_width - 56., 66.),
         14.,
     );

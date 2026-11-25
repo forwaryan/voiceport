@@ -1,15 +1,101 @@
-//! Compact menu-bar source switcher, keyed by stable catalog IDs.
+//! Menu-bar dictation status and progressive source switching.
 use super::*;
+use objc2::{Message, rc::Weak};
 use objc2_foundation::NSRectEdge;
 
+#[cfg(debug_assertions)]
+pub(super) mod fixture;
 mod recovery;
+mod recovery_model;
 
-const WIDTH: f64 = 300.;
-const ROW_HEIGHT: f64 = 40.;
-const LIST_HEIGHT: f64 = ROW_HEIGHT * 3.;
-const HEADER_Y: f64 = 48. + LIST_HEIGHT;
-const HEADER_HEIGHT: f64 = 100.;
+const WIDTH: f64 = 320.;
+const ROW_HEIGHT: f64 = 46.;
+const VISIBLE_ROWS: usize = 4;
+const HEADER_HEIGHT: f64 = 132.;
 const GUIDANCE_HEIGHT: f64 = 74.;
+const TOOLBAR_HEIGHT: f64 = 44.;
+const SCREEN_MARGIN: f64 = 24.; // popover arrow and screen-edge clearance
+
+#[derive(Debug, PartialEq)]
+struct PanelLayout {
+    document_height: f64,
+    viewport_height: f64,
+    toolbar_y: f64,
+    guidance_y: f64,
+    recovery_y: f64,
+    header_y: f64,
+}
+
+impl PanelLayout {
+    fn new(rows: usize, guidance: bool, recovery: f64, visible_screen_height: f64) -> Self {
+        let toolbar_y = rows as f64 * ROW_HEIGHT;
+        let guidance_y = toolbar_y + TOOLBAR_HEIGHT;
+        let recovery_y = guidance_y + if guidance { GUIDANCE_HEIGHT } else { 0. };
+        let header_y = recovery_y + recovery;
+        let document_height = header_y + HEADER_HEIGHT;
+        let preferred_height =
+            document_height - rows.saturating_sub(VISIBLE_ROWS) as f64 * ROW_HEIGHT;
+        Self {
+            document_height,
+            viewport_height: preferred_height.min((visible_screen_height - SCREEN_MARGIN).max(1.)),
+            toolbar_y,
+            guidance_y,
+            recovery_y,
+            header_y,
+        }
+    }
+}
+
+define_class!(
+    #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = Weak<Delegate>]
+    struct PanelActions;
+    unsafe impl NSObjectProtocol for PanelActions {}
+    impl PanelActions {
+        #[unsafe(method(toggleQuickSources:))]
+        fn toggle_sources(&self, sender: &NSButton) {
+            if let Some(owner) = self.ivars().load()
+                && let Some(panel) = owner.ivars().quick_panel.get()
+                && panel.popover.isShown()
+                && std::ptr::eq(&*panel.disclosure, sender)
+            {
+                panel.expanded.set(!panel.expanded.get());
+                owner.refresh();
+            }
+        }
+    }
+);
+
+impl PanelActions {
+    fn new(owner: &Delegate) -> Retained<Self> {
+        let actions = Self::alloc(owner.mtm()).set_ivars(Weak::from_retained(&owner.retain()));
+        unsafe { msg_send![super(actions), init] }
+    }
+}
+
+define_class!(
+    #[unsafe(super = NSButton)]
+    #[thread_kind = MainThreadOnly]
+    struct ScrollingButton;
+    impl ScrollingButton {
+        #[unsafe(method(becomeFirstResponder))]
+        fn become_first_responder(&self) -> bool {
+            let accepted: bool = unsafe { msg_send![super(self), becomeFirstResponder] };
+            if accepted {
+                self.scrollRectToVisible(self.bounds());
+            }
+            accepted
+        }
+    }
+);
+
+impl ScrollingButton {
+    fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
+        let button = Self::alloc(mtm).set_ivars(());
+        unsafe { msg_send![super(button), initWithFrame: frame] }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Setting {
@@ -67,68 +153,136 @@ fn language_name(language: &str) -> &str {
 
 pub(super) struct QuickPanel {
     popover: Retained<NSPopover>,
+    scroll: Retained<NSScrollView>,
+    document: Retained<NSView>,
+    layout: RefCell<Option<PanelLayout>>,
+    screen_height: Cell<f64>,
     header: Retained<NSView>,
     current: Retained<NSTextField>,
+    checkmark: Retained<NSImageView>,
     language: Retained<NSTextField>,
+    status: Retained<NSTextField>,
+    shortcut: Retained<NSTextField>,
+    open: Retained<NSButton>,
     guidance: Retained<NSView>,
     guidance_reason: Retained<NSTextField>,
     guidance_button: Retained<NSButton>,
     guidance_target: Cell<Option<Setting>>,
-    guidance_inputs: RefCell<Option<GuidanceInputs>>,
-    recovery: RefCell<Option<recovery::Card>>,
+    recovery_slot: Retained<NSView>,
+    recovery: recovery::ResultCard,
     recovery_actions: Retained<recovery::RecoveryActions>,
-    hint: Retained<NSTextField>,
-    list: Retained<NSScrollView>,
+    toolbar: Retained<NSView>,
+    disclosure: Retained<NSButton>,
     manage: Retained<NSButton>,
+    expanded: Cell<bool>,
+    _actions: Retained<PanelActions>,
+    sources: Retained<NSView>,
     rows: RefCell<Vec<SourceRow>>,
-    catalog: RefCell<Vec<crate::local_models::Entry>>,
-}
-struct GuidanceInputs {
-    source_id: String,
-    language: String,
-    configurable: bool,
+    source_inputs: RefCell<Option<SourceInputs>>,
 }
 
-impl QuickPanel {
-    fn update_guidance(&self, c: &Controller, catalog_changed: bool, configurable: bool) {
-        let mut inputs = self.guidance_inputs.borrow_mut();
-        if !catalog_changed
-            && inputs.as_ref().is_some_and(|previous| {
-                previous.source_id == c.source_id
-                    && previous.language == c.language
-                    && previous.configurable == configurable
-            })
-        {
-            return;
-        }
-        let guidance = if configurable {
-            source_guidance(c)
-        } else {
-            None
-        };
-        self.guidance_target
-            .set(guidance.as_ref().map(|(setting, _)| *setting));
-        if let Some((setting, reason)) = guidance {
-            self.guidance_button.setTitle(setting.action_title());
-            set_label_text(&self.guidance_reason, &reason);
-            self.guidance_reason
-                .setToolTip(Some(&self.guidance_reason.stringValue()));
-        }
-        set_label_text(
-            &self.language,
-            &format!("识别语言：{}", language_name(&c.language)),
-        );
-        *inputs = Some(GuidanceInputs {
-            source_id: c.source_id.clone(),
-            language: c.language.clone(),
-            configurable,
-        });
-    }
+struct SourceInputs {
+    current_id: String,
+    entries: Vec<crate::local_models::Entry>,
+    lock_reason: Option<&'static str>,
 }
 
 struct SourceRow {
     id: String,
     button: Retained<NSButton>,
+}
+
+impl QuickPanel {
+    fn update_guidance(&self, c: &Controller, configurable: bool) {
+        let guidance = if c.catalog.entries.is_empty() {
+            None // The current-source row and Add action already explain this case.
+        } else {
+            source_guidance(c)
+        };
+        self.guidance.setHidden(guidance.is_none());
+        self.guidance_target
+            .set(guidance.as_ref().map(|(setting, _)| *setting));
+        if let Some((setting, reason)) = guidance {
+            self.guidance_button.setTitle(setting.action_title());
+            self.guidance_button.setEnabled(configurable);
+            set_label_text(&self.guidance_reason, &reason);
+            self.guidance_reason
+                .setToolTip(Some(&self.guidance_reason.stringValue()));
+        }
+    }
+
+    fn relink_key_views(&self) {
+        let mut controls: Vec<Retained<NSView>> = vec![self.open.clone().into_super().into_super()];
+        self.append_recovery_key_views(&mut controls);
+        if !self.guidance.isHidden() {
+            controls.push(self.guidance_button.clone().into_super().into_super());
+        }
+        controls.push(self.manage.clone().into_super().into_super());
+        controls.push(self.disclosure.clone().into_super().into_super());
+        if self.expanded.get() {
+            controls.extend(
+                self.rows
+                    .borrow()
+                    .iter()
+                    .map(|row| row.button.clone().into_super().into_super()),
+            );
+        }
+        for (view, next) in controls.iter().zip(controls.iter().cycle().skip(1)) {
+            // All next views are retained by this panel's view hierarchy.
+            unsafe { view.setNextKeyView(Some(next)) };
+        }
+        // The native key-view loop handles reverse traversal and skips
+        // hidden/disabled controls without changing the user's system setting.
+        if let Some(window) = self.document.window() {
+            window.setAutorecalculatesKeyViewLoop(false);
+            window.setInitialFirstResponder(Some(&self.open));
+        }
+    }
+
+    fn position(&self, layout: PanelLayout) {
+        let mut cached = self.layout.borrow_mut();
+        if cached.as_ref() == Some(&layout) {
+            return;
+        }
+        let visible = self.scroll.documentVisibleRect();
+        let from_top = cached.as_ref().map_or(0., |previous| {
+            (previous.document_height - visible.origin.y - visible.size.height).max(0.)
+        });
+        self.sources
+            .setFrameSize(NSSize::new(WIDTH, layout.toolbar_y));
+        self.toolbar
+            .setFrameOrigin(NSPoint::new(0., layout.toolbar_y));
+        self.guidance
+            .setFrameOrigin(NSPoint::new(0., layout.guidance_y));
+        self.recovery_slot.setFrame(rect(
+            0.,
+            layout.recovery_y,
+            WIDTH,
+            layout.header_y - layout.recovery_y,
+        ));
+        self.header
+            .setFrameOrigin(NSPoint::new(0., layout.header_y));
+        self.document
+            .setFrameSize(NSSize::new(WIDTH, layout.document_height));
+        let viewport = NSSize::new(WIDTH, layout.viewport_height);
+        self.popover.setContentSize(viewport);
+        self.scroll.setFrameSize(viewport);
+        // The same scroll surface holds all sections, so even if the recovery
+        // slot fills a very short screen the sources and Add remain reachable.
+        self.scroll_from_top(from_top);
+        *cached = Some(layout);
+    }
+
+    fn scroll_from_top(&self, inset: f64) {
+        let clip = self.scroll.contentView();
+        let max_y = (self.document.bounds().size.height - clip.bounds().size.height).max(0.);
+        clip.scrollToPoint(NSPoint::new(0., (max_y - inset).max(0.)));
+        self.scroll.reflectScrolledClipView(&clip);
+    }
+
+    fn scroll_to_top(&self) {
+        self.scroll_from_top(0.);
+    }
 }
 
 pub(super) fn selected_title(c: &Controller) -> &str {
@@ -189,12 +343,18 @@ impl Delegate {
         if let Some(window) = self.ivars().window.get() {
             window.orderOut(None);
         }
+        if let Some(screen) = button.window().and_then(|window| window.screen()) {
+            panel.screen_height.set(screen.visibleFrame().size.height);
+        }
         if !panel.popover.isShown() {
-            // A newly opened popover always starts with its result collapsed.
+            // Reset both disclosures on open. Neither transcript nor an old
+            // scroll position should be the first thing users encounter.
+            panel.expanded.set(false);
             panel.clear_recovery();
         }
         self.refresh();
         if !panel.popover.isShown() {
+            panel.scroll_to_top();
             #[allow(deprecated)]
             NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
             panel.popover.showRelativeToRect_ofView_preferredEdge(
@@ -210,34 +370,28 @@ impl Delegate {
                 window.makeKeyAndOrderFront(None);
                 // Opening with the pointer should not pre-focus the header button.
                 // Tab can still enter the normal native keyboard navigation chain.
+                panel.relink_key_views();
                 window.makeFirstResponder(Some(&window));
-            }
-            if let Some(c) = self.ivars().controller.borrow().as_ref()
-                && let Some(row) = panel.rows.borrow().iter().find(|row| row.id == c.source_id)
-            {
-                row.button.scrollRectToVisible(row.button.bounds());
+                panel.scroll_to_top();
             }
         }
     }
     pub(super) fn select_quick_source(&self, sender: &NSButton) {
-        let id = self.ivars().quick_panel.get().and_then(|panel| {
-            panel
-                .rows
-                .borrow()
-                .iter()
-                .find(|row| std::ptr::eq(&*row.button, sender))
-                .map(|row| row.id.clone())
-        });
+        let Some(panel) = self.ivars().quick_panel.get() else {
+            return;
+        };
+        if !panel.popover.isShown() || !panel.expanded.get() || !self.quick_actions_unlocked() {
+            return;
+        }
+        let id = panel.source_for_sender(sender);
         if let Some(id) = id {
             self.with_controller(|c| {
-                if can_select(
-                    c,
-                    &id,
-                    self.ivars().permission_rx.borrow().is_some(),
-                    self.settings_locked(),
-                    self.ivars().quitting.get(),
-                ) {
+                if can_select(c, &id, false, false, false) {
                     self.set_source(c, id);
+                    panel.expanded.set(false);
+                    if let Some(window) = sender.window() {
+                        window.makeFirstResponder(Some(&panel.disclosure));
+                    }
                 }
             });
         }
@@ -282,96 +436,137 @@ impl Delegate {
     }
     fn build_quick_panel(&self) -> QuickPanel {
         let mtm = self.mtm();
-        let height = HEADER_Y + HEADER_HEIGHT;
-        let view = NSView::initWithFrame(NSView::alloc(mtm), rect(0., 0., WIDTH, height));
-        let header =
-            NSView::initWithFrame(NSView::alloc(mtm), rect(0., HEADER_Y, WIDTH, HEADER_HEIGHT));
-        view.addSubview(&header);
-        let icon = self.icon(&header, "waveform.circle.fill", rect(14., 65., 22., 22.));
+        let height = HEADER_HEIGHT + TOOLBAR_HEIGHT;
+        let scroll =
+            NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(0., 0., WIDTH, height));
+        scroll.setDrawsBackground(false);
+        scroll.setHasVerticalScroller(true);
+        scroll.setScrollerStyle(NSScrollerStyle::Overlay);
+        scroll.setAutohidesScrollers(true);
+        scroll.setBorderType(NSBorderType::NoBorder);
+        scroll.setAccessibilityLabel(Some(ns_string!("VoicePort 快捷面板")));
+        let document = NSView::initWithFrame(NSView::alloc(mtm), rect(0., 0., WIDTH, height));
+        scroll.setDocumentView(Some(&document));
+        let section = |y, height| {
+            let view = NSView::initWithFrame(NSView::alloc(mtm), rect(0., y, WIDTH, height));
+            document.addSubview(&view);
+            view
+        };
+        // In the default top-to-bottom reading order: overview, current result,
+        // source guidance, source actions, then alternatives when expanded.
+        let header = section(TOOLBAR_HEIGHT, HEADER_HEIGHT);
+        let recovery_slot = section(TOOLBAR_HEIGHT, 0.);
+        let guidance = section(TOOLBAR_HEIGHT, GUIDANCE_HEIGHT);
+        let toolbar = section(0., TOOLBAR_HEIGHT);
+        let sources = section(0., 0.);
+        guidance.setHidden(true);
+        sources.setHidden(true);
+
+        let icon = self.icon(&header, "waveform.circle.fill", rect(16., 97., 21., 21.));
         icon.setContentTintColor(Some(&NSColor::controlAccentColor()));
-        let brand = self.label(&header, "VoicePort", rect(44., 67., 150., 22.), 14.);
+        let brand = self.label(&header, "VoicePort", rect(45., 98., 135., 21.), 14.);
         brand.setFont(Some(&NSFont::boldSystemFontOfSize(14.)));
-        let open = self.button(&header, "", sel!(showWindow:), WIDTH - 44., 63., 28.);
-        open.setFrame(rect(WIDTH - 44., 63., 28., 28.));
-        open.setBordered(false);
-        open.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
-        open.setImage(symbol_image("arrow.up.forward.square", 15.).as_deref());
-        open.setAccessibilityLabel(Some(ns_string!("打开完整界面")));
-        open.setToolTip(Some(ns_string!("打开完整界面")));
-        self.surface(&header, rect(12., 0., WIDTH - 24., 54.));
-        self.caption(&header, "当前转写", rect(24., 36., 66., 16.));
-        let language = self.caption(&header, "", rect(92., 36., WIDTH - 116., 16.));
+        let open = panel_button(
+            self,
+            &header,
+            "打开完整界面",
+            sel!(showWindow:),
+            rect(WIDTH - 134., 94., 118., 29.),
+        );
+        open.setAccessibilityLabel(Some(ns_string!("打开 VoicePort 完整界面")));
+        open.setAccessibilityIdentifier(Some(ns_string!("voiceport.quick.open")));
+
+        let separator = NSBox::initWithFrame(NSBox::alloc(mtm), rect(16., 89., WIDTH - 32., 1.));
+        separator.setBoxType(NSBoxType::Separator);
+        header.addSubview(&separator);
+        self.caption(&header, "当前来源", rect(16., 72., 72., 17.));
+        let language = self.caption(&header, "", rect(94., 72., WIDTH - 110., 17.));
         language.setAlignment(NSTextAlignment::Right);
-        language.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-        let current = self.label(&header, "", rect(24., 11., WIDTH - 48., 23.), 15.);
-        current.setMaximumNumberOfLines(1);
-        current.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+        single_line(&language);
+        let checkmark = self.icon(&header, "checkmark.circle.fill", rect(16., 49., 17., 17.));
+        checkmark.setContentTintColor(Some(&NSColor::controlAccentColor()));
+        checkmark.setAccessibilityElement(false);
+        let current = self.label(&header, "", rect(40., 46., WIDTH - 56., 24.), 15.);
+        single_line(&current);
         current.setFont(Some(&NSFont::boldSystemFontOfSize(15.)));
         current.setAccessibilityIdentifier(Some(ns_string!("voiceport.quick.current")));
+        let status = self.label(&header, "", rect(16., 26., WIDTH - 32., 19.), 13.);
+        single_line(&status);
+        status.setAccessibilityIdentifier(Some(ns_string!("voiceport.quick.state")));
+        let shortcut = self.caption(&header, "", rect(16., 6., WIDTH - 32., 17.));
+        single_line(&shortcut);
+        shortcut.setAccessibilityIdentifier(Some(ns_string!("voiceport.quick.shortcut")));
 
-        let guidance = NSView::initWithFrame(
-            NSView::alloc(mtm),
-            rect(0., HEADER_Y, WIDTH, GUIDANCE_HEIGHT),
-        );
-        guidance.setHidden(true);
-        view.addSubview(&guidance);
-        let guidance_reason = self.label(&guidance, "", rect(24., 33., WIDTH - 48., 36.), 12.);
+        let guidance_reason = self.label(&guidance, "", rect(16., 33., WIDTH - 32., 36.), 12.);
         guidance_reason.setMaximumNumberOfLines(2);
-        let guidance_button = self.button(&guidance, "", sel!(resolveQuickSource:), 20., 0., 96.);
-        guidance_button.setControlSize(NSControlSize::Small);
+        let guidance_button = panel_button(
+            self,
+            &guidance,
+            "",
+            sel!(resolveQuickSource:),
+            rect(16., 2., 102., 28.),
+        );
         guidance_button
             .setAccessibilityIdentifier(Some(ns_string!("voiceport.quick.resolve-source")));
-
-        let list = NSScrollView::initWithFrame(
-            NSScrollView::alloc(mtm),
-            rect(12., 48., WIDTH - 24., LIST_HEIGHT),
-        );
-        list.setDrawsBackground(false);
-        list.setHasVerticalScroller(true);
-        list.setAutohidesScrollers(true);
-        list.setBorderType(NSBorderType::NoBorder);
-        list.setAccessibilityIdentifier(Some(ns_string!("voiceport.quick.sources")));
-        view.addSubview(&list);
-        let manage = self.button(
-            &view,
+        let manage = panel_button(
+            self,
+            &toolbar,
             "添加转写方式…",
             sel!(quickManageSources:),
-            10.,
-            7.,
-            126.,
+            rect(16., 8., 130., 28.),
         );
-        manage.setControlSize(NSControlSize::Small);
-        let hint = self.caption(&view, "", rect(140., 17., WIDTH - 154., 16.));
-        hint.setAlignment(NSTextAlignment::Right);
+        manage.setAccessibilityIdentifier(Some(ns_string!("voiceport.quick.add")));
+        let disclosure = panel_button(
+            self,
+            &toolbar,
+            "",
+            sel!(toggleQuickSources:),
+            rect(WIDTH - 164., 8., 148., 28.),
+        );
+        disclosure.setAccessibilityIdentifier(Some(ns_string!("voiceport.quick.more-sources")));
+        let actions = PanelActions::new(self);
+        unsafe { disclosure.setTarget(Some(&*actions)) };
+
         let controller =
             NSViewController::initWithNibName_bundle(NSViewController::alloc(mtm), None, None);
-        controller.setView(&view);
+        controller.setView(&scroll);
         let popover = NSPopover::new(mtm);
         popover.setBehavior(NSPopoverBehavior::Transient);
-        // Keep surface changes immediate; an in-flight close animation must not
-        // make the next status click look like another request to close.
+        // A close animation must not turn the next status click into another close.
         popover.setAnimates(false);
         popover.setContentViewController(Some(&controller));
         popover.setContentSize(NSSize::new(WIDTH, height));
         QuickPanel {
             popover,
+            scroll,
+            document,
+            layout: RefCell::new(None),
+            screen_height: Cell::new(f64::INFINITY),
             header,
             current,
+            checkmark,
             language,
+            status,
+            shortcut,
+            open,
             guidance,
             guidance_reason,
             guidance_button,
             guidance_target: Cell::new(None),
-            guidance_inputs: RefCell::new(None),
-            recovery: RefCell::new(None),
+            recovery_slot,
+            recovery: recovery::ResultCard::default(),
             recovery_actions: recovery::RecoveryActions::new(self),
-            hint,
-            list,
+            toolbar,
+            disclosure,
             manage,
+            expanded: Cell::new(false),
+            _actions: actions,
+            sources,
             rows: RefCell::new(Vec::new()),
-            catalog: RefCell::new(Vec::new()),
+            source_inputs: RefCell::new(None),
         }
     }
+
     pub(super) fn refresh_quick_panel(
         &self,
         c: &Controller,
@@ -379,110 +574,240 @@ impl Delegate {
         shortcut: &str,
         idle: bool,
     ) {
-        let Some(panel) = self.ivars().quick_panel.get() else {
-            return;
-        };
-        let recovery_height = panel.update_recovery(self, c, idle);
-        let catalog_changed = *panel.catalog.borrow() != c.catalog.entries;
-        let configurable = idle && !c.discovering() && !self.ivars().quitting.get();
-        panel.update_guidance(c, catalog_changed, configurable);
-        let show_guidance = panel.guidance_target.get().is_some();
-        let guidance_y = HEADER_Y + recovery_height;
-        let header_y = guidance_y + if show_guidance { GUIDANCE_HEIGHT } else { 0. };
-        if panel.guidance.isHidden() == show_guidance {
-            panel.guidance.setHidden(!show_guidance);
+        if let Some(panel) = self.ivars().quick_panel.get() {
+            panel.refresh_contents(self, c, state, shortcut, idle);
         }
-        if panel.guidance.frame().origin.y != guidance_y {
-            panel.guidance.setFrameOrigin(NSPoint::new(0., guidance_y));
-        }
-        if panel.header.frame().origin.y != header_y {
-            panel.header.setFrameOrigin(NSPoint::new(0., header_y));
-            panel
-                .popover
-                .setContentSize(NSSize::new(WIDTH, header_y + HEADER_HEIGHT));
-        }
-        let title = NSString::from_str(selected_title(c));
-        panel.current.setStringValue(&title);
-        panel
-            .current
-            .setToolTip(Some(&NSString::from_str(c.catalog.detail(&c.source_id))));
-        panel.hint.setStringValue(&NSString::from_str(if !idle {
-            state
-        } else if c.discovering() {
+    }
+}
+
+impl QuickPanel {
+    fn refresh_contents(
+        &self,
+        d: &Delegate,
+        c: &Controller,
+        state: &str,
+        shortcut: &str,
+        idle: bool,
+    ) {
+        let recovery_height = self.update_recovery(d, c, idle);
+        let configurable = idle && !c.discovering() && !d.ivars().quitting.get();
+        self.update_guidance(c, configurable);
+        let current = c
+            .catalog
+            .entries
+            .iter()
+            .find(|entry| entry.id == c.source_id);
+        let title = current.map_or_else(
+            || {
+                if c.catalog.entries.is_empty() {
+                    "未配置来源"
+                } else {
+                    "当前来源已不可用"
+                }
+            },
+            |entry| &entry.title,
+        );
+        let available = current.is_some_and(|entry| entry.source.is_ok());
+        self.checkmark.setHidden(!available);
+        set_label_text(&self.current, title);
+        self.current
+            .setAccessibilityLabel(Some(&NSString::from_str(&format!("当前来源：{title}"))));
+        self.current
+            .setToolTip(Some(&NSString::from_str(&match current {
+                Some(entry) => format!("{}\n{}", entry.title, entry.detail),
+                None => title.to_owned(),
+            })));
+        set_label_text(
+            &self.language,
+            &format!("识别语言：{}", language_name(&c.language)),
+        );
+        let message = if idle && c.discovering() {
             "正在检查来源…"
         } else {
-            shortcut
-        }));
-        panel.hint.setToolTip(Some(&NSString::from_str(&format!(
-            "{state} · {shortcut} 开始 / 停止听写"
-        ))));
-        panel.manage.setEnabled(idle && !c.discovering());
-        if catalog_changed {
-            let document_height = (c.catalog.entries.len() as f64 * ROW_HEIGHT).max(LIST_HEIGHT);
-            let document = NSView::initWithFrame(
-                NSView::alloc(self.mtm()),
-                rect(0., 0., WIDTH - 24., document_height),
-            );
-            let mut rows = Vec::new();
-            for (index, entry) in c.catalog.entries.iter().enumerate() {
-                let y = document_height - (index + 1) as f64 * ROW_HEIGHT;
-                let title = if entry.source.is_ok() {
-                    entry.title.clone()
-                } else {
-                    format!("{} · 不可用", entry.title)
-                };
-                let button = self.button(
-                    &document,
-                    &title,
+            state
+        };
+        set_label_text(&self.status, &format!("听写状态：{message}"));
+        let has_shortcut = d.ivars().hotkey_error.borrow().is_none();
+        let shortcut_help = if has_shortcut {
+            d.ivars().shortcut_mode.get().instruction()
+        } else {
+            "未注册，请在设置中更换"
+        };
+        let shortcut_text = format!("快捷键：{shortcut} · {shortcut_help}");
+        set_label_text(&self.shortcut, &shortcut_text);
+        self.shortcut
+            .setToolTip(Some(&NSString::from_str(&shortcut_text)));
+        let lock_reason = if c.discovering() {
+            Some("正在检查来源，请稍候")
+        } else if !configurable {
+            Some("当前有任务或设置操作，请完成后再更换来源")
+        } else {
+            None
+        };
+        self.manage.setEnabled(configurable);
+        let disabled = lock_reason.map(NSString::from_str);
+        self.manage.setToolTip(disabled.as_deref());
+        self.manage.setAccessibilityHelp(disabled.as_deref());
+
+        let changed = self.update_source_rows(d, c, lock_reason);
+        let row_count = self.rows.borrow().len();
+        if row_count == 0 {
+            self.expanded.set(false);
+        }
+        let expanded = self.expanded.get();
+        self.sources.setHidden(!expanded);
+        self.disclosure.setHidden(row_count == 0);
+        let disclosure_title = if expanded {
+            "收起来源".to_owned()
+        } else {
+            format!("更多来源（{row_count}）")
+        };
+        let title = NSString::from_str(&disclosure_title);
+        if *self.disclosure.title() != *title {
+            self.disclosure.setTitle(&title);
+        }
+        self.disclosure.setAccessibilityLabel(Some(&title));
+        self.disclosure.setAccessibilityExpanded(expanded);
+        self.disclosure
+            .setAccessibilityHelp(Some(ns_string!("展开后用 Tab 或滚动查看其他来源")));
+
+        let layout = PanelLayout::new(
+            if expanded { row_count } else { 0 },
+            !self.guidance.isHidden(),
+            recovery_height,
+            self.screen_height.get(),
+        );
+        if self.layout.borrow().as_ref() != Some(&layout) || changed {
+            self.position(layout);
+            self.relink_key_views();
+        }
+    }
+
+    fn source_for_sender(&self, sender: &NSButton) -> Option<String> {
+        self.rows
+            .borrow()
+            .iter()
+            .find(|row| std::ptr::eq(&*row.button, sender) && row.button.isEnabled())
+            .map(|row| row.id.clone())
+    }
+
+    fn update_source_rows(
+        &self,
+        d: &Delegate,
+        c: &Controller,
+        lock_reason: Option<&'static str>,
+    ) -> bool {
+        let mut previous = self.source_inputs.borrow_mut();
+        let changed = previous.as_ref().is_none_or(|inputs| {
+            inputs.current_id != c.source_id || inputs.entries != c.catalog.entries
+        });
+        let lock_changed = previous
+            .as_ref()
+            .is_none_or(|inputs| inputs.lock_reason != lock_reason);
+        if !changed && !lock_changed {
+            return false;
+        }
+        let mut rows = self.rows.borrow_mut();
+        let alternatives = c.catalog.entries.iter().filter(|e| e.id != c.source_id);
+        if changed {
+            for child in self.sources.subviews().iter() {
+                child.removeFromSuperview();
+            }
+            rows.clear();
+            let count = alternatives.clone().count();
+            for (index, entry) in alternatives.clone().enumerate() {
+                let y = (count - index - 1) as f64 * ROW_HEIGHT;
+                let unavailable = entry.source.as_ref().err();
+                let button = panel_button(
+                    d,
+                    &self.sources,
+                    &entry.title,
                     sel!(selectQuickSource:),
-                    4.,
-                    y + 2.,
-                    WIDTH - 46.,
+                    rect(
+                        16.,
+                        y + if unavailable.is_some() { 16. } else { 7. },
+                        WIDTH - 32.,
+                        30.,
+                    ),
                 );
-                button.setFrame(rect(4., y + 2., WIDTH - 46., ROW_HEIGHT - 4.));
                 button.setBordered(false);
-                button.setButtonType(NSButtonType::Radio);
-                button.setFont(Some(&NSFont::systemFontOfSize(13.)));
                 button.setAlignment(NSTextAlignment::Left);
                 button.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+                button.setFont(Some(&NSFont::systemFontOfSize(13.)));
                 button.setAccessibilityIdentifier(Some(&NSString::from_str(&format!(
                     "voiceport.quick.source.{}",
                     entry.id
                 ))));
-                button.setToolTip(Some(&NSString::from_str(&format!(
-                    "{}\n{}",
-                    entry.title, entry.detail
-                ))));
+                let label = if unavailable.is_some() {
+                    format!("{}，不可用", entry.title)
+                } else {
+                    format!("切换到 {}", entry.title)
+                };
+                button.setAccessibilityLabel(Some(&NSString::from_str(&label)));
+                if let Some(reason) = unavailable {
+                    let reason = d.caption(
+                        &self.sources,
+                        &format!("不可用：{reason}"),
+                        rect(16., y + 2., WIDTH - 32., 17.),
+                    );
+                    single_line(&reason);
+                    reason.setToolTip(Some(&reason.stringValue()));
+                }
                 rows.push(SourceRow {
                     id: entry.id.clone(),
                     button,
                 });
             }
-            panel.list.setDocumentView(Some(&document));
-            document.scrollPoint(NSPoint::new(0., document_height));
-            *panel.rows.borrow_mut() = rows;
-            *panel.catalog.borrow_mut() = c.catalog.entries.clone();
+            *previous = Some(SourceInputs {
+                current_id: c.source_id.clone(),
+                entries: c.catalog.entries.clone(),
+                lock_reason,
+            });
+        } else if let Some(inputs) = previous.as_mut() {
+            inputs.lock_reason = lock_reason;
         }
-        for row in panel.rows.borrow().iter() {
-            let selected = row.id == c.source_id;
-            let selection = if selected {
-                NSControlStateValueOn
-            } else {
-                NSControlStateValueOff
-            };
-            // Leave active mouse/keyboard tracking alone on the 100ms timer.
-            if row.button.state() != selection {
-                row.button.setState(selection);
+        for (row, entry) in rows.iter().zip(alternatives) {
+            let reason = entry
+                .source
+                .as_ref()
+                .err()
+                .map(String::as_str)
+                .or(lock_reason);
+            let enabled = reason.is_none();
+            if row.button.isEnabled() != enabled || changed || (lock_changed && !enabled) {
+                row.button.setEnabled(enabled);
+                let tooltip = format!("{}\n{}", entry.title, reason.unwrap_or(&entry.detail));
+                row.button.setToolTip(Some(&NSString::from_str(&tooltip)));
+                row.button
+                    .setAccessibilityHelp(reason.map(NSString::from_str).as_deref());
             }
-            row.button.setEnabled(can_select(
-                c,
-                &row.id,
-                !idle,
-                false,
-                self.ivars().quitting.get(),
-            ));
         }
+        changed
     }
+}
+
+fn panel_button(
+    d: &Delegate,
+    view: &NSView,
+    title: &str,
+    action: objc2::runtime::Sel,
+    frame: NSRect,
+) -> Retained<NSButton> {
+    let button = ScrollingButton::new(d.mtm(), frame);
+    button.setTitle(&NSString::from_str(title));
+    button.setBezelStyle(NSBezelStyle::Push);
+    button.setControlSize(NSControlSize::Small);
+    unsafe {
+        button.setTarget(Some(d));
+        button.setAction(Some(action));
+    }
+    view.addSubview(&button);
+    button.into_super()
+}
+
+fn single_line(label: &NSTextField) {
+    label.setMaximumNumberOfLines(1);
+    label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
 }
 
 fn set_label_text(label: &NSTextField, text: &str) {
@@ -507,6 +832,28 @@ fn can_select(c: &Controller, id: &str, preparing: bool, managing: bool, quittin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn viewport_caps_long_lists_and_keeps_recovery_above_source_actions() {
+        let compact = PanelLayout::new(0, false, 0., 720.);
+        assert_eq!(compact.document_height, compact.viewport_height);
+        let long = PanelLayout::new(40, false, 0., 720.);
+        assert_eq!(
+            long.viewport_height,
+            compact.viewport_height + 4. * ROW_HEIGHT
+        );
+        assert_eq!(
+            long.document_height,
+            compact.document_height + 40. * ROW_HEIGHT
+        );
+
+        let small = PanelLayout::new(40, true, 104., 260.);
+        assert_eq!(small.viewport_height, 260. - SCREEN_MARGIN);
+        assert_eq!(small.header_y, small.recovery_y + 104.);
+        assert_eq!(small.recovery_y, small.guidance_y + GUIDANCE_HEIGHT);
+        assert_eq!(small.guidance_y, small.toolbar_y + TOOLBAR_HEIGHT);
+        assert!(small.viewport_height >= HEADER_HEIGHT);
+    }
 
     #[test]
     fn guidance_uses_selected_id_and_its_availability_diagnostic() {

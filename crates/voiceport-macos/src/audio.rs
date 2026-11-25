@@ -8,9 +8,9 @@ use objc2::{AllocAnyThread, MainThreadMarker};
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
 use objc2_avf_audio::{
     AVAudioBuffer, AVAudioCommonFormat, AVAudioConverter, AVAudioConverterInputStatus,
-    AVAudioConverterOutputStatus, AVAudioEngine, AVAudioFile, AVAudioFormat, AVAudioPCMBuffer,
-    AVAudioTime, AVEncoderAudioQualityKey, AVEncoderBitRateKey, AVFormatIDKey,
-    AVNumberOfChannelsKey, AVSampleRateKey,
+    AVAudioConverterOutputStatus, AVAudioFile, AVAudioFormat, AVAudioPCMBuffer,
+    AVEncoderAudioQualityKey, AVEncoderBitRateKey, AVFormatIDKey, AVNumberOfChannelsKey,
+    AVSampleRateKey,
 };
 use objc2_foundation::{NSDictionary, NSError, NSLocale, NSNumber, NSString, NSURL};
 use objc2_speech::{
@@ -29,6 +29,13 @@ use std::time::Instant;
 #[path = "audio_diagnostics.rs"]
 pub(crate) mod diagnostics;
 use diagnostics::{CaptureDiagnostics, CaptureObservation, InputSignal, StageTimer};
+#[path = "audio_devices.rs"]
+pub(crate) mod devices;
+use devices::{OpenInput, Route};
+#[path = "audio_level.rs"]
+pub(crate) mod level;
+#[path = "audio_recovery_pcm.rs"]
+mod recovery_pcm;
 
 pub const MAXIMUM_SECONDS: u64 = 180;
 const OUTPUT_RATE: f64 = 24_000.0;
@@ -55,7 +62,9 @@ pub enum AudioEvent {
 /// Construction is inert: no files, permission queries, engine or Speech object.
 /// This type is deliberately !Send/!Sync. start/stop/cancel/finish belong to UI.
 pub struct Recorder {
-    engine: Option<Retained<AVAudioEngine>>,
+    input: Option<OpenInput>,
+    route: Option<Route>,
+    recovered_input: bool,
     sink: Option<Arc<Sink>>,
     speech: Option<Speech>,
     recording: Option<Arc<Recording>>,
@@ -75,7 +84,9 @@ impl Default for Recorder {
 impl Recorder {
     pub fn new() -> Self {
         Self {
-            engine: None,
+            input: None,
+            route: None,
+            recovered_input: false,
             sink: None,
             speech: None,
             recording: None,
@@ -116,6 +127,18 @@ impl Recorder {
     pub fn request_permissions(generation: u64, sender: EventSender) {
         Self::request_permissions_for_source(generation, sender, true);
     }
+    pub(crate) fn request_speech_preview(sender: EventSender) {
+        request_speech_permission(
+            Arc::new(PermissionReply {
+                generation: 0,
+                sender,
+                use_speech: true,
+                sent: AtomicBool::new(false),
+            }),
+            Self::permission_status().0 == "authorized",
+        );
+    }
+
     pub fn request_permissions_for_source(generation: u64, sender: EventSender, use_speech: bool) {
         let reply = Arc::new(PermissionReply {
             generation,
@@ -129,11 +152,11 @@ impl Recorder {
         };
         let status = unsafe { AVCaptureDevice::authorizationStatusForMediaType(media_type) };
         if status == AVAuthorizationStatus::Authorized {
-            request_speech_permission(reply);
+            request_speech_permission(reply, true);
         } else if status == AVAuthorizationStatus::NotDetermined {
             let callback = RcBlock::new(move |allowed: Bool| {
                 if allowed.as_bool() {
-                    request_speech_permission(reply.clone())
+                    request_speech_permission(reply.clone(), true)
                 } else {
                     reply.send(false, speech_authorized())
                 }
@@ -154,6 +177,18 @@ impl Recorder {
         sender: EventSender,
         local: Option<crate::local_audio::Input>,
     ) -> Result<bool, String> {
+        self.start_with_input(speech_authorized, language, generation, sender, local, None)
+    }
+
+    pub(crate) fn start_with_input(
+        &mut self,
+        speech_authorized: bool,
+        language: &str,
+        generation: u64,
+        sender: EventSender,
+        local: Option<crate::local_audio::Input>,
+        preferred_uid: Option<&str>,
+    ) -> Result<bool, String> {
         main_thread()
             .inspect_err(|_| self.capture_diagnostics = Some(CaptureDiagnostics::default()))?;
         self.cancel();
@@ -172,16 +207,16 @@ impl Recorder {
         });
         self.events = Some(events.clone());
         let result = (|| {
+            let (route, input) = OpenInput::select(preferred_uid, |format| {
+                validate_format(format).map_err(str::to_owned)
+            })?;
+            let format = input.format.clone();
             let recording = Arc::new(
                 storage::default_storage()
                     .and_then(|s| s.create_recording())
                     .map_err(|e| e.to_string())?,
             );
             self.recording = Some(recording.clone());
-            let engine = unsafe { AVAudioEngine::new() };
-            let input = unsafe { engine.inputNode() };
-            let format = unsafe { input.outputFormatForBus(0) };
-            validate_format(&format)?;
             let writer = AacWriter::new(recording.path(), &format)?;
             recording.secure_audio_file().map_err(|e| e.to_string())?;
             let local_mode = local.is_some();
@@ -228,27 +263,10 @@ impl Recorder {
             if let Some(speech) = self.speech.as_mut() {
                 speech.start(events.clone(), speech_active);
             }
-            let tap = RcBlock::new(
-                move |buffer: NonNull<AVAudioPCMBuffer>, _time: NonNull<AVAudioTime>| {
-                    // The framework owns buffer for this callback. consume is synchronous;
-                    // neither this reference nor PCM pointers escape the callback.
-                    // Bound temporary Objective-C objects even on an audio thread
-                    // without a surrounding application autorelease pool.
-                    autoreleasepool(|_| sink.consume(unsafe { buffer.as_ref() }));
-                },
-            );
-            self.engine = Some(engine);
-            unsafe {
-                input.installTapOnBus_bufferSize_format_block(
-                    0,
-                    1024,
-                    Some(&format),
-                    RcBlock::as_ptr(&tap),
-                );
-                let engine = self.engine.as_ref().expect("engine stored before tap");
-                engine.prepare();
-                engine.startAndReturnError().map_err(native_error)?;
-            }
+            input.attach(move |buffer| sink.consume(buffer));
+            self.input = Some(input);
+            self.route = Some(route);
+            self.recovered_input = false;
             Ok(live)
         })();
         if result.is_err() {
@@ -258,6 +276,61 @@ impl Recorder {
             self.capture_diagnostics = None;
         }
         result
+    }
+
+    pub(crate) fn route(&self) -> Option<&Route> {
+        self.route.as_ref()
+    }
+
+    /// Replace only the engine and tap. Never restart a transcription job, reset
+    /// the recording clock, or open a second writer. Normalize a replacement
+    /// tap before it reaches audio consumers that require a fixed format.
+    pub(crate) fn recover_input(&mut self, preferred_uid: Option<&str>) -> Result<(), String> {
+        let (Some(input), Some(route)) = (self.input.as_mut(), self.route.as_ref()) else {
+            return Ok(());
+        };
+        if input.healthy(route, false) {
+            return Ok(());
+        }
+        self.route = None;
+        self.input.take(); // Drain and revoke old tap access before opening another one.
+        if std::mem::replace(&mut self.recovered_input, true) {
+            return Err("麦克风再次断开，已停止本轮录音；请检查设备后重新开始。".into());
+        }
+        let Some(sink) = self.sink.clone() else {
+            return Err("录音输入已关闭，请重新开始。".into());
+        };
+        let format = sink
+            .state
+            .lock()
+            .map_err(|_| "录音写入锁失效。")?
+            .format
+            .clone();
+        let (route, (input, bridge)) =
+            OpenInput::open_prepared(preferred_uid, true, |new_format| {
+                recovery_pcm::FormatBridge::new(new_format, &format)
+            })
+            .map_err(|error| format!("麦克风已断开，无法继续本轮录音：{error} 请重新开始。"))?;
+        if let Some(bridge) = bridge {
+            let bridge = Mutex::new(bridge);
+            input.attach(move |buffer| {
+                let result = bridge
+                    .lock()
+                    .map_err(|_| "备用麦克风转换锁失效。".to_owned())
+                    .and_then(|mut bridge| {
+                        sink.observe_replacement(buffer);
+                        bridge.convert(buffer, |output| sink.consume_pcm(output, false))
+                    });
+                if let Err(error) = result {
+                    sink.fail_route_conversion(error);
+                }
+            });
+        } else {
+            input.attach(move |buffer| sink.consume(buffer));
+        }
+        self.input = Some(input);
+        self.route = Some(route);
+        Ok(())
     }
 
     /// The settled capture snapshot survives stop, cancellation, and release
@@ -282,7 +355,17 @@ impl Recorder {
 
     pub fn stop(&mut self) -> Result<Arc<Recording>, String> {
         main_thread()?;
+        let interrupted = self
+            .input
+            .as_mut()
+            .zip(self.route.as_ref())
+            .is_some_and(|(input, route)| !input.healthy(route, true));
         self.stop_native();
+        if interrupted {
+            self.failure = Some("麦克风在结束录音前已断开；未转写本轮音频，请重新开始。".into());
+            self.route = None;
+            self.mark_capture_unknown();
+        }
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
@@ -309,6 +392,7 @@ impl Recorder {
     /// its recording alive until that worker finishes reading it.
     pub fn cancel(&mut self) {
         self.stop_native();
+        self.route = None;
         self.recording = None;
         self.finalized = false;
         self.failure = None;
@@ -324,12 +408,7 @@ impl Recorder {
         if let Some(events) = self.events.take() {
             events.active.store(false, Ordering::Release);
         }
-        if let Some(engine) = self.engine.take() {
-            unsafe {
-                engine.stop();
-                engine.inputNode().removeTapOnBus(0);
-            }
-        }
+        self.input.take();
         if let Some(sink) = self.sink.take() {
             let (result, diagnostics) = sink.finish();
             self.capture_diagnostics = Some(diagnostics);
@@ -379,23 +458,23 @@ impl PermissionReply {
         }
     }
 }
-fn request_speech_permission(reply: Arc<PermissionReply>) {
+fn request_speech_permission(reply: Arc<PermissionReply>, microphone: bool) {
     if !reply.use_speech {
-        reply.send(true, false);
+        reply.send(microphone, false);
         return;
     }
     let status = unsafe { SFSpeechRecognizer::authorizationStatus() };
     if status == SFSpeechRecognizerAuthorizationStatus::NotDetermined {
         let callback = RcBlock::new(move |status| {
             reply.send(
-                true,
+                microphone,
                 status == SFSpeechRecognizerAuthorizationStatus::Authorized,
             )
         });
         unsafe { SFSpeechRecognizer::requestAuthorization(&callback) };
     } else {
         reply.send(
-            true,
+            microphone,
             status == SFSpeechRecognizerAuthorizationStatus::Authorized,
         )
     }
@@ -558,7 +637,38 @@ struct SinkState {
 unsafe impl Send for SinkState {}
 
 impl Sink {
+    fn fail_route_conversion(&self, error: String) {
+        if let Ok(mut state) = self.state.lock() {
+            if !state.accepting {
+                return;
+            }
+            state.accepting = false;
+            state.valid = false;
+            state.diagnostics.unavailable();
+        }
+        self.events.send(AudioEvent::Failed(format!(
+            "备用麦克风不可用，请重新录音：{error}"
+        )));
+    }
+    fn observe_replacement(&self, buffer: &AVAudioPCMBuffer) {
+        if let Ok(mut state) = self.state.lock()
+            && state.accepting
+        {
+            state.diagnostics.callback();
+            let (original, replacement) =
+                unsafe { (state.format.sampleRate(), buffer.format().sampleRate()) };
+            let remaining = state.maximum_frames.saturating_sub(state.frames);
+            let raw_limit = (remaining as f64 * replacement / original).floor() as usize;
+            state.observe_pcm(
+                buffer,
+                (unsafe { buffer.frameLength() } as usize).min(raw_limit),
+            );
+        }
+    }
     fn consume(&self, buffer: &AVAudioPCMBuffer) {
+        self.consume_pcm(buffer, true);
+    }
+    fn consume_pcm(&self, buffer: &AVAudioPCMBuffer, observe: bool) {
         let event = {
             let Ok(mut state) = self.state.lock() else {
                 self.events
@@ -568,8 +678,10 @@ impl Sink {
             if !state.accepting {
                 return;
             }
-            state.diagnostics.callback();
-            match state.consume(buffer, self.speech_active.load(Ordering::Acquire)) {
+            if observe {
+                state.diagnostics.callback();
+            }
+            match state.consume(buffer, self.speech_active.load(Ordering::Acquire), observe) {
                 Ok(true) => Some(AudioEvent::LimitReached),
                 Ok(false) => state.local_error.take().map(AudioEvent::Failed),
                 Err(error) => {
@@ -616,7 +728,26 @@ impl Sink {
     }
 }
 impl SinkState {
-    fn consume(&mut self, buffer: &AVAudioPCMBuffer, speech_active: bool) -> Result<bool, String> {
+    fn observe_pcm(&mut self, buffer: &AVAudioPCMBuffer, count: usize) {
+        if count == 0 {
+            return;
+        }
+        match pcm_samples(buffer, MAXIMUM_TAP_FRAMES as usize) {
+            Ok(pcm) => self.diagnostics.observe(
+                count.min(pcm.frames),
+                pcm.channels,
+                pcm.sample,
+                Instant::now,
+            ),
+            Err(_) => self.diagnostics.unavailable(),
+        }
+    }
+    fn consume(
+        &mut self,
+        buffer: &AVAudioPCMBuffer,
+        speech_active: bool,
+        observe: bool,
+    ) -> Result<bool, String> {
         unsafe {
             if buffer.format() != self.format
                 || buffer.frameLength() > MAXIMUM_TAP_FRAMES
@@ -631,12 +762,8 @@ impl SinkState {
             }
             // Observe only the frames accepted by the current recording limit,
             // before any mixing. Missing observations cannot alter writer/ASR input.
-            match pcm_samples(buffer, MAXIMUM_TAP_FRAMES as usize) {
-                Ok(pcm) => {
-                    self.diagnostics
-                        .observe(count as usize, pcm.channels, pcm.sample, Instant::now)
-                }
-                Err(_) => self.diagnostics.unavailable(),
+            if observe {
+                self.observe_pcm(buffer, count as usize);
             }
             let copy;
             let input = if count < buffer.frameLength() as u64 {
@@ -1304,12 +1431,15 @@ mod tests {
     #[test]
     fn local_permission_policy_replies_without_querying_system_speech() {
         let (sender, receiver) = std::sync::mpsc::channel();
-        request_speech_permission(Arc::new(PermissionReply {
-            generation: 78,
-            sender,
-            use_speech: false,
-            sent: AtomicBool::new(false),
-        }));
+        request_speech_permission(
+            Arc::new(PermissionReply {
+                generation: 78,
+                sender,
+                use_speech: false,
+                sent: AtomicBool::new(false),
+            }),
+            true,
+        );
         assert_eq!(
             receiver.try_recv().unwrap(),
             (
@@ -1498,6 +1628,29 @@ mod tests {
             events.try_iter().collect::<Vec<_>>(),
             [(82, AudioEvent::LimitReached)]
         );
+    }
+
+    #[test]
+    fn replacement_diagnostics_are_raw_single_callback_and_limited_by_remaining_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            storage::Storage::at(dir.path().canonicalize().unwrap().join(storage::NAMESPACE));
+        let recording = store.create_recording().unwrap();
+        let (original, normalized) = synthetic_buffer(48_000., 1, 480);
+        let (_, incoming) = synthetic_buffer(16_000., 2, 480);
+        unsafe {
+            let samples = (*normalized.floatChannelData()).as_ptr();
+            std::slice::from_raw_parts_mut(samples, 480).fill(0.0);
+        }
+        let (sink, _) = diagnostic_sink(&recording, &original, 85);
+        sink.state.lock().unwrap().maximum_frames = 480;
+        sink.observe_replacement(&incoming);
+        sink.consume_pcm(&normalized, false);
+        let (result, diagnostics) = sink.finish();
+        result.unwrap();
+        assert_eq!(diagnostics.signal, InputSignal::Signal);
+        assert_eq!(diagnostics.callbacks, Some(1));
+        assert_eq!(diagnostics.observed_frames, Some(160));
     }
 
     #[test]

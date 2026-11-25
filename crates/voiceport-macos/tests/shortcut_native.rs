@@ -23,6 +23,11 @@ fn main() {
     let mtm = objc2::MainThreadMarker::new().expect("requires the OS main thread");
     objc2::rc::autoreleasepool(|_| {
         shortcut_recorder::regression(mtm);
+        voiceport_macos::isolated_shortcut_regression(mtm);
+        if std::env::var_os("VOICEPORT_TEST_ISOLATED_UI").is_some() {
+            println!("shortcut_native: skipped global registration in isolated UI mode");
+            return;
+        }
         let modifiers = COMMAND | CONTROL | OPTION | SHIFT;
         let original = Shortcut::new(64, modifiers).unwrap();
         let occupied = Shortcut::new(79, modifiers).unwrap();

@@ -83,6 +83,7 @@ The Rust workspace has the following direct dependencies, with versions resolved
 | objc2-foundation | 0.3.2 | Foundation types and native paths | MIT |
 | objc2-app-kit | 0.3.2 | Native menu, window and input integration | Zlib OR Apache-2.0 OR MIT |
 | objc2-av-foundation / objc2-avf-audio | 0.3.2 | Microphone permissions, capture and AAC conversion | Zlib OR Apache-2.0 OR MIT |
+| objc2-audio-toolbox / objc2-core-audio | 0.3.2 | Audio unit device selection and Core Audio input device discovery | Zlib OR Apache-2.0 OR MIT |
 | objc2-speech | 0.3.2 | On-device speech recognition | Zlib OR Apache-2.0 OR MIT |
 | block2 | 0.6.2 | Native framework callback blocks | MIT |
 | core-foundation | 0.10.1 | Core Foundation ownership and values | MIT OR Apache-2.0 |

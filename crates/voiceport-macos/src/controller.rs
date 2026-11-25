@@ -5,12 +5,18 @@ use crate::{
         diagnostics::{InputSignal, StageTimer, StageTimings},
     },
     delivery::Delivery,
+    dictation_dictionary::Dictionary,
+    dictation_workflows::Workflows,
     lifecycle::{Lifecycle, Phase},
     local_audio::Incoming,
     local_models::{CHATGPT, Catalog, SessionSource},
     plugin_process::{CLEANUP_WARNING, Custody, Failure},
     storage::Recording,
 };
+#[cfg(test)]
+#[path = "controller/dictation_workflow_tests.rs"]
+mod dictation_workflow_tests;
+
 use std::sync::Mutex;
 use std::{
     sync::{
@@ -223,9 +229,20 @@ impl GuiDiagnostics {
     }
 }
 
+/// Origin of the display buffer, not a new transcript store or delivery receipt.
+#[derive(Clone, Copy)]
+pub(crate) enum VisibleTranscript {
+    Preview(u64),
+    Final(u64),
+}
+
 pub struct Controller {
     pub state: Lifecycle,
     pub transcript: String,
+    pub(crate) visible_transcript: Option<VisibleTranscript>,
+    pub(crate) raw_transcript: Option<String>,
+    pub(crate) workflows: Workflows,
+    recorded_dictionary: Dictionary,
     pub message: String,
     pub preview_status: String,
     pub delivery_status: String,
@@ -238,6 +255,10 @@ pub struct Controller {
     recorded_source: SessionSource,
     partial: PartialSlot,
     recorder: Recorder,
+    pub(crate) microphone_uid: Option<String>,
+    recorded_microphone_uid: Option<String>,
+    microphone_test: Option<crate::audio::level::LevelTest>,
+    microphone_test_status: String,
     delivery: Delivery,
     events_tx: Sender<(u64, AudioEvent)>,
     events: Receiver<(u64, AudioEvent)>,
@@ -266,6 +287,10 @@ impl Controller {
         Self {
             state: Lifecycle::default(),
             transcript: String::new(),
+            visible_transcript: None,
+            raw_transcript: None,
+            workflows: Workflows::default(),
+            recorded_dictionary: Dictionary::default(),
             message: "聚焦输入框，按快捷键开始听写。".into(),
             preview_status: "本机预览尚未启动".into(),
             delivery_status: String::new(),
@@ -278,6 +303,10 @@ impl Controller {
             recorded_source: SessionSource::ChatGpt,
             partial: Arc::new(Mutex::new(None)),
             recorder: Recorder::new(),
+            microphone_uid: None,
+            recorded_microphone_uid: None,
+            microphone_test: None,
+            microphone_test_status: String::new(),
             delivery: Delivery::new(),
             events_tx,
             events,
@@ -329,7 +358,10 @@ impl Controller {
         self.started.map(|s| s.elapsed().as_secs()).unwrap_or(0)
     }
     pub fn busy(&self) -> bool {
-        !self.state.can_start() || self.delivery.has_pending() || self.source_tests.busy()
+        !self.state.can_start()
+            || self.delivery.has_pending()
+            || self.source_tests.busy()
+            || self.microphone_test.is_some()
     }
     /// Test concrete source IDs without changing preferences, transcript or lifecycle.
     pub fn start_source_tests(&mut self, ids: &[String]) -> Result<(), String> {
@@ -533,7 +565,7 @@ impl Controller {
     ) -> Option<u64> {
         self.start_pinned_with_permissions(source, language, automatic, Recorder::permission_status)
     }
-    fn start_pinned_with_permissions(
+    pub(crate) fn start_pinned_with_permissions(
         &mut self,
         source: SessionSource,
         language: String,
@@ -628,9 +660,17 @@ impl Controller {
         self.cancel_capture();
         self.recording = None;
         self.transcript.clear();
+        self.visible_transcript = None;
+        self.raw_transcript = None;
+        self.recorded_dictionary = if gui {
+            self.workflows.dictionary_for_session()
+        } else {
+            Dictionary::default()
+        };
         self.testing = false;
         self.recorded_language = language;
         self.recorded_source = source;
+        self.recorded_microphone_uid = self.microphone_uid.clone();
         self.allow_delivery = automatic;
         let use_speech = self.recorded_source.uses_system_speech();
         self.message = if use_speech {
@@ -672,6 +712,9 @@ impl Controller {
         self.delivery.clear();
         self.recording = None;
         self.transcript.clear();
+        self.visible_transcript = None;
+        self.raw_transcript = None;
+        self.recorded_dictionary = Dictionary::default();
         let generation = self.state.begin()?;
         self.state.permissions(generation, true);
         self.state.transcribe();
@@ -687,7 +730,11 @@ impl Controller {
             return;
         }
         self.started = None;
-        self.delivery_status = self.delivery.finish_preview();
+        if self.recorded_dictionary.is_empty() {
+            self.delivery_status = self.delivery.finish_preview();
+        } else if self.allow_delivery && self.delivery.failure_stage().is_none() {
+            self.delivery_status = "应用个人词典后，再输入最终文字。".into();
+        }
         match self.stop_capture() {
             Ok(recording) => {
                 self.recording = Some(recording);
@@ -698,26 +745,64 @@ impl Controller {
                     self.submit();
                 }
             }
-            Err(message) => {
-                // This recording cannot be retried. Release capture/controller
-                // references; an active local Job keeps its lease until completion.
-                self.cancel_capture();
-                self.recording = None;
-                self.state.phase = Phase::Failed;
-                if let Some(active) = &self.active {
-                    active.cancel.cancel();
-                    self.stop_failure = Some(message.clone());
-                    self.state.phase = Phase::Stopping;
+            Err(message) => self.fail_capture(message),
+        }
+    }
+    fn fail_capture(&mut self, message: String) {
+        // A local job keeps its lease until completion, but neither it nor a
+        // partial AAC from an interrupted capture may be submitted for delivery.
+        self.started = None;
+        self.cancel_capture();
+        self.recording = None;
+        self.state.phase = Phase::Failed;
+        if let Some(active) = &self.active {
+            active.cancel.cancel();
+            self.stop_failure = Some(message.clone());
+            self.state.phase = Phase::Stopping;
+        }
+        self.state.retry_available = false;
+        self.message = message;
+        self.report_gui_transcription(TranscriptionState::Failed, Some(BlockReason::CaptureFailed));
+        self.gui_diagnostics.abandon_stages();
+        self.delivery.retain_preview();
+        self.wait_for_delivery();
+    }
+    pub(crate) fn microphone_route(&self) -> Option<String> {
+        self.recorder
+            .route()
+            .map(crate::audio::devices::Route::summary)
+    }
+    pub(crate) fn start_microphone_test(&mut self) {
+        if self.busy() {
+            return;
+        }
+        match crate::audio::level::LevelTest::start(self.microphone_uid.as_deref()) {
+            Ok(test) => {
+                self.microphone_test = Some(test);
+                self.poll_microphone_test();
+            }
+            Err(error) => self.microphone_test_status = error,
+        }
+    }
+    pub(crate) fn microphone_test_running(&self) -> bool {
+        self.microphone_test.is_some()
+    }
+    pub(crate) fn microphone_test_status(&self) -> &str {
+        &self.microphone_test_status
+    }
+    pub(crate) fn stop_microphone_test(&mut self) {
+        if self.microphone_test.take().is_some() {
+            self.microphone_test_status = "电平测试已停止。".into();
+        }
+    }
+    fn poll_microphone_test(&mut self) {
+        if let Some(test) = self.microphone_test.as_mut() {
+            match test.status(Instant::now()) {
+                Ok(status) => self.microphone_test_status = status,
+                Err(message) => {
+                    self.stop_microphone_test();
+                    self.microphone_test_status = message.into();
                 }
-                self.state.retry_available = false;
-                self.message = message;
-                self.report_gui_transcription(
-                    TranscriptionState::Failed,
-                    Some(BlockReason::CaptureFailed),
-                );
-                self.gui_diagnostics.abandon_stages();
-                self.delivery.retain_preview();
-                self.wait_for_delivery();
             }
         }
     }
@@ -951,6 +1036,7 @@ impl Controller {
         }
     }
     pub fn cancel(&mut self) {
+        self.stop_microphone_test();
         if self.source_tests.busy() {
             self.source_tests.cancel();
             self.message = self.source_tests.summary();
@@ -996,7 +1082,60 @@ impl Controller {
         }
         self.wait_for_delivery();
     }
+    pub(crate) fn cancel_released_shortcut(&mut self) {
+        self.cancel();
+        self.message = "准备期间已松开快捷键，未开始录音。".into();
+    }
+
+    fn update_dictation_partial(&mut self, generation: u64, text: String) {
+        self.transcript = text;
+        self.visible_transcript = Some(VisibleTranscript::Preview(generation));
+        // An append-only target cannot undo raw partial text after correction.
+        if self.recorded_dictionary.is_empty() {
+            self.delivery_status = self.delivery.preview(&self.transcript);
+        }
+    }
+
+    fn apply_dictation_final(&mut self, text: String) {
+        let corrected = self.recorded_dictionary.apply(&text);
+        if corrected == text {
+            self.transcript = text;
+            self.raw_transcript = None;
+        } else {
+            self.transcript = corrected.into_owned();
+            self.raw_transcript = Some(text);
+        }
+    }
+
+    #[cfg(test)]
     pub fn poll(&mut self) {
+        self.poll_with_start_gate(|_| true);
+    }
+
+    pub(crate) fn poll_with_start_gate(&mut self, start_allowed: impl FnMut(u64) -> bool) {
+        self.poll_with_capture(start_allowed, |c, speech, generation, local| {
+            c.recorder.start_with_input(
+                speech && c.recorded_source.uses_system_speech(),
+                &c.recorded_language,
+                generation,
+                c.events_tx.clone(),
+                local,
+                c.recorded_microphone_uid.as_deref(),
+            )
+        });
+    }
+
+    pub(crate) fn poll_with_capture(
+        &mut self,
+        mut start_allowed: impl FnMut(u64) -> bool,
+        mut start_capture: impl FnMut(
+            &mut Self,
+            bool,
+            u64,
+            Option<crate::local_audio::Input>,
+        ) -> Result<bool, String>,
+    ) {
+        self.poll_microphone_test();
         let was_testing = self.source_tests.busy();
         self.source_tests.poll();
         if was_testing {
@@ -1017,13 +1156,19 @@ impl Controller {
                 Err(TryRecvError::Empty) => {}
             }
         }
+        if self.state.phase == Phase::Recording
+            && let Err(error) = self
+                .recorder
+                .recover_input(self.recorded_microphone_uid.as_deref())
+        {
+            self.fail_capture(error);
+        }
         let partial = self.partial.lock().ok().and_then(|mut slot| slot.take());
         if let Some((generation, text)) = partial
             && self.state.accepts(generation)
             && self.state.phase == Phase::Recording
         {
-            self.transcript = text;
-            self.delivery_status = self.delivery.preview(&self.transcript);
+            self.update_dictation_partial(generation, text);
         }
         while let Ok((generation, event)) = self.events.try_recv() {
             if !self.state.accepts(generation) {
@@ -1034,6 +1179,12 @@ impl Controller {
                     // Duplicate callbacks must not cancel an already-started
                     // session or change its delivery target.
                     if self.state.phase != Phase::Permissions {
+                        continue;
+                    }
+                    // A synchronous permission reply can arrive during the same tick
+                    // that began preparations, while Carbon key-up is still pending.
+                    if !start_allowed(generation) {
+                        self.cancel_released_shortcut();
                         continue;
                     }
                     if !self.state.permissions(generation, microphone) {
@@ -1057,13 +1208,7 @@ impl Controller {
                     if self.current_gui_receipt().is_some() {
                         self.gui_diagnostics.capture_pending = Some(generation);
                     }
-                    match self.recorder.start(
-                        speech && self.recorded_source.uses_system_speech(),
-                        &self.recorded_language,
-                        generation,
-                        self.events_tx.clone(),
-                        local,
-                    ) {
+                    match start_capture(self, speech, generation, local) {
                         Ok(preview) => {
                             self.started = Some(Instant::now());
                             if let Some(incoming) = incoming {
@@ -1074,7 +1219,7 @@ impl Controller {
                                 self.message = if self.delivery.uses_clipboard() {
                                     "兼容听写中；停止后会复制最终文字并粘贴到原输入位置。"
                                 } else {
-                                    "正在录音；再次按快捷键停止。"
+                                    "正在录音；结束后转写。"
                                 }
                                 .into();
                             }
@@ -1103,8 +1248,7 @@ impl Controller {
                     }
                 }
                 AudioEvent::Partial(text) if self.state.phase == Phase::Recording => {
-                    self.transcript = text;
-                    self.delivery_status = self.delivery.preview(&self.transcript);
+                    self.update_dictation_partial(generation, text);
                 }
                 AudioEvent::Status(text) => self.preview_status = text,
                 AudioEvent::Failed(message)
@@ -1255,7 +1399,9 @@ impl Controller {
                         if !has_text {
                             self.gui_diagnostics.preparation = None;
                         }
-                        self.transcript = text;
+                        self.apply_dictation_final(text);
+                        self.visible_transcript =
+                            has_text.then_some(VisibleTranscript::Final(completion.generation));
                         self.delivery_status =
                             self.delivery.deliver(&self.transcript, self.allow_delivery);
                         self.gui_diagnostics
@@ -2023,6 +2169,28 @@ pub(crate) mod stop_failure_regression {
         finish(&mut c, &outgoing, panel, "晚于取消");
         assert_eq!(c.gui_dictation_receipt().unwrap(), cancelled);
 
+        c.workflows.dictionary_enabled = true;
+        c.workflows.rules = crate::dictation_dictionary::parse_rules("北经 → 北京").unwrap();
+        let (generation, corrected_receiver) = start(&mut c);
+        c.update_dictation_partial(c.state.generation(), "北经".into());
+        assert_eq!(c.transcript, "北经");
+        assert_eq!(corrected_receiver.borrow().writes, 0);
+        finish(&mut c, &outgoing, generation, "北经🙂");
+        finish(&mut c, &outgoing, generation, "重复结果");
+        assert_eq!(c.transcript, "北京🙂");
+        assert_eq!(c.raw_transcript.as_deref(), Some("北经🙂"));
+        let corrected = corrected_receiver.borrow();
+        assert_eq!(corrected.snapshot.text, "A北京🙂B");
+        assert_eq!(corrected.snapshot.selection.location, 5);
+        assert_eq!(corrected.writes, 1);
+        assert_eq!(
+            c.gui_dictation_receipt().unwrap().delivery.state,
+            DeliveryState::Confirmed
+        );
+        println!(
+            "gui-delivery: personal dictionary preview writes=0, corrected final writes=1, original retained"
+        );
+
         // Real synthetic PCM/AAC and production Stop/Job dispatch, with an
         // isolated receiver and an ASR stand-in that returns a successful empty
         // result. Leave the receiver open to detect any second request.
@@ -2681,6 +2849,47 @@ pub(crate) mod tests {
         assert_eq!(c.state.phase, Phase::Recording);
         assert_eq!(c.message, "current recording");
         assert_eq!(c.delivery.failure_stage(), None);
+    }
+
+    #[test]
+    fn late_permission_after_shortcut_release_cannot_capture_or_transcribe() {
+        let mut c = Controller::new();
+        let (generation, _) = c
+            .prepare_start_with(SessionSource::ChatGpt, String::new(), false, true, |_| {
+                panic!("panel-only start must not capture a target")
+            })
+            .unwrap();
+        c.poll_with_capture(
+            |_| panic!("permission has not arrived"),
+            |_, _, _, _| panic!("capture without permission"),
+        );
+        assert_eq!(c.state.phase, Phase::Permissions);
+        for _ in 0..2 {
+            c.events_tx
+                .send((
+                    generation,
+                    AudioEvent::Permissions {
+                        microphone: true,
+                        speech: false,
+                    },
+                ))
+                .unwrap();
+        }
+        let samples = std::cell::Cell::new(0);
+        c.poll_with_capture(
+            |reply_generation| {
+                assert_eq!(reply_generation, generation);
+                samples.set(samples.get() + 1);
+                false
+            },
+            |_, _, _, _| panic!("released shortcut reached capture"),
+        );
+        assert_eq!(samples.get(), 1);
+        assert_eq!(c.state.phase, Phase::Idle);
+        assert!(c.active.is_none() && c.worker.is_none() && c.recording.is_none());
+        let receipt = c.gui_dictation_receipt().unwrap();
+        assert_eq!(receipt.transcription, TranscriptionState::Cancelled);
+        assert_eq!(receipt.block_reason, Some(BlockReason::Cancelled));
     }
 
     #[test]

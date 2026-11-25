@@ -13,6 +13,7 @@ enum Action {
     Remove(String),
     Details(String),
     Destination(String),
+    LocateTest(String),
 }
 /// Keep the selected file's provenance with the parsed contents until review.
 struct ImportReview {
@@ -40,6 +41,14 @@ impl ImportReview {
     }
 }
 
+struct DiagnosticRow {
+    source: Source,
+    manifest: Option<Manifest>,
+    invalid: bool,
+    status: Retained<NSTextField>,
+    locate: Retained<NSButton>,
+}
+
 pub(crate) struct LibraryState {
     owner: Retained<Delegate>,
     store: RefCell<Store>,
@@ -54,6 +63,7 @@ pub(crate) struct LibraryState {
     alert: RefCell<Option<Retained<NSAlert>>>,
     panel: RefCell<Option<Retained<NSOpenPanel>>>,
     blocked: Cell<bool>,
+    diagnostic_rows: RefCell<Vec<DiagnosticRow>>,
     presentation: presentation::Presentation,
     cleaned: Cell<bool>,
 }
@@ -128,9 +138,19 @@ fn source_status(store: &Store, source: &Source) -> (String, bool) {
     let mut candidate = source.clone();
     candidate.enabled = true;
     match store.validate_source(&candidate) {
-        Err(error) => (format!("需要处理 · {error}"), true),
+        Err(error) => (
+            format!(
+                "{} · 配置需修正：{error}",
+                if source.enabled {
+                    "已启用"
+                } else {
+                    "已停用"
+                }
+            ),
+            true,
+        ),
         Ok(_) if !source.enabled => ("已停用".into(), false),
-        Ok(_) => ("已启用 · 连接未检测".into(), false),
+        Ok(_) => ("已启用".into(), false),
     }
 }
 impl Library {
@@ -349,7 +369,13 @@ impl Library {
         view.addSubview(&b);
         b
     }
-    fn action_button(&self, view: &NSView, title: &str, action: Action, frame: NSRect) {
+    fn action_button(
+        &self,
+        view: &NSView,
+        title: &str,
+        action: Action,
+        frame: NSRect,
+    ) -> Retained<NSButton> {
         let tag = self.ivars().actions.borrow().len();
         let b = self.button(view, title, sel!(libraryItem:), frame);
         b.setTag(tag as isize);
@@ -359,12 +385,43 @@ impl Library {
             Action::Remove(id) => ("remove", id),
             Action::Details(id) => ("details", id),
             Action::Destination(id) => ("destination", id),
+            Action::LocateTest(id) => ("locate-test", id),
         };
         b.setAccessibilityIdentifier(Some(&NSString::from_str(&format!(
             "voiceport.library.{kind}.{id}"
         ))));
         b.setEnabled(matches!(kind, "details" | "destination") || !self.ivars().blocked.get());
         self.ivars().actions.borrow_mut().push(action);
+        b
+    }
+    /// Update text and availability in place to preserve scroll and focus.
+    pub(in crate::app) fn refresh_diagnostics(&self) {
+        let iv = self.ivars();
+        let slot = self.owner().ivars().controller.borrow();
+        let Some(c) = slot.as_ref() else {
+            return;
+        };
+        let discovering = c.discovering();
+        for row in iv.diagnostic_rows.borrow().iter() {
+            let entry =
+                diagnostics::matching_entry(&c.catalog.entries, &row.source, row.manifest.as_ref());
+            let result = entry.and_then(|entry| c.source_tests.row(entry));
+            let text = NSString::from_str(&diagnostics::test_status(
+                &row.source,
+                row.invalid,
+                discovering,
+                entry,
+                result,
+            ));
+            if *row.status.stringValue() != *text {
+                row.status.setStringValue(&text);
+                row.status.setToolTip(Some(&text));
+            }
+            let enabled = !iv.blocked.get() && !discovering && !c.busy() && entry.is_some();
+            if row.locate.isEnabled() != enabled {
+                row.locate.setEnabled(enabled);
+            }
+        }
     }
     fn render(&self) {
         let iv = self.ivars();
@@ -373,6 +430,7 @@ impl Library {
         let query = iv.search.get().unwrap().stringValue().to_string();
         let sources = iv.tabs.get().unwrap().selectedSegment() == 1;
         iv.actions.borrow_mut().clear();
+        iv.diagnostic_rows.borrow_mut().clear();
         let scroll = iv.scroll.get().unwrap();
         let width = scroll.contentSize().width;
         let plugins = matching_plugins(&store, &query);
@@ -388,7 +446,8 @@ impl Library {
             })
             .collect();
         let count = if sources { rows.len() } else { plugins.len() };
-        let height = (count as f64 * 80.).max(scroll.contentSize().height);
+        let row_height = if sources { 106. } else { 80. };
+        let height = (count as f64 * row_height).max(scroll.contentSize().height);
         let view = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., width, height));
         if count == 0 {
             d.label(
@@ -411,40 +470,77 @@ impl Library {
                 rect(24., height - 104., width - 48., 32.),
             );
         } else if sources {
-            for (i, s) in rows.iter().enumerate() {
-                let y = height - (i + 1) as f64 * 80.;
-                d.surface(&view, rect(0., y + 3., width, 74.));
-                let name = d.label(&view, &s.name, rect(14., y + 48., width - 294., 22.), 13.);
-                name.setToolTip(Some(&NSString::from_str(&format!("{}\n{}", s.name, s.id))));
-                let plugin = store.plugin(&s.plugin_id).ok();
-                let destination = Destination::configured(plugin.as_ref(), Some(s));
-                let metadata = plugin.as_ref().map_or("插件未安装", |p| p.name.as_str());
-                let caption = format!("{metadata} · {}", destination.label());
-                d.caption(&view, &caption, rect(14., y + 29., width - 294., 18.));
-                let (status, invalid) = source_status(&store, s);
-                let label = d.caption(&view, &status, rect(14., y + 7., width - 294., 20.));
-                label.setToolTip(Some(&NSString::from_str(&status)));
-                if invalid {
-                    label.setTextColor(Some(&NSColor::systemOrangeColor()));
-                }
-                self.action_button(
+            for (i, source) in rows.iter().enumerate() {
+                let y = height - (i + 1) as f64 * row_height;
+                let text_width = width - 230.;
+                d.surface(&view, rect(0., y + 3., width, row_height - 6.));
+                let name = d.label(
                     &view,
+                    &source.name,
+                    rect(14., y + 77., text_width, 22.),
+                    13.,
+                );
+                name.setToolTip(Some(&NSString::from_str(&format!(
+                    "{}\n{}",
+                    source.name, source.id
+                ))));
+                let manifest = store.plugin(&source.plugin_id).ok();
+                let destination = Destination::configured(manifest.as_ref(), Some(source));
+                let (status, invalid) = source_status(&store, source);
+                let route = format!("音频去向：{}", destination.summary());
+                let route_label = d.caption(&view, &route, rect(14., y + 55., text_width, 22.));
+                route_label.setToolTip(Some(&NSString::from_str(&route)));
+                let status_label =
+                    d.label(&view, &status, rect(14., y + 33., text_width, 22.), 11.);
+                status_label.setToolTip(Some(&NSString::from_str(&status)));
+                let test_label = d.label(
+                    &view,
+                    "样例测试：等待目录",
+                    rect(14., y + 9., text_width, 22.),
+                    11.,
+                );
+                let make = |title, action, x, y, w| {
+                    let button =
+                        self.action_button(&view, title, action, rect(width - x, y, w, 28.));
+                    button.setAccessibilityLabel(Some(&NSString::from_str(&format!(
+                        "{title}：{}（{}）",
+                        source.name, source.id
+                    ))));
+                    button
+                };
+                make(
                     "音频去向",
-                    Action::Destination(s.id.clone()),
-                    rect(width - 266., y + 25., 86., 28.),
+                    Action::Destination(source.id.clone()),
+                    208.,
+                    y + 59.,
+                    94.,
                 );
-                self.action_button(
-                    &view,
-                    "编辑…",
-                    Action::Edit(s.id.clone()),
-                    rect(width - 174., y + 25., 78., 28.),
+                let test = make(
+                    "查看测试…",
+                    Action::LocateTest(source.id.clone()),
+                    108.,
+                    y + 59.,
+                    96.,
                 );
-                self.action_button(
-                    &view,
+                test.setEnabled(false);
+                test.setToolTip(Some(ns_string!(
+                    "关闭管理窗口并定位来源。此操作不会发送样例。"
+                )));
+                make("编辑…", Action::Edit(source.id.clone()), 208., y + 24., 94.);
+                make(
                     "删除…",
-                    Action::Remove(s.id.clone()),
-                    rect(width - 90., y + 25., 78., 28.),
+                    Action::Remove(source.id.clone()),
+                    108.,
+                    y + 24.,
+                    96.,
                 );
+                iv.diagnostic_rows.borrow_mut().push(DiagnosticRow {
+                    source: (*source).clone(),
+                    manifest,
+                    invalid,
+                    status: test_label,
+                    locate: test,
+                });
             }
         } else {
             for (i, p) in plugins.iter().enumerate() {
@@ -481,9 +577,46 @@ impl Library {
         }
         scroll.setDocumentView(Some(&view));
         view.scrollPoint(NSPoint::new(0., height));
+        self.refresh_diagnostics();
+        self.window().recalculateKeyViewLoop();
     }
     fn perform(&self, action: Action) {
         if !self.available() {
+            return;
+        }
+        if let Action::LocateTest(id) = &action {
+            if !self.ready() || self.owner().ivars().quitting.get() {
+                return;
+            }
+            let store = self.store();
+            let matching = store
+                .sources
+                .iter()
+                .find(|source| &source.id == id)
+                .is_some_and(|source| {
+                    let manifest = store.plugin(&source.plugin_id).ok();
+                    self.owner()
+                        .ivars()
+                        .controller
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|c| {
+                            diagnostics::matching_entry(
+                                &c.catalog.entries,
+                                source,
+                                manifest.as_ref(),
+                            )
+                            .is_some()
+                        })
+                });
+            if matching {
+                // Do not loosen admission: close the manager before opening the test panel.
+                let manager = self.retain();
+                manager.window().performClose(None);
+                if manager.ivars().cleaned.get() && !manager.owner().settings_locked() {
+                    crate::app::source_probes::show_located(manager.owner(), id);
+                }
+            }
             return;
         }
         if let Action::Destination(id) = &action {
@@ -566,7 +699,7 @@ impl Library {
                     );
                 }
             }
-            Action::Details(_) | Action::Destination(_) => unreachable!(),
+            Action::Details(_) | Action::Destination(_) | Action::LocateTest(_) => unreachable!(),
         }
     }
     /// Reload after every transaction, including failures after a durable commit.
@@ -637,6 +770,7 @@ pub(super) fn show(d: &Delegate, store: Store, path: PathBuf) {
         alert: RefCell::new(None),
         panel: RefCell::new(None),
         blocked: Cell::new(false),
+        diagnostic_rows: RefCell::new(Vec::new()),
         presentation: presentation::Presentation::default(),
         cleaned: Cell::new(false),
     });
@@ -849,10 +983,7 @@ mod tests {
         };
         assert_eq!(source_status(&store, &source), ("已停用".into(), false));
         source.enabled = true;
-        assert_eq!(
-            source_status(&store, &source),
-            ("已启用 · 连接未检测".into(), false)
-        );
+        assert_eq!(source_status(&store, &source), ("已启用".into(), false));
         source.config.remove("model");
         assert!(source_status(&store, &source).1);
         source.enabled = false;

@@ -7,6 +7,55 @@ pub(crate) const OPTION: u32 = 1 << 11;
 pub(crate) const CONTROL: u32 = 1 << 12;
 const MODIFIERS: u32 = COMMAND | SHIFT | OPTION | CONTROL;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ShortcutMode {
+    #[default]
+    Toggle,
+    Hold,
+}
+
+impl ShortcutMode {
+    pub(crate) const PREFERENCE: &str = "dictationShortcutMode";
+
+    pub(crate) fn load(saved: Option<&str>) -> Self {
+        if saved == Some("hold") {
+            Self::Hold
+        } else {
+            Self::Toggle
+        }
+    }
+
+    pub(crate) fn preference(self) -> &'static str {
+        match self {
+            Self::Toggle => "toggle",
+            Self::Hold => "hold",
+        }
+    }
+
+    pub(crate) fn instruction(self) -> &'static str {
+        match self {
+            Self::Toggle => "开始 / 停止听写",
+            Self::Hold => "按住说话，松开结束",
+        }
+    }
+
+    pub(crate) fn index(self) -> isize {
+        isize::from(self == Self::Hold)
+    }
+}
+
+#[test]
+fn shortcut_mode_is_opt_in_and_keeps_unknown_and_old_defaults_in_toggle() {
+    assert_eq!(ShortcutMode::default(), ShortcutMode::Toggle);
+    for value in [None, Some("toggle"), Some("future"), Some("1")] {
+        assert_eq!(ShortcutMode::load(value), ShortcutMode::Toggle);
+    }
+    assert_eq!(
+        ShortcutMode::load(Some(ShortcutMode::Hold.preference())),
+        ShortcutMode::Hold
+    );
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Shortcut {
