@@ -148,7 +148,7 @@ impl PersonalInstall {
         Self::new(app, &home, uid, &socket)
     }
 
-    fn new(app: &Path, home: &Path, uid: libc::uid_t, socket: &Path) -> Result<Self> {
+    pub(super) fn new(app: &Path, home: &Path, uid: libc::uid_t, socket: &Path) -> Result<Self> {
         let parent = home.join("Applications");
         if parent == Path::new("/Applications")
             || app != parent.join(APP)

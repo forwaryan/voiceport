@@ -25,6 +25,8 @@ mod first_run;
 mod hotkey_start;
 #[doc(hidden)]
 pub use first_run::first_run_field_fixture;
+#[cfg(all(debug_assertions, feature = "item45-acceptance"))]
+pub(crate) mod item45_acceptance;
 mod microphone;
 mod model_manager;
 mod picker;
@@ -641,7 +643,7 @@ impl Delegate {
         }
         item
     }
-    fn build_menu(&self) {
+    fn build_context_menu(&self, overlay_enabled: bool) -> Retained<NSMenu> {
         let mtm = self.mtm();
         let menu = NSMenu::new(mtm);
         menu.setAutoenablesItems(false);
@@ -681,7 +683,7 @@ impl Delegate {
         }
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         let overlay = self.menu_item("显示听写提示", sel!(toggleDictationOverlay:), "");
-        overlay.setState(status_overlay::checked(status_overlay::enabled()));
+        overlay.setState(status_overlay::checked(overlay_enabled));
         menu.addItem(&overlay);
         let _ = self.ivars().overlay_menu.set(overlay);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
@@ -697,6 +699,12 @@ impl Delegate {
         self.update_menu();
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&self.menu_item("退出 VoicePort", sel!(terminate:), ""));
+        menu
+    }
+
+    fn build_menu(&self) {
+        let mtm = self.mtm();
+        let menu = self.build_context_menu(status_overlay::enabled());
         // A fixed, compact slot avoids shifting neighboring menu extras as
         // recording and processing states change. Template images follow macOS.
         let status = NSStatusBar::systemStatusBar().statusItemWithLength(28.);
@@ -788,6 +796,10 @@ impl Delegate {
             *self.ivars().hotkey_error.borrow_mut() = Some(message.clone());
             self.with_controller(|c| c.message = message);
         }
+        self.install_tick_timer();
+    }
+
+    fn install_tick_timer(&self) {
         let timer = unsafe {
             NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
                 0.1,

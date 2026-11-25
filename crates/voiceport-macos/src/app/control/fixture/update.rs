@@ -149,4 +149,5 @@ pub(super) fn verify(fixture: &Fixture<'_>, folder: &Path) {
     println!(
         "PASS production update IPC: versions, explicit lookup, duplicate busy, cached stale after refresh failure, no update, local newer, incompatible release, read-only status and untouched fixture bundle"
     );
+    fixture.owner.verify_update_progress_menu();
 }

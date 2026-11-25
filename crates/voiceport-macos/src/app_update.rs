@@ -1,4 +1,5 @@
 //! GitHub release selection and verified update staging.
+mod download_progress;
 mod github;
 mod install;
 
@@ -11,6 +12,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+pub(super) use download_progress::DownloadProgress;
 pub(super) use install::{
     MANUAL_ONLY, QUIT_ACK, Staged, apply, can_install_in_app, checkable_installation,
 };
@@ -181,6 +183,15 @@ impl std::fmt::Display for CommandFailed {
 impl std::error::Error for CommandFailed {}
 
 fn bounded_output(command: &mut Command, limit: u64, timeout: Duration) -> io::Result<Vec<u8>> {
+    bounded_output_with_progress(command, limit, timeout, None)
+}
+
+fn bounded_output_with_progress(
+    command: &mut Command,
+    limit: u64,
+    timeout: Duration,
+    progress: Option<DownloadProgress>,
+) -> io::Result<Vec<u8>> {
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -189,8 +200,26 @@ fn bounded_output(command: &mut Command, limit: u64, timeout: Duration) -> io::R
     let mut output = child.stdout.take().expect("piped stdout").take(limit + 1);
     let (tx, rx) = mpsc::sync_channel(1);
     let read_thread = thread::Builder::new().spawn(move || {
-        let mut buffer = Vec::new();
-        let result = output.read_to_end(&mut buffer).map(|_| buffer);
+        let result = if let Some(progress) = progress {
+            let mut bytes = Vec::new();
+            let mut chunk = [0; 8192];
+            loop {
+                match output.read(&mut chunk) {
+                    Ok(0) => break Ok(bytes),
+                    Ok(n) => {
+                        bytes.extend_from_slice(&chunk[..n]);
+                        if bytes.len() as u64 <= limit {
+                            progress.received(bytes.len() as u64);
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => break Err(error),
+                }
+            }
+        } else {
+            let mut bytes = Vec::new();
+            output.read_to_end(&mut bytes).map(|_| bytes)
+        };
         let _ = tx.send(result);
     });
     let deadline = Instant::now() + timeout;
@@ -238,11 +267,81 @@ fn verify_download(bytes: &[u8], update: &Update) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn stage(home: &Path, destination: &Path, update: Update) -> Result<Staged> {
+pub(super) fn stage(
+    home: &Path,
+    destination: &Path,
+    update: Update,
+    progress: &DownloadProgress,
+) -> Result<Staged> {
     let target = install::PersonalInstall::current(destination)?;
-    let bytes = github::download(home, &update)?;
+    stage_payload(
+        target,
+        update,
+        progress,
+        |update| github::download(home, update, progress),
+        || {},
+    )
+}
+
+fn stage_payload(
+    target: install::PersonalInstall,
+    update: Update,
+    progress: &DownloadProgress,
+    download: impl FnOnce(&Update) -> Result<Vec<u8>>,
+    before_verification: impl FnOnce(),
+) -> Result<Staged> {
+    let bytes = download(&update)?;
+    progress.verifying();
+    before_verification();
     verify_download(&bytes, &update)?;
     install::stage(&target, &update.version, &bytes)
+}
+
+#[cfg(all(debug_assertions, feature = "item45-acceptance"))]
+#[derive(Clone)]
+pub(crate) struct Item45Stage {
+    pub home: std::path::PathBuf,
+    pub port: u16,
+    pub finish_verification: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(all(debug_assertions, feature = "item45-acceptance"))]
+impl Item45Stage {
+    pub(crate) fn installed(&self) -> std::path::PathBuf {
+        self.home.join("Applications/VoicePort.app")
+    }
+
+    fn target(&self) -> Result<install::PersonalInstall> {
+        install::PersonalInstall::new(
+            &self.installed(),
+            &self.home,
+            unsafe { libc::geteuid() },
+            &voiceport_control::transport::default_path(),
+        )
+    }
+
+    pub(crate) fn can_stage(&self) -> bool {
+        self.target().is_ok()
+    }
+
+    pub(crate) fn stage(&self, update: Update, progress: &DownloadProgress) -> Result<Staged> {
+        stage_payload(
+            self.target()?,
+            update,
+            progress,
+            |update| github::fixture_loopback_body(self.port, update.bytes, progress),
+            || {
+                let deadline = std::time::Instant::now() + Duration::from_secs(12);
+                while !self
+                    .finish_verification
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            },
+        )
+    }
 }
 
 #[cfg(test)]
