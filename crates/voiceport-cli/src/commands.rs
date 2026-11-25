@@ -173,15 +173,35 @@ fn execute(mut args: Vec<String>) -> Result<Response, Response> {
             _ => Err(invalid()),
         };
     }
-    let action = parse(&args)?;
+    let expectation = status_expectation(&args)?;
+    let action = if expectation.is_some() {
+        Action::Status
+    } else {
+        parse(&args)?
+    };
     #[cfg(target_os = "macos")]
     {
-        let path = socket.map_or_else(voiceport_control::transport::path_from_env, Ok)?;
-        voiceport_control::transport::call(&path, action)
+        let response = socket
+            .map_or_else(voiceport_control::transport::path_from_env, Ok)
+            .and_then(|path| voiceport_control::transport::call(&path, action));
+        if let Some((bundle, pid)) = expectation {
+            let attach = |mut response: Response| {
+                let readiness = voiceport_control::readiness::assess(&bundle, pid, &response);
+                if let Some(data) = response.data.as_object_mut() {
+                    data.insert("readiness".into(), json!(readiness));
+                } else {
+                    response.data = json!({"readiness": readiness});
+                }
+                response
+            };
+            response.map(&attach).map_err(attach)
+        } else {
+            response
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (socket, action);
+        let _ = (socket, action, expectation);
         Err(Response::error(
             "unsupported",
             "App control is supported only on macOS. Portable host/demo/doctor/transcribe remain available.",
@@ -191,10 +211,44 @@ fn execute(mut args: Vec<String>) -> Result<Response, Response> {
 pub fn help() -> &'static str {
     HELP
 }
+fn status_expectation(args: &[String]) -> Result<Option<(PathBuf, Option<u32>)>, Response> {
+    let words: Vec<_> = args.iter().map(String::as_str).collect();
+    let rest = match words.as_slice() {
+        ["status", rest @ ..] | ["app", "status", rest @ ..] if !rest.is_empty() => rest,
+        _ => return Ok(None),
+    };
+    let mut bundle = None;
+    let mut pid = None;
+    for pair in rest.chunks(2) {
+        match pair {
+            ["--expect-bundle", value] if bundle.is_none() => {
+                let path = PathBuf::from(value);
+                if !path.is_absolute() {
+                    return Err(invalid());
+                }
+                bundle = Some(path);
+            }
+            ["--expect-pid", value] if pid.is_none() => {
+                pid = Some(
+                    value
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|pid| *pid != 0)
+                        .ok_or_else(invalid)?,
+                );
+            }
+            _ => return Err(invalid()),
+        }
+    }
+    Ok(Some((bundle.ok_or_else(invalid)?, pid)))
+}
+
 fn option_takes_value(option: &str) -> bool {
     matches!(
         option,
         "--socket"
+            | "--expect-bundle"
+            | "--expect-pid"
             | "--qq"
             | "--plugin"
             | "--name"

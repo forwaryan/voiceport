@@ -2,12 +2,13 @@
 use super::*;
 use objc2_foundation::NSRectEdge;
 
+mod recovery;
+
 const WIDTH: f64 = 300.;
 const ROW_HEIGHT: f64 = 40.;
 const LIST_HEIGHT: f64 = ROW_HEIGHT * 3.;
 const HEADER_Y: f64 = 48. + LIST_HEIGHT;
 const HEADER_HEIGHT: f64 = 100.;
-const RECOVERY_HEIGHT: f64 = 104.;
 const GUIDANCE_HEIGHT: f64 = 74.;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,10 +75,8 @@ pub(super) struct QuickPanel {
     guidance_button: Retained<NSButton>,
     guidance_target: Cell<Option<Setting>>,
     guidance_inputs: RefCell<Option<GuidanceInputs>>,
-    recovery: Retained<NSView>,
-    recovery_reason: Retained<NSTextField>,
-    recovery_feedback: Retained<NSTextField>,
-    recovery_generation: Cell<Option<u64>>,
+    recovery: RefCell<Option<recovery::Card>>,
+    recovery_actions: Retained<recovery::RecoveryActions>,
     hint: Retained<NSTextField>,
     list: Retained<NSScrollView>,
     manage: Retained<NSButton>,
@@ -144,6 +143,7 @@ impl Delegate {
     pub(super) fn close_quick_panel(&self) {
         if let Some(panel) = self.ivars().quick_panel.get() {
             panel.popover.close();
+            panel.clear_recovery();
         }
     }
     pub(super) fn toggle_quick_panel(&self) {
@@ -188,6 +188,10 @@ impl Delegate {
         // The status icon presents only the quick panel, even after a full-window visit.
         if let Some(window) = self.ivars().window.get() {
             window.orderOut(None);
+        }
+        if !panel.popover.isShown() {
+            // A newly opened popover always starts with its result collapsed.
+            panel.clear_recovery();
         }
         self.refresh();
         if !panel.popover.isShown() {
@@ -269,29 +273,6 @@ impl Delegate {
             unsafe { picker.performClick(None) };
         }
     }
-    pub(super) fn copy_quick_recovery(&self) {
-        let Some(panel) = self.ivars().quick_panel.get() else {
-            return;
-        };
-        if !panel.popover.isShown() || !self.quick_actions_unlocked() {
-            return;
-        }
-        self.with_controller(|c| {
-            let reason = quick_recovery_reason(c);
-            if !c.busy()
-                && let Some(feedback) = copy_recovery_result(
-                    panel.recovery_generation.get(),
-                    c.state.generation(),
-                    reason,
-                    &c.transcript,
-                    Delivery::copy,
-                )
-            {
-                c.message = feedback.into();
-            }
-        });
-        self.refresh();
-    }
     fn quick_actions_unlocked(&self) -> bool {
         let iv = self.ivars();
         !iv.quitting.get()
@@ -341,27 +322,6 @@ impl Delegate {
         guidance_button
             .setAccessibilityIdentifier(Some(ns_string!("voiceport.quick.resolve-source")));
 
-        let recovery = NSView::initWithFrame(
-            NSView::alloc(mtm),
-            rect(0., HEADER_Y, WIDTH, RECOVERY_HEIGHT),
-        );
-        recovery.setHidden(true);
-        view.addSubview(&recovery);
-        self.surface(&recovery, rect(12., 6., WIDTH - 24., 92.));
-        let title = self.label(&recovery, "转写完成", rect(24., 75., WIDTH - 48., 17.), 12.);
-        title.setFont(Some(&NSFont::boldSystemFontOfSize(12.)));
-        let recovery_reason = self.caption(&recovery, "", rect(24., 39., WIDTH - 48., 34.));
-        let copy = self.button(
-            &recovery,
-            "复制本次文字",
-            sel!(copyQuickRecovery:),
-            20.,
-            8.,
-            100.,
-        );
-        copy.setControlSize(NSControlSize::Small);
-        copy.setAccessibilityIdentifier(Some(ns_string!("voiceport.quick.copy-recovery")));
-        let recovery_feedback = self.caption(&recovery, "", rect(126., 15., WIDTH - 150., 21.));
         let list = NSScrollView::initWithFrame(
             NSScrollView::alloc(mtm),
             rect(12., 48., WIDTH - 24., LIST_HEIGHT),
@@ -403,10 +363,8 @@ impl Delegate {
             guidance_button,
             guidance_target: Cell::new(None),
             guidance_inputs: RefCell::new(None),
-            recovery,
-            recovery_reason,
-            recovery_feedback,
-            recovery_generation: Cell::new(None),
+            recovery: RefCell::new(None),
+            recovery_actions: recovery::RecoveryActions::new(self),
             hint,
             list,
             manage,
@@ -424,44 +382,24 @@ impl Delegate {
         let Some(panel) = self.ivars().quick_panel.get() else {
             return;
         };
-        let recovery = quick_recovery_reason(c).filter(|_| idle && !self.ivars().quitting.get());
-        panel
-            .recovery_generation
-            .set(recovery.map(|_| c.state.generation()));
+        let recovery_height = panel.update_recovery(self, c, idle);
         let catalog_changed = *panel.catalog.borrow() != c.catalog.entries;
         let configurable = idle && !c.discovering() && !self.ivars().quitting.get();
         panel.update_guidance(c, catalog_changed, configurable);
         let show_guidance = panel.guidance_target.get().is_some();
-        if panel.recovery.isHidden() == recovery.is_some()
-            || panel.guidance.isHidden() == show_guidance
-        {
-            let recovery_height = if recovery.is_some() {
-                RECOVERY_HEIGHT
-            } else {
-                0.
-            };
-            let guidance_height = if show_guidance { GUIDANCE_HEIGHT } else { 0. };
-            panel.recovery.setHidden(recovery.is_none());
+        let guidance_y = HEADER_Y + recovery_height;
+        let header_y = guidance_y + if show_guidance { GUIDANCE_HEIGHT } else { 0. };
+        if panel.guidance.isHidden() == show_guidance {
             panel.guidance.setHidden(!show_guidance);
-            panel
-                .guidance
-                .setFrameOrigin(NSPoint::new(0., HEADER_Y + recovery_height));
-            let header_y = HEADER_Y + recovery_height + guidance_height;
+        }
+        if panel.guidance.frame().origin.y != guidance_y {
+            panel.guidance.setFrameOrigin(NSPoint::new(0., guidance_y));
+        }
+        if panel.header.frame().origin.y != header_y {
             panel.header.setFrameOrigin(NSPoint::new(0., header_y));
             panel
                 .popover
                 .setContentSize(NSSize::new(WIDTH, header_y + HEADER_HEIGHT));
-        }
-        if let Some(reason) = recovery {
-            set_label_text(&panel.recovery_reason, reason);
-            set_label_text(
-                &panel.recovery_feedback,
-                match c.message.as_str() {
-                    COPY_SUCCESS => "文字已复制",
-                    COPY_FAILURE => "复制失败，请重试",
-                    _ => "",
-                },
-            );
         }
         let title = NSString::from_str(selected_title(c));
         panel.current.setStringValue(&title);
@@ -554,28 +492,6 @@ fn set_label_text(label: &NSTextField, text: &str) {
     }
 }
 
-fn quick_recovery_reason(c: &Controller) -> Option<&'static str> {
-    let has_transcript = !c.transcript.is_empty();
-    completed_delivery_failure(c.state.phase, has_transcript, c.delivery_failure_stage()).or_else(
-        || {
-            (c.state.phase == Phase::Ready && has_transcript && c.has_unconfirmed_paste())
-                .then_some("粘贴请求已提交，请先检查输入框，避免重复粘贴。")
-        },
-    )
-}
-
-fn copy_recovery_result(
-    displayed_generation: Option<u64>,
-    generation: u64,
-    reason: Option<&str>,
-    transcript: &str,
-    copy: impl FnOnce(&str) -> bool,
-) -> Option<&'static str> {
-    reason
-        .filter(|_| displayed_generation == Some(generation))
-        .map(|_| copy_feedback(transcript, copy))
-}
-
 fn can_select(c: &Controller, id: &str, preparing: bool, managing: bool, quitting: bool) -> bool {
     !c.busy()
         && !c.discovering()
@@ -591,55 +507,6 @@ fn can_select(c: &Controller, id: &str, preparing: bool, managing: bool, quittin
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn recovery_copies_only_the_final_text_for_the_displayed_warning() {
-        let mut copied = Vec::new();
-        let reason = completed_delivery_failure(Phase::Ready, true, Some("readback"));
-        assert!(reason.unwrap().contains("避免重复粘贴"));
-        let mut copy = |text: &str| {
-            copied.push(text.to_string());
-            true
-        };
-        assert_eq!(
-            copy_recovery_result(None, 7, reason, "最终文字", &mut copy),
-            None
-        );
-        assert_eq!(
-            copy_recovery_result(Some(6), 7, reason, "最终文字", &mut copy),
-            None
-        );
-        assert_eq!(
-            copy_recovery_result(Some(7), 7, reason, "最终文字", &mut copy),
-            Some(COPY_SUCCESS)
-        );
-        assert_eq!(copied, ["最终文字"]);
-    }
-
-    #[test]
-    fn recovery_preserves_the_warning_when_clipboard_write_fails() {
-        let reason = completed_delivery_failure(Phase::Ready, true, Some("focus"));
-        assert_eq!(
-            copy_recovery_result(Some(1), 1, reason, "最终文字", |_| false),
-            Some(COPY_FAILURE)
-        );
-        assert!(reason.unwrap().contains("无法确认原输入框"));
-        let no_copy = |_: &str| panic!("there is no current delivery warning");
-        for phase in [Phase::Recording, Phase::Failed, Phase::Stopping] {
-            let reason = completed_delivery_failure(phase, true, Some("focus"));
-            assert_eq!(
-                copy_recovery_result(Some(1), 1, reason, "旧文字", no_copy),
-                None
-            );
-        }
-        for (text, stage) in [("", Some("focus")), ("最终文字", None)] {
-            let reason = completed_delivery_failure(Phase::Ready, !text.is_empty(), stage);
-            assert_eq!(
-                copy_recovery_result(Some(1), 1, reason, text, no_copy),
-                None
-            );
-        }
-    }
 
     #[test]
     fn guidance_uses_selected_id_and_its_availability_diagnostic() {

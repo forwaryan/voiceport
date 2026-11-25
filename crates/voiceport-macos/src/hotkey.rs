@@ -14,7 +14,11 @@ use std::{
     time::Instant,
 };
 
+use voiceport_control::readiness::Hotkey;
+
 const EVENT_NOT_HANDLED: i32 = -9874;
+// eventHotKeyExistsErr in the HIToolbox CarbonEventsCore header.
+const HOTKEY_EXISTS: i32 = -9878;
 const SIGNATURE: u32 = u32::from_be_bytes(*b"VPOR");
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -96,6 +100,54 @@ impl HotKeyEvent {
     }
 }
 
+#[derive(Debug)]
+pub(crate) enum RegistrationError {
+    MainThread,
+    Handler(i32),
+    Shortcut(i32),
+}
+
+impl RegistrationError {
+    pub(crate) fn state(&self) -> Hotkey {
+        match self {
+            Self::Shortcut(HOTKEY_EXISTS) => Hotkey::Conflict,
+            _ => Hotkey::RegistrationFailed,
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn only_a_shortcut_registration_collision_is_reported_as_conflict() {
+    assert_eq!(
+        RegistrationError::Shortcut(HOTKEY_EXISTS).state(),
+        Hotkey::Conflict
+    );
+    assert_eq!(
+        RegistrationError::Handler(HOTKEY_EXISTS).state(),
+        Hotkey::RegistrationFailed
+    );
+    assert_eq!(
+        RegistrationError::Shortcut(-9879).state(),
+        Hotkey::RegistrationFailed
+    );
+    assert_eq!(
+        RegistrationError::MainThread.state(),
+        Hotkey::RegistrationFailed
+    );
+}
+
+impl std::fmt::Display for RegistrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MainThread => write!(f, "全局快捷键必须在主线程注册。"),
+            Self::Handler(status) => write!(f, "无法安装全局快捷键处理器（{status}）。"),
+            Self::Shortcut(HOTKEY_EXISTS) => write!(f, "全局快捷键已被占用。"),
+            Self::Shortcut(status) => write!(f, "无法注册全局快捷键（{status}）。"),
+        }
+    }
+}
+
 /// Register, unregister and drop on the main thread. The stable boxed context
 /// outlives Carbon's handler even when the Rust owner moves on that thread.
 pub struct GlobalHotKey {
@@ -120,9 +172,9 @@ impl GlobalHotKey {
 
     /// Only validated bindings can reach Carbon. Use a separate owner when
     /// replacing a live binding so failure leaves the previous one installed.
-    pub(crate) fn register(&mut self, shortcut: Shortcut) -> Result<(), String> {
+    pub(crate) fn register(&mut self, shortcut: Shortcut) -> Result<(), RegistrationError> {
         if unsafe { libc::pthread_main_np() } != 1 {
-            return Err("全局快捷键必须在主线程注册。".into());
+            return Err(RegistrationError::MainThread);
         }
         self.unregister();
         let event_type = EventTypeSpec {
@@ -142,7 +194,7 @@ impl GlobalHotKey {
         };
         if status != 0 {
             self.unregister();
-            return Err(format!("无法安装全局快捷键处理器（{status}）。"));
+            return Err(RegistrationError::Handler(status));
         }
         let status = unsafe {
             RegisterEventHotKey(
@@ -159,7 +211,7 @@ impl GlobalHotKey {
         };
         if status != 0 {
             self.unregister();
-            return Err(format!("无法注册全局快捷键，可能已被占用（{status}）。"));
+            return Err(RegistrationError::Shortcut(status));
         }
         Ok(())
     }

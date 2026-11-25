@@ -94,8 +94,21 @@ impl Delivery {
         &mut self,
         target: Option<&crate::delivery::model::ApplicationTarget>,
     ) -> Result<(), String> {
+        let shortcut = self.stop_shortcut;
+        self.begin_with_capture(|| native::capture(target, shortcut))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_fixture(&mut self, target: Box<dyn Target>) -> Result<(), String> {
+        self.begin_with_capture(|| Ok(native::Captured::Ordinary(target)))
+    }
+
+    fn begin_with_capture(
+        &mut self,
+        capture: impl FnOnce() -> Result<native::Captured, Failure>,
+    ) -> Result<(), String> {
         self.on_main().map_err(Failure::message)?;
-        self.clear();
+        self.clear_inner();
         if self.has_pending() {
             return Err("正在确认上一轮输入，请稍后重新开始。".into());
         }
@@ -103,8 +116,7 @@ impl Delivery {
         self.method = None;
         self.receipt = model::DeliveryReceipt::default();
         self.final_accepted = false;
-        let result = native::capture(target, self.stop_shortcut)
-            .and_then(|capture| self.accept_capture(capture));
+        let result = capture().and_then(|capture| self.accept_capture(capture));
         match result {
             Ok(()) => Ok(()),
             Err(failure) => {
@@ -357,6 +369,19 @@ impl Delivery {
             self.retain_preview();
             return self.retained();
         }
+        if self
+            .prepared_text
+            .as_ref()
+            .is_some_and(|(_, final_text)| *final_text)
+        {
+            return self.final_status();
+        }
+        if text.trim().is_empty() {
+            // An empty final must never replace the original selection. Undo
+            // only a confirmed preview when its original span is still owned.
+            self.clear_inner();
+            return "没有识别到可输入的文字。".into();
+        }
         if self.preparing.is_some() {
             return self.queue_prepared_text(text, true);
         }
@@ -448,13 +473,22 @@ impl Delivery {
     /// AppKit a turn to deliver real user-input monitor callbacks before more
     /// Unicode events are posted. The returned status replaces delivery UI text.
     pub fn poll(&mut self) -> Option<String> {
+        self.poll_observing_preparation(|| {})
+    }
+
+    /// Observe the preparation outcome before consuming any queued text.
+    pub(crate) fn poll_observing_preparation(&mut self, prepared: impl FnOnce()) -> Option<String> {
         if self.preparing.is_some() {
             if let Err(failure) = self.on_main() {
                 return Some(failure.message());
             }
-            match self.advance_preparation() {
-                Ok(false) => return None,
-                Ok(true) => {
+            let outcome = self.advance_preparation();
+            if matches!(outcome, Ok(false)) {
+                return None;
+            }
+            prepared();
+            match outcome {
+                Ok(_) => {
                     if let Some((text, final_text)) = self.prepared_text.take() {
                         return Some(if final_text {
                             self.deliver(&text, true)
@@ -611,7 +645,7 @@ impl Delivery {
 
     fn clear_inner(&mut self) {
         self.receipt = self.receipt();
-        self.receipt.stopped = true;
+        self.receipt.stop();
         self.final_accepted = true;
         self.discard_preparation();
         if let Some(mut session) = self.session.take() {

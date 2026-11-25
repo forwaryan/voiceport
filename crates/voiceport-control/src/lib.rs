@@ -3,6 +3,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+mod dictation;
+pub use dictation::{
+    CaptureSignal, CaptureSummary, DeliveryReceipt, DeliveryState, DictationBlockReason,
+    DictationTimings, GuiDictationDiagnostics, GuiDictationReceipt, TranscriptionState,
+};
+pub mod readiness;
+
 pub const VERSION: u32 = 1;
 pub const MAX_FRAME: usize = 262_144;
 pub const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);

@@ -1,8 +1,7 @@
 //! Pure delivery policy. Boundaries in tests never inspect or modify real applications.
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
-mod progress;
-pub use progress::{DeliveryReceipt, DeliveryState};
+pub use voiceport_control::{DeliveryReceipt, DeliveryState};
 
 pub const MAX_TEXT: usize = 100_000;
 pub const MAX_FIELD: usize = 1_000_000;
@@ -347,6 +346,10 @@ impl<T: Target> OwnedSpan<T> {
         // Bound the raw input as well, before allocating segmentation output.
         if raw.encode_utf16().count() > MAX_TEXT {
             return Err(Failure::Content);
+        }
+        if !self.changed && raw.trim().is_empty() {
+            self.ended = final_text;
+            return Ok(());
         }
         let text = automatic(raw);
         let bytes = byte_range(&self.expected.text, self.owned).ok_or(Failure::Selection)?;

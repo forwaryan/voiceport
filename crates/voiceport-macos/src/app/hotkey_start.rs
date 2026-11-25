@@ -21,6 +21,17 @@ fn foreground() -> Option<ApplicationTarget> {
 }
 
 impl Delegate {
+    pub(super) fn start_with_trace(&self, c: &mut Controller, start: impl FnOnce(&mut Controller)) {
+        let previous_generation = c.state.generation();
+        start(c);
+        let generation = c.state.generation();
+        if generation != previous_generation
+            && let Some(trace) = self.ivars().last_start_trace.borrow_mut().as_mut()
+        {
+            trace["session"] = generation.into();
+        }
+    }
+
     pub(super) fn handle_hotkey(&self, event: HotKeyEvent) {
         if self.ivars().pending_hotkey.borrow_mut().take().is_some() {
             self.reject_hotkey("cancelled_handoff", "已取消返回输入位置。");
@@ -46,15 +57,14 @@ impl Delegate {
             return;
         }
         *self.ivars().last_start_trace.borrow_mut() = Some(json!({
-            "origin":"hotkey", "captured_pid":event.target.as_ref().map(|t|t.pid),
-            "captured_bundle":event.target.as_ref().map(|t|&t.bundle),
-            "dispatch_pid":foreground().map(|t|t.pid), "outcome":"checking",
+            "origin":"hotkey", "captured_pid":null, "captured_bundle":null,
+            "dispatch_pid":null, "outcome":"checking",
         }));
         if !automatic {
             if let Some(trace) = self.ivars().last_start_trace.borrow_mut().as_mut() {
                 trace["outcome"] = "panel_only".into();
             }
-            self.with_controller(|c| c.start());
+            self.with_controller(|c| self.start_with_trace(c, Controller::start));
             return;
         }
         self.route_hotkey(event, true);
@@ -71,7 +81,7 @@ impl Delegate {
         if let Some(trace) = self.ivars().last_start_trace.borrow_mut().as_mut() {
             trace["outcome"] = code.into();
         }
-        self.with_controller(|c| c.reject_start(message));
+        self.with_controller(|c| self.start_with_trace(c, |c| c.reject_start(message)));
     }
 
     fn route_hotkey(&self, event: HotKeyEvent, first: bool) {
@@ -107,7 +117,9 @@ impl Delegate {
                     .into();
                 }
                 if let Some(target) = event.target {
-                    self.with_controller(|c| c.start_in_application(&target));
+                    self.with_controller(|c| {
+                        self.start_with_trace(c, |c| c.start_in_application(&target));
+                    });
                 }
             }
             StartRoute::RestoreCapturedApplication => {

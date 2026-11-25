@@ -1,5 +1,5 @@
 //! Retained ordinary management window. Only its owned sheets block this window.
-use super::*;
+use super::{destination::Destination, *};
 use block2::RcBlock;
 use objc2::Message;
 #[cfg(test)]
@@ -12,6 +12,7 @@ enum Action {
     Edit(String),
     Remove(String),
     Details(String),
+    Destination(String),
 }
 /// Keep the selected file's provenance with the parsed contents until review.
 struct ImportReview {
@@ -357,11 +358,12 @@ impl Library {
             Action::Edit(id) => ("edit", id),
             Action::Remove(id) => ("remove", id),
             Action::Details(id) => ("details", id),
+            Action::Destination(id) => ("destination", id),
         };
         b.setAccessibilityIdentifier(Some(&NSString::from_str(&format!(
             "voiceport.library.{kind}.{id}"
         ))));
-        b.setEnabled(kind == "details" || !self.ivars().blocked.get());
+        b.setEnabled(matches!(kind, "details" | "destination") || !self.ivars().blocked.get());
         self.ivars().actions.borrow_mut().push(action);
     }
     fn render(&self) {
@@ -412,19 +414,25 @@ impl Library {
             for (i, s) in rows.iter().enumerate() {
                 let y = height - (i + 1) as f64 * 80.;
                 d.surface(&view, rect(0., y + 3., width, 74.));
-                let name = d.label(&view, &s.name, rect(14., y + 48., width - 210., 22.), 13.);
+                let name = d.label(&view, &s.name, rect(14., y + 48., width - 294., 22.), 13.);
                 name.setToolTip(Some(&NSString::from_str(&format!("{}\n{}", s.name, s.id))));
-                let plugin = store
-                    .plugin(&s.plugin_id)
-                    .map(|p| p.name)
-                    .unwrap_or_else(|_| "插件未安装".into());
-                d.caption(&view, &plugin, rect(14., y + 29., width - 210., 18.));
+                let plugin = store.plugin(&s.plugin_id).ok();
+                let destination = Destination::configured(plugin.as_ref(), Some(s));
+                let metadata = plugin.as_ref().map_or("插件未安装", |p| p.name.as_str());
+                let caption = format!("{metadata} · {}", destination.label());
+                d.caption(&view, &caption, rect(14., y + 29., width - 294., 18.));
                 let (status, invalid) = source_status(&store, s);
-                let label = d.caption(&view, &status, rect(14., y + 7., width - 210., 20.));
+                let label = d.caption(&view, &status, rect(14., y + 7., width - 294., 20.));
                 label.setToolTip(Some(&NSString::from_str(&status)));
                 if invalid {
                     label.setTextColor(Some(&NSColor::systemOrangeColor()));
                 }
+                self.action_button(
+                    &view,
+                    "音频去向",
+                    Action::Destination(s.id.clone()),
+                    rect(width - 266., y + 25., 86., 28.),
+                );
                 self.action_button(
                     &view,
                     "编辑…",
@@ -478,6 +486,20 @@ impl Library {
         if !self.available() {
             return;
         }
+        if let Action::Destination(id) = &action {
+            let store = self.store();
+            if let Some(source) = store.sources.iter().find(|source| &source.id == id) {
+                let plugin = store.plugin(&source.plugin_id).ok();
+                let destination = Destination::configured(plugin.as_ref(), Some(source));
+                self.sheet(
+                    &format!("{} · 音频去向", source.name),
+                    &destination.details(),
+                    &["完成"],
+                    |_, _| {},
+                );
+            }
+            return;
+        }
         if let Action::Details(id) = &action {
             if let Ok(p) = self.store().plugin(id) {
                 let count = self
@@ -487,8 +509,9 @@ impl Library {
                     .filter(|s| s.plugin_id == p.id)
                     .count();
                 let detail = format!(
-                    "{}\n\n版本：{}\n插件 ID：{}\n声明来源：{}\n配置来源数：{}{}",
+                    "{}\n\n{}\n\n版本：{}\n插件 ID：{}\n声明来源：{}\n配置来源数：{}{}",
                     description(&p),
+                    Destination::configured(Some(&p), None).details(),
                     p.version,
                     p.id,
                     p.origin,
@@ -543,7 +566,7 @@ impl Library {
                     );
                 }
             }
-            Action::Details(_) => unreachable!(),
+            Action::Details(_) | Action::Destination(_) => unreachable!(),
         }
     }
     /// Reload after every transaction, including failures after a durable commit.

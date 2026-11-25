@@ -1,6 +1,9 @@
 //! Main-thread orchestration; cleanup confirmation gates recording release and admission.
 use crate::{
-    audio::{AudioEvent, Recorder},
+    audio::{
+        AudioEvent, Recorder,
+        diagnostics::{InputSignal, StageTimer, StageTimings},
+    },
     delivery::Delivery,
     lifecycle::{Lifecycle, Phase},
     local_audio::Incoming,
@@ -14,9 +17,13 @@ use std::{
         Arc,
         mpsc::{self, Receiver, Sender, SyncSender, TryRecvError, TrySendError},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 type PartialSlot = Arc<Mutex<Option<(u64, String)>>>;
+use voiceport_control::{
+    CaptureSignal, CaptureSummary, DictationBlockReason as BlockReason, DictationTimings,
+    GuiDictationDiagnostics, GuiDictationReceipt, TranscriptionState,
+};
 use voiceport_core::{CancellationToken, TranscriptionClient};
 
 struct Job {
@@ -33,6 +40,7 @@ struct Job {
 }
 struct Completion {
     generation: u64,
+    elapsed: Option<Duration>,
     result: Result<String, Failure>,
 }
 struct ActiveJob {
@@ -62,6 +70,7 @@ impl Worker {
             .spawn(move || {
                 while let Ok(mut job) = incoming.recv() {
                     let generation = job.generation;
+                    let started = StageTimer::start(Instant::now);
                     // Unwind on the worker only. Controller already holds custody
                     // and its recording lease before Job can drop or send can fail.
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -148,14 +157,69 @@ impl Worker {
                     } else {
                         result
                     };
+                    let elapsed = started.finish(Instant::now);
                     drop(job);
-                    if outgoing.send(Completion { generation, result }).is_err() {
+                    if outgoing
+                        .send(Completion {
+                            generation,
+                            elapsed,
+                            result,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
             })
             .map_err(|_| "无法启动转写工作线程。".to_string())?;
         Ok(Self { jobs, results })
+    }
+}
+
+#[derive(Default)]
+struct GuiDiagnostics {
+    capture_pending: Option<u64>,
+    capture: Option<CaptureSummary>,
+    preparation: Option<StageTimer>,
+    delivery: Option<StageTimer>,
+    timings: StageTimings,
+}
+
+impl GuiDiagnostics {
+    fn projection(&self, receipt: &GuiDictationReceipt) -> GuiDictationDiagnostics {
+        fn millis(duration: Option<Duration>) -> Option<u64> {
+            duration.and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        }
+        GuiDictationDiagnostics {
+            session: receipt.session,
+            generation: receipt.generation,
+            capture: self.capture,
+            timings: DictationTimings {
+                capture_first_frame_ms: millis(self.timings.capture_first_frame),
+                preparation_ms: millis(self.timings.preparation),
+                transcription_ms: millis(self.timings.transcription),
+                delivery_ms: millis(self.timings.delivery),
+            },
+        }
+    }
+
+    fn finish_preparation(&mut self) {
+        if let Some(started) = self.preparation.take() {
+            self.timings.preparation = started.finish(Instant::now);
+        }
+    }
+
+    fn finish_delivery_if_settled(&mut self, delivery: &Delivery) {
+        if !delivery.has_pending()
+            && let Some(started) = self.delivery.take()
+        {
+            self.timings.delivery = started.finish(Instant::now);
+        }
+    }
+
+    fn abandon_stages(&mut self) {
+        self.preparation = None;
+        self.delivery = None;
     }
 }
 
@@ -185,6 +249,9 @@ pub struct Controller {
     started: Option<Instant>,
     allow_delivery: bool,
     delivery_settle: Option<Phase>,
+    gui_receipt: Option<GuiDictationReceipt>,
+    gui_owns_delivery: bool,
+    gui_diagnostics: GuiDiagnostics,
     stop_failure: Option<String>,
     testing: bool,
 }
@@ -222,6 +289,9 @@ impl Controller {
             started: None,
             allow_delivery: false,
             delivery_settle: None,
+            gui_receipt: None,
+            gui_owns_delivery: false,
+            gui_diagnostics: GuiDiagnostics::default(),
             stop_failure: None,
             testing: false,
         }
@@ -297,10 +367,104 @@ impl Controller {
     pub(crate) fn input_method(&self) -> Option<&'static str> {
         self.delivery.method()
     }
+    /// Read the latest GUI session, even after another CLI operation takes over.
+    pub(crate) fn gui_dictation_receipt(&self) -> Option<GuiDictationReceipt> {
+        let mut receipt = self.gui_receipt.clone()?;
+        if self.gui_owns_delivery {
+            receipt.delivery = self.delivery.receipt();
+            receipt.method = self.delivery.method().map(str::to_owned);
+            receipt.failure_stage = self.delivery.failure_stage().map(str::to_owned);
+        }
+        Some(receipt)
+    }
+    pub(crate) fn gui_dictation_diagnostics(&self) -> Option<GuiDictationDiagnostics> {
+        self.gui_receipt
+            .as_ref()
+            .map(|receipt| self.gui_diagnostics.projection(receipt))
+    }
+    fn seal_gui_capture(&mut self) {
+        if let Some(generation) = self.gui_diagnostics.capture_pending
+            && let Some(capture) = self.recorder.capture_diagnostics()
+        {
+            self.gui_diagnostics.capture_pending = None;
+            self.gui_diagnostics.timings.capture_first_frame = capture.timings.capture_first_frame;
+            self.gui_diagnostics.capture = Some(CaptureSummary {
+                generation,
+                signal: match capture.signal {
+                    InputSignal::NoCallbacks => CaptureSignal::NoCallbacks,
+                    InputSignal::NoFrames => CaptureSignal::NoFrames,
+                    InputSignal::DigitalSilence => CaptureSignal::DigitalSilence,
+                    InputSignal::LowEnergy => CaptureSignal::LowEnergy,
+                    InputSignal::Signal => CaptureSignal::Signal,
+                    InputSignal::Unknown => CaptureSignal::Unknown,
+                },
+                callbacks: capture.callbacks,
+                observed_frames: capture.observed_frames,
+            });
+        }
+    }
+    fn cancel_capture(&mut self) {
+        self.recorder.cancel();
+        self.seal_gui_capture();
+    }
+    fn stop_capture(&mut self) -> Result<Arc<Recording>, String> {
+        let result = self.recorder.stop();
+        self.seal_gui_capture();
+        result
+    }
+    fn detach_gui_delivery(&mut self) {
+        if self.gui_owns_delivery {
+            self.gui_receipt = self.gui_dictation_receipt();
+            self.gui_owns_delivery = false;
+        }
+    }
+    fn begin_gui_receipt(&mut self, generation: u64, automatic: bool) {
+        self.gui_diagnostics = GuiDiagnostics::default();
+        self.gui_receipt = Some(GuiDictationReceipt {
+            session: generation,
+            generation,
+            automatic,
+            transcription: TranscriptionState::Pending,
+            delivery: Default::default(),
+            method: None,
+            failure_stage: None,
+            block_reason: (!automatic).then_some(BlockReason::PanelOnly),
+        });
+        self.gui_owns_delivery = false;
+    }
+    fn current_gui_receipt(&mut self) -> Option<&mut GuiDictationReceipt> {
+        self.gui_receipt
+            .as_mut()
+            .filter(|receipt| receipt.generation == self.state.generation())
+    }
+    fn report_gui_transcription(
+        &mut self,
+        transcription: TranscriptionState,
+        reason: Option<BlockReason>,
+    ) {
+        if let Some(receipt) = self.current_gui_receipt()
+            && receipt.transcription == TranscriptionState::Pending
+        {
+            receipt.transcription = transcription;
+            if reason.is_some() {
+                receipt.block_reason = reason;
+            }
+        }
+    }
     pub(crate) fn reject_start(&mut self, message: &str) {
+        self.reject_gui_start(message, BlockReason::StartRejected, self.automatic);
+    }
+    fn reject_gui_start(&mut self, message: &str, reason: BlockReason, automatic: bool) {
         if self.busy() {
             return;
         }
+        if let Some(generation) = self.state.begin() {
+            self.begin_gui_receipt(generation, automatic);
+            self.report_gui_transcription(TranscriptionState::NotStarted, Some(reason));
+        }
+        self.mark_start_rejected(message);
+    }
+    fn mark_start_rejected(&mut self, message: &str) {
         self.state.phase = Phase::Failed;
         self.state.retry_available = false;
         self.message = format!("{message} 本轮未开始录音，已有文字保留在结果区。");
@@ -310,13 +474,6 @@ impl Controller {
         (self.allow_delivery && !self.testing)
             .then(|| self.delivery.failure_stage())
             .flatten()
-    }
-    pub(crate) fn has_unconfirmed_paste(&self) -> bool {
-        self.allow_delivery
-            && !self.testing
-            && self.delivery.uses_clipboard()
-            && !self.delivery.has_pending()
-            && self.delivery.receipt().state == crate::delivery::model::DeliveryState::Submitted
     }
     pub fn toggle(&mut self) {
         if self.state.phase == Phase::Recording {
@@ -348,15 +505,17 @@ impl Controller {
         {
             Ok(source) => source,
             Err(error) => {
-                self.message = error;
-                self.state.phase = Phase::Failed;
-                self.state.retry_available = false;
+                self.reject_gui_start(&error, BlockReason::SourceUnavailable, self.automatic);
                 return;
             }
         };
-        if let Some((generation, use_speech)) =
-            self.prepare_start_in_application(source, self.language.clone(), self.automatic, target)
-        {
+        if let Some((generation, use_speech)) = self.prepare_start_in_application(
+            source,
+            self.language.clone(),
+            self.automatic,
+            target,
+            true,
+        ) {
             Recorder::request_permissions_for_source(
                 generation,
                 self.events_tx.clone(),
@@ -400,7 +559,7 @@ impl Controller {
         language: String,
         automatic: bool,
     ) -> Option<(u64, bool)> {
-        self.prepare_start_in_application(source, language, automatic, None)
+        self.prepare_start_in_application(source, language, automatic, None, false)
     }
     fn prepare_start_in_application(
         &mut self,
@@ -408,6 +567,19 @@ impl Controller {
         language: String,
         automatic: bool,
         target: Option<&crate::delivery::model::ApplicationTarget>,
+        gui: bool,
+    ) -> Option<(u64, bool)> {
+        self.prepare_start_with(source, language, automatic, gui, |delivery| {
+            delivery.begin_in_application(target)
+        })
+    }
+    fn prepare_start_with(
+        &mut self,
+        source: SessionSource,
+        language: String,
+        automatic: bool,
+        gui: bool,
+        capture_target: impl FnOnce(&mut Delivery) -> Result<(), String>,
     ) -> Option<(u64, bool)> {
         if self.busy() {
             return None;
@@ -415,25 +587,46 @@ impl Controller {
         if !voiceport_core::language::supported(&language)
             || matches!(&source, SessionSource::Local(model) if !model.kind.supports_language(&language))
         {
-            self.message = "所选模型不支持此语言，请更改语言或模型。".into();
+            let message = "所选模型不支持此语言，请更改语言或模型。";
+            if gui {
+                self.reject_gui_start(message, BlockReason::UnsupportedLanguage, automatic);
+            } else {
+                self.message = message.into();
+            }
             return None;
         }
+        self.detach_gui_delivery();
+        self.gui_diagnostics.abandon_stages();
         self.delivery.clear();
         if self.delivery.has_pending() {
             self.wait_for_delivery();
             self.message = "正在确认上一轮输入，请稍后重新开始。".into();
             return None;
         }
-        if automatic && let Err(message) = self.delivery.begin_in_application(target) {
-            self.delivery_status = message.clone();
-            if self.delivery.blocks_recording() {
-                self.reject_start(&message);
-                return None;
+        let generation = self.state.begin()?;
+        if gui {
+            self.begin_gui_receipt(generation, automatic);
+            self.gui_owns_delivery = automatic;
+        }
+        if automatic {
+            if gui {
+                self.gui_diagnostics.preparation = Some(StageTimer::start(Instant::now));
+            }
+            let target = capture_target(&mut self.delivery);
+            if !self.delivery.preparing_input() {
+                self.gui_diagnostics.finish_preparation();
+            }
+            if let Err(message) = target {
+                self.delivery_status = message.clone();
+                if self.delivery.blocks_recording() {
+                    self.report_gui_transcription(TranscriptionState::NotStarted, None);
+                    self.mark_start_rejected(&message);
+                    return None;
+                }
             }
         }
-        self.recorder.cancel();
+        self.cancel_capture();
         self.recording = None;
-        let generation = self.state.begin()?;
         self.transcript.clear();
         self.testing = false;
         self.recorded_language = language;
@@ -474,6 +667,8 @@ impl Controller {
         if self.busy() {
             return None;
         }
+        self.detach_gui_delivery();
+        self.gui_diagnostics.abandon_stages();
         self.delivery.clear();
         self.recording = None;
         self.transcript.clear();
@@ -493,7 +688,7 @@ impl Controller {
         }
         self.started = None;
         self.delivery_status = self.delivery.finish_preview();
-        match self.recorder.stop() {
+        match self.stop_capture() {
             Ok(recording) => {
                 self.recording = Some(recording);
                 self.state.transcribe();
@@ -506,7 +701,7 @@ impl Controller {
             Err(message) => {
                 // This recording cannot be retried. Release capture/controller
                 // references; an active local Job keeps its lease until completion.
-                self.recorder.cancel();
+                self.cancel_capture();
                 self.recording = None;
                 self.state.phase = Phase::Failed;
                 if let Some(active) = &self.active {
@@ -516,6 +711,11 @@ impl Controller {
                 }
                 self.state.retry_available = false;
                 self.message = message;
+                self.report_gui_transcription(
+                    TranscriptionState::Failed,
+                    Some(BlockReason::CaptureFailed),
+                );
+                self.gui_diagnostics.abandon_stages();
                 self.delivery.retain_preview();
                 self.wait_for_delivery();
             }
@@ -531,9 +731,24 @@ impl Controller {
             && self.state.retry_available
     }
     pub fn retry(&mut self) {
-        if !self.can_retry_recording() || self.state.retry().is_none() {
+        if !self.can_retry_recording() {
             return;
         }
+        let gui = self.current_gui_receipt().is_some();
+        let Some(generation) = self.state.retry() else {
+            return;
+        };
+        self.detach_gui_delivery();
+        if gui && let Some(receipt) = self.gui_receipt.as_mut() {
+            receipt.generation = generation;
+            receipt.transcription = TranscriptionState::Pending;
+            receipt.block_reason = Some(BlockReason::RetryPanelOnly);
+            self.gui_diagnostics.timings = StageTimings {
+                capture_first_frame: self.gui_diagnostics.timings.capture_first_frame,
+                ..StageTimings::default()
+            };
+        }
+        self.gui_diagnostics.abandon_stages();
         self.delivery.clear();
         self.allow_delivery = false;
         self.submit();
@@ -607,10 +822,15 @@ impl Controller {
                 .into()
             }
             Err(message) => {
-                self.recorder.stop().ok();
+                self.stop_capture().ok();
                 self.state.phase = Phase::Failed;
                 self.state.retry_available = self.recording.is_some();
                 self.message = message;
+                self.report_gui_transcription(
+                    TranscriptionState::Failed,
+                    Some(BlockReason::TranscriptionFailed),
+                );
+                self.gui_diagnostics.abandon_stages();
                 self.delivery.retain_preview();
                 self.wait_for_delivery();
             }
@@ -637,13 +857,18 @@ impl Controller {
                 observation: None,
             });
         }
+        self.report_gui_transcription(
+            TranscriptionState::Failed,
+            Some(BlockReason::TranscriptionFailed),
+        );
         self.state.phase = Phase::Stopping;
         self.state.retry_available = false;
         self.allow_delivery = false;
         self.delivery_settle = None;
+        self.gui_diagnostics.abandon_stages();
         self.delivery.clear();
         self.started = None;
-        self.recorder.cancel();
+        self.cancel_capture();
         self.show_cleanup_warning();
     }
     fn show_cleanup_warning(&mut self) {
@@ -737,18 +962,35 @@ impl Controller {
             self.request_cleanup_observation();
             return;
         }
+        let delivery_pending = self.delivery.has_pending();
+        let gui_pending = self.current_gui_receipt().is_some_and(|receipt| {
+            if receipt.transcription == TranscriptionState::Pending {
+                receipt.transcription = TranscriptionState::Cancelled;
+                receipt.block_reason = Some(BlockReason::Cancelled);
+                true
+            } else {
+                if delivery_pending {
+                    receipt.block_reason = Some(BlockReason::Cancelled);
+                }
+                false
+            }
+        });
+        if !gui_pending && !delivery_pending {
+            self.detach_gui_delivery();
+        }
         self.stop_failure = None;
         self.delivery_settle = None;
         let worker_active = self.active.is_some();
         self.state.cancel(worker_active);
+        self.gui_diagnostics.abandon_stages();
         self.delivery.clear();
         self.started = None;
-        self.recorder.cancel();
+        self.cancel_capture();
         if let Some(active) = &self.active {
             active.cancel.cancel();
             self.message = "正在取消并释放录音…".into();
         } else {
-            self.recorder.cancel();
+            self.cancel_capture();
             self.recording = None;
             self.message = "听写已取消。".into();
         }
@@ -797,6 +1039,11 @@ impl Controller {
                     if !self.state.permissions(generation, microphone) {
                         if !microphone {
                             self.message = "请在系统设置中允许 VoicePort 使用麦克风。".into();
+                            self.report_gui_transcription(
+                                TranscriptionState::NotStarted,
+                                Some(BlockReason::MicrophoneDenied),
+                            );
+                            self.gui_diagnostics.abandon_stages();
                             self.delivery.clear();
                         }
                         continue;
@@ -807,6 +1054,9 @@ impl Controller {
                     } else {
                         (None, None)
                     };
+                    if self.current_gui_receipt().is_some() {
+                        self.gui_diagnostics.capture_pending = Some(generation);
+                    }
                     match self.recorder.start(
                         speech && self.recorded_source.uses_system_speech(),
                         &self.recorded_language,
@@ -842,7 +1092,12 @@ impl Controller {
                         Err(message) => {
                             self.state.phase = Phase::Failed;
                             self.message = message;
-                            self.recorder.cancel();
+                            self.report_gui_transcription(
+                                TranscriptionState::NotStarted,
+                                Some(BlockReason::CaptureFailed),
+                            );
+                            self.cancel_capture();
+                            self.gui_diagnostics.abandon_stages();
                             self.delivery.clear();
                         }
                     }
@@ -862,7 +1117,12 @@ impl Controller {
                     self.message = message;
                     self.state.phase = Phase::Failed;
                     self.started = None;
-                    self.recorder.cancel();
+                    self.cancel_capture();
+                    self.report_gui_transcription(
+                        TranscriptionState::Failed,
+                        Some(BlockReason::CaptureFailed),
+                    );
+                    self.gui_diagnostics.abandon_stages();
                     self.delivery.retain_preview();
                     self.wait_for_delivery();
                 }
@@ -894,12 +1154,13 @@ impl Controller {
                 } else if let Some(active) = self.active.take() {
                     active.cancel.cancel();
                     self.allow_delivery = false;
+                    self.gui_diagnostics.abandon_stages();
                     self.delivery.retain_preview();
                     self.wait_for_delivery();
                     let stopping = self.state.phase == Phase::Stopping;
                     if self.state.worker_disconnected(self.recording.is_some()) {
                         if stopping {
-                            self.recorder.cancel();
+                            self.cancel_capture();
                             self.recording = None;
                             if let Some(error) = self.stop_failure.take() {
                                 self.state.phase = Phase::Failed;
@@ -908,6 +1169,10 @@ impl Controller {
                                 self.message = "听写已取消。".into();
                             }
                         } else {
+                            self.report_gui_transcription(
+                                TranscriptionState::Failed,
+                                Some(BlockReason::TranscriptionFailed),
+                            );
                             self.message = "转写工作线程已退出，录音保留供手动重试。".into();
                         }
                     }
@@ -931,6 +1196,9 @@ impl Controller {
                 // Finalize the valid AAC lease before offering the same-source retry.
                 self.stop();
             }
+            if self.state.phase == Phase::Transcribing && self.current_gui_receipt().is_some() {
+                self.gui_diagnostics.timings.transcription = completion.elapsed;
+            }
             if self.cleanup.is_some()
                 || self
                     .active
@@ -951,7 +1219,7 @@ impl Controller {
             }
             self.active = None;
             if self.state.phase == Phase::Stopping {
-                self.recorder.cancel();
+                self.cancel_capture();
                 self.recording = None;
                 if let Some(error) = self.stop_failure.take() {
                     self.state.phase = Phase::Failed;
@@ -967,21 +1235,52 @@ impl Controller {
             ) {
                 match completion.result {
                     Ok(text) => {
+                        let has_text = !text.trim().is_empty();
+                        if has_text {
+                            self.report_gui_transcription(TranscriptionState::Completed, None);
+                        } else {
+                            self.report_gui_transcription(
+                                TranscriptionState::Empty,
+                                Some(BlockReason::EmptyTranscript),
+                            );
+                        }
+                        if self.gui_owns_delivery
+                            && self.allow_delivery
+                            && has_text
+                            && self.delivery.failure_stage().is_none()
+                            && (self.delivery.method().is_some() || self.delivery.preparing_input())
+                        {
+                            self.gui_diagnostics.delivery = Some(StageTimer::start(Instant::now));
+                        }
+                        if !has_text {
+                            self.gui_diagnostics.preparation = None;
+                        }
                         self.transcript = text;
                         self.delivery_status =
                             self.delivery.deliver(&self.transcript, self.allow_delivery);
-                        self.message = if self.testing { if self.transcript.is_empty() { "样例接口已响应：没有识别到语音（内置样例为一秒静音）；未验证识别质量。" } else { "样例接口已响应，返回文字见面板；静音样例不能证明识别质量。" } } else if self.transcript.is_empty() { "没有识别到语音。" } else { "最终转写完成。" }.into();
-                        if self.allow_delivery
-                            && !self.transcript.is_empty()
-                            && self.delivery.uses_clipboard()
-                        {
+                        self.gui_diagnostics
+                            .finish_delivery_if_settled(&self.delivery);
+                        self.message = match (self.testing, has_text) {
+                            (true, false) => "样例接口已响应：没有识别到语音（内置样例为一秒静音）；未验证识别质量。",
+                            (true, true) => "样例接口已响应，返回文字见面板；静音样例不能证明识别质量。",
+                            (false, false) => "没有识别到语音。",
+                            (false, true) => "最终转写完成。",
+                        }
+                        .into();
+                        if self.allow_delivery && has_text && self.delivery.uses_clipboard() {
                             self.message = self.delivery_status.clone();
                         }
                         self.recorder.finish();
+                        self.seal_gui_capture();
                         self.recording = None;
                     }
                     Err(error) => {
                         self.message = error.message;
+                        self.report_gui_transcription(
+                            TranscriptionState::Failed,
+                            Some(BlockReason::TranscriptionFailed),
+                        );
+                        self.gui_diagnostics.abandon_stages();
                         self.delivery.retain_preview();
                         self.wait_for_delivery();
                     }
@@ -989,7 +1288,12 @@ impl Controller {
             }
         }
         self.wait_for_delivery();
-        if let Some(status) = self.delivery.poll() {
+        let status = self
+            .delivery
+            .poll_observing_preparation(|| self.gui_diagnostics.finish_preparation());
+        self.gui_diagnostics
+            .finish_delivery_if_settled(&self.delivery);
+        if let Some(status) = status {
             self.delivery_status = status;
             if self.delivery.uses_clipboard() {
                 self.message = self.delivery_status.clone();
@@ -1183,11 +1487,14 @@ pub(crate) mod stop_failure_regression {
                         .exists()
                 );
                 let generation = job.generation;
+                let timer = StageTimer::start(Instant::now);
                 started_tx.send(generation).unwrap();
                 let result = responses.recv_timeout(Duration::from_secs(5)).unwrap();
+                let elapsed = timer.finish(Instant::now);
                 drop(job);
                 completion
                     .send(Completion {
+                        elapsed,
                         generation,
                         result: result.map_err(Failure::from),
                     })
@@ -1207,6 +1514,9 @@ pub(crate) mod stop_failure_regression {
 
     fn retry_preserves_recording() {
         let mut fixture = Fixture::new(Input::Valid);
+        let original = fixture.controller.state.generation();
+        fixture.controller.begin_gui_receipt(original, false);
+        fixture.controller.gui_diagnostics.capture_pending = Some(original);
         let control = controlled_worker(&mut fixture.controller, 2);
         fixture.controller.stop();
         let first = control
@@ -1238,16 +1548,30 @@ pub(crate) mod stop_failure_regression {
             &fixture.controller.recorder
         ));
         assert!(fixture.controller.recording.is_some());
+        let failed = fixture.controller.gui_dictation_diagnostics().unwrap();
+        assert_eq!(failed.capture.unwrap().generation, original);
+        assert!(failed.timings.transcription_ms.is_some());
         fixture.controller.retry();
         let current = control
             .started
             .recv_timeout(Duration::from_secs(5))
             .unwrap();
         assert_ne!(current, first);
+        let retried = fixture.controller.gui_dictation_diagnostics().unwrap();
+        assert_eq!(retried.session, original);
+        assert_eq!(retried.generation, current);
+        assert_eq!(retried.capture, failed.capture);
+        assert_eq!(
+            retried.timings.capture_first_frame_ms,
+            failed.timings.capture_first_frame_ms
+        );
+        assert_eq!(retried.timings.transcription_ms, None);
+        assert_eq!(retried.timings.delivery_ms, None);
         for _ in 0..2 {
             control
                 .outgoing
                 .send(Completion {
+                    elapsed: None,
                     generation: first,
                     result: Ok("stale result".into()),
                 })
@@ -1282,6 +1606,9 @@ pub(crate) mod stop_failure_regression {
 
     fn cancellation_waits_for_recording_release() {
         let mut fixture = Fixture::new(Input::Valid);
+        let original = fixture.controller.state.generation();
+        fixture.controller.begin_gui_receipt(original, false);
+        fixture.controller.gui_diagnostics.capture_pending = Some(original);
         let control = controlled_worker(&mut fixture.controller, 1);
         fixture.controller.stop();
         let generation = control
@@ -1302,6 +1629,7 @@ pub(crate) mod stop_failure_regression {
         control
             .outgoing
             .send(Completion {
+                elapsed: None,
                 generation: generation - 1,
                 result: Ok("stale".into()),
             })
@@ -1318,6 +1646,11 @@ pub(crate) mod stop_failure_regression {
         assert_eq!(fixture.controller.state.phase, Phase::Idle);
         assert!(!fixture.controller.state.retry_available);
         assert_eq!(fixture.controller.transcript, PREVIEW);
+        let cancelled = fixture.controller.gui_dictation_diagnostics().unwrap();
+        assert_eq!(cancelled.generation, original);
+        assert_eq!(cancelled.capture.unwrap().signal, CaptureSignal::Signal);
+        assert_eq!(cancelled.timings.transcription_ms, None);
+        assert_eq!(cancelled.timings.delivery_ms, None);
         assert!(fixture.released("cancel", "matching-completion"));
         control.thread.join().unwrap();
     }
@@ -1359,6 +1692,7 @@ pub(crate) mod stop_failure_regression {
         control
             .outgoing
             .send(Completion {
+                elapsed: None,
                 generation: generation - 1,
                 result: Ok("stale local result".into()),
             })
@@ -1444,6 +1778,312 @@ pub(crate) mod stop_failure_regression {
         assert_eq!(c.language, "en");
         worker.thread.join().unwrap();
     }
+    fn gui_delivery_without_devices() {
+        use crate::delivery::model::{
+            Failure as InputFailure, Snapshot, Target, TextRange, byte_range,
+        };
+        use std::{cell::RefCell, rc::Rc};
+        use voiceport_control::DeliveryState;
+
+        struct ReceiverState {
+            snapshot: Snapshot,
+            focused: bool,
+            write_error: bool,
+            writes: usize,
+        }
+        struct Receiver(Rc<RefCell<ReceiverState>>);
+        impl Target for Receiver {
+            fn read(&mut self) -> Result<Snapshot, InputFailure> {
+                let receiver = self.0.borrow();
+                if !receiver.focused {
+                    return Err(InputFailure::FocusElementChanged);
+                }
+                Ok(receiver.snapshot.clone())
+            }
+            fn replace(
+                &mut self,
+                range: TextRange,
+                text: &str,
+                expected: &Snapshot,
+            ) -> Result<(), InputFailure> {
+                assert_eq!(&self.read()?, expected);
+                let mut receiver = self.0.borrow_mut();
+                let bytes = byte_range(&receiver.snapshot.text, range).unwrap();
+                receiver.snapshot.text.replace_range(bytes, text);
+                receiver.snapshot.selection = TextRange {
+                    location: range.location + text.encode_utf16().count(),
+                    length: 0,
+                };
+                receiver.writes += 1;
+                if receiver.write_error {
+                    return Err(InputFailure::Write);
+                }
+                Ok(())
+            }
+        }
+        fn receiver() -> Rc<RefCell<ReceiverState>> {
+            Rc::new(RefCell::new(ReceiverState {
+                snapshot: Snapshot {
+                    text: "A|B".into(),
+                    selection: TextRange {
+                        location: 1,
+                        length: 1,
+                    },
+                },
+                focused: true,
+                write_error: false,
+                writes: 0,
+            }))
+        }
+        fn start(c: &mut Controller) -> (u64, Rc<RefCell<ReceiverState>>) {
+            let receiver = receiver();
+            let (generation, _) = c
+                .prepare_start_with(
+                    SessionSource::ChatGpt,
+                    "zh".into(),
+                    true,
+                    true,
+                    |delivery| delivery.begin_fixture(Box::new(Receiver(receiver.clone()))),
+                )
+                .unwrap();
+            assert!(c.state.permissions(generation, true));
+            assert!(c.state.transcribe());
+            c.active = Some(ActiveJob {
+                generation,
+                cancel: CancellationToken::new(),
+                custody: Custody::default(),
+                _recording: None,
+            });
+            (generation, receiver)
+        }
+        fn finish(c: &mut Controller, outgoing: &Sender<Completion>, generation: u64, text: &str) {
+            outgoing
+                .send(Completion {
+                    elapsed: None,
+                    generation,
+                    result: Ok(text.into()),
+                })
+                .unwrap();
+            c.poll();
+        }
+
+        let mut c = Controller::new();
+        let (outgoing, results) = mpsc::channel();
+        let (jobs, _incoming) = mpsc::sync_channel(1);
+        c.worker = Some(Worker { jobs, results });
+        assert!(c.gui_dictation_receipt().is_none());
+        let mut preceding = 0;
+        for (case, result, state, stage, target_text, writes) in [
+            (
+                "in-place",
+                "测试",
+                DeliveryState::Confirmed,
+                None,
+                "A测试B",
+                1,
+            ),
+            (
+                "focus-change",
+                "测试",
+                DeliveryState::NotSent,
+                Some("focus"),
+                "A|B",
+                0,
+            ),
+            (
+                "user-edit",
+                "测试",
+                DeliveryState::NotSent,
+                Some("ownership"),
+                "A用户B",
+                0,
+            ),
+            ("empty", "", DeliveryState::NotSent, None, "A|B", 0),
+            ("whitespace", " \n", DeliveryState::NotSent, None, "A|B", 0),
+            (
+                "unknown-write",
+                "测试",
+                DeliveryState::Uncertain,
+                Some("write"),
+                "A测试B",
+                1,
+            ),
+        ] {
+            let (generation, receiver) = start(&mut c);
+            let pending = c.gui_dictation_receipt().unwrap();
+            assert_eq!(
+                (pending.session, pending.generation),
+                (generation, generation)
+            );
+            assert_eq!(pending.transcription, TranscriptionState::Pending);
+            assert_eq!(pending.delivery.state, DeliveryState::NotSent);
+            assert_eq!(pending.method.as_deref(), Some("accessibility"));
+            assert_eq!(pending.failure_stage, None);
+
+            c.events_tx
+                .send((preceding, AudioEvent::Partial("旧轮".into())))
+                .unwrap();
+            finish(&mut c, &outgoing, preceding, "迟到结果");
+            assert_eq!(c.gui_dictation_receipt().unwrap(), pending, "{case}");
+            assert!(c.transcript.is_empty());
+            assert_eq!(receiver.borrow().writes, 0);
+
+            match case {
+                "focus-change" => receiver.borrow_mut().focused = false,
+                "user-edit" => receiver.borrow_mut().snapshot.text = "A用户B".into(),
+                "unknown-write" => receiver.borrow_mut().write_error = true,
+                _ => {}
+            }
+            finish(&mut c, &outgoing, generation, result);
+            assert_eq!(c.state.phase, Phase::Ready, "{case}");
+            let receipt = c.gui_dictation_receipt().unwrap();
+            assert_eq!(receipt.delivery.state, state, "{case}");
+            assert_eq!(receipt.failure_stage.as_deref(), stage, "{case}");
+            let empty = result.trim().is_empty();
+            assert_eq!(
+                receipt.transcription,
+                if empty {
+                    TranscriptionState::Empty
+                } else {
+                    TranscriptionState::Completed
+                }
+            );
+            assert_eq!(
+                receipt.block_reason,
+                empty.then_some(BlockReason::EmptyTranscript)
+            );
+            assert_eq!(
+                receipt.delivery.submitted_operations,
+                usize::from(state == DeliveryState::Confirmed)
+            );
+            assert_eq!(
+                receipt.delivery.confirmed_operations,
+                usize::from(state == DeliveryState::Confirmed)
+            );
+            c.events_tx
+                .send((generation, AudioEvent::Partial("迟到预览".into())))
+                .unwrap();
+            finish(&mut c, &outgoing, generation, "重复结果");
+            assert_eq!(c.gui_dictation_receipt().unwrap(), receipt, "{case}");
+            assert_eq!(&c.transcript, result);
+            let receiver = receiver.borrow();
+            assert_eq!(receiver.snapshot.text, target_text, "{case}");
+            assert_eq!(receiver.writes, writes, "{case}");
+            if writes > 0 {
+                assert_eq!(
+                    receiver.snapshot.selection,
+                    TextRange {
+                        location: 3,
+                        length: 0
+                    }
+                );
+            }
+            let json = serde_json::to_value(&receipt).unwrap();
+            assert_eq!(
+                serde_json::from_value::<GuiDictationReceipt>(json.clone()).unwrap(),
+                receipt
+            );
+            for private in ["A|B", "A测试B", "测试", "A用户B", "重复结果", "迟到预览"]
+            {
+                assert!(!json.to_string().contains(private));
+            }
+            preceding = generation;
+            println!(
+                "gui-delivery: {case} text={target_text:?} selection={:?} writes={writes} receipt={json}",
+                receiver.snapshot.selection
+            );
+        }
+
+        // Starting a panel-only GUI session or a CLI operation cannot borrow a
+        // previous automatic route, failure, or ambiguous-write outcome.
+        let automatic = c.gui_dictation_receipt().unwrap();
+        let (cli, _) = c
+            .prepare_start(SessionSource::ChatGpt, "zh".into(), false)
+            .unwrap();
+        assert!(cli > automatic.generation);
+        assert_eq!(c.gui_dictation_receipt().unwrap(), automatic);
+        c.cancel();
+        assert_eq!(c.gui_dictation_receipt().unwrap(), automatic);
+        let (panel, _) = c
+            .prepare_start_with(SessionSource::ChatGpt, "zh".into(), false, true, |_| {
+                panic!("panel-only GUI must not capture a target");
+            })
+            .unwrap();
+        let receipt = c.gui_dictation_receipt().unwrap();
+        assert_eq!(receipt.generation, panel);
+        assert_eq!(receipt.method, None);
+        assert_eq!(receipt.failure_stage, None);
+        assert_eq!(receipt.delivery, Default::default());
+        assert_eq!(receipt.block_reason, Some(BlockReason::PanelOnly));
+        c.cancel();
+        let cancelled = c.gui_dictation_receipt().unwrap();
+        assert_eq!(cancelled.generation, panel);
+        assert_eq!(cancelled.transcription, TranscriptionState::Cancelled);
+        assert_eq!(cancelled.block_reason, Some(BlockReason::Cancelled));
+        finish(&mut c, &outgoing, panel, "晚于取消");
+        assert_eq!(c.gui_dictation_receipt().unwrap(), cancelled);
+
+        // Real synthetic PCM/AAC and production Stop/Job dispatch, with an
+        // isolated receiver and an ASR stand-in that returns a successful empty
+        // result. Leave the receiver open to detect any second request.
+        let mut fixture = Fixture::new(Input::Valid);
+        let c = &mut fixture.controller;
+        let generation = c.state.generation();
+        c.begin_gui_receipt(generation, true);
+        c.gui_diagnostics.capture_pending = Some(generation);
+        c.allow_delivery = true;
+        c.gui_owns_delivery = true;
+        let receiver = receiver();
+        c.delivery
+            .begin_fixture(Box::new(Receiver(receiver.clone())))
+            .unwrap();
+        assert!(c.gui_dictation_diagnostics().unwrap().capture.is_none());
+        let (jobs, incoming) = mpsc::sync_channel(1);
+        let (outgoing, results) = mpsc::channel();
+        c.worker = Some(Worker { jobs, results });
+        c.stop();
+        let job = incoming
+            .try_recv()
+            .expect("one ASR request for audible input");
+        assert_eq!(job.generation, generation);
+        assert!(job.recording.as_ref().unwrap().path().exists());
+        let elapsed = StageTimer::start(Instant::now).finish(Instant::now);
+        drop(job);
+        outgoing
+            .send(Completion {
+                generation,
+                elapsed,
+                result: Ok(String::new()),
+            })
+            .unwrap();
+        c.poll();
+        let receipt = c.gui_dictation_receipt().unwrap();
+        let diagnostics = c.gui_dictation_diagnostics().unwrap();
+        let capture = diagnostics.capture.unwrap();
+        assert_eq!(capture.generation, generation);
+        assert_eq!(capture.signal, CaptureSignal::Signal);
+        assert_eq!(capture.callbacks, Some(3));
+        assert_eq!(capture.observed_frames, Some(14_400));
+        assert!(diagnostics.timings.capture_first_frame_ms.is_some());
+        assert!(diagnostics.timings.transcription_ms.is_some());
+        assert_eq!(diagnostics.timings.preparation_ms, None);
+        assert_eq!(diagnostics.timings.delivery_ms, None);
+        assert_eq!(receipt.transcription, TranscriptionState::Empty);
+        assert_eq!(receipt.delivery.state, DeliveryState::NotSent);
+        assert!(!c.can_retry_recording());
+        c.retry();
+        finish(c, &outgoing, generation, "重复结果");
+        assert!(matches!(incoming.try_recv(), Err(TryRecvError::Empty)));
+        assert_eq!(c.gui_dictation_diagnostics().unwrap(), diagnostics);
+        assert_eq!(c.gui_dictation_receipt().unwrap(), receipt);
+        assert_eq!(receiver.borrow().snapshot.text, "A|B");
+        assert_eq!(receiver.borrow().writes, 0);
+        println!(
+            "gui-delivery: audible empty ASR requests=1 writes=0 diagnostics={}",
+            serde_json::to_string(&diagnostics).unwrap()
+        );
+    }
+
     pub(crate) fn run(case: &str, _main_thread: MainThreadMarker) {
         assert!(MainThreadMarker::new().is_some());
         match case {
@@ -1452,6 +2092,7 @@ pub(crate) mod stop_failure_regression {
             "cancel" => cancellation_waits_for_recording_release(),
             "local-stop-failure" => local_stop_failure_waits_for_worker(),
             "cli-session" => cli_start_stop_uses_pinned_policy_without_devices(),
+            "gui-delivery" => gui_delivery_without_devices(),
             _ => panic!("unknown stop_failure case: {case}"),
         }
         println!("stop_failure: {case} passed");
@@ -1794,6 +2435,7 @@ pub(crate) mod tests {
         drop(job);
         outgoing
             .send(Completion {
+                elapsed: None,
                 generation,
                 result: Ok("late".into()),
             })
@@ -1854,7 +2496,11 @@ pub(crate) mod tests {
         c.catalog = Catalog::pending(&c.source_id);
         c.start();
         assert_eq!(c.state.phase, Phase::Failed);
-        assert_eq!(c.state.generation(), 0);
+        let receipt = c.gui_dictation_receipt().unwrap();
+        assert_eq!(receipt.generation, c.state.generation());
+        assert_eq!(receipt.transcription, TranscriptionState::NotStarted);
+        assert_eq!(receipt.block_reason, Some(BlockReason::SourceUnavailable));
+        assert_eq!(receipt.delivery, Default::default());
         assert!(c.worker.is_none() && c.active.is_none());
         assert!(c.events.try_recv().is_err());
         assert_eq!(c.source_id, crate::local_models::PARAFORMER);
@@ -1903,6 +2549,7 @@ pub(crate) mod tests {
         assert!(c.state.begin().is_none());
         outgoing
             .send(Completion {
+                elapsed: None,
                 generation,
                 result: Err("cancelled".into()),
             })
@@ -1958,6 +2605,7 @@ pub(crate) mod tests {
         let (outgoing, results) = mpsc::channel();
         outgoing
             .send(Completion {
+                elapsed: None,
                 generation: current - 1,
                 result: Ok("stale".into()),
             })
@@ -1977,12 +2625,14 @@ pub(crate) mod tests {
         let (outgoing, results) = mpsc::channel();
         outgoing
             .send(Completion {
+                elapsed: None,
                 generation: job_generation - 1,
                 result: Ok("stale".into()),
             })
             .unwrap();
         outgoing
             .send(Completion {
+                elapsed: None,
                 generation: job_generation,
                 result: Ok("cancelled".into()),
             })
@@ -2043,7 +2693,12 @@ pub(crate) mod tests {
         c.reject_start("目标应用发生变化。");
         assert_eq!(c.state.phase, Phase::Failed);
         assert!(!c.state.retry_available);
-        assert_eq!(c.state.generation(), generation);
+        assert_eq!(c.state.generation(), generation + 1);
+        let receipt = c.gui_dictation_receipt().unwrap();
+        assert_eq!(receipt.session, generation + 1);
+        assert_eq!(receipt.transcription, TranscriptionState::NotStarted);
+        assert_eq!(receipt.block_reason, Some(BlockReason::StartRejected));
+        assert_eq!(receipt.delivery, Default::default());
         assert_eq!(c.transcript, "previous synthetic result");
         assert!(c.message.contains("本轮未开始录音"));
         assert!(c.active.is_none());
@@ -2149,6 +2804,7 @@ pub(crate) mod tests {
             if mode == "stale" {
                 outgoing
                     .send(Completion {
+                        elapsed: None,
                         generation: generation + 1,
                         result: Err(failure()),
                     })
@@ -2160,7 +2816,11 @@ pub(crate) mod tests {
                 Err(failure())
             };
             drop(job);
-            let sent = outgoing.send(Completion { generation, result });
+            let sent = outgoing.send(Completion {
+                elapsed: None,
+                generation,
+                result,
+            });
             if mode == "send-failure" {
                 assert!(sent.is_err());
             } else {
@@ -2313,6 +2973,7 @@ pub(crate) mod tests {
         let (outgoing, results) = mpsc::channel();
         outgoing
             .send(Completion {
+                elapsed: None,
                 generation,
                 result: Ok("duplicate must not deliver".into()),
             })
