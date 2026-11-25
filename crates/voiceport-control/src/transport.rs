@@ -9,7 +9,7 @@ use std::{
     os::{
         fd::{AsRawFd, FromRawFd},
         unix::{
-            fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
+            fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
             net::{UnixListener, UnixStream},
         },
     },
@@ -259,19 +259,14 @@ pub fn call(path: &Path, action: crate::Action) -> Result<Response, Response> {
     private_parent(path, false)?;
     let identity = socket_identity(path)?;
     let deadline = Instant::now() + TIMEOUT;
-    // Nonblocking connect avoids an unbounded full-listen-backlog wait.
-    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
-    if fd < 0 {
-        return Err(failure("protocol_error"));
-    }
-    let stream = unsafe { UnixStream::from_raw_fd(fd) };
-    if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
-        return Err(failure("protocol_error"));
-    }
-    stream
-        .set_nonblocking(true)
-        .map_err(|_| failure("protocol_error"))?;
-    connect(&stream, path)?;
+    let stream = nonblocking_stream().map_err(|_| failure("protocol_error"))?;
+    connect(&stream, path).map_err(|error| {
+        failure(match error.raw_os_error() {
+            Some(libc::ECONNREFUSED | libc::ENOENT) => "app_not_running",
+            Some(libc::EAGAIN | libc::EINPROGRESS) => "busy",
+            _ => "protocol_error",
+        })
+    })?;
     stream
         .set_nonblocking(false)
         .map_err(|_| failure("protocol_error"))?;
@@ -297,13 +292,27 @@ pub fn call(path: &Path, action: crate::Action) -> Result<Response, Response> {
     }
     Ok(reply)
 }
-fn connect(stream: &UnixStream, path: &Path) -> Result<(), Response> {
+fn nonblocking_stream() -> io::Result<UnixStream> {
+    // A full listen backlog must never block a client or recovery probe.
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let stream = unsafe { UnixStream::from_raw_fd(fd) };
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    stream.set_nonblocking(true)?;
+    Ok(stream)
+}
+
+fn connect(stream: &UnixStream, path: &Path) -> io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
     address.sun_family = libc::AF_UNIX as _;
     let bytes = path.as_os_str().as_bytes();
     if bytes.len() >= address.sun_path.len() {
-        return Err(failure("unsafe_socket"));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "socket path"));
     }
     for (dst, src) in address.sun_path.iter_mut().zip(bytes) {
         *dst = *src as _;
@@ -316,11 +325,7 @@ fn connect(stream: &UnixStream, path: &Path) -> Result<(), Response> {
         )
     };
     if rc != 0 {
-        return Err(failure(match io::Error::last_os_error().raw_os_error() {
-            Some(libc::ECONNREFUSED | libc::ENOENT) => "app_not_running",
-            Some(libc::EAGAIN | libc::EINPROGRESS) => "busy",
-            _ => "protocol_error",
-        }));
+        return Err(io::Error::last_os_error());
     }
     Ok(())
 }
@@ -346,32 +351,127 @@ pub struct Server {
     requests: Receiver<Pending>,
     stop: Arc<AtomicBool>,
     _guard: SocketGuard,
+    _ownership: fs::File,
 }
 struct SocketGuard {
     path: PathBuf,
+    owned: PathBuf,
     identity: (u64, u64),
 }
 impl Drop for SocketGuard {
     fn drop(&mut self) {
-        if socket_identity(&self.path).ok() == Some(self.identity) {
-            let _ = fs::remove_file(&self.path);
+        for path in [&self.path, &self.owned] {
+            if socket_identity(path).ok() == Some(self.identity) {
+                let _ = fs::remove_file(path);
+            }
         }
     }
 }
+
+// Keep the private name below the Unix address limit even for a 100-byte public
+// path. Extra slots let startup skip an orphan left before publication.
+fn owned_socket_names(path: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    b"0123456789abcdefghijklmnopqrstuvwxyz"
+        .iter()
+        .map(move |digit| {
+            let mut name = path.as_os_str().to_owned();
+            name.push(format!(".v{}", char::from(*digit)));
+            PathBuf::from(name)
+        })
+}
+
+fn reclaim_socket(path: &Path) -> Result<(), Response> {
+    let identity = socket_identity(path)?;
+    let owned = owned_socket_names(path)
+        .find(|candidate| socket_identity(candidate).ok() == Some(identity))
+        .ok_or_else(|| failure("socket_in_use"))?;
+    let stream = nonblocking_stream().map_err(|_| failure("protocol_error"))?;
+    if !connect(&stream, path).is_err_and(|error| error.raw_os_error() == Some(libc::ECONNREFUSED))
+    {
+        return Err(failure("socket_in_use"));
+    }
+    // Both names must still identify the same socket after the probe. An
+    // unrelated or replaced endpoint never qualifies for recovery.
+    if socket_identity(path)? != identity || socket_identity(&owned)? != identity {
+        return Err(failure("unsafe_socket"));
+    }
+    fs::remove_file(path).map_err(|_| failure("unsafe_socket"))?;
+    if socket_identity(&owned).ok() == Some(identity) {
+        let _ = fs::remove_file(owned);
+    }
+    Ok(())
+}
+
+/// Keeps a new server from binding this socket while the returned file is held.
+/// The kernel releases the lock on process exit, even if no cleanup code runs.
+pub fn lock_quiet(path: &Path) -> Result<fs::File, Response> {
+    lock_startup(path, false)
+}
+
+/// An absent endpoint also may mean a requested launch has not reached IPC.
+/// Only an owned, refused endpoint establishes progress and subsequent exit.
+#[cfg(target_os = "macos")]
+pub fn lock_for_owned_recovery(path: &Path) -> Result<fs::File, Response> {
+    lock_startup(path, true)
+}
+
+fn lock_startup(path: &Path, require_owned_endpoint: bool) -> Result<fs::File, Response> {
+    private_parent(path, true)?;
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&lock_path)
+        .map_err(|_| failure("unsafe_socket"))?;
+    let safe_lock = |metadata: fs::Metadata| {
+        metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o777 == 0o600
+            && metadata.nlink() == 1
+    };
+    let metadata = lock.metadata().map_err(|_| failure("unsafe_socket"))?;
+    let identity = (metadata.dev(), metadata.ino());
+    if !safe_lock(metadata) {
+        return Err(failure("unsafe_socket"));
+    }
+    lock.try_lock().map_err(|_| failure("socket_in_use"))?;
+    let present = fs::symlink_metadata(&lock_path).map_err(|_| failure("unsafe_socket"))?;
+    if (present.dev(), present.ino()) != identity || !safe_lock(present) {
+        return Err(failure("unsafe_socket"));
+    }
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound && !require_owned_endpoint => (),
+        Ok(_) => reclaim_socket(path)?,
+        Err(_) => return Err(failure("unsafe_socket")),
+    }
+    Ok(lock)
+}
+
 impl Server {
     pub fn bind(path: &Path) -> Result<Self, Response> {
-        private_parent(path, true)?;
-        // Existing sockets, including stale/unknown ones, are never removed.
-        if fs::symlink_metadata(path).is_ok() {
-            return Err(failure("socket_in_use"));
-        }
-        let listener = UnixListener::bind(path).map_err(|_| failure("socket_in_use"))?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        let ownership = lock_quiet(path)?;
+        let owned = owned_socket_names(path)
+            .find(|candidate| {
+                fs::symlink_metadata(candidate)
+                    .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+            })
+            .ok_or_else(|| failure("socket_in_use"))?;
+        let listener = UnixListener::bind(&owned).map_err(|_| failure("socket_in_use"))?;
+        fs::set_permissions(&owned, fs::Permissions::from_mode(0o600))
             .map_err(|_| failure("unsafe_socket"))?;
         let guard = SocketGuard {
             path: path.into(),
-            identity: socket_identity(path)?,
+            identity: socket_identity(&owned)?,
+            owned,
         };
+        // Publish the address only after the listener and its ownership proof exist.
+        // hard_link never overwrites an address another process bound on our path.
+        fs::hard_link(&guard.owned, path).map_err(|_| failure("socket_in_use"))?;
         listener
             .set_nonblocking(true)
             .map_err(|_| failure("protocol_error"))?;
@@ -441,6 +541,7 @@ impl Server {
             requests,
             stop,
             _guard: guard,
+            _ownership: ownership,
         })
     }
     pub fn next(&self) -> Option<Pending> {

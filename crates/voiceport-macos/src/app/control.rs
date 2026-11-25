@@ -66,6 +66,15 @@ struct Operation {
     result: Option<Response>,
 }
 impl Operation {
+    fn has_retained_text(&self) -> bool {
+        !self.sample
+            && self
+                .result
+                .as_ref()
+                .and_then(|response| response.data["text"].as_str())
+                .is_some_and(|text| !text.trim().is_empty())
+    }
+
     fn retry_available(&self, c: &Controller) -> bool {
         !self.cancelled
             && !self.sample
@@ -160,6 +169,33 @@ fn missing() -> Response {
     )
 }
 impl Delegate {
+    pub(super) fn retained_cli_result_for_update(&self) -> Result<bool, &'static str> {
+        let ivars = self.ivars();
+        if ivars.cli_quit_at.get().is_some() {
+            return Err("命令行已请求退出。请等退出完成后重新打开应用。");
+        }
+        let control = ivars
+            .control
+            .try_borrow()
+            .map_err(|_| "命令行状态正在变化，请稍候。")?;
+        if control.preparing()
+            || control
+                .operation
+                .as_ref()
+                .is_some_and(|op| op.result.is_none())
+            || control
+                .probe
+                .as_ref()
+                .is_some_and(|probe| probe.active_id().is_some())
+        {
+            return Err("命令行任务仍在处理。请等当前操作结束。");
+        }
+        Ok(control
+            .operation
+            .as_ref()
+            .is_some_and(Operation::has_retained_text))
+    }
+
     pub(super) fn start_control(&self) -> Result<(), Response> {
         let path = voiceport_control::transport::path_from_env()?;
         self.ivars().control.borrow_mut().server = Some(Server::bind(&path)?);
@@ -728,6 +764,28 @@ fn manage(action: Action, catalog: Vec<Value>) -> Outcome {
 #[cfg(test)]
 mod operation_tests {
     use super::*;
+    #[test]
+    fn completed_cli_text_can_still_be_retained_after_a_new_gui_session() {
+        let mut c = Controller::new();
+        c.state.phase = Phase::Ready;
+        c.transcript = "synthetic CLI result".into();
+        let mut op = Operation {
+            id: "previous-cli".into(),
+            generation: c.state.generation(),
+            cancelled: false,
+            plugin: false,
+            sample: false,
+            result: None,
+        };
+        assert!(!op.has_retained_text());
+        op.settle(&c);
+        c.state.begin().unwrap();
+        c.transcript.clear();
+        assert!(op.has_retained_text());
+        op.sample = true;
+        assert!(!op.has_retained_text());
+    }
+
     #[test]
     fn rejected_start_never_registers_or_replaces_an_operation() {
         for previous_operation in [false, true] {

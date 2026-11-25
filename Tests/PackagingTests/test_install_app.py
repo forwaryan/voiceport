@@ -1,4 +1,6 @@
+import fcntl
 import json
+import os
 import pathlib
 import plistlib
 import shutil
@@ -81,6 +83,40 @@ class InstallTests(unittest.TestCase):
                 self.assertEqual((target / 'version').read_text(), 'new')
                 self.assertEqual((pathlib.Path(result['backup']) / 'version').read_text(), 'old')
                 self.assertFalse((target.parent / '.voiceport-install.lock').exists())
+
+    def test_manual_install_holds_both_locks_until_replacement_finishes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp).resolve()
+            source, target = root / 'new.app', root / 'Applications/VoicePort.app'
+            source.mkdir()
+            target.mkdir(parents=True)
+            (target / 'version').write_text('old')
+            marker = target.parent / '.voiceport-install.lock'
+
+            def check_locks_now(*args):
+                self.assertEqual(marker.read_text().strip(), str(os.getpid()))
+                with self.assertRaises(FileExistsError):
+                    marker.open('x')
+                fd = os.open(target.parent, os.O_RDONLY)
+                try:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    os.close(fd)
+
+            with patch.object(install_app, 'bundle_info'), \
+                 patch.object(install_app, 'signing_continues', return_value=True), \
+                 patch.object(install_app, 'stop_idle', side_effect=check_locks_now) as stop:
+                marker.write_text('legacy owner')
+                with self.assertRaisesRegex(ValueError, 'installer marker exists'):
+                    install_app.install(source, target)
+                stop.assert_not_called()
+                self.assertEqual((target / 'version').read_text(), 'old')
+                self.assertEqual(marker.read_text(), 'legacy owner')
+                marker.unlink()
+                install_app.install(source, target)
+                stop.assert_called_once()
+            self.assertFalse(marker.exists())
 
     def test_failed_replacement_restores_old_bundle(self):
         with tempfile.TemporaryDirectory() as temp:

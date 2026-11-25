@@ -1,0 +1,3 @@
+# Preserve these upstream license files byte-for-byte.
+resources/third-party/crates/crc32fast-1.5.0/LICENSE-APACHE whitespace=-blank-at-eof
+resources/third-party/crates/zlib-rs-0.6.8/LICENSE whitespace=-blank-at-eol

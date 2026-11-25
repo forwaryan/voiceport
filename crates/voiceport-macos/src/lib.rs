@@ -2,6 +2,8 @@
 #[cfg(target_os = "macos")]
 mod app;
 #[cfg(target_os = "macos")]
+mod app_update;
+#[cfg(target_os = "macos")]
 mod cloud_models;
 #[cfg(target_os = "macos")]
 mod controller;

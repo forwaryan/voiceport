@@ -67,6 +67,56 @@ fn unsafe_modes_links_unknown_files_and_replacements_are_not_removed() {
     assert!(Server::bind(&linked.join("other.sock")).is_err());
 }
 #[test]
+fn startup_preserves_unowned_stale_sockets_and_skips_partial_publications() {
+    let (_temp, path) = socket();
+    private_parent(&path, true).unwrap();
+    let unknown = UnixListener::bind(&path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let identity = socket_identity(&path).unwrap();
+    drop(unknown);
+    assert!(lock_quiet(&path).is_err());
+    assert_eq!(socket_identity(&path).unwrap(), identity);
+    fs::remove_file(&path).unwrap();
+
+    let first_slot = owned_socket_names(&path).next().unwrap();
+    let partial = UnixListener::bind(&first_slot).unwrap();
+    fs::set_permissions(&first_slot, fs::Permissions::from_mode(0o600)).unwrap();
+    let identity = socket_identity(&first_slot).unwrap();
+    drop(partial);
+    let server = Server::bind(&path).unwrap();
+    let owned = server._guard.owned.clone();
+    assert_ne!(owned, first_slot);
+    assert_eq!(
+        socket_identity(&path).unwrap(),
+        socket_identity(&owned).unwrap()
+    );
+    drop(server);
+    assert!(!path.exists());
+    assert!(!owned.exists());
+    assert_eq!(socket_identity(&first_slot).unwrap(), identity);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn rollback_requires_ownership_and_a_refused_connection() {
+    let (_temp, path) = socket();
+    assert!(lock_for_owned_recovery(&path).is_err());
+    let owned = owned_socket_names(&path).next().unwrap();
+    let listener = UnixListener::bind(&owned).unwrap();
+    fs::set_permissions(&owned, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::hard_link(&owned, &path).unwrap();
+    assert!(lock_for_owned_recovery(&path).is_err());
+    assert!(path.exists());
+    drop(listener);
+    let recovery = lock_for_owned_recovery(&path).unwrap();
+    assert!(!path.exists());
+    assert!(!owned.exists());
+    assert!(Server::bind(&path).is_err());
+    drop(recovery);
+    assert!(Server::bind(&path).is_ok());
+}
+
+#[test]
 fn invalid_version_and_oversize_frames_never_reach_dispatch() {
     let (_temp, path) = socket();
     let server = Server::bind(&path).unwrap();

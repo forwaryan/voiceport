@@ -29,6 +29,7 @@ mod shortcut_editor;
 mod source_manager;
 mod source_probes;
 mod status_overlay;
+mod update_ui;
 
 #[doc(hidden)]
 pub fn isolated_shortcut_regression(mtm: MainThreadMarker) {
@@ -173,6 +174,11 @@ struct Ivars {
     menu_copy: OnceCell<Retained<NSMenuItem>>,
     overlay: RefCell<status_overlay::Overlay>,
     overlay_menu: OnceCell<Retained<NSMenuItem>>,
+    update: RefCell<update_ui::UpdateUi>,
+    update_item: OnceCell<Retained<NSMenuItem>>,
+    update_refresh_item: OnceCell<Retained<NSMenuItem>>,
+    update_auto_item: OnceCell<Retained<NSMenuItem>>,
+    update_commit: RefCell<Option<std::process::ChildStdin>>,
     status_appearance: Cell<Option<StatusAppearance>>,
     page_tabs: OnceCell<Retained<NSSegmentedControl>>,
     dictation_page: OnceCell<Retained<NSView>>,
@@ -237,6 +243,13 @@ define_class!(
             } else {
                 self.refresh();
                 self.show_first_run_if_new();
+            }
+        }
+        #[unsafe(method(applicationWillTerminate:))]
+        fn will_terminate(&self, _notification: &NSNotification) {
+            if let Some(mut commit) = self.ivars().update_commit.borrow_mut().take() {
+                use std::io::Write;
+                let _ = commit.write_all(&crate::app_update::QUIT_ACK);
             }
         }
         #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
@@ -457,6 +470,12 @@ define_class!(
         fn shortcut_mode_action(&self, _sender: Option<&AnyObject>) {
             self.change_shortcut_mode();
         }
+        #[unsafe(method(updateVoicePort:))]
+        fn update_voiceport_action(&self, _sender: Option<&AnyObject>) { self.update_action(); }
+        #[unsafe(method(refreshVoicePortUpdate:))]
+        fn refresh_voiceport_action(&self, _sender: Option<&AnyObject>) { self.start_update_check(true); }
+        #[unsafe(method(toggleAutoUpdate:))]
+        fn toggle_auto_update_action(&self, _sender: Option<&AnyObject>) { self.toggle_auto_update(); }
         #[unsafe(method(tick:))]
         fn tick(&self, _sender: Option<&AnyObject>) {
             self.poll_shortcut();
@@ -479,6 +498,7 @@ define_class!(
                 self.manage_models_action(sel!(manageModels:), None);
             }
             self.poll_control();
+            self.update_tick();
             if self.ivars().cli_quit_at.get().is_some_and(|at| std::time::Instant::now() >= at) {
                 self.ivars().cli_quit_at.set(None);
                 NSApplication::sharedApplication(self.mtm()).terminate(None);
@@ -583,6 +603,18 @@ impl Delegate {
         overlay.setState(status_overlay::checked(status_overlay::enabled()));
         menu.addItem(&overlay);
         let _ = self.ivars().overlay_menu.set(overlay);
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        let update = self.menu_item("检查更新…", sel!(updateVoicePort:), "");
+        menu.addItem(&update);
+        let _ = self.ivars().update_item.set(update);
+        let refresh = self.menu_item("重新检查更新…", sel!(refreshVoicePortUpdate:), "");
+        menu.addItem(&refresh);
+        let _ = self.ivars().update_refresh_item.set(refresh);
+        let automatic = self.menu_item("自动检查更新", sel!(toggleAutoUpdate:), "");
+        menu.addItem(&automatic);
+        let _ = self.ivars().update_auto_item.set(automatic);
+        self.update_menu();
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&self.menu_item("退出 VoicePort", sel!(terminate:), ""));
         // A fixed, compact slot avoids shifting neighboring menu extras as
         // recording and processing states change. Template images follow macOS.
@@ -1203,6 +1235,15 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
 
 pub fn run() {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
+    if let Some((mode, args)) = arguments.split_first()
+        && mode == "--apply-staged-update"
+    {
+        if let Err(error) = crate::app_update::apply(args) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     #[cfg(debug_assertions)]
     if let [flag, directory] = arguments.as_slice()
         && flag == "--quick-panel-fixture"
