@@ -145,7 +145,8 @@ impl ConsoleSession {
         if dictionary.is_null() {
             return false;
         }
-        // CGSession.h declares these keys as CFString and the return value is owned.
+        // CGSession.h uses CFString keys. kCGSessionOnConsoleKey expands to
+        // kCGSSessionOnConsoleKey. CGSessionCopyCurrentDictionary returns an owned value.
         let dictionary =
             unsafe { CFDictionary::<CFString, CFType>::wrap_under_create_rule(dictionary) };
         let session_uid = dictionary
@@ -159,7 +160,7 @@ impl ConsoleSession {
                 .is_some_and(bool::from)
         };
         session_uid == Some(i64::from(self.uid))
-            && is_true("kCGSessionOnConsoleKey")
+            && is_true("kCGSSessionOnConsoleKey")
             && is_true("kCGSessionLoginDoneKey")
     }
 }

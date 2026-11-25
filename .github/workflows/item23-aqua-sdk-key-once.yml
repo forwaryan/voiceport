@@ -1,0 +1,292 @@
+name: Item 23 Aqua acceptance
+run-name: Item 23 Aqua acceptance (${{ github.sha }})
+
+on:
+  push:
+    branches: [ci/item23-aqua-sdk-key-once-2a4a9cf]
+
+permissions:
+  contents: read
+
+jobs:
+  focus:
+    if: github.event.created && !github.event.deleted && github.run_attempt == '1'
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_SHA: 2a4a9cf21ebfb92243bc28d410f800d7d85bd91d
+      SOURCE_TREE: 7a876482ba37c17758ef65f5ef50e1f9af7f2cf8
+      FIXTURE_BLOB: 6bacc67ca7667841680bf56b80f1094a19dbfa98
+      RUSTUP_TOOLCHAIN: 1.95.0
+      CARGO_TERM_COLOR: never
+    steps:
+      - name: Check out the triggering commit and its parent
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Check the frozen scope and run the strict Aqua fixture
+        run: |
+          stage=source
+          scratch=
+          finish() {
+            local rc=$?
+            trap - EXIT
+            if [[ -n "$scratch" ]] && ! rm -rf -- "$scratch"; then
+              stage=cleanup
+              rc=1
+            fi
+            local result=failure
+            case "$rc" in
+              0) result=pass ;;
+              78) result=conditions-unmet ;;
+            esac
+            local line="item23 outcome=$result stage=$stage exit=$rc source=$SOURCE_SHA workflow_commit=$GITHUB_SHA"
+            if ! printf '%s\n' "$line" >> "$GITHUB_STEP_SUMMARY"; then
+              printf 'item23 outcome=failure stage=summary exit=1\n'
+              exit 1
+            fi
+            printf '%s\n' "$line"
+            exit "$rc"
+          }
+          trap finish EXIT
+
+          workflow=.github/workflows/item23-aqua-sdk-key-once.yml
+          fixture=crates/voiceport-macos/src/app/status_overlay_fixture.rs
+          [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/ci/item23-aqua-sdk-key-once-2a4a9cf ]] || exit 1
+          [[ "$(git rev-list --parents -n 1 HEAD)" == "$GITHUB_SHA $SOURCE_SHA" ]] || exit 1
+          [[ "$(git rev-parse "$SOURCE_SHA^{tree}")" == "$SOURCE_TREE" ]] || exit 1
+          changes=$(git diff --no-renames --name-status "$SOURCE_SHA" HEAD) || exit 1
+          [[ "$changes" == "$(printf 'A\t%s\nM\t%s' "$workflow" "$fixture")" ]] || exit 1
+          [[ "$(git ls-tree HEAD -- "$fixture")" == "$(printf '100644 blob %s\t%s' "$FIXTURE_BLOB" "$fixture")" ]] || exit 1
+          [[ "$(git hash-object --no-filters "$fixture")" == "$FIXTURE_BLOB" ]] || exit 1
+          source_status=$(git status --porcelain --untracked-files=all) || exit 1
+          [[ -z "$source_status" ]] || exit 1
+          git ls-tree -r -z HEAD | python3 -I -B -c '
+          from hashlib import sha1
+          import os
+          from pathlib import Path
+          import sys
+
+          entries = sys.stdin.buffer.read().split(b"\0")[:-1]
+          if not entries:
+              sys.exit(1)
+          for entry in entries:
+              metadata, name = entry.split(b"\t", 1)
+              _, kind, oid = metadata.split()
+              path = Path(os.fsdecode(name))
+              if kind != b"blob" or path.is_symlink() or not path.is_file():
+                  sys.exit(1)
+              data = path.read_bytes()
+              raw_oid = sha1(b"blob %d\0" % len(data) + data).hexdigest().encode()
+              if raw_oid != oid:
+                  sys.exit(1)
+          ' || exit 1
+
+          stage=runner-preflight
+          [[ "$RUNNER_ENVIRONMENT" == github-hosted && "$RUNNER_OS" == macOS && "$RUNNER_ARCH" == ARM64 ]] || exit 78
+          macos=$(sw_vers -productVersion) || exit 78
+          [[ "$(uname -m)" == arm64 && "$macos" =~ ^15\.[0-9]+(\.[0-9]+)?$ ]] || exit 78
+          [[ "$(/usr/sbin/sysctl -n kern.hv_vmm_present)" == 1 ]] || exit 78
+          boot=$(/usr/sbin/sysctl -n kern.bootsessionuuid) || exit 78
+          [[ "$boot" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]] || exit 78
+          printf 'item23 hosted macos=%s arch=arm64 virtual_guest=1\n' "$macos"
+
+          stage=probe-build
+          scratch=$(mktemp -d "$RUNNER_TEMP/item23-aqua.XXXXXX") || exit 1
+          cat > "$scratch/console.m" <<'OBJC'
+          #import <AppKit/AppKit.h>
+          #import <CoreGraphics/CGSession.h>
+          #import <Security/AuthSession.h>
+          #include <string.h>
+          #include <sys/stat.h>
+          #include <unistd.h>
+
+          static const char *flag(CFDictionaryRef session, CFStringRef key) {
+              CFTypeRef value = CFDictionaryGetValue(session, key);
+              if (!value) return "missing";
+              if (CFGetTypeID(value) != CFBooleanGetTypeID()) return "invalid";
+              return CFBooleanGetValue(value) ? "true" : "false";
+          }
+
+          int main(void) {
+              @autoreleasepool {
+                  uid_t uid = geteuid();
+                  struct stat console;
+                  SecuritySessionId asid = 0;
+                  SessionAttributeBits attributes = 0;
+                  OSStatus status = SessionGetInfo(callerSecuritySession, &asid, &attributes);
+                  if (!uid || getuid() != uid || stat("/dev/console", &console) != 0 ||
+                      console.st_uid != uid || status != errSecSuccess || !asid ||
+                      (attributes & (sessionHasGraphicAccess | sessionIsRemote)) != sessionHasGraphicAccess) {
+                      fprintf(stderr, "item23 caller is outside a non-root local graphical console session\n");
+                      return 78;
+                  }
+                  CFDictionaryRef session = CGSessionCopyCurrentDictionary();
+                  if (!session) return 78;
+                  CFTypeRef user = CFDictionaryGetValue(session, kCGSessionUserIDKey);
+                  int64_t quartzUID = -1;
+                  if (user && CFGetTypeID(user) == CFNumberGetTypeID()) {
+                      CFNumberGetValue(user, kCFNumberSInt64Type, &quartzUID);
+                  }
+                  const char *onConsole = flag(session, kCGSessionOnConsoleKey);
+                  const char *loginDone = flag(session, kCGSessionLoginDoneKey);
+                  const char *locked = flag(session, CFSTR("CGSSessionScreenIsLocked"));
+                  // An unlocked session may omit the lock flag. Also require an
+                  // active, regular desktop application and exclude lock/login UI.
+                  NSRunningApplication *front = NSWorkspace.sharedWorkspace.frontmostApplication;
+                  NSString *bundle = front.bundleIdentifier;
+                  NSArray *systemUI = @[@"com.apple.loginwindow", @"com.apple.SecurityAgent",
+                                        @"com.apple.ScreenSaver.Engine", @"com.apple.screensaver"];
+                  BOOL desktop = front.active && front.activationPolicy == NSApplicationActivationPolicyRegular &&
+                                 bundle.length && ![systemUI containsObject:bundle];
+                  fprintf(stderr, "item23 uid_matches=%d graphics=1 remote=0 sdk_on_console=%s "
+                                  "login_done=%s screen_lock=%s desktop_frontmost=%d\n",
+                          quartzUID == uid, onConsole, loginDone, locked, desktop);
+                  BOOL eligible = quartzUID == uid && !strcmp(onConsole, "true") &&
+                                  !strcmp(loginDone, "true") && desktop &&
+                                  (!strcmp(locked, "false") || !strcmp(locked, "missing"));
+                  CFRelease(session);
+                  if (!eligible) return 78;
+                  printf("%u %u\n", uid, asid);
+                  return 0;
+              }
+          }
+          OBJC
+          xcrun clang -fobjc-arc -Wall -Wextra -Werror "$scratch/console.m" \
+            -framework AppKit -framework CoreGraphics -framework Security -o "$scratch/console" \
+            > "$scratch/probe-build.log" 2>&1 || exit 1
+
+          probe() {
+            local caller uid asid launch_asid
+            caller=$("$scratch/console") || return $?
+            read -r uid asid <<< "$caller"
+            launch_asid=$(/bin/launchctl print "gui/$uid" 2> "$scratch/launchctl.stderr" | python3 -I -B -c '
+          import re, sys
+          text = sys.stdin.read()
+          contexts = re.findall(r"(?ms)^\s*security context\s*=\s*\{([^{}]*)\}", text)
+          ids = re.findall(r"(?m)^\s*asid\s*=\s*(0[xX][0-9a-fA-F]+|[0-9]+)\s*$", contexts[0]) if len(contexts) == 1 else []
+          if len(ids) != 1:
+              sys.exit(78)
+          print(int(ids[0], 16 if ids[0].lower().startswith("0x") else 10))
+          ') || return 78
+            [[ -n "$asid" && "$launch_asid" == "$asid" ]] || return 78
+            printf 'item23 caller_matches_gui_asid=1\n' >&2
+            printf '%s\n' "$caller"
+          }
+          stage=aqua-preflight
+          before=$(probe) || exit $?
+
+          stage=toolchain
+          rustup toolchain install 1.95.0 --profile minimal > "$scratch/rustup.log" 2>&1
+          stage=dependencies
+          CARGO_NET_OFFLINE=false cargo fetch --locked --target aarch64-apple-darwin > "$scratch/cargo-fetch.log" 2>&1
+
+          stage=aqua-recheck
+          [[ "$(/usr/sbin/sysctl -n kern.bootsessionuuid)" == "$boot" ]] || exit 78
+          after=$(probe) || exit $?
+          [[ "$before" == "$after" ]] || exit 78
+          read -r _ asid <<< "$after"
+
+          stage=strict-fixture
+          fixture_exit=0
+          python3 -I -B scripts/verify_status_overlay_focus.py --authorized-isolated-vm "$boot" "$asid" \
+            > "$scratch/fixture-path" 2> "$scratch/fixture-stderr" || fixture_exit=$?
+          printf 'item23 strict_fixture_exit=%s\n' "$fixture_exit"
+          python3 -I -B - "$fixture_exit" "$scratch/fixture-path" "$scratch/fixture-stderr" <<'PY'
+          import json
+          from pathlib import Path
+          import re
+          import sys
+
+          exit_code = int(sys.argv[1])
+          path_line = Path(sys.argv[2]).read_text().strip()
+          if not path_line:
+              wrapper_refused = Path(sys.argv[3]).read_text().strip() in {
+                  'status-overlay-focus: refused before build (macOS virtual guest required)',
+                  'status-overlay-focus: refused before build (invalid boot/session authorization)',
+              }
+              sys.exit(78 if exit_code == 78 and wrapper_refused else 1)
+          evidence = Path(path_line).resolve()
+          expected_parent = (Path.cwd() / '.voiceport' / 'evidence').resolve()
+          if evidence.parent != expected_parent or not evidence.name.startswith('status-overlay-focus.'):
+              sys.exit(1)
+          try:
+              report = json.loads((evidence / 'report.json').read_text())
+              checks = report['checks']
+              names = [Path(check['stdout']).name for check in checks]
+              bundle_removed = not list(evidence.glob('bundle.*'))
+              print('item23 report', json.dumps({
+                  'status': report['status'], 'passed': report['passed'],
+                  'exit_code': report.get('exit_code'), 'bundle_removed': bundle_removed,
+              }))
+              for name, check in zip(names, checks):
+                  fields = ('status', 'exit_code', 'passed', 'timed_out', 'interrupted',
+                            'cleanup_confirmed', 'left_descendants')
+                  print('item23 check', json.dumps({'log': name, **{field: check.get(field) for field in fields}}))
+              if names != ['build.stdout.log', 'focus.stdout.log']:
+                  sys.exit(1)
+              focus_lines = (evidence / 'focus.stdout.log').read_text(errors='replace').splitlines()
+              focus_errors = (evidence / 'focus.stderr.log').read_text(errors='replace').splitlines()
+          except (OSError, TypeError, ValueError, KeyError):
+              sys.exit(1)
+
+          prefix = 'status-overlay-focus: '
+          markers = tuple(prefix + line for line in (
+              'positive native baseline Focus { active: true, key_window_present: true, '
+              'key_window_is_target: true, target_is_key: true, ax_is_editor: true, '
+              'responder_is_editor: true, caret_is_expected: true }',
+              'Preparing reduce_motion=false preserved native focus',
+              'Recording reduce_motion=false preserved native focus',
+              'Recording reduce_motion=true preserved native focus',
+              'Transcribing reduce_motion=true preserved native focus',
+              'Delivering reduce_motion=true preserved native focus',
+              'hide preserved key window, AX identity, responder and caret',
+              'passed positive native key/AX baseline and all overlay transitions',
+          ))
+          diagnostics = {prefix + line for line in (
+              'isolated guest, active Aqua session and fixture bundle verified',
+              'app_event_loop=true target_can_become_key=true',
+              'app_event_loop=true target_can_become_key=false',
+              'fixture requested key window after becoming active',
+              'refused before AppKit (isolated VM authorization required)',
+              'refused before AppKit (macOS virtual guest was not detected)',
+              'refused before AppKit (guest boot UUID does not match the authorization)',
+              'refused before AppKit (invalid Aqua session ID)',
+              'refused before AppKit (the caller is outside the authorized active Aqua console session)',
+              'refused before AppKit (the executable is outside the dedicated synthetic fixture bundle)',
+              'AppKit rejected the regular activation policy',
+              'authorized Aqua session is no longer current',
+              'AppKit exited before the focus checks completed',
+              'no NSScreen / WindowServer fixture surface',
+          )}
+          unavailable = re.escape(prefix + 'native baseline unavailable after activation request: Focus { ') + ', '.join(
+              field + ': (?:true|false)' for field in (
+                  'active', 'key_window_present', 'key_window_is_target', 'target_is_key',
+                  'ax_is_editor', 'responder_is_editor', 'caret_is_expected',
+              )
+          ) + r' \}'
+          for line in focus_lines + focus_errors:
+              if line in markers or line in diagnostics or re.fullmatch(unavailable, line):
+                  print(line)
+
+          build, focus = checks
+          clean = bundle_removed and all(check['cleanup_confirmed'] is True and
+                                         check['left_descendants'] is False and
+                                         check['status'] == 'completed' for check in checks)
+          if clean and build['passed'] is True and build['exit_code'] == 0:
+              if (exit_code == report.get('exit_code') == focus['exit_code'] == 0 and
+                      report['status'] == 'completed' and report['passed'] is True and
+                      focus['passed'] is True and tuple(line for line in focus_lines if line in markers) == markers):
+                  sys.exit(0)
+              if (exit_code == report.get('exit_code') == focus['exit_code'] == 78 and
+                      report['status'] == 'check_failed' and report['passed'] is False and
+                      focus['passed'] is False):
+                  sys.exit(78)
+          sys.exit(1)
+          PY
