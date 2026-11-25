@@ -54,6 +54,14 @@ use plugin_dependencies::{
 mod proxy;
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
+#[path = "../src/status_overlay.rs"]
+mod status_overlay;
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "../src/app/status_overlay.rs"]
+mod status_overlay_panel;
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
 #[path = "../src/storage.rs"]
 mod storage;
 #[cfg(target_os = "macos")]
@@ -65,6 +73,26 @@ fn main() {
         .expect("stop_failure must execute on the actual OS main thread");
     println!("stop_failure: os_main_thread=true");
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args
+        .first()
+        .is_some_and(|flag| flag == "--status-overlay-focus")
+    {
+        let [_, consent, boot_id, session_id] = args.as_slice() else {
+            eprintln!(
+                "status-overlay-focus: refused before AppKit (isolated VM authorization required)"
+            );
+            std::process::exit(78);
+        };
+        if consent != "--authorized-isolated-vm" {
+            eprintln!(
+                "status-overlay-focus: refused before AppKit (isolated VM authorization required)"
+            );
+            std::process::exit(78);
+        }
+        objc2::rc::autoreleasepool(|_| {
+            status_overlay_panel::fixture::run(main_thread, boot_id, session_id)
+        });
+    }
     let cases: Vec<&str> = match args.as_slice() {
         [] => vec![
             "zero",
