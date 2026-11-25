@@ -96,6 +96,26 @@ fn startup_preserves_unowned_stale_sockets_and_skips_partial_publications() {
     assert_eq!(socket_identity(&first_slot).unwrap(), identity);
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn rollback_requires_ownership_and_a_refused_connection() {
+    let (_temp, path) = socket();
+    assert!(lock_for_owned_recovery(&path).is_err());
+    let owned = owned_socket_names(&path).next().unwrap();
+    let listener = UnixListener::bind(&owned).unwrap();
+    fs::set_permissions(&owned, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::hard_link(&owned, &path).unwrap();
+    assert!(lock_for_owned_recovery(&path).is_err());
+    assert!(path.exists());
+    drop(listener);
+    let recovery = lock_for_owned_recovery(&path).unwrap();
+    assert!(!path.exists());
+    assert!(!owned.exists());
+    assert!(Server::bind(&path).is_err());
+    drop(recovery);
+    assert!(Server::bind(&path).is_ok());
+}
+
 #[test]
 fn invalid_version_and_oversize_frames_never_reach_dispatch() {
     let (_temp, path) = socket();

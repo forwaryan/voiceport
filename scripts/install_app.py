@@ -103,13 +103,20 @@ def install(source, destination, *, quit_idle=False, allow_signing_change=False)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if not stat.S_ISDIR(destination.parent.lstat().st_mode):
         raise ValueError('expected real installation directory')
-    # Share the kernel lock with the in-app updater. A crash releases the lock.
+    # Hold both locks: some existing installers recognise only the marker,
+    # while the installed v0.3.13 in-app candidate also uses a directory flock.
     lock_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    marker = '.voiceport-install.lock'
+    marker_fd = None
     backup = None
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if os.path.lexists(destination.parent / '.voiceport-install.lock'):
-            raise ValueError('an older installer lock exists; verify its owner before recovery')
+        try:
+            marker_fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                0o600, dir_fd=lock_fd)
+        except FileExistsError as error:
+            raise ValueError('an installer marker exists; verify its owner before recovery') from error
+        os.write(marker_fd, f'{os.getpid()}\n'.encode())
         with tempfile.TemporaryDirectory(prefix='.voiceport-update-', dir=destination.parent) as temp:
             staged = pathlib.Path(temp) / 'VoicePort.app'
             shutil.copytree(source, staged)
@@ -132,7 +139,19 @@ def install(source, destination, *, quit_idle=False, allow_signing_change=False)
         return {'installed': str(destination), 'backup': str(backup) if backup else None,
                 'signing_change_allowed': allow_signing_change}
     finally:
-        os.close(lock_fd)
+        try:
+            if marker_fd is not None:
+                owned = os.fstat(marker_fd)
+                try:
+                    found = os.stat(marker, dir_fd=lock_fd, follow_symlinks=False)
+                    if (owned.st_dev, owned.st_ino) == (found.st_dev, found.st_ino):
+                        os.unlink(marker, dir_fd=lock_fd)
+                except FileNotFoundError:
+                    pass
+        finally:
+            if marker_fd is not None:
+                os.close(marker_fd)
+            os.close(lock_fd)
 
 
 def main():

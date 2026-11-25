@@ -176,6 +176,7 @@ struct Ivars {
     overlay_menu: OnceCell<Retained<NSMenuItem>>,
     update: RefCell<update_ui::UpdateUi>,
     update_item: OnceCell<Retained<NSMenuItem>>,
+    update_refresh_item: OnceCell<Retained<NSMenuItem>>,
     update_auto_item: OnceCell<Retained<NSMenuItem>>,
     update_commit: RefCell<Option<std::process::ChildStdin>>,
     status_appearance: Cell<Option<StatusAppearance>>,
@@ -471,6 +472,8 @@ define_class!(
         }
         #[unsafe(method(updateVoicePort:))]
         fn update_voiceport_action(&self, _sender: Option<&AnyObject>) { self.update_action(); }
+        #[unsafe(method(refreshVoicePortUpdate:))]
+        fn refresh_voiceport_action(&self, _sender: Option<&AnyObject>) { self.start_update_check(true); }
         #[unsafe(method(toggleAutoUpdate:))]
         fn toggle_auto_update_action(&self, _sender: Option<&AnyObject>) { self.toggle_auto_update(); }
         #[unsafe(method(tick:))]
@@ -604,6 +607,9 @@ impl Delegate {
         let update = self.menu_item("检查更新…", sel!(updateVoicePort:), "");
         menu.addItem(&update);
         let _ = self.ivars().update_item.set(update);
+        let refresh = self.menu_item("重新检查更新…", sel!(refreshVoicePortUpdate:), "");
+        menu.addItem(&refresh);
+        let _ = self.ivars().update_refresh_item.set(refresh);
         let automatic = self.menu_item("自动检查更新", sel!(toggleAutoUpdate:), "");
         menu.addItem(&automatic);
         let _ = self.ivars().update_auto_item.set(automatic);

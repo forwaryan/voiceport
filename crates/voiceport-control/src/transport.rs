@@ -405,6 +405,17 @@ fn reclaim_socket(path: &Path) -> Result<(), Response> {
 /// Keeps a new server from binding this socket while the returned file is held.
 /// The kernel releases the lock on process exit, even if no cleanup code runs.
 pub fn lock_quiet(path: &Path) -> Result<fs::File, Response> {
+    lock_startup(path, false)
+}
+
+/// An absent endpoint also may mean a requested launch has not reached IPC.
+/// Only an owned, refused endpoint establishes progress and subsequent exit.
+#[cfg(target_os = "macos")]
+pub fn lock_for_owned_recovery(path: &Path) -> Result<fs::File, Response> {
+    lock_startup(path, true)
+}
+
+fn lock_startup(path: &Path, require_owned_endpoint: bool) -> Result<fs::File, Response> {
     private_parent(path, true)?;
     let mut lock_path = path.as_os_str().to_owned();
     lock_path.push(".lock");
@@ -434,7 +445,7 @@ pub fn lock_quiet(path: &Path) -> Result<fs::File, Response> {
         return Err(failure("unsafe_socket"));
     }
     match fs::symlink_metadata(path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+        Err(error) if error.kind() == io::ErrorKind::NotFound && !require_owned_endpoint => (),
         Ok(_) => reclaim_socket(path)?,
         Err(_) => return Err(failure("unsafe_socket")),
     }

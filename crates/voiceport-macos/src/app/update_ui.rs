@@ -24,12 +24,17 @@ enum State {
     Checking {
         manual: bool,
         receiver: Receiver<app_update::Result<Check>>,
-        previous: Option<Update>,
+        previous: Option<Cached>,
     },
-    Offered(Update),
-    Downloading(Receiver<app_update::Result<Staged>>),
-    Ready(Staged),
+    Offered(Update, Option<&'static str>),
+    Downloading(Receiver<app_update::Result<Staged>>, Option<&'static str>),
+    Ready(Staged, Option<&'static str>),
     Notice(Notice),
+}
+
+enum Cached {
+    Offer(Update),
+    Download(Staged),
 }
 
 struct Notice {
@@ -59,9 +64,9 @@ impl Notice {
 }
 
 impl State {
-    fn checked(manual: bool, result: app_update::Result<Check>, previous: Option<Update>) -> Self {
+    fn checked(manual: bool, result: app_update::Result<Check>, previous: Option<Cached>) -> Self {
         match result {
-            Ok(Check::Available(candidate)) => Self::Offered(candidate),
+            Ok(Check::Available(candidate)) => Self::Offered(candidate, None),
             Ok(Check::Current {
                 latest,
                 local_newer,
@@ -85,22 +90,42 @@ impl State {
                 latest: Some(latest),
                 show_release: true,
             }),
-            Err(reason) if manual => Self::Notice(Notice::failure("无法检查更新", reason)),
-            Err(_) => previous.map_or(Self::Idle, Self::Offered),
+            Err(reason) => match previous {
+                Some(Cached::Offer(candidate)) => Self::Offered(candidate, Some(reason)),
+                Some(Cached::Download(staged)) => Self::Ready(staged, Some(reason)),
+                None if manual => Self::Notice(Notice::failure("无法检查更新", reason)),
+                None => Self::Idle,
+            },
             Ok(_) => Self::Idle,
         }
+    }
+
+    fn can_refresh(&self) -> bool {
+        matches!(self, Self::Offered(..) | Self::Ready(..))
     }
 
     fn menu_title(&self, current: &str) -> String {
         match self {
             Self::Idle => "检查更新…".into(),
             Self::Checking { .. } => format!("正在检查更新… · {}", versions(current, None)),
-            Self::Offered(candidate) => format!(
-                "发现新版本… · {}",
-                versions(current, Some(&candidate.version))
-            ),
-            Self::Downloading(_) => "正在下载并校验更新…".into(),
-            Self::Ready(candidate) => format!("安装 v{} 并重启…", candidate.version),
+            Self::Offered(candidate, failure) => match failure {
+                None => format!(
+                    "发现新版本… · {}",
+                    versions(current, Some(&candidate.version))
+                ),
+                Some(_) => format!(
+                    "刷新失败… · {}",
+                    cached_versions(current, &candidate.version)
+                ),
+            },
+            Self::Downloading(..) => "正在下载并校验更新…".into(),
+            Self::Ready(candidate, failure) => match failure {
+                None => format!("安装 v{} 并重启…", candidate.version),
+                Some(_) => format!(
+                    "已校验 · 刷新失败… · {}",
+                    cached_versions(current, &candidate.version)
+                ),
+            },
             Self::Notice(notice) => format!(
                 "{}… · {}",
                 notice.title,
@@ -115,6 +140,10 @@ fn versions(current: &str, latest: Option<&str>) -> String {
         Some(latest) => format!("当前 {current} · 最新 {latest}"),
         None => format!("当前 {current}"),
     }
+}
+
+fn cached_versions(current: &str, known: &str) -> String {
+    format!("当前 {current} · 上次已知 {known}")
 }
 
 fn current_version() -> String {
@@ -175,8 +204,11 @@ impl Delegate {
             item.setToolTip(detail.as_deref());
             item.setEnabled(!matches!(
                 update.state,
-                State::Checking { .. } | State::Downloading(_)
+                State::Checking { .. } | State::Downloading(..)
             ));
+        }
+        if let Some(item) = self.ivars().update_refresh_item.get() {
+            item.setHidden(!update.state.can_refresh());
         }
         if let Some(item) = self.ivars().update_auto_item.get() {
             item.setState(if update.automatic {
@@ -189,7 +221,7 @@ impl Delegate {
 
     pub(super) fn toggle_auto_update(&self) {
         let (installed, home) = location();
-        if !app_update::installed_path(&installed, &home) {
+        if !app_update::checkable_installation(&installed, &home) {
             self.update_message(
                 "当前副本不能自动更新",
                 "请使用应用程序目录中的 VoicePort.app。",
@@ -206,11 +238,17 @@ impl Delegate {
         self.update_menu();
     }
 
-    fn start_update_check(&self, manual: bool) {
+    pub(super) fn start_update_check(&self, manual: bool) {
         let (installed, home) = location();
         let mut update = self.ivars().update.borrow_mut();
+        if matches!(
+            update.state,
+            State::Checking { .. } | State::Downloading(..)
+        ) {
+            return;
+        }
         update.next = Some(Instant::now() + CHECK_INTERVAL);
-        if !app_update::installed_path(&installed, &home) {
+        if !app_update::checkable_installation(&installed, &home) {
             drop(update);
             if manual {
                 let notice =
@@ -233,7 +271,8 @@ impl Delegate {
             .is_ok()
         {
             let previous = match std::mem::take(&mut update.state) {
-                State::Offered(candidate) => Some(candidate),
+                State::Offered(candidate, _) => Some(Cached::Offer(candidate)),
+                State::Ready(staged, _) => Some(Cached::Download(staged)),
                 _ => None,
             };
             update.state = State::Checking {
@@ -252,16 +291,31 @@ impl Delegate {
     }
 
     fn offer_update(&self) {
-        let version = match &self.ivars().update.borrow().state {
-            State::Offered(candidate) => candidate.version.clone(),
+        let (version, failure) = match &self.ivars().update.borrow().state {
+            State::Offered(candidate, failure) => (candidate.version.clone(), *failure),
             _ => return,
         };
-        let versions = versions(&current_version(), Some(&version));
+        let current = current_version();
+        let (title, detail) = match failure {
+            Some(reason) => (
+                "无法刷新 VoicePort 版本",
+                format!("{}\n{reason}", cached_versions(&current, &version)),
+            ),
+            None => ("发现 VoicePort 新版本", versions(&current, Some(&version))),
+        };
+        if !app_update::can_install_in_app(&location().0) {
+            self.update_message(
+                title,
+                &format!("{detail}\n\n{}", app_update::MANUAL_ONLY),
+                true,
+            );
+            return;
+        }
         match alert(
             self.mtm(),
-            "发现 VoicePort 新版本",
+            title,
             &format!(
-                "{versions}\n\n下载并校验时可以继续使用 VoicePort。下载完成后，应用会等你确认安装并重启。"
+                "{detail}\n\n下载并校验时可以继续使用 VoicePort。下载完成后，应用会等你确认安装并重启。"
             ),
             &["下载并校验", "查看发布页", "稍后"],
         ) {
@@ -274,8 +328,10 @@ impl Delegate {
     fn download_update(&self, version: &str) {
         let (installed, home) = location();
         let mut update = self.ivars().update.borrow_mut();
-        let candidate = match std::mem::take(&mut update.state) {
-            State::Offered(candidate) if candidate.version == version => candidate,
+        let (candidate, failure) = match std::mem::take(&mut update.state) {
+            State::Offered(candidate, failure) if candidate.version == version => {
+                (candidate, failure)
+            }
             state => {
                 update.state = state;
                 drop(update);
@@ -291,7 +347,7 @@ impl Delegate {
             })
             .is_ok();
         update.state = if started {
-            State::Downloading(receiver)
+            State::Downloading(receiver, failure)
         } else {
             State::Notice(Notice::failure(
                 "无法下载更新",
@@ -316,18 +372,27 @@ impl Delegate {
     }
 
     fn install_update(&self) {
-        let version = match &self.ivars().update.borrow().state {
-            State::Ready(candidate) => candidate.version.clone(),
+        let (version, failure) = match &self.ivars().update.borrow().state {
+            State::Ready(candidate, failure) => (candidate.version.clone(), *failure),
             _ => return,
         };
         if !self.may_install_update() {
             self.update_message("目前不能重启", "请等听写和其他任务结束；先保存需要保留的转写文字，再清除结果或处理失败的录音。更新包仍已准备好。", false);
             return;
         }
+        let mut detail =
+            "VoicePort 将正常退出并重新打开。安装不修改模型、设置或转写数据；旧应用包会保留。"
+                .to_owned();
+        if let Some(reason) = failure {
+            detail = format!(
+                "{}\n刷新失败：{reason}\n\n{detail}",
+                cached_versions(&current_version(), &version)
+            );
+        }
         if alert(
             self.mtm(),
             &format!("安装 VoicePort v{version}？"),
-            "VoicePort 将正常退出并重新打开。安装不修改模型、设置或转写数据；旧应用包会保留。",
+            &detail,
             &["安装并重启", "稍后"],
         ) != NSAlertFirstButtonReturn
         {
@@ -344,7 +409,7 @@ impl Delegate {
             return;
         }
         let (installed, _) = location();
-        let State::Ready(staged) = std::mem::take(&mut self.ivars().update.borrow_mut().state)
+        let State::Ready(staged, _) = std::mem::take(&mut self.ivars().update.borrow_mut().state)
         else {
             return;
         };
@@ -366,11 +431,11 @@ impl Delegate {
                 drop(update);
                 self.start_update_check(true);
             }
-            State::Offered(_) => {
+            State::Offered(..) => {
                 drop(update);
                 self.offer_update();
             }
-            State::Ready(_) => {
+            State::Ready(..) => {
                 drop(update);
                 self.install_update();
             }
@@ -396,7 +461,7 @@ impl Delegate {
         }
         enum Completion {
             Check(bool, app_update::Result<Check>),
-            Stage(app_update::Result<Staged>),
+            Stage(app_update::Result<Staged>, Option<&'static str>),
         }
         let mut update = self.ivars().update.borrow_mut();
         if !update.initialized {
@@ -418,12 +483,14 @@ impl Delegate {
                 }
                 Err(TryRecvError::Empty) => None,
             },
-            State::Downloading(receiver) => match receiver.try_recv() {
-                Ok(result) => Some(Completion::Stage(result)),
-                Err(TryRecvError::Disconnected) => Some(Completion::Stage(Err("下载更新已中断。"))),
+            State::Downloading(receiver, failure) => match receiver.try_recv() {
+                Ok(result) => Some(Completion::Stage(result, *failure)),
+                Err(TryRecvError::Disconnected) => {
+                    Some(Completion::Stage(Err("下载更新已中断。"), *failure))
+                }
                 Err(TryRecvError::Empty) => None,
             },
-            State::Idle | State::Offered(_) | State::Notice(..)
+            State::Idle | State::Offered(..) | State::Notice(..)
                 if update.automatic && update.next.is_some_and(|next| next <= Instant::now()) =>
             {
                 drop(update);
@@ -443,8 +510,10 @@ impl Delegate {
         // and open dialogs only from explicit menu actions, outside this callback.
         update.state = match finished {
             Completion::Check(manual, result) => State::checked(manual, result, previous),
-            Completion::Stage(Ok(staged)) => State::Ready(staged),
-            Completion::Stage(Err(error)) => State::Notice(Notice::failure("无法准备更新", error)),
+            Completion::Stage(Ok(staged), failure) => State::Ready(staged, failure),
+            Completion::Stage(Err(error), _) => {
+                State::Notice(Notice::failure("无法准备更新", error))
+            }
         };
         drop(update);
         self.update_menu();
@@ -474,6 +543,43 @@ mod tests {
             State::checked(false, Err("无法连接 GitHub。"), None),
             State::Idle
         ));
+    }
+
+    #[test]
+    fn ready_download_remains_refreshable_but_is_not_latest_after_failure() {
+        let ready = Staged::fixture("0.3.14");
+        assert!(State::Ready(Staged::fixture("0.3.14"), None).can_refresh());
+        let state = State::checked(
+            true,
+            Err("无法连接 GitHub。"),
+            Some(Cached::Download(ready)),
+        );
+        assert!(state.can_refresh());
+        assert_eq!(
+            state.menu_title("0.3.13"),
+            "已校验 · 刷新失败… · 当前 0.3.13 · 上次已知 0.3.14"
+        );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn offered_update_remains_refreshable_but_is_not_latest_after_failure() {
+        for manual in [true, false] {
+            let candidate = app_update::fixture_release_check("0.3.13");
+            let State::Offered(update, None) = State::checked(manual, candidate, None) else {
+                panic!("expected offer")
+            };
+            let state = State::checked(
+                manual,
+                Err("无法连接 GitHub。"),
+                Some(Cached::Offer(update)),
+            );
+            assert!(state.can_refresh());
+            assert_eq!(
+                state.menu_title("0.3.13"),
+                "刷新失败… · 当前 0.3.13 · 上次已知 0.3.14"
+            );
+        }
     }
 
     #[cfg(target_arch = "aarch64")]

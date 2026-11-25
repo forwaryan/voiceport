@@ -11,7 +11,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub(super) use install::{QUIT_ACK, Staged, apply, installed_path};
+pub(super) use install::{
+    MANUAL_ONLY, QUIT_ACK, Staged, apply, can_install_in_app, checkable_installation,
+};
 
 pub(super) const RELEASES_PAGE: &str = "https://github.com/forwaryan/voiceport/releases";
 const MAX_ZIP: u64 = 64 * 1024 * 1024;
@@ -225,10 +227,10 @@ fn verify_download(bytes: &[u8], update: &Update) -> Result<()> {
 }
 
 pub(super) fn stage(home: &Path, destination: &Path, update: Update) -> Result<Staged> {
-    install::check_running_installation(destination)?;
+    let target = install::PersonalInstall::current(destination)?;
     let bytes = github::download(home, &update)?;
     verify_download(&bytes, &update)?;
-    install::stage(destination, &update.version, &bytes)
+    install::stage(&target, &update.version, &bytes)
 }
 
 #[cfg(test)]

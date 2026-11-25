@@ -91,25 +91,200 @@ fn rejects_duplicate_zip_entries_before_extraction() {
     assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
 }
 
+fn fixture_target(home: &Path) -> PersonalInstall {
+    let installed = home.join("Applications").join(APP);
+    fs::create_dir_all(&installed).unwrap();
+    PersonalInstall::new(
+        &installed,
+        home,
+        unsafe { libc::geteuid() },
+        &transport::default_path(),
+    )
+    .unwrap()
+}
+
 #[test]
 fn swap_keeps_the_previous_bundle_and_does_not_touch_adjacent_data() {
-    let temp = tempfile::tempdir().unwrap();
-    let installed = temp.path().join(APP);
-    let old_stage = temp.path().join(".voiceport-update-fixture");
-    let staged = old_stage.join(APP);
+    let temp = tempfile::tempdir_in("/private/tmp").unwrap();
+    let target = fixture_target(temp.path());
+    let installed = &target.app;
+    let old_stage = Builder::new()
+        .prefix(STAGE)
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir_in(target.parent())
+        .unwrap();
+    let staged = old_stage.path().join(APP);
     let data = temp.path().join("VoicePort data");
-    fs::create_dir(&installed).unwrap();
-    fs::create_dir_all(&staged).unwrap();
+    fs::create_dir(&staged).unwrap();
     fs::create_dir(&data).unwrap();
     fs::write(installed.join("old"), b"keep for rollback").unwrap();
     fs::write(staged.join("new"), b"update").unwrap();
     fs::write(data.join("model"), b"untouched").unwrap();
-    swap(&staged, &installed).unwrap();
+    let previous = target.verify().unwrap();
+    let next = BundleId::read(&staged).unwrap();
+    let lock = lock_installation(&target).unwrap();
+    verified_swap(&target, &lock.directory, old_stage.path(), &previous, &next).unwrap();
     assert_eq!(fs::read(installed.join("new")).unwrap(), b"update");
     assert_eq!(fs::read(staged.join("old")).unwrap(), b"keep for rollback");
     assert_eq!(fs::read(data.join("model")).unwrap(), b"untouched");
-    assert!(swap(&staged.join("absent"), &installed).is_err());
+    assert!(verified_swap(&target, &lock.directory, old_stage.path(), &previous, &next).is_err());
     assert_eq!(fs::read(installed.join("new")).unwrap(), b"update");
+    verified_swap(&target, &lock.directory, old_stage.path(), &next, &previous).unwrap();
+    assert_eq!(
+        fs::read(installed.join("old")).unwrap(),
+        b"keep for rollback"
+    );
+}
+
+#[test]
+fn rejects_shared_wrong_owner_test_socket_and_linked_install() {
+    let temp = tempfile::tempdir_in("/private/tmp").unwrap();
+    let target = fixture_target(temp.path());
+    let default = transport::default_path();
+    let shared = Path::new("/Applications/VoicePort.app");
+    assert!(PersonalInstall::new(shared, temp.path(), target.uid, &default).is_err());
+    assert!(PersonalInstall::new(shared, Path::new("/"), target.uid, &default).is_err());
+    assert_eq!(
+        Staged::fixture("0.3.15").handoff(shared).err(),
+        Some(MANUAL_ONLY)
+    );
+    let args = ["2", shared.to_str().unwrap(), "/unused", "0.3.15", "0", "0"].map(str::to_owned);
+    assert_eq!(apply(&args), Err(MANUAL_ONLY));
+    assert!(checkable_installation(&target.app, temp.path()));
+    assert!(
+        PersonalInstall::new(
+            &target.app,
+            temp.path(),
+            target.uid.wrapping_add(1),
+            &default
+        )
+        .is_err()
+    );
+    assert!(
+        PersonalInstall::new(
+            &target.app,
+            temp.path(),
+            target.uid,
+            &temp.path().join("fixture.sock")
+        )
+        .is_err()
+    );
+    let stage = Builder::new()
+        .prefix(STAGE)
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir_in(target.parent())
+        .unwrap();
+    let candidate = stage.path().join(APP);
+    fs::create_dir(&candidate).unwrap();
+    let original_id = target.verify().unwrap();
+    let staged_id = BundleId::read(&candidate).unwrap();
+    let lock = lock_installation(&target).unwrap();
+    let original = target.parent().join("old-app");
+    fs::rename(&target.app, &original).unwrap();
+    std::os::unix::fs::symlink(&original, &target.app).unwrap();
+    assert!(
+        verified_swap(
+            &target,
+            &lock.directory,
+            stage.path(),
+            &original_id,
+            &staged_id
+        )
+        .is_err()
+    );
+    assert!(
+        reopen_verified(&target, &original_id, |_| panic!(
+            "aliased path must not launch"
+        ))
+        .is_err()
+    );
+    assert_eq!(BundleId::read(&original).unwrap(), original_id);
+    assert_eq!(BundleId::read(&candidate).unwrap(), staged_id);
+    assert!(fs::symlink_metadata(&target.app).unwrap().is_symlink());
+}
+
+#[test]
+fn new_and_marker_only_installers_exclude_each_other() {
+    let temp = tempfile::tempdir_in("/private/tmp").unwrap();
+    let target = fixture_target(temp.path());
+    let marker_path = target.parent().join(".voiceport-install.lock");
+    let old = || {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&marker_path)
+    };
+    let marker = old().unwrap();
+    assert!(lock_installation(&target).is_err());
+    assert_eq!(
+        BundleId::from_metadata(&marker.metadata().unwrap()),
+        BundleId::from_metadata(&fs::metadata(&marker_path).unwrap())
+    );
+    drop(marker);
+    fs::remove_file(&marker_path).unwrap();
+    let lock = lock_installation(&target).unwrap();
+    assert_eq!(old().unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+    assert!(open_directory(target.parent()).unwrap().try_lock().is_err());
+    drop(lock);
+    assert!(old().is_ok());
+}
+
+#[test]
+fn unknown_launch_is_not_retried_or_rolled_back() {
+    let no_recovery =
+        || panic!("must not recover without a successful launch receipt and failed readback");
+    assert_eq!(
+        finish_launch(Err("uncertain open"), false, no_recovery),
+        Err(MANUAL_RECOVERY)
+    );
+    assert_eq!(
+        finish_launch(Err("uncertain open"), true, no_recovery),
+        Ok(())
+    );
+    assert_eq!(
+        finish_launch(Ok(()), false, || Err("recovery checked")),
+        Err("recovery checked")
+    );
+}
+
+#[test]
+fn unknown_legacy_socket_blocks_rollback_without_swapping_or_removing_it() {
+    use std::os::unix::net::UnixListener;
+    let temp = tempfile::tempdir_in("/private/tmp").unwrap();
+    let target = fixture_target(temp.path());
+    let stage = Builder::new()
+        .prefix(STAGE)
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir_in(target.parent())
+        .unwrap();
+    let backup = stage.path().join(APP);
+    fs::create_dir(&backup).unwrap();
+    let original = BundleId::read(&backup).unwrap();
+    let replacement = target.verify().unwrap();
+    let parent = temp.path().join("ipc");
+    fs::DirBuilder::new().mode(0o700).create(&parent).unwrap();
+    let socket = parent.join("control.sock");
+    drop(UnixListener::bind(&socket).unwrap());
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+    let identity = BundleId::from_metadata(&fs::symlink_metadata(&socket).unwrap());
+    let lock = lock_installation(&target).unwrap();
+    assert_eq!(
+        restore_previous(
+            &target,
+            &lock.directory,
+            stage.path(),
+            &socket,
+            &original,
+            &replacement
+        ),
+        Err(MANUAL_RECOVERY)
+    );
+    assert_eq!(target.verify().unwrap(), replacement);
+    assert_eq!(BundleId::read(&backup).unwrap(), original);
+    assert_eq!(
+        BundleId::from_metadata(&fs::symlink_metadata(&socket).unwrap()),
+        identity
+    );
 }
 
 #[test]
@@ -129,26 +304,31 @@ fn shutdown_requires_the_acknowledgment_byte() {
 #[test]
 fn installation_rejects_an_occupied_control_socket() {
     let temp = tempfile::tempdir_in("/private/tmp").unwrap();
-    let installed = temp.path().join(APP);
+    let target = fixture_target(temp.path());
     let candidate = temp.path().join("candidate");
     let socket = temp.path().join("ipc/control.sock");
-    fs::create_dir(&installed).unwrap();
-    fs::create_dir(&candidate).unwrap();
-    let original = BundleId::read(&installed).unwrap();
+    let original = target.verify().unwrap();
+    let lock = lock_installation(&target).unwrap();
     let _running_app = transport::Server::bind(&socket).unwrap();
     assert_eq!(
-        install_new(&installed, &candidate, &socket, "0.3.14", &original),
+        install_new(
+            &target,
+            &lock.directory,
+            &candidate,
+            &socket,
+            "0.3.14",
+            &original
+        ),
         Err("VoicePort 已经在运行或控制连接不可用；未替换应用。")
     );
-    assert!(BundleId::read(&installed).unwrap() == original);
+    assert_eq!(target.verify().unwrap(), original);
     assert!(socket.exists());
-    assert!(!temp.path().join(".voiceport-install.lock").exists());
 }
 
 #[test]
-fn crash_releases_install_and_startup_locks_without_leaving_paths() {
+fn older_directory_lock_blocks_install_until_owner_exits() {
     let temp = tempfile::tempdir_in("/private/tmp").unwrap();
-    let installed = temp.path().join(APP);
+    let target = fixture_target(temp.path());
     let socket_parent = temp.path().join("ipc");
     let socket = socket_parent.join("control.sock");
     fs::DirBuilder::new()
@@ -161,7 +341,7 @@ fn crash_releases_install_and_startup_locks_without_leaving_paths() {
             "-c",
             "import fcntl, os, sys\nfds = [os.open(sys.argv[1], os.O_RDONLY), os.open(sys.argv[2], os.O_RDWR | os.O_CREAT, 0o600)]\nfor fd in fds: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\nprint('ready', flush=True)\nsys.stdin.read(1)",
         ])
-        .arg(temp.path())
+        .arg(target.parent())
         .arg(socket_parent.join("control.sock.lock"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -170,14 +350,14 @@ fn crash_releases_install_and_startup_locks_without_leaving_paths() {
     let mut ready = [0; 6];
     child.stdout.take().unwrap().read_exact(&mut ready).unwrap();
     assert_eq!(&ready, b"ready\n");
-    assert!(lock_installation(&installed).is_err());
+    assert!(lock_installation(&target).is_err());
     assert!(transport::Server::bind(&socket).is_err());
     assert!(!socket.exists());
     child.kill().unwrap();
     child.wait().unwrap();
-    let _installation = lock_installation(&installed).unwrap();
+    let _installation = lock_installation(&target).unwrap();
     let _server = transport::Server::bind(&socket).unwrap();
-    assert!(!temp.path().join(".voiceport-install.lock").exists());
+    assert!(target.parent().join(".voiceport-install.lock").exists());
 }
 
 #[test]
@@ -191,44 +371,78 @@ fn signed_update_stages_privately_and_replaces_only_the_current_bundle() {
         std::env::var_os("VOICEPORT_TEST_RELEASE_ZIP").expect("signed previous ZIP fixture");
     let new_zip = std::env::var_os("VOICEPORT_TEST_UPDATE_ZIP").expect("signed new ZIP fixture");
     let temp = tempfile::tempdir_in("/private/tmp").unwrap();
-    let installed = temp.path().join(APP);
+    let target = fixture_target(temp.path());
+    let installed = &target.app;
     let socket = temp.path().join("ipc/control.sock");
     let previous = fs::read(old_zip).unwrap();
     let candidate = fs::read(new_zip).unwrap();
-    extract(&previous, temp.path()).unwrap();
+    extract(&previous, target.parent()).unwrap();
     let current = env!("CARGO_PKG_VERSION");
     let mut next = Version::parse(current).unwrap().0;
     next[2] += 1;
     let next = format!("{}.{}.{}", next[0], next[1], next[2]);
     assert_eq!(
-        stage(&installed, current, &previous).err(),
+        stage(&target, current, &previous).err(),
         Some("更新包的版本或构建号不匹配，或试图降级。")
     );
-    let staged = stage(&installed, &next, &candidate).unwrap();
+    let staged = stage(&target, &next, &candidate).unwrap();
     assert_eq!(
         fs::metadata(staged.directory.path()).unwrap().mode() & 0o777,
         0o700
     );
     let replacement = staged.directory.path().join(APP);
-    let ad_hoc = tempfile::tempdir_in(temp.path()).unwrap();
+    let ad_hoc = Builder::new()
+        .prefix(STAGE)
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir_in(target.parent())
+        .unwrap();
     extract(&candidate, ad_hoc.path()).unwrap();
     let wrong_signer = ad_hoc.path().join(APP);
     codesign(&["--force", "--sign", "-"], &wrong_signer).unwrap();
     assert!(inspect(&wrong_signer).is_ok());
-    assert!(install_new(&installed, &wrong_signer, &socket, &next, &staged.original).is_err());
-    assert!(BundleId::read(&installed).unwrap() == staged.original);
+    let lock = lock_installation(&target).unwrap();
+    assert!(
+        install_new(
+            &target,
+            &lock.directory,
+            ad_hoc.path(),
+            &socket,
+            &next,
+            &staged.original
+        )
+        .is_err()
+    );
+    assert!(BundleId::read(installed).unwrap() == staged.original);
     let data = temp.path().join("user-data");
     fs::write(&data, b"retained fixture data").unwrap();
-    let new = install_new(&installed, &replacement, &socket, &next, &staged.original).unwrap();
-    assert_eq!(inspect(&installed).unwrap().version, next);
+    let new = install_new(
+        &target,
+        &lock.directory,
+        staged.directory.path(),
+        &socket,
+        &next,
+        &staged.original,
+    )
+    .unwrap();
+    assert_eq!(inspect(installed).unwrap().version, next);
     assert_eq!(inspect(&replacement).unwrap().version, current);
     assert!(BundleId::read(&replacement).unwrap() == staged.original);
     assert_eq!(fs::read(data).unwrap(), b"retained fixture data");
     assert!(!socket.exists());
-    assert!(!temp.path().join(".voiceport-install.lock").exists());
+    assert!(target.parent().join(".voiceport-install.lock").exists());
     let server = transport::Server::bind(&socket).unwrap();
-    assert!(restore_previous(&installed, &replacement, &socket, &staged.original, &new).is_err());
-    assert_eq!(BundleId::read(&installed).unwrap(), new);
+    assert!(
+        restore_previous(
+            &target,
+            &lock.directory,
+            staged.directory.path(),
+            &socket,
+            &staged.original,
+            &new
+        )
+        .is_err()
+    );
+    assert_eq!(BundleId::read(installed).unwrap(), new);
     drop(server);
 
     // Exit after binding but before responding to IPC, skipping Rust cleanup.
@@ -243,8 +457,16 @@ fn signed_update_stages_privately_and_replaces_only_the_current_bundle() {
         .unwrap();
     assert_eq!(crash.code(), Some(86));
     assert!(socket.exists());
-    restore_previous(&installed, &replacement, &socket, &staged.original, &new).unwrap();
-    assert_eq!(inspect(&installed).unwrap().version, current);
+    restore_previous(
+        &target,
+        &lock.directory,
+        staged.directory.path(),
+        &socket,
+        &staged.original,
+        &new,
+    )
+    .unwrap();
+    assert_eq!(inspect(installed).unwrap().version, current);
     assert_eq!(inspect(&replacement).unwrap().version, next);
     assert_eq!(
         fs::read(temp.path().join("user-data")).unwrap(),
