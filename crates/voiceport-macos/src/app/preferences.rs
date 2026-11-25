@@ -1,7 +1,7 @@
 //! The existing settings stay in one native scroll view, grouped by task.
 use super::*;
 
-const DOCUMENT_HEIGHT: f64 = 654.;
+const DOCUMENT_HEIGHT: f64 = 702.;
 const HEADER_HEIGHT: f64 = 62.;
 
 pub(super) struct InputSlots {
@@ -63,7 +63,7 @@ impl Delegate {
         let dictation = self.section(
             &doc,
             426.,
-            228.,
+            276.,
             "听写与快捷键",
             ns_string!("voiceport.settings.dictation"),
         );
@@ -104,6 +104,25 @@ impl Delegate {
     }
 
     fn build_dictation_preferences(&self, section: &NSView) {
+        self.label(section, "保留最近听写", rect(16., 211., 320., 20.), 13.);
+        self.caption(
+            section,
+            "仅在本次运行中保留，关闭时清空。",
+            rect(16., 190., 355., 17.),
+        );
+        let history =
+            NSSwitch::initWithFrame(NSSwitch::alloc(self.mtm()), rect(488., 200., 42., 28.));
+        unsafe {
+            history.setTarget(Some(self));
+            history.setAction(Some(sel!(setRecentDictationsPreference:)));
+        }
+        history.setAccessibilityLabel(Some(ns_string!("保留最近听写")));
+        history.setAccessibilityHelp(Some(ns_string!("仅在本次运行中保留，关闭时清空")));
+        history
+            .setAccessibilityIdentifier(Some(ns_string!("voiceport.settings.recent-dictations")));
+        section.addSubview(&history);
+        let _ = self.ivars().recent_dictations_switch.set(history);
+
         self.label(section, "快捷键模式", rect(16., 161., 300., 20.), 13.);
         self.caption(
             section,

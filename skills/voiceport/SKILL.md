@@ -1,6 +1,6 @@
 ---
 name: voiceport
-description: Controls VoicePort through its CLI. Use when inspecting status, configuring sources or plugins, diagnosing QQ installation or recognized text not reaching a target App, testing connectivity and latency, or explicitly recording/retrying dictation. Supports 来源配置、连通性测试、耗时诊断、听写控制 and 已识别但未输入排查.
+description: Operates the installed VoicePort CLI for dictation, file transcription and export, recent dictation, source and plugin setup, microphone and models, preferences, dictionary and scenes, and input delivery diagnostics. Use for 听写、来源配置、文件转写、最近听写 or 已识别但未输入.
 ---
 
 # VoicePort
@@ -14,7 +14,12 @@ Choose the command for the question:
 | Request | Command | What it proves |
 | --- | --- | --- |
 | Learn this installed version's commands | `--help`, `sources --help`, `skills get cli` | Offline, version-matched instructions |
-| Identify the running App and its configuration | `status`, `sources list`, `plugins show ID` | Instance/configuration metadata; no transcript or credential read |
+| Identify the running App and its configuration | `status`, `app capabilities`, `sources list`, `sources destination ID` | Instance, supported groups, and sanitized audio destination |
+| Inspect App updates | `app update status`, `app update check` | Read the current snapshot first. Request a release lookup only when asked and use the native menu for downloads and installation. |
+| Inspect hardware and settings | `microphone list/status`, `models list`, `preferences get` | Selected and available devices/models, language, shortcut registration and delivery preferences |
+| Configure dictionary or scenes | `dictionary show/set/preview`, `scenes list/add/remove/apply` | Saved local rules and named settings, with native destination confirmation to apply a scene |
+| Examine recent GUI dictation | `history list`, then explicitly requested `history show ID` | Bounded, process-local metadata and separately requested text |
+| Transcribe and export a chosen audio file | `file sources/plan/start/status/result/export` | Reviewable source/destination, operation ID, explicit text and new export file |
 | Check a QQ installation | `qq doctor [--qq ABSOLUTE_APP_PATH]` | Read-only installation report; inspect `data.blockers`, not just exit 0; no bridge or transcription proof |
 | Test source connectivity and elapsed time | `sources probe ID [--language CODE|auto]` | Proposal only until `--accept-upload`; tests synthetic silence, not recognition quality |
 | Record and retrieve requested speech | `dictation start/stop/result` | Explicit microphone operation; no automatic delivery |
@@ -27,7 +32,7 @@ The portable `doctor` only checks ChatGPT auth-file metadata. `transcribe AUDIO`
 
 Start with `voiceport --version`, `voiceport --help`, and `voiceport skills get cli`. If the CLI is not on PATH, use the chosen App's exact `Contents/MacOS/voiceport` path. Do not install a global binary or edit shell startup files just to locate it. `voiceport-rs` is a compatible entry.
 
-For App commands, use `voiceport --json [--socket ABSOLUTE_SOCKET] status`. Check `data.bundle_path`, `pid`, `source`, `state`, `busy`, `discovering`, and `permissions`. Reuse the same explicit socket throughout an isolated workflow. Commands never launch the App. New probe actions need a matching App; an older App may return `invalid_request` even if the CLI help lists them. Do not switch instances or silently fall back to the old test command.
+For App commands, use `voiceport --json [--socket ABSOLUTE_SOCKET] status` and `app capabilities`. Check `data.bundle_path`, `pid`, `source`, `state`, `busy`, `discovering`, and `permissions`. The socket belongs to the current effective user. Reuse that socket and PID throughout the workflow. Start the intended App only when authorized. An older App may return `invalid_request` on a newer command. Keep the intended instance and consult its installed help.
 
 ## Step 2: Inspect and configure only the requested source
 
@@ -53,7 +58,13 @@ Use `dictation start --source ID [--language CODE|auto]`, keep its operation ID,
 
 For a failed retained recording, inspect result data for `state:"failed"`, current `retry_available:true` and `delivery:"none"`. Only an explicit user request to re-transcribe authorizes `dictation retry OPERATION`, which may upload the recording again. It requires the matching CLI ID and Controller generation, no busy/pending cleanup, and keeps the original pinned source/language and delivery none. GUI operations, superseded generations and legacy synthetic tests cannot be retried this way. Acceptance returns a new operation ID; use it for result/cancel, since the old ID then returns `not_found`. Availability can change after later GUI work; an earlier report is not a retry guarantee. Never retry automatically after failure or a lost reply.
 
-## Step 5: Diagnose recognized text not reaching a target
+## Step 5: Handle existing audio or results
+
+For a selected local audio file, use `file sources` and `file plan` to identify the actual source and destination. Submit `file start OPERATION --confirm` only for the reviewed file, language and destination. If the reply is lost, `file status` accepts the known proposal ID. Retrieve text or export it only when requested. Use `history list` for metadata and `history show ID` only when the user asks to read the retained text. Clearing history and disabling collection both require explicit confirmation.
+
+For native permissions or a physical shortcut, open `app open first-run` or `app open shortcut` and let the user complete the indicated `next` action. Model changes use a proposal and `models start OPERATION --confirm`; follow with `models status` and verify the installation through `models details`. `models open` presents the native manager. A local microphone level test requires an existing grant and explicit acceptance with `microphone test-start --confirm`.
+
+## Step 6: Diagnose recognized text not reaching a target
 
 Read `status` on the same socket and check the bundle path, PID, `permissions` and `input.gui_receipt`. Correlate the GUI session and generation before reporting whether transcription finished or delivery reached the target. Older App builds may provide only legacy fields that carry over between rounds. Use `app show --settings` to expose the intended instance's settings when requested. CLI dictation uses `delivery:"none"`. For GUI failures, check the recognition source and the receiving app independently. `qq doctor` checks installation only. Do not read target text or transcripts for routine diagnostics, change permissions, reprobe sources or reupload audio automatically. [Delivery status](references/cli.md#delivery-status) · [Troubleshooting workflow](references/workflows.md#recognized-text-not-delivered)
 

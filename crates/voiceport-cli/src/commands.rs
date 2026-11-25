@@ -2,6 +2,17 @@
 use serde_json::json;
 use std::{collections::BTreeMap, ffi::OsString, path::PathBuf};
 use voiceport_control::{Action, Response};
+mod product;
+
+const GROUPS: &[&str] = &[
+    "status",
+    "app",
+    "sources",
+    "plugins",
+    "dictation",
+    "skills",
+    "qq",
+];
 const GUIDES: &[(&str, &str)] = &[
     ("core", include_str!("../../../skills/voiceport/SKILL.md")),
     (
@@ -29,7 +40,30 @@ const GUIDES: &[(&str, &str)] = &[
         include_str!("../../../skills/voiceport-plugins/templates/json_http_adapter.py"),
     ),
 ];
-const HELP: &str = "voiceport [--json] [--socket ABSOLUTE_PATH] COMMAND\n\nstatus | app status/show/quit\nsources list/show/add/update/remove/select/secret/test\nsources probe ID|--all [--language CODE|auto] [--accept-upload]\nsources probe-result/probe-cancel OPERATION\nplugins list/show/import\ndictation start/stop/retry/cancel/result\nqq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)\nskills list | skills get [GUIDE]\nGuides: core, cli, workflows, plugins, plugin-examples, plugin-protocol, plugin-template\n--version\n\nUse voiceport skills get cli for complete arguments.\nApp control requires the running macOS App at the chosen socket.\nNo command implicitly launches, records, uploads audio or delivers text.\nOnly dictation start records; sources test/probe require --accept-upload.\nUse COMMAND --help or help COMMAND for offline group help.\nLegacy help/host/demo/doctor/transcribe are also available.";
+const HELP: &str = "voiceport [--json] [--socket ABSOLUTE_PATH] COMMAND
+
+status | app status/capabilities/show/open/quit
+app update check/status
+sources list/show/destination/add/update/remove/select/secret/test
+sources probe ID|--all [--language CODE|auto] [--accept-upload]
+sources probe-result/probe-cancel OPERATION
+plugins list/show/import
+dictation start/stop/retry/cancel/result/gui-result
+preferences get/set
+microphone list/status/select/test-start/test-stop/open
+models list/details/refresh/open/download/update/import/remove/install-engine/start/status/cancel
+dictionary show/set/preview | scenes list/add/remove/apply
+history list/show/clear/settings
+file open/sources/plan/start/status/result/cancel/export
+qq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)
+skills list | skills get [GUIDE]
+Guides: core, cli, workflows, plugins, plugin-examples, plugin-protocol, plugin-template
+--version
+
+Use voiceport skills get cli for complete arguments.
+App control requires the running macOS App at the chosen socket.
+Use COMMAND --help or help COMMAND for offline group help.
+Legacy help/host/demo/doctor/transcribe are also available.";
 fn invalid() -> Response {
     Response::error(
         "invalid_arguments",
@@ -55,38 +89,20 @@ pub fn print_result(response: Response, json_output: bool) -> u8 {
     }
     exit
 }
+fn is_group(arg: &OsString) -> bool {
+    GROUPS
+        .iter()
+        .chain(product::GROUPS)
+        .any(|group| arg == group)
+}
+
 /// None delegates the byte-preserving original command line to the portable CLI.
 pub fn run(raw: &[OsString]) -> Option<u8> {
     let managed = raw
         .iter()
         .any(|a| ["--json", "--socket", "--version"].iter().any(|f| a == f))
-        || raw.first().is_some_and(|a| {
-            [
-                "status",
-                "app",
-                "sources",
-                "plugins",
-                "dictation",
-                "skills",
-                "qq",
-            ]
-            .iter()
-            .any(|v| a == v)
-        })
-        || (raw.first().is_some_and(|a| a == "help")
-            && raw.get(1).is_some_and(|a| {
-                [
-                    "status",
-                    "app",
-                    "sources",
-                    "plugins",
-                    "dictation",
-                    "qq",
-                    "skills",
-                ]
-                .iter()
-                .any(|group| a == group)
-            }));
+        || raw.first().is_some_and(is_group)
+        || (raw.first().is_some_and(|a| a == "help") && raw.get(1).is_some_and(is_group));
     if !managed {
         return None;
     }
@@ -257,6 +273,11 @@ fn option_takes_value(option: &str) -> bool {
             | "--secret-stdin"
             | "--source"
             | "--language"
+            | "--dictionary"
+            | "--device"
+            | "--limit"
+            | "--output"
+            | "--format"
     )
 }
 /// Reuse the embedded reference so group help stays version-matched and offline.
@@ -268,9 +289,19 @@ fn contextual_help(args: &[String]) -> Option<String> {
         [path @ .., flag] if is_help(flag) && !path.is_empty() => path,
         _ => return None,
     };
-    let (group, verbs, section): (&str, &[&str], &str) = match path[0] {
+    let (group, rest) = match path {
+        ["app", "update", rest @ ..] => ("app update", rest),
+        [group, rest @ ..] => (*group, rest),
+        [] => return None,
+    };
+    let (group, verbs, section): (&str, &[&str], &str) = match group {
         "status" => ("status", &[], "App commands (macOS)"),
-        "app" => ("app", &["status", "show", "quit"], "App commands (macOS)"),
+        "app" => (
+            "app",
+            &["status", "show", "quit", "open", "capabilities"],
+            "App commands (macOS)",
+        ),
+        "app update" => ("app update", &["check", "status"], "App commands (macOS)"),
         "sources" => (
             "sources",
             &[
@@ -285,6 +316,7 @@ fn contextual_help(args: &[String]) -> Option<String> {
                 "probe",
                 "probe-result",
                 "probe-cancel",
+                "destination",
             ],
             "Sources and plugins",
         ),
@@ -295,14 +327,67 @@ fn contextual_help(args: &[String]) -> Option<String> {
         ),
         "dictation" => (
             "dictation",
-            &["start", "stop", "retry", "cancel", "result"],
+            &["start", "stop", "retry", "cancel", "result", "gui-result"],
             "Dictation and test operations",
+        ),
+        "preferences" => ("preferences", &["get", "set"], "Preferences"),
+        "microphone" => (
+            "microphone",
+            &[
+                "list",
+                "status",
+                "select",
+                "test-start",
+                "test-stop",
+                "open",
+            ],
+            "Microphone",
+        ),
+        "models" => (
+            "models",
+            &[
+                "list",
+                "details",
+                "refresh",
+                "open",
+                "download",
+                "update",
+                "import",
+                "remove",
+                "install-engine",
+                "start",
+                "status",
+                "cancel",
+            ],
+            "Local models",
+        ),
+        "dictionary" => (
+            "dictionary",
+            &["show", "set", "preview"],
+            "Dictionary and scenes",
+        ),
+        "scenes" => (
+            "scenes",
+            &["list", "add", "remove", "apply"],
+            "Dictionary and scenes",
+        ),
+        "history" => (
+            "history",
+            &["list", "show", "clear", "settings"],
+            "Recent dictation",
+        ),
+        "file" => (
+            "file",
+            &[
+                "open", "sources", "plan", "start", "status", "result", "cancel", "export",
+            ],
+            "Single-file transcription",
         ),
         "qq" => ("qq", &["doctor"], "QQ installation diagnostics (macOS)"),
         "skills" => ("skills", &["list", "get"], "Offline commands"),
         _ => return None,
     };
-    if path.len() > 2 || (path.len() == 2 && !verbs.contains(&path[1])) {
+    if !matches!(rest, [] | [_]) || rest.first().is_some_and(|verb| !verbs.contains(verb)) {
         return None;
     }
     let reference = GUIDES.iter().find(|(name, _)| *name == "cli")?.1;
@@ -320,6 +405,8 @@ fn parse(args: &[String]) -> Result<Action, Response> {
         ["app", "show"] => Action::Show,
         ["app", "show", "--settings"] => Action::ShowSettings,
         ["app", "quit"] => Action::Quit,
+        ["app", "update", "check"] => Action::UpdateCheck,
+        ["app", "update", "status"] => Action::UpdateStatus,
         ["sources", "list"] => Action::SourcesList,
         ["sources", "show", id] => Action::SourcesShow { id: (*id).into() },
         ["sources", "remove", id] => Action::SourcesRemove { id: (*id).into() },
@@ -398,7 +485,7 @@ fn parse(args: &[String]) -> Result<Action, Response> {
         ["sources", verb @ ("add" | "update"), id, rest @ ..] => {
             return source(id, *verb == "update", rest);
         }
-        _ => return Err(invalid()),
+        _ => return product::parse(&words),
     };
     Ok(action)
 }

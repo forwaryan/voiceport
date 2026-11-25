@@ -3,7 +3,7 @@ use super::*;
 use objc2_foundation::NSDictionary;
 use std::path::Path;
 
-fn check_viewport(panel: &QuickPanel, view: &NSView) {
+pub(super) fn check_viewport(panel: &QuickPanel, view: &NSView) {
     let frame = view.convertRect_toView(view.bounds(), Some(&panel.document));
     let visible = panel.scroll.documentVisibleRect();
     let id = NSAccessibility::accessibilityIdentifier(view);
@@ -17,7 +17,7 @@ fn check_viewport(panel: &QuickPanel, view: &NSView) {
     );
 }
 
-fn capture(panel: &QuickPanel, dir: &Path, file: &str) {
+pub(super) fn capture(panel: &QuickPanel, dir: &Path, file: &str) {
     let view = &panel.scroll;
     let bounds = view.bounds();
     let window = view.window().unwrap();
@@ -204,6 +204,7 @@ pub(in crate::app) fn run(mtm: MainThreadMarker, output: &Path) {
     panel.position(PanelLayout::new(
         0,
         true,
+        0.,
         recovery,
         panel.screen_height.get(),
     ));
@@ -221,6 +222,7 @@ pub(in crate::app) fn run(mtm: MainThreadMarker, output: &Path) {
     panel.position(PanelLayout::new(
         0,
         true,
+        0.,
         recovery,
         panel.screen_height.get(),
     ));
@@ -233,6 +235,7 @@ pub(in crate::app) fn run(mtm: MainThreadMarker, output: &Path) {
         "260-point screen: synthetic uncertain receipt, show/copy slot and add independently reachable by local focus"
     );
     panel.fixture_recovery_copy_once(&d);
+    history::fixture::run(&panel, &d, &window, output);
 
     c.catalog.entries.clear();
     panel.refresh_contents(&d, &c, "就绪", "⌃⌥空格", true);

@@ -1,5 +1,7 @@
 # VoicePort host protocol v1
 
+This JSONL protocol is the portable child-process interface. Commands that control the running macOS App use the separate [local control socket](CLI.md#ipc-boundaries).
+
 `voiceport-rs host [--auth PATH]` is a child process using stdin/stdout pipes, never a shell, daemon or listener. Startup emits `{"version":1,"event":"ready","state":"idle"}` without reading auth/audio or networking. Only transcribe/retry invoke the existing fixed-HTTPS client. Paths, tokens and account IDs are never echoed. Swift integration is a subsequent story.
 
 Every command is one UTF-8 JSON object followed by LF. CRLF is accepted (CR counts toward the limit). Blank lines, invalid UTF-8/JSON, unknown/duplicate fields, unsupported actions/versions and malformed IDs return one static `invalid_frame` error without echoing input or performing an action. An input frame excluding LF is at most 16,384 bytes; oversize frames are drained to LF using bounded memory. An unterminated EOF fragment is invalid once; EOF then invalidates/cancels work and exits, without a terminal result. Frames must not contain raw LF inside strings; JSON escaped LF is fine. `language` may be absent/null; other required fields cannot be null. Audio paths are nonempty UTF-8 strings without NUL; filesystem errors are sanitized.

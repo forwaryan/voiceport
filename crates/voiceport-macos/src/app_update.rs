@@ -152,9 +152,21 @@ fn release_update(bytes: &[u8], current: Version, source: github::Source) -> Res
 }
 
 pub(super) fn check(home: &Path, running: &str) -> Result<Check> {
+    check_with(running, || github::latest(home))
+}
+
+fn check_with(
+    running: &str,
+    fetch_latest: impl FnOnce() -> Result<(Vec<u8>, github::Source)>,
+) -> Result<Check> {
     let current = Version::parse(running).ok_or("无法识别当前应用版本号。")?;
-    let (bytes, source) = github::latest(home)?;
+    let (bytes, source) = fetch_latest()?;
     release_update(&bytes, current, source)
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn check_fixture_release(running: &str, release: Result<Vec<u8>>) -> Result<Check> {
+    check_with(running, || Ok((release?, github::Source::Public)))
 }
 
 #[derive(Debug)]

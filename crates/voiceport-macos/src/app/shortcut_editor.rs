@@ -31,21 +31,26 @@ impl Delegate {
             } else {
                 ShortcutMode::Toggle
             };
-            if self.ivars().shortcut_mode.replace(mode) != mode {
-                // An edge queued under the previous mode does not start a new mode.
-                if let Some(rx) = self.ivars().hotkey_rx.borrow().as_ref() {
-                    while rx.try_recv().is_ok() {}
-                }
-                self.ivars().hold_session.set(None);
-                unsafe {
-                    NSUserDefaults::standardUserDefaults().setObject_forKey(
-                        Some(&NSString::from_str(mode.preference())),
-                        &NSString::from_str(ShortcutMode::PREFERENCE),
-                    );
-                }
-            }
+            self.set_shortcut_mode(mode);
         }
         self.refresh();
+    }
+
+    pub(super) fn set_shortcut_mode(&self, mode: ShortcutMode) {
+        if self.ivars().shortcut_mode.replace(mode) == mode {
+            return;
+        }
+        // An edge queued under the previous mode does not start a new mode.
+        if let Some(rx) = self.ivars().hotkey_rx.borrow().as_ref() {
+            while rx.try_recv().is_ok() {}
+        }
+        self.ivars().hold_session.set(None);
+        unsafe {
+            NSUserDefaults::standardUserDefaults().setObject_forKey(
+                Some(&NSString::from_str(mode.preference())),
+                &NSString::from_str(ShortcutMode::PREFERENCE),
+            );
+        }
     }
 
     pub(super) fn change_shortcut(&self) {
@@ -62,30 +67,42 @@ impl Delegate {
         let candidate = match index {
             0 => Some(Shortcut::DEFAULT),
             1 => Some(Shortcut::ALTERNATIVE),
-            2 => {
-                self.ivars().editing_shortcut.set(true);
-                // Drop both registration and queue: neither a captured key nor
-                // an event queued before the editor can later start dictation.
-                self.ivars().hotkey.borrow_mut().take();
-                self.ivars().hotkey_rx.borrow_mut().take();
-                self.with_controller(|c| c.set_stop_shortcut(None));
-                self.refresh();
-                let value = crate::shortcut_recorder::record(
-                    self.mtm(),
-                    self.ivars().shortcut_binding.get(),
-                    |candidate| {
-                        let (tx, _rx) = std::sync::mpsc::channel();
-                        let mut probe = crate::hotkey::GlobalHotKey::new(tx);
-                        // Drop immediately. This is a point-in-time test; Save
-                        // rechecks before committing the preference.
-                        probe.register(candidate).map_err(|error| error.to_string())
-                    },
-                );
-                self.ivars().editing_shortcut.set(false);
-                value
-            }
+            2 => self.record_shortcut(),
             _ => None,
         };
+        self.finish_shortcut_change(candidate);
+    }
+
+    pub(super) fn open_shortcut_recorder(&self) {
+        if self.may_change_shortcut() {
+            let candidate = self.record_shortcut();
+            self.finish_shortcut_change(candidate);
+        }
+    }
+
+    fn record_shortcut(&self) -> Option<Shortcut> {
+        self.ivars().editing_shortcut.set(true);
+        // Drop both registration and queue: neither a captured key nor
+        // an event queued before the editor can later start dictation.
+        self.ivars().hotkey.borrow_mut().take();
+        self.ivars().hotkey_rx.borrow_mut().take();
+        self.with_controller(|c| c.set_stop_shortcut(None));
+        self.refresh();
+        let value = crate::shortcut_recorder::record(
+            self.mtm(),
+            self.ivars().shortcut_binding.get(),
+            |candidate| {
+                let (tx, _rx) = std::sync::mpsc::channel();
+                let mut probe = crate::hotkey::GlobalHotKey::new(tx);
+                // Save rechecks registration before committing the preference.
+                probe.register(candidate).map_err(|error| error.to_string())
+            },
+        );
+        self.ivars().editing_shortcut.set(false);
+        value
+    }
+
+    fn finish_shortcut_change(&self, candidate: Option<Shortcut>) {
         if self.ivars().quitting.get() {
             self.refresh();
             return;

@@ -5,7 +5,10 @@ use ring::digest::{Context, SHA256, SHA512};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
-    os::{fd::AsRawFd, unix::fs::PermissionsExt},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{MetadataExt, PermissionsExt},
+    },
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -190,7 +193,7 @@ pub enum Operation {
     Download,
     Engine,
     Import(PathBuf),
-    Remove,
+    Remove { identity: (u64, u64) },
 }
 impl Job {
     pub fn start(
@@ -203,7 +206,7 @@ impl Job {
             Operation::Engine => "正在准备识别引擎…",
             Operation::Download => "正在准备下载模型…",
             Operation::Import(_) => "正在准备导入模型…",
-            Operation::Remove => "正在删除 VoicePort 模型副本…",
+            Operation::Remove { .. } => "正在删除 VoicePort 模型副本…",
         };
         let progress = Arc::new(Mutex::new(Progress::Stage(preparing.into())));
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -218,7 +221,7 @@ impl Job {
                     }
                     let _lock = Lock::acquire(&paths.root)?;
                     match operation {
-                        Operation::Remove => remove(&paths, definition, &c),
+                        Operation::Remove { identity } => remove(&paths, definition, identity, &c),
                         other => {
                             let runtime = tokio::runtime::Builder::new_current_thread()
                                 .enable_all()
@@ -312,9 +315,11 @@ impl NoFollow for OpenOptions {
 fn io_error(error: std::io::Error) -> String {
     format!("模型文件操作失败：{error}")
 }
+pub(crate) const CANCELLED: &str = "已取消安装，未完成的文件已清理。";
+
 fn check(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::Acquire) {
-        Err("已取消安装，未完成的文件已清理。".into())
+        Err(CANCELLED.into())
     } else {
         Ok(())
     }
@@ -515,7 +520,7 @@ async fn install(
                 progress,
                 transfer,
             )?,
-            Operation::Remove | Operation::Engine => unreachable!(),
+            Operation::Remove { .. } | Operation::Engine => unreachable!(),
         }
         offset += asset.bytes;
     }
@@ -624,14 +629,25 @@ fn publish_model(stage: &Path, target: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-fn remove(paths: &Paths, d: &Definition, cancel: &AtomicBool) -> Result<String, String> {
-    check(cancel)?;
-    let target = paths.model(d);
-    let metadata = target.symlink_metadata().map_err(io_error)?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+pub(crate) fn removal_identity(paths: &Paths, d: &Definition) -> Result<(u64, u64), String> {
+    let metadata = paths.model(d).symlink_metadata().map_err(io_error)?;
+    if !metadata.is_dir() {
         return Err("模型目录类型异常，未执行删除。".into());
     }
-    fs::remove_dir_all(target).map_err(io_error)?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+fn remove(
+    paths: &Paths,
+    d: &Definition,
+    identity: (u64, u64),
+    cancel: &AtomicBool,
+) -> Result<String, String> {
+    check(cancel)?;
+    if removal_identity(paths, d)? != identity {
+        return Err("模型目录已变更，未执行删除。".into());
+    }
+    fs::remove_dir_all(paths.model(d)).map_err(io_error)?;
     Ok(format!("已删除 {} 的 VoicePort 副本。", d.name))
 }
 

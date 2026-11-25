@@ -5,6 +5,7 @@ use objc2_foundation::NSRectEdge;
 
 #[cfg(debug_assertions)]
 pub(super) mod fixture;
+mod history;
 mod recovery;
 mod recovery_model;
 
@@ -22,15 +23,23 @@ struct PanelLayout {
     viewport_height: f64,
     toolbar_y: f64,
     guidance_y: f64,
+    history_y: f64,
     recovery_y: f64,
     header_y: f64,
 }
 
 impl PanelLayout {
-    fn new(rows: usize, guidance: bool, recovery: f64, visible_screen_height: f64) -> Self {
+    fn new(
+        rows: usize,
+        guidance: bool,
+        history: f64,
+        recovery: f64,
+        visible_screen_height: f64,
+    ) -> Self {
         let toolbar_y = rows as f64 * ROW_HEIGHT;
         let guidance_y = toolbar_y + TOOLBAR_HEIGHT;
-        let recovery_y = guidance_y + if guidance { GUIDANCE_HEIGHT } else { 0. };
+        let history_y = guidance_y + if guidance { GUIDANCE_HEIGHT } else { 0. };
+        let recovery_y = history_y + history;
         let header_y = recovery_y + recovery;
         let document_height = header_y + HEADER_HEIGHT;
         let preferred_height =
@@ -40,6 +49,7 @@ impl PanelLayout {
             viewport_height: preferred_height.min((visible_screen_height - SCREEN_MARGIN).max(1.)),
             toolbar_y,
             guidance_y,
+            history_y,
             recovery_y,
             header_y,
         }
@@ -171,6 +181,7 @@ pub(super) struct QuickPanel {
     recovery_slot: Retained<NSView>,
     recovery: recovery::ResultCard,
     recovery_actions: Retained<recovery::RecoveryActions>,
+    history: history::History,
     toolbar: Retained<NSView>,
     disclosure: Retained<NSButton>,
     manage: Retained<NSButton>,
@@ -214,6 +225,7 @@ impl QuickPanel {
     fn relink_key_views(&self) {
         let mut controls: Vec<Retained<NSView>> = vec![self.open.clone().into_super().into_super()];
         self.append_recovery_key_views(&mut controls);
+        self.history.append_key_views(&mut controls);
         if !self.guidance.isHidden() {
             controls.push(self.guidance_button.clone().into_super().into_super());
         }
@@ -254,6 +266,12 @@ impl QuickPanel {
             .setFrameOrigin(NSPoint::new(0., layout.toolbar_y));
         self.guidance
             .setFrameOrigin(NSPoint::new(0., layout.guidance_y));
+        self.history.view.setFrame(rect(
+            0.,
+            layout.history_y,
+            WIDTH,
+            layout.recovery_y - layout.history_y,
+        ));
         self.recovery_slot.setFrame(rect(
             0.,
             layout.recovery_y,
@@ -298,6 +316,7 @@ impl Delegate {
         if let Some(panel) = self.ivars().quick_panel.get() {
             panel.popover.close();
             panel.clear_recovery();
+            panel.history.reset();
         }
     }
     pub(super) fn toggle_quick_panel(&self) {
@@ -351,6 +370,7 @@ impl Delegate {
             // scroll position should be the first thing users encounter.
             panel.expanded.set(false);
             panel.clear_recovery();
+            panel.history.reset();
         }
         self.refresh();
         if !panel.popover.isShown() {
@@ -456,6 +476,7 @@ impl Delegate {
         // source guidance, source actions, then alternatives when expanded.
         let header = section(TOOLBAR_HEIGHT, HEADER_HEIGHT);
         let recovery_slot = section(TOOLBAR_HEIGHT, 0.);
+        let history = history::History::new(self, section(TOOLBAR_HEIGHT, 0.));
         let guidance = section(TOOLBAR_HEIGHT, GUIDANCE_HEIGHT);
         let toolbar = section(0., TOOLBAR_HEIGHT);
         let sources = section(0., 0.);
@@ -556,6 +577,7 @@ impl Delegate {
             recovery_slot,
             recovery: recovery::ResultCard::default(),
             recovery_actions: recovery::RecoveryActions::new(self),
+            history,
             toolbar,
             disclosure,
             manage,
@@ -575,6 +597,9 @@ impl Delegate {
         idle: bool,
     ) {
         if let Some(panel) = self.ivars().quick_panel.get() {
+            if !panel.popover.isShown() {
+                panel.history.reset();
+            }
             panel.refresh_contents(self, c, state, shortcut, idle);
         }
     }
@@ -590,6 +615,9 @@ impl QuickPanel {
         idle: bool,
     ) {
         let recovery_height = self.update_recovery(d, c, idle);
+        let (history_height, history_changed) =
+            self.history
+                .update(d, c, idle && d.quick_actions_unlocked());
         let configurable = idle && !c.discovering() && !d.ivars().quitting.get();
         self.update_guidance(c, configurable);
         let current = c
@@ -674,10 +702,11 @@ impl QuickPanel {
         let layout = PanelLayout::new(
             if expanded { row_count } else { 0 },
             !self.guidance.isHidden(),
+            history_height,
             recovery_height,
             self.screen_height.get(),
         );
-        if self.layout.borrow().as_ref() != Some(&layout) || changed {
+        if self.layout.borrow().as_ref() != Some(&layout) || changed || history_changed {
             self.position(layout);
             self.relink_key_views();
         }
@@ -835,9 +864,9 @@ mod tests {
 
     #[test]
     fn viewport_caps_long_lists_and_keeps_recovery_above_source_actions() {
-        let compact = PanelLayout::new(0, false, 0., 720.);
+        let compact = PanelLayout::new(0, false, 0., 0., 720.);
         assert_eq!(compact.document_height, compact.viewport_height);
-        let long = PanelLayout::new(40, false, 0., 720.);
+        let long = PanelLayout::new(40, false, 0., 0., 720.);
         assert_eq!(
             long.viewport_height,
             compact.viewport_height + 4. * ROW_HEIGHT
@@ -847,7 +876,7 @@ mod tests {
             compact.document_height + 40. * ROW_HEIGHT
         );
 
-        let small = PanelLayout::new(40, true, 104., 260.);
+        let small = PanelLayout::new(40, true, 0., 104., 260.);
         assert_eq!(small.viewport_height, 260. - SCREEN_MARGIN);
         assert_eq!(small.header_y, small.recovery_y + 104.);
         assert_eq!(small.recovery_y, small.guidance_y + GUIDANCE_HEIGHT);

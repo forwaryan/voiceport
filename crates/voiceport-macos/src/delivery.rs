@@ -751,6 +751,9 @@ impl Delivery {
     pub fn secure_input() -> bool {
         native::secure_input()
     }
+    pub(crate) fn history_focus_safe() -> bool {
+        native::history_focus_safe()
+    }
     /// Use only in response to an explicit user permission-button click.
     pub fn request_accessibility() {
         native::request_accessibility();

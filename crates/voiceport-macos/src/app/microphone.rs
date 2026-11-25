@@ -11,6 +11,21 @@ pub(super) fn preference(defaults: &NSUserDefaults) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+pub(super) fn set_preference(c: &mut Controller, uid: Option<String>) {
+    let defaults = NSUserDefaults::standardUserDefaults();
+    if let Some(uid) = &uid {
+        unsafe {
+            defaults.setObject_forKey(
+                Some(&NSString::from_str(uid)),
+                ns_string!("microphoneDeviceUID"),
+            );
+        }
+    } else {
+        defaults.removeObjectForKey(ns_string!("microphoneDeviceUID"));
+    }
+    c.microphone_uid = uid;
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Choice {
     System,
@@ -75,23 +90,13 @@ define_class!(
                 Some(Choice::Device(device)) => Some(device.uid.clone()),
                 _ => return,
             };
+            drop(rows);
             let allowed = self.selection_allowed();
-            let mut accepted = false;
             owner.with_controller(|c| {
                 if !c.busy() && allowed {
-                    c.microphone_uid = uid.clone();
-                    accepted = true;
+                    set_preference(c, uid);
                 }
             });
-            drop(rows);
-            if accepted {
-                let defaults = NSUserDefaults::standardUserDefaults();
-                if let Some(uid) = uid {
-                    unsafe { defaults.setObject_forKey(Some(&NSString::from_str(&uid)), ns_string!("microphoneDeviceUID")) };
-                } else {
-                    defaults.removeObjectForKey(ns_string!("microphoneDeviceUID"));
-                }
-            }
             self.inventory();
         }
 

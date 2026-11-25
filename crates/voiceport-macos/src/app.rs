@@ -13,9 +13,14 @@ use objc2_foundation::{
 };
 use std::cell::{Cell, OnceCell, RefCell};
 mod control;
+#[cfg(debug_assertions)]
+pub use control::isolated_control_regression;
 mod control_probes;
 mod dictation_page;
 mod dictation_workflows;
+mod file_transcription;
+#[cfg(debug_assertions)]
+pub use file_transcription::isolated_file_transcription_regression;
 mod first_run;
 mod hotkey_start;
 #[doc(hidden)]
@@ -25,6 +30,7 @@ mod model_manager;
 mod picker;
 mod preferences;
 mod quick_panel;
+mod recent_dictations;
 mod shortcut_editor;
 mod source_manager;
 mod source_probes;
@@ -183,6 +189,7 @@ struct Ivars {
     page_tabs: OnceCell<Retained<NSSegmentedControl>>,
     dictation_page: OnceCell<Retained<NSView>>,
     dictation_result: OnceCell<dictation_page::Page>,
+    file_page: OnceCell<file_transcription::Page>,
     settings_page: OnceCell<Retained<NSView>>,
     window: OnceCell<Retained<NSWindow>>,
     show_window_on_launch: Cell<bool>,
@@ -191,6 +198,9 @@ struct Ivars {
     preset_settings: OnceCell<Retained<NSButton>>,
     workflow_dialog: Cell<bool>,
     automatic: OnceCell<Retained<NSSwitch>>,
+    recent_dictations_switch: OnceCell<Retained<NSSwitch>>,
+    #[cfg(debug_assertions)]
+    recent_dictations_fixture_defaults: OnceCell<Retained<NSUserDefaults>>,
     language: OnceCell<Retained<NSPopUpButton>>,
     source: OnceCell<Retained<NSPopUpButton>>,
     source_rows: RefCell<Vec<(String, String)>>,
@@ -264,6 +274,8 @@ define_class!(
         #[unsafe(method(applicationShouldTerminate:))]
         fn should_terminate(&self, _app: &NSApplication) -> NSApplicationTerminateReply {
             self.ivars().quitting.set(true);
+            self.close_quick_panel();
+            self.close_file_sheet();
             if let Ok(mut overlay) = self.ivars().overlay.try_borrow_mut() { overlay.close(); }
             let manager = self.ivars().source_manager.borrow().clone();
             if let Some(manager) = manager { manager.close_for_shutdown(); }
@@ -275,7 +287,11 @@ define_class!(
             // must wait until the controller borrow and any worker lease end.
             if let Ok(mut slot) = self.ivars().controller.try_borrow_mut() {
                 if let Some(c) = slot.as_mut() {
-                    if !self.ivars().shutdown_started.replace(true) { c.cancel(); }
+                    c.file_jobs.cancel_for_shutdown();
+                    if !self.ivars().shutdown_started.replace(true) {
+                        c.set_recent_dictations_enabled(false);
+                        c.cancel();
+                    }
                     if c.busy() { return NSApplicationTerminateReply::TerminateLater; }
                 }
                 if self.settings_locked() { return NSApplicationTerminateReply::TerminateLater; }
@@ -362,6 +378,25 @@ define_class!(
         }
         #[unsafe(method(showWindow:))]
         fn show_action(&self, _sender: Option<&AnyObject>) { self.show_window(); }
+
+        #[unsafe(method(showFileTranscription:))]
+        fn show_file_action(&self, _sender: Option<&AnyObject>) { self.show_file_transcription(); }
+        #[unsafe(method(chooseFileTranscription:))]
+        fn choose_file_action(&self, _sender: Option<&AnyObject>) { self.choose_file_transcription(); }
+        #[unsafe(method(selectFileTranscriptionSource:))]
+        fn select_file_source_action(&self, _sender: Option<&AnyObject>) { self.select_file_transcription_source(); }
+        #[unsafe(method(startFileTranscription:))]
+        fn start_file_action(&self, _sender: Option<&AnyObject>) { self.start_file_transcription(); }
+        #[unsafe(method(cancelFileTranscription:))]
+        fn cancel_file_action(&self, _sender: Option<&AnyObject>) { self.cancel_file_transcription(); }
+        #[unsafe(method(exportFileTranscriptionText:))]
+        fn export_file_text_action(&self, _sender: Option<&AnyObject>) {
+            self.export_file_transcription(crate::file_transcription::ExportFormat::Text);
+        }
+        #[unsafe(method(exportFileTranscriptionMarkdown:))]
+        fn export_file_markdown_action(&self, _sender: Option<&AnyObject>) {
+            self.export_file_transcription(crate::file_transcription::ExportFormat::Markdown);
+        }
         #[unsafe(method(selectPage:))]
         fn page_action(&self, _sender: Option<&AnyObject>) {
             let settings = self.ivars().page_tabs.get().is_some_and(|tabs| tabs.selectedSegment() == 1);
@@ -392,10 +427,17 @@ define_class!(
             status_overlay::set_enabled(!status_overlay::enabled());
             self.refresh();
         }
+        #[unsafe(method(setRecentDictationsPreference:))]
+        fn recent_dictations_preference_action(&self, sender: &NSSwitch) {
+            if self.ivars().recent_dictations_switch.get().is_some_and(|control| std::ptr::eq(&**control, sender)) {
+                self.set_recent_dictations_enabled(sender.state() == NSControlStateValueOn);
+            }
+        }
         #[unsafe(method(toggleAutomatic:))]
         fn automatic_action(&self, _sender: Option<&AnyObject>) {
             if self.settings_locked() { return; }
-            self.with_controller(|c| { c.automatic = !c.automatic; NSUserDefaults::standardUserDefaults().setBool_forKey(c.automatic, ns_string!("automaticPaste")); }); self.refresh();
+            self.with_controller(|c| self.set_automatic_input(c, !c.automatic));
+            self.refresh();
         }
         #[unsafe(method(selectSource:))]
         fn source_action(&self, _sender: Option<&AnyObject>) {
@@ -410,16 +452,7 @@ define_class!(
         }
         #[unsafe(method(manageSources:))]
         fn manage_sources_action(&self, _sender: Option<&AnyObject>) {
-            let manager = self.ivars().source_manager.borrow().clone();
-            if let Some(manager) = manager { manager.bring_forward(); return; }
-            let idle=self.ivars().controller.borrow().as_ref().is_some_and(|c|!c.busy() && !c.discovering());
-            if self.ivars().quitting.get() || !idle || self.ivars().permission_rx.borrow().is_some() || self.ivars().editing_shortcut.get() || self.ivars().managing_models.get() || self.ivars().managing_sources.replace(true) {return;}
-            if let Err(error) = source_manager::manage(self) {
-                self.ivars().managing_sources.set(false);
-                self.with_controller(|c| c.message = format!("无法打开来源管理：{error}"));
-            }
-            // The retained manager releases admission in windowWillClose.
-            self.refresh();
+            self.open_source_manager();
         }
         #[unsafe(method(testSource:))]
         fn test_source_action(&self, _sender: Option<&AnyObject>) {
@@ -452,8 +485,7 @@ define_class!(
             self.with_controller(|c| {
                 if c.busy() { return; }
                 let selected = self.ivars().language.get().map(|control| control.indexOfSelectedItem()).unwrap_or(0);
-                c.language = voiceport_core::language::code(selected as usize).into();
-                unsafe { NSUserDefaults::standardUserDefaults().setObject_forKey(Some(&NSString::from_str(&c.language)), ns_string!("language")); }
+                self.set_language(c, voiceport_core::language::code(selected as usize).into());
             }); self.refresh();
         }
         #[unsafe(method(showPersonalDictionary:))]
@@ -487,6 +519,8 @@ define_class!(
             }
             self.with_controller(|c| {
                 if self.ivars().quitting.get() && !self.ivars().shutdown_started.get() {
+                    c.set_recent_dictations_enabled(false);
+                    c.file_jobs.cancel_for_shutdown();
                     c.cancel(); self.ivars().shutdown_started.set(true);
                 }
                 self.poll_dictation(c);
@@ -504,6 +538,7 @@ define_class!(
                 NSApplication::sharedApplication(self.mtm()).terminate(None);
             }
             self.refresh();
+            self.refresh_file_page();
             let probes = self.ivars().source_probe_panel.borrow().clone();
             if let Some(probes) = probes { probes.refresh(); }
             let sources = self.ivars().source_manager.borrow().clone();
@@ -533,6 +568,51 @@ impl Delegate {
         let this = Self::alloc(mtm).set_ivars(Ivars::default());
         unsafe { msg_send![super(this), init] }
     }
+    fn set_automatic_input(&self, c: &mut Controller, enabled: bool) {
+        c.automatic = enabled;
+        NSUserDefaults::standardUserDefaults()
+            .setBool_forKey(enabled, ns_string!("automaticPaste"));
+    }
+
+    fn set_language(&self, c: &mut Controller, language: String) {
+        c.language = language;
+        unsafe {
+            NSUserDefaults::standardUserDefaults().setObject_forKey(
+                Some(&NSString::from_str(&c.language)),
+                ns_string!("language"),
+            );
+        }
+    }
+
+    fn open_source_manager(&self) {
+        let manager = self.ivars().source_manager.borrow().clone();
+        if let Some(manager) = manager {
+            manager.bring_forward();
+            return;
+        }
+        let idle = self
+            .ivars()
+            .controller
+            .borrow()
+            .as_ref()
+            .is_some_and(|c| !c.busy() && !c.discovering());
+        if self.ivars().quitting.get()
+            || !idle
+            || self.ivars().permission_rx.borrow().is_some()
+            || self.ivars().editing_shortcut.get()
+            || self.ivars().managing_models.get()
+            || self.ivars().managing_sources.replace(true)
+        {
+            return;
+        }
+        if let Err(error) = source_manager::manage(self) {
+            self.ivars().managing_sources.set(false);
+            self.with_controller(|c| c.message = format!("无法打开来源管理：{error}"));
+        }
+        // The retained manager releases admission in windowWillClose.
+        self.refresh();
+    }
+
     fn with_controller(&self, action: impl FnOnce(&mut Controller)) {
         if let Ok(mut slot) = self.ivars().controller.try_borrow_mut()
             && let Some(controller) = slot.as_mut()
@@ -576,6 +656,7 @@ impl Delegate {
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         for (title, action, symbol) in [
             ("打开结果与设置…", sel!(showWindow:), "macwindow"),
+            ("音频文件转写…", sel!(showFileTranscription:), "waveform"),
             (
                 "首次使用与自检…",
                 sel!(showFirstRunChecks:),
@@ -639,6 +720,11 @@ impl Delegate {
         let application_item = NSMenuItem::new(mtm);
         let application_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), ns_string!("VoicePort"));
         application_menu.addItem(&self.menu_item("结果与设置…", sel!(showWindow:), ","));
+        application_menu.addItem(&self.menu_item(
+            "转写音频文件…",
+            sel!(chooseFileTranscription:),
+            "o",
+        ));
         application_menu.addItem(&NSMenuItem::separatorItem(mtm));
         application_menu.addItem(&self.menu_item("退出 VoicePort", sel!(terminate:), "q"));
         application_item.setSubmenu(Some(&application_menu));
@@ -661,6 +747,7 @@ impl Delegate {
         let defaults = NSUserDefaults::standardUserDefaults();
         let mut controller = Controller::new();
         controller.microphone_uid = microphone::preference(&defaults);
+        controller.set_recent_dictations_enabled(recent_dictations::preference(&defaults));
         if defaults
             .objectForKey(ns_string!("automaticPaste"))
             .is_some()
@@ -887,7 +974,8 @@ impl Delegate {
             let line = NSBox::initWithFrame(NSBox::alloc(mtm), rect(24., 444., 572., 1.));
             line.setBoxType(NSBoxType::Separator);
             view.addSubview(&line);
-            let dictation = NSView::initWithFrame(NSView::alloc(mtm), rect(24., 20., 572., 408.));
+            let dictation: Retained<NSView> =
+                file_transcription::DropArea::new(self, rect(24., 20., 572., 408.)).into_super();
             let _ = self
                 .ivars()
                 .dictation_result
@@ -970,6 +1058,7 @@ impl Delegate {
             Phase::Transcribing => (StatusAppearance::Working, "正在转写"),
             Phase::Delivering => (StatusAppearance::Working, "正在输入文字"),
             Phase::Stopping => (StatusAppearance::Working, "正在停止"),
+            _ if c.file_jobs.busy() => (StatusAppearance::Working, "正在处理音频文件"),
             _ if c.source_tests.busy() => (StatusAppearance::Working, "正在测试来源"),
             _ if preparing_permissions => (StatusAppearance::Working, "正在准备权限"),
             _ if returning_to_input => (StatusAppearance::Working, "正在返回输入位置"),
@@ -996,7 +1085,7 @@ impl Delegate {
             )));
         }
         if let Some(item) = self.ivars().menu_cancel.get() {
-            item.setEnabled(c.busy() || returning_to_input);
+            item.setEnabled((c.busy() && !c.file_jobs.busy()) || returning_to_input);
         }
         if let Some(item) = self.ivars().menu_copy.get() {
             item.setEnabled(!c.transcript.is_empty());
@@ -1112,7 +1201,7 @@ impl Delegate {
                         && !returning_to_input
                         && !self.settings_locked()
                         && (recording || !c.busy()),
-                    can_cancel: c.busy() || returning_to_input,
+                    can_cancel: (c.busy() && !c.file_jobs.busy()) || returning_to_input,
                     can_retry: !self.settings_locked()
                         && c.can_retry_recording()
                         && receipt
@@ -1133,6 +1222,13 @@ impl Delegate {
             if control.isEnabled() != idle {
                 control.setEnabled(idle);
             }
+        }
+        if let Some(control) = self.ivars().recent_dictations_switch.get() {
+            let state = status_overlay::checked(c.recent_dictations_enabled());
+            if control.state() != state {
+                control.setState(state);
+            }
+            control.setEnabled(!self.ivars().quitting.get());
         }
         if let Some(control) = self.ivars().language.get() {
             let selected = voiceport_core::language::index(&c.language) as isize;

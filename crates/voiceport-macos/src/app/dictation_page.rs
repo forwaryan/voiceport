@@ -201,6 +201,7 @@ pub(super) struct Page {
     pub(super) copy: Retained<NSButton>,
     pub(super) raw_original: Retained<NSButton>,
     toggle: Retained<NSButton>,
+    pub(super) open_file: Retained<NSButton>,
     cancel: Retained<NSButton>,
     retry: Retained<NSButton>,
     origin: Cell<Option<TranscriptOrigin>>,
@@ -311,8 +312,16 @@ impl Page {
         let make = |title, action, id, x, y, w| {
             button(mtm, target, area, title, action, id, rect(x, y, w, 32.))
         };
-        let heading = label(mtm, area, "听写结果", rect(0., 376., 390., 30.), 21.);
+        let heading = label(mtm, area, "听写结果", rect(0., 376., 246., 30.), 21.);
         heading.setFont(Some(&NSFont::boldSystemFontOfSize(21.)));
+        let open_file = make(
+            "转写音频文件…",
+            sel!(chooseFileTranscription:),
+            "voiceport.dictation.open-file",
+            250.,
+            375.,
+            155.,
+        );
         let disclosure = make(
             "展开本轮诊断",
             sel!(toggleDictationDiagnostics:),
@@ -414,6 +423,7 @@ impl Page {
             copy,
             raw_original,
             toggle,
+            open_file,
             cancel,
             retry,
             origin: Cell::new(None),
@@ -424,9 +434,10 @@ impl Page {
 
     // Link document views themselves, not the NSScrollView wrappers. Native
     // AppKit still decides which disabled/hidden views are valid key targets.
-    fn key_views(&self) -> [&NSView; 9] {
+    fn key_views(&self) -> [&NSView; 10] {
         [
             &self.disclosure,
+            &self.open_file,
             &self.raw_original,
             &self.edit,
             &self.copy,

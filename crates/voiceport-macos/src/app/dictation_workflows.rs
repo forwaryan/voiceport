@@ -297,6 +297,26 @@ impl Delegate {
         }
     }
 
+    pub(super) fn confirm_named_scene(&self, name: &str) {
+        self.workflow_dialog(|| {
+            let preferences = self
+                .ivars()
+                .controller
+                .borrow()
+                .as_ref()
+                .ok_or("听写尚未就绪。")?
+                .workflows
+                .clone();
+            let preset = preferences
+                .presets
+                .iter()
+                .find(|preset| preset.name == name)
+                .cloned()
+                .ok_or("场景已不存在。")?;
+            self.apply_preset(&preset, preferences)
+        });
+    }
+
     fn apply_preset(&self, preset: &Preset, mut preferences: Workflows) -> Result<(), String> {
         let (source, source_title) = {
             let slot = self.ivars().controller.borrow();
@@ -350,13 +370,7 @@ impl Delegate {
         preferences.dictionary_enabled = preset.dictionary_enabled;
         self.update_workflows(preferences)?;
         self.with_controller(|c| {
-            c.language.clone_from(&preset.language);
-            unsafe {
-                NSUserDefaults::standardUserDefaults().setObject_forKey(
-                    Some(&NSString::from_str(&c.language)),
-                    ns_string!("language"),
-                );
-            }
+            self.set_language(c, preset.language.clone());
             self.set_source(c, preset.source_id.clone());
             c.message = format!("已应用听写场景「{}」。", preset.name);
         });
@@ -364,8 +378,18 @@ impl Delegate {
     }
 
     fn update_workflows(&self, preferences: Workflows) -> Result<(), String> {
+        let mut result = Err("听写尚未就绪。".into());
+        self.with_controller(|c| result = self.commit_workflows(c, preferences));
+        result
+    }
+
+    pub(super) fn commit_workflows(
+        &self,
+        c: &mut Controller,
+        preferences: Workflows,
+    ) -> Result<(), String> {
         persist(&preferences)?;
-        self.with_controller(move |c| c.workflows = preferences);
+        c.workflows = preferences;
         Ok(())
     }
 

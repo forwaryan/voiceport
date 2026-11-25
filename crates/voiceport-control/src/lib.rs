@@ -8,6 +8,11 @@ pub use dictation::{
     CaptureSignal, CaptureSummary, DeliveryReceipt, DeliveryState, DictationBlockReason,
     DictationTimings, GuiDictationDiagnostics, GuiDictationReceipt, TranscriptionState,
 };
+mod product;
+pub use product::{
+    DictionaryRequest, FileFormat, FileRequest, HistoryRequest, MicrophoneRequest, ModelMutation,
+    ModelsRequest, Page, PreferencesRequest, RecordingMode, ScenesRequest,
+};
 pub mod readiness;
 
 pub const VERSION: u32 = 1;
@@ -89,6 +94,42 @@ pub enum Action {
     },
     Result {
         operation: String,
+    },
+    Capabilities,
+    UpdateCheck,
+    UpdateStatus,
+    Open {
+        page: Page,
+    },
+    Preferences {
+        request: PreferencesRequest,
+    },
+    Microphone {
+        request: MicrophoneRequest,
+    },
+    SourcesDestination {
+        id: String,
+    },
+    ModelsList,
+    ModelsRefresh,
+    Models {
+        request: ModelsRequest,
+    },
+    Dictionary {
+        request: DictionaryRequest,
+    },
+    Scenes {
+        request: ScenesRequest,
+    },
+    GuiResult {
+        generation: u64,
+        original: bool,
+    },
+    History {
+        request: HistoryRequest,
+    },
+    File {
+        request: FileRequest,
     },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]

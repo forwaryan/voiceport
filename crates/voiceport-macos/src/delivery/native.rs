@@ -217,6 +217,33 @@ fn focused(pid: libc::pid_t) -> Result<OwnedCf, Failure> {
     focus::resolve(pid).map(|resolved| resolved.element)
 }
 
+/// Observe only secure-input state and AX role metadata, without capturing a target.
+pub(super) fn history_focus_safe() -> bool {
+    if secure_input() {
+        return false;
+    }
+    match frontmost() {
+        Ok((pid, _)) if trusted() => {
+            let Ok(element) = focused(pid) else {
+                return false;
+            };
+            let ordinary = |value: OwnedCf| {
+                value
+                    .string(1_000)
+                    .is_some_and(|role| role != "AXSecureTextField")
+            };
+            attribute(element.0, "AXRole").is_ok_and(ordinary)
+                && match attribute(element.0, "AXSubrole") {
+                    Ok(value) => ordinary(value),
+                    Err(AX_UNSUPPORTED | AX_NO_VALUE) => true,
+                    Err(_) => false,
+                }
+        }
+        Err(Failure::Application) => true, // VoicePort's own dictation interface.
+        _ => false,                        // The external focus could be sensitive.
+    }
+}
+
 /// Explicit diagnostic: reads only target metadata, never field text or permissions.
 pub(super) fn diagnose_input() -> serde_json::Value {
     let mut result = serde_json::json!({

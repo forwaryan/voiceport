@@ -123,6 +123,12 @@ python3 -I scripts/release_macos.py resume dist/release-0.3.3 \
 
 从出现「目前不能重启」的旧本地 `0.3.13` 迁移时，请先保存需要保留的文字。如果还需要失败录音的转写，可在旧应用内明确选择重试。重试可能再次上传录音。等任务结束并确认可以舍弃剩余内容后，再正常退出。在同一路径用下方手动安装器安装签名连续的已校验新版。对于仍处于 `ready` 或 `failed` 的旧应用，`--quit-idle` 会拒绝替换。系统目录安装还应先确认所有用户均已退出 VoicePort。若启动或回退受旧 socket 阻塞，请先由该用户确认没有实例仍在使用，再按 [CLI 的控制端点说明](CLI.md) 处理。
 
+### 在命令行查询更新
+
+运行 `voiceport --json app capabilities` 检查当前 App 是否公布 `app_update`，然后用同一控制端点执行 `voiceport --json app update status`。这是进程内快照，只读当前版本、最近一次验证的发行版本及检查结果。新查询正在运行或失败时，如果仍有上次已知版本，`latest_version_stale` 为 `true`。启动后尚无成功查询时，`latest_version` 为 `null`。快照随 App 退出清除。
+
+需要重新查询时，明确执行一次 `voiceport --json app update check`，随后用 `app update status` 查看结果。退出码 0 表示请求已接收或快照已读取，查询结论见 `last_check_state` 和 `reason`。忙碌时检查请求返回退出码 4，并带有当前快照。两条命令共用 App 菜单的更新状态。下载和安装仍从菜单确认，安装前执行原有任务、保留结果和签名检查。完整字段见 [CLI 命令参考](../skills/voiceport/references/cli.md#app-commands-macos)。
+
 ## 安装到同一个位置
 
 ```sh
