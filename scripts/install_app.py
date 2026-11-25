@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Install a verified bundle at one stable path, preserving the previous bundle."""
 import argparse
+import fcntl
 import json
 import os
 import pathlib
@@ -102,12 +103,13 @@ def install(source, destination, *, quit_idle=False, allow_signing_change=False)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if not stat.S_ISDIR(destination.parent.lstat().st_mode):
         raise ValueError('expected real installation directory')
-    # Serialize installers at this destination; never delete a pre-existing lock.
-    lock = destination.parent / '.voiceport-install.lock'
-    lock_fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    # Share the kernel lock with the in-app updater. A crash releases the lock.
+    lock_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     backup = None
     try:
-        os.write(lock_fd, (str(os.getpid()) + '\n').encode())
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if os.path.lexists(destination.parent / '.voiceport-install.lock'):
+            raise ValueError('an older installer lock exists; verify its owner before recovery')
         with tempfile.TemporaryDirectory(prefix='.voiceport-update-', dir=destination.parent) as temp:
             staged = pathlib.Path(temp) / 'VoicePort.app'
             shutil.copytree(source, staged)
@@ -131,7 +133,6 @@ def install(source, destination, *, quit_idle=False, allow_signing_change=False)
                 'signing_change_allowed': allow_signing_change}
     finally:
         os.close(lock_fd)
-        lock.unlink()
 
 
 def main():

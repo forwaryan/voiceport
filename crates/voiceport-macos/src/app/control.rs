@@ -160,6 +160,21 @@ fn missing() -> Response {
     )
 }
 impl Delegate {
+    pub(super) fn control_quiet_for_update(&self) -> bool {
+        self.ivars().cli_quit_at.get().is_none()
+            && self.ivars().control.try_borrow().is_ok_and(|control| {
+                control.background.is_none()
+                    && control
+                        .operation
+                        .as_ref()
+                        .is_none_or(|operation| operation.result.is_some())
+                    && control
+                        .probe
+                        .as_ref()
+                        .is_none_or(|probe| probe.active_id().is_none())
+            })
+    }
+
     pub(super) fn start_control(&self) -> Result<(), Response> {
         let path = voiceport_control::transport::path_from_env()?;
         self.ivars().control.borrow_mut().server = Some(Server::bind(&path)?);

@@ -103,7 +103,7 @@ def generate(write=True):
   elif 'MIT' in license: selected='MIT'
   elif 'Apache-2.0' in license: selected='Apache-2.0'
   else: selected=license
-  assert selected in ['MIT','Apache-2.0','MIT AND Unicode-3.0','Apache-2.0 AND ISC','ISC','BSD-3-Clause','MPL-2.0','Unicode-3.0','CDLA-Permissive-2.0'], ('unreviewed terms',selected)
+  assert selected in ['MIT','Apache-2.0','MIT AND Unicode-3.0','Apache-2.0 AND ISC','ISC','BSD-3-Clause','MPL-2.0','Unicode-3.0','CDLA-Permissive-2.0','Zlib'], ('unreviewed terms',selected)
   # Retain every supplied alternative in full. This is not an election of a
   # project license or a legal approval of external redistribution.
   rows.append({'name':p['name'],'version':p['version'],'source':p['source'],'package_id':id,'declared_spdx':license,'selection':selected, 'selection_basis':'Where OR options exist choose MIT, else Apache-2.0; AND terms retained together. Embedded components retain their own full notices regardless of crate primary expression. All supplied alternatives remain available. MPL package full source bundled. This is material selection for local development, not legal approval or a project-license election.','scope':sorted(scopes.get(id,{'other-platform-or-lock-only'})),'enabled_features':nodes.get(id,{}).get('features',[]),'source_manifest':'cargo-registry/'+p['name']+'-'+p['version']+'/Cargo.toml','materials':files})
