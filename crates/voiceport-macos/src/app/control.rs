@@ -10,14 +10,28 @@ use std::{
     sync::mpsc::{self, Receiver},
 };
 use voiceport_control::{
-    Action, Response,
+    Action, DictionaryRequest, FileRequest, HistoryRequest, Page, PreferencesRequest, Response,
+    ScenesRequest,
     readiness::Hotkey,
     transport::{Pending, Server},
 };
 
+mod files;
+#[cfg(debug_assertions)]
+mod fixture;
+#[cfg(debug_assertions)]
+pub use fixture::isolated_control_regression;
+mod history;
+mod models;
+mod product;
+
 #[derive(Default)]
 pub(super) struct Control {
     pub server: Option<Server>,
+    window: Option<(product::Window, Pending)>,
+    microphone_operation: Option<String>,
+    models: models::ModelControl,
+    files: files::FileControl,
     background: Option<Receiver<Completed>>,
     operation: Option<Operation>,
     probe: Option<super::control_probes::ProbeOperation>,
@@ -152,6 +166,7 @@ struct Completed {
 enum Outcome {
     Reply(Response, bool),
     Pinned(SessionSource, String, bool),
+    PreparedFile(Box<files::Prepared>),
 }
 fn err(code: &str, message: &str) -> Response {
     Response::error(code, message)
@@ -214,6 +229,12 @@ impl Delegate {
     pub(super) fn poll_control(&self) {
         // First settle an owned operation, before a later GUI session can expose a new transcript.
         let mut control = self.ivars().control.borrow_mut();
+        if control.models.poll(self.ivars().quitting.get()) {
+            self.ivars().managing_models.set(false);
+            if !self.ivars().quitting.get() {
+                self.with_controller(|c| c.refresh_catalog());
+            }
+        }
         if let Some(operation) = &mut control.operation
             && let Some(c) = self.ivars().controller.borrow().as_ref()
         {
@@ -237,6 +258,18 @@ impl Delegate {
                         self.with_controller(|c| c.refresh_catalog());
                     }
                     response
+                }
+                Outcome::PreparedFile(prepared) => {
+                    if completed.pending.expired() {
+                        err(
+                            "timeout",
+                            "Request expired before preparing the file receipt.",
+                        )
+                    } else if self.ivars().quitting.get() {
+                        busy()
+                    } else {
+                        control.files.prepare(prepared)
+                    }
                 }
                 Outcome::Pinned(source, language, sample) => {
                     if completed.pending.expired() {
@@ -271,6 +304,13 @@ impl Delegate {
                 continue;
             }
             self.dispatch_control(&mut control, pending);
+            if let Some((window, pending)) = control.window.take() {
+                // Native dialogs may run a nested AppKit event loop. Release the
+                // controller and control borrows before any window action.
+                drop(control);
+                self.show_control_window(window, pending);
+                return;
+            }
         }
     }
     pub(super) fn hotkey_registration(&self) -> Hotkey {
@@ -298,6 +338,7 @@ impl Delegate {
             || self.ivars().pending_hotkey.borrow().is_some()
             || self.settings_locked()
             || control.background.is_some();
+        let unavailable = locked || c.discovering();
         let response = match action {
             Action::Status => {
                 let (microphone, speech) = crate::audio::Recorder::permission_status();
@@ -382,7 +423,136 @@ impl Delegate {
                     return;
                 }
             }
+            Action::Capabilities => product::capabilities(),
+            Action::UpdateCheck => self.control_update_check(),
+            Action::UpdateStatus => Response::ok(self.update_snapshot()),
+            Action::History { .. } if self.ivars().quitting.get() => busy(),
+            Action::History {
+                request:
+                    HistoryRequest::Settings {
+                        enabled: Some(enabled),
+                        confirm,
+                    },
+            } => {
+                if unavailable || c.busy() {
+                    busy()
+                } else {
+                    drop(slot);
+                    pending.respond(self.set_control_history(enabled, confirm));
+                    return;
+                }
+            }
+            Action::History { request } => history::dispatch(c, request),
+            Action::File { .. } if self.ivars().quitting.get() => busy(),
+            Action::File {
+                request:
+                    FileRequest::Plan {
+                        path,
+                        source,
+                        language,
+                    },
+            } => {
+                if unavailable || c.busy() {
+                    busy()
+                } else {
+                    control.files.clear_proposal();
+                    match crate::file_transcription::Plan::resolve(&c.catalog, &source, &language) {
+                        Ok(plan) => {
+                            self.background_control(control, pending, move || {
+                                match crate::file_transcription::Input::open(&path) {
+                                    Ok(input) => Outcome::PreparedFile(Box::new(files::Prepared {
+                                        input,
+                                        plan,
+                                    })),
+                                    Err(error) => {
+                                        Outcome::Reply(files::error_response(&error), false)
+                                    }
+                                }
+                            });
+                            return;
+                        }
+                        Err(error) => files::error_response(&error),
+                    }
+                }
+            }
+            Action::File { request } => control.files.dispatch(c, request, unavailable),
+            Action::ModelsList => product::models(c),
+            Action::Models { request } => {
+                let was_running = control.models.running();
+                let response = control.models.dispatch(c, request, unavailable);
+                if !was_running && control.models.running() {
+                    self.ivars().managing_models.set(true);
+                }
+                response
+            }
+            Action::SourcesDestination { id } => product::destination(c, &id),
+            Action::GuiResult {
+                generation,
+                original,
+            } => product::gui_result(c, generation, original),
+            Action::Preferences {
+                request: request @ PreferencesRequest::Get,
+            } => self.control_preferences(c, request),
+            Action::Dictionary {
+                request: request @ (DictionaryRequest::Show | DictionaryRequest::Preview { .. }),
+            } => self.control_dictionary(c, request),
+            Action::Scenes {
+                request: request @ ScenesRequest::List,
+            } => self.control_scenes(c, request),
+            Action::Microphone { request } => {
+                self.control_microphone(control, c, request, unavailable)
+            }
+            Action::Open { page }
+                if !self.ivars().quitting.get()
+                    && (matches!(
+                        page,
+                        Page::Result
+                            | Page::Settings
+                            | Page::FirstRun
+                            | Page::Permissions
+                            | Page::Microphone
+                            | Page::QuickPanel
+                            | Page::File
+                    ) || (matches!(page, Page::Models)
+                        && self.ivars().model_manager.borrow().is_some())
+                        || (matches!(page, Page::Sources)
+                            && self.ivars().source_manager.borrow().is_some())) =>
+            {
+                control.window = Some((product::Window::Page(page), pending));
+                return;
+            }
             _ if locked || c.busy() || c.discovering() => busy(),
+            Action::Open { page } => {
+                control.window = Some((product::Window::Page(page), pending));
+                return;
+            }
+            Action::Preferences { request } => self.control_preferences(c, request),
+            Action::ModelsRefresh => {
+                c.refresh_catalog();
+                product::models(c)
+            }
+            Action::Dictionary { request } => self.control_dictionary(c, request),
+            Action::Scenes {
+                request: ScenesRequest::Apply { name },
+            } => {
+                match c
+                    .workflows
+                    .presets
+                    .iter()
+                    .find(|preset| preset.name == name)
+                {
+                    None => missing(),
+                    Some(preset) if preset.source(&c.catalog).is_err() => err(
+                        "invalid_config",
+                        "The saved scene source or language is unavailable.",
+                    ),
+                    Some(_) => {
+                        control.window = Some((product::Window::ApplyScene(name), pending));
+                        return;
+                    }
+                }
+            }
+            Action::Scenes { request } => self.control_scenes(c, request),
             Action::DictationRetry { operation } => match &mut control.operation {
                 Some(op) => op.retry(&operation, c),
                 None => missing(),

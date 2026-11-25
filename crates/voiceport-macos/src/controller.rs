@@ -16,6 +16,8 @@ use crate::{
 #[cfg(test)]
 #[path = "controller/dictation_workflow_tests.rs"]
 mod dictation_workflow_tests;
+#[path = "controller/recent_dictations.rs"]
+pub(crate) mod recent_dictations;
 
 use std::sync::Mutex;
 use std::{
@@ -251,6 +253,7 @@ pub struct Controller {
     pub source_id: String,
     pub catalog: Catalog,
     pub source_tests: crate::source_tests::SourceTests,
+    pub(crate) file_jobs: crate::file_transcription::Jobs,
     discovery: Option<Receiver<Catalog>>,
     recorded_source: SessionSource,
     partial: PartialSlot,
@@ -271,6 +274,7 @@ pub struct Controller {
     allow_delivery: bool,
     delivery_settle: Option<Phase>,
     gui_receipt: Option<GuiDictationReceipt>,
+    recent_dictations: recent_dictations::RecentDictations,
     gui_owns_delivery: bool,
     overlay_origin_pid: Option<i32>,
     gui_diagnostics: GuiDiagnostics,
@@ -300,6 +304,7 @@ impl Controller {
             source_id: CHATGPT.into(),
             catalog: Catalog::pending(CHATGPT),
             source_tests: crate::source_tests::SourceTests::new(),
+            file_jobs: crate::file_transcription::Jobs::default(),
             discovery: None,
             recorded_source: SessionSource::ChatGpt,
             partial: Arc::new(Mutex::new(None)),
@@ -320,6 +325,7 @@ impl Controller {
             allow_delivery: false,
             delivery_settle: None,
             gui_receipt: None,
+            recent_dictations: recent_dictations::RecentDictations::default(),
             gui_owns_delivery: false,
             overlay_origin_pid: None,
             gui_diagnostics: GuiDiagnostics::default(),
@@ -359,8 +365,21 @@ impl Controller {
     pub fn seconds(&self) -> u64 {
         self.started.map(|s| s.elapsed().as_secs()).unwrap_or(0)
     }
+    pub(crate) fn start_prepared_file(
+        &mut self,
+        input: crate::file_transcription::Input,
+        plan: crate::file_transcription::Plan,
+        accept_upload: bool,
+    ) -> Result<crate::file_transcription::Status, crate::file_transcription::Error> {
+        if self.busy() {
+            return Err(crate::file_transcription::BUSY);
+        }
+        plan.verify_source(&self.catalog)?;
+        self.file_jobs.start(input, plan, accept_upload)
+    }
     pub fn busy(&self) -> bool {
-        !self.state.can_start()
+        self.file_jobs.busy()
+            || !self.state.can_start()
             || self.delivery.has_pending()
             || self.source_tests.busy()
             || self.microphone_test.is_some()
@@ -685,6 +704,11 @@ impl Controller {
                 }
             }
         }
+        if gui {
+            self.begin_recent_dictation(generation);
+        } else {
+            self.discard_recent_dictation_candidate();
+        }
         self.cancel_capture();
         self.recording = None;
         self.transcript.clear();
@@ -744,6 +768,7 @@ impl Controller {
         self.raw_transcript = None;
         self.recorded_dictionary = Dictionary::default();
         let generation = self.state.begin()?;
+        self.discard_recent_dictation_candidate();
         self.state.permissions(generation, true);
         self.state.transcribe();
         self.testing = true;
@@ -815,6 +840,9 @@ impl Controller {
     pub(crate) fn microphone_test_running(&self) -> bool {
         self.microphone_test.is_some()
     }
+    pub(crate) fn microphone_test_id(&self) -> Option<&str> {
+        self.microphone_test.as_ref().map(|test| test.id.as_str())
+    }
     pub(crate) fn microphone_test_status(&self) -> &str {
         &self.microphone_test_status
     }
@@ -851,6 +879,7 @@ impl Controller {
             return;
         }
         let gui = self.current_gui_receipt().is_some();
+        let previous = self.state.generation();
         let Some(generation) = self.state.retry() else {
             return;
         };
@@ -864,6 +893,7 @@ impl Controller {
                 capture_first_frame: self.gui_diagnostics.timings.capture_first_frame,
                 ..StageTimings::default()
             };
+            self.retry_recent_dictation(previous, generation);
         }
         self.gui_diagnostics.abandon_stages();
         self.delivery.clear();
@@ -1068,6 +1098,9 @@ impl Controller {
         }
     }
     pub fn cancel(&mut self) {
+        if self.file_jobs.busy() {
+            return;
+        }
         self.stop_microphone_test();
         if self.source_tests.busy() {
             self.source_tests.cancel();
@@ -1100,8 +1133,10 @@ impl Controller {
         self.delivery_settle = None;
         let worker_active = self.active.is_some();
         self.state.cancel(worker_active);
+        self.discard_recent_dictation_candidate();
         self.gui_diagnostics.abandon_stages();
         self.delivery.clear();
+        self.observe_recent_dictation();
         self.started = None;
         self.cancel_capture();
         if let Some(active) = &self.active {
@@ -1167,6 +1202,7 @@ impl Controller {
             Option<crate::local_audio::Input>,
         ) -> Result<bool, String>,
     ) {
+        self.file_jobs.poll();
         self.poll_microphone_test();
         let was_testing = self.source_tests.busy();
         self.source_tests.poll();
@@ -1480,6 +1516,7 @@ impl Controller {
         if self.state.phase == Phase::Delivering && !self.delivery.has_pending() {
             self.state.phase = self.delivery_settle.take().unwrap_or(Phase::Ready);
         }
+        self.observe_recent_dictation();
     }
 }
 

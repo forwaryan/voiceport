@@ -12,6 +12,8 @@ mod dictation_dictionary;
 #[cfg(target_os = "macos")]
 mod dictation_workflows;
 #[cfg(target_os = "macos")]
+mod file_transcription;
+#[cfg(target_os = "macos")]
 mod hotkey;
 #[cfg(target_os = "macos")]
 mod input_target;
@@ -54,6 +56,9 @@ pub use app::first_run_field_fixture;
 pub use app::isolated_shortcut_regression;
 #[cfg(target_os = "macos")]
 pub use app::run;
+#[cfg(all(target_os = "macos", debug_assertions))]
+#[doc(hidden)]
+pub use app::{isolated_control_regression, isolated_file_transcription_regression};
 #[cfg(target_os = "macos")]
 pub mod audio;
 #[cfg(target_os = "macos")]

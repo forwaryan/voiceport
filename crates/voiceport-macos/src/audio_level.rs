@@ -50,6 +50,7 @@ impl Level {
 }
 
 pub(crate) struct LevelTest {
+    pub(crate) id: String,
     input: OpenInput,
     route: Route,
     level: Arc<Mutex<Level>>,
@@ -73,6 +74,7 @@ impl LevelTest {
             }
         });
         Ok(Self {
+            id: uuid::Uuid::new_v4().to_string(),
             input,
             route,
             level,

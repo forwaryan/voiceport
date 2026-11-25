@@ -1,10 +1,12 @@
 //! Native model library. One retained window owns installation and its admission lock.
 use super::*;
-use crate::model_library::{Definition, Installation, Job, MODELS, Operation, Paths};
+use crate::model_library::{
+    Definition, Installation, Job, MODELS, Operation, Paths, removal_identity,
+};
 use block2::RcBlock;
 use local_state::{LocalRefresh, ModelView, PrimaryAction, RefreshReason};
 use objc2::Message;
-use std::{os::unix::fs::MetadataExt, path::PathBuf, time::Instant};
+use std::{path::PathBuf, time::Instant};
 mod browse;
 mod cloud;
 mod local_state;
@@ -735,10 +737,9 @@ impl Manager {
             self.notice("请先选择其他转写来源，再删除此模型。");
             return None;
         }
-        let path = self.ivars().paths.model(d);
-        match path.symlink_metadata() {
-            Ok(metadata) if metadata.is_dir() => Some((metadata.dev(), metadata.ino())),
-            _ => {
+        match removal_identity(&self.ivars().paths, d) {
+            Ok(identity) => Some(identity),
+            Err(_) => {
                 self.ivars().local_refresh.borrow_mut().invalidate();
                 self.refresh();
                 self.notice("VoicePort 模型副本已变更或无法删除，请检查目录状态。");
@@ -764,7 +765,7 @@ impl Manager {
                 && let Some(current) = manager.removable_model(d)
             {
                 if current == identity {
-                    manager.start(d, Operation::Remove);
+                    manager.start(d, Operation::Remove { identity });
                 } else {
                     manager.ivars().local_refresh.borrow_mut().invalidate();
                     manager.notice("VoicePort 模型副本已替换，请重新确认后删除。");

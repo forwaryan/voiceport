@@ -224,6 +224,84 @@ fn response(status: &str, body: &[u8]) -> Vec<u8> {
     bytes
 }
 #[test]
+fn file_transcription_reaches_only_the_confirmed_loopback_source() {
+    use crate::{
+        controller::Controller,
+        file_transcription::{Destination, Input, Plan, State},
+        local_models::{Entry, SessionSource},
+    };
+
+    let server = serve(
+        response("200 OK", br#"{"text":"file fixture transcript"}"#),
+        Duration::ZERO,
+    );
+    let source = crate::plugins::Source {
+        id: "file-http".into(),
+        name: "File fixture HTTP".into(),
+        plugin_id: crate::plugins::HTTP.into(),
+        plugin_version: "1".into(),
+        enabled: true,
+        config: BTreeMap::from([
+            ("endpoint".into(), server.endpoint.clone()),
+            ("model".into(), "fixture-file".into()),
+        ]),
+        credential_refs: BTreeMap::new(),
+    };
+    let snapshot = Snapshot::configured(&Store::default(), &source).unwrap();
+    let mut c = Controller::new();
+    c.catalog.entries.push(Entry {
+        id: source.id.clone(),
+        title: source.name,
+        detail: String::new(),
+        source: Ok(SessionSource::Plugin(Box::new(snapshot))),
+    });
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("private-fixture-name.wav");
+    std::fs::write(&path, sample()).unwrap();
+    let denied = Plan::resolve(&c.catalog, &source.id, "en").unwrap();
+    assert_eq!(
+        c.start_prepared_file(Input::open(&path).unwrap(), denied, false)
+            .unwrap_err()
+            .code,
+        "confirmation_required",
+    );
+    assert!(!c.busy());
+    assert!(matches!(
+        server.requests.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    let allowed = Plan::resolve(&c.catalog, &source.id, "en").unwrap();
+    let receipt = c
+        .start_prepared_file(Input::open(&path).unwrap(), allowed, true)
+        .unwrap();
+    assert_eq!(receipt.delivery, "none");
+    assert!(matches!(
+        receipt.target.destination,
+        Destination::Http { loopback: true, .. }
+    ));
+    let request = server.request();
+    let request_text = String::from_utf8_lossy(&request);
+    assert!(request_text.starts_with("POST /full/transcriptions HTTP/1.1"));
+    assert!(request_text.contains("fixture-file"));
+    assert!(request_text.contains("name=\"language\"\r\n\r\nen"));
+    assert!(request_text.contains("filename=\"dictation.wav\""));
+    assert!(!request_text.contains("private-fixture-name"));
+    let deadline = Instant::now() + FIXTURE_LIMIT;
+    while c.file_jobs.busy() {
+        c.file_jobs.poll();
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(2));
+    }
+    let (status, text) = c.file_jobs.result(&receipt.operation).unwrap();
+    assert_eq!(status.state, State::Ready);
+    assert_eq!(text, Some("file fixture transcript"));
+    assert_eq!(std::fs::read(path).unwrap(), sample());
+    assert_eq!(c.state.generation(), 0);
+    assert_eq!(c.input_method(), None);
+    server.finish_blocking();
+}
+
+#[test]
 fn source_probe_uses_the_production_http_path_with_only_synthetic_audio() {
     for (status, body, available) in [
         ("200 OK", br#"{"text":""}"#.as_slice(), true),

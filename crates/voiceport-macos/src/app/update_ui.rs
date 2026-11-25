@@ -4,6 +4,7 @@ use crate::app_update::{self, Check, Staged, Update};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
+use voiceport_control::Response;
 
 const AUTO_UPDATE_PREF: &str = "automaticallyCheckForUpdates";
 const FIRST_CHECK: Duration = Duration::from_secs(15);
@@ -15,6 +16,66 @@ pub(super) struct UpdateUi {
     automatic: bool,
     next: Option<Instant>,
     state: State,
+    last_check: CheckSummary,
+    #[cfg(debug_assertions)]
+    fixture: Option<CheckFixture>,
+}
+
+impl UpdateUi {
+    fn running_version(&self) -> String {
+        #[cfg(debug_assertions)]
+        if self.fixture.is_some() {
+            return env!("CARGO_PKG_VERSION").into();
+        }
+        current_version()
+    }
+}
+
+#[derive(Default)]
+struct CheckSummary {
+    latest: Option<String>,
+    state: Option<&'static str>,
+    reason: Option<&'static str>,
+}
+
+impl CheckSummary {
+    fn record(&mut self, result: &app_update::Result<Check>) {
+        let (state, latest, reason) = match result {
+            Ok(Check::Available(update)) => ("update_available", Some(&update.version), None),
+            Ok(Check::Current {
+                latest,
+                local_newer,
+            }) => (
+                if *local_newer {
+                    "local_newer"
+                } else {
+                    "up_to_date"
+                },
+                Some(latest),
+                None,
+            ),
+            Ok(Check::Incompatible { latest, reason }) => {
+                ("incompatible", Some(latest), Some(*reason))
+            }
+            Err(reason) => ("failed", None, Some(*reason)),
+        };
+        self.state = Some(state);
+        self.reason = reason;
+        if let Some(latest) = latest {
+            self.latest = Some(latest.clone());
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+pub(super) type FixtureRelease = app_update::Result<Vec<u8>>;
+
+#[cfg(debug_assertions)]
+#[derive(Clone)]
+struct CheckFixture {
+    home: PathBuf,
+    installed: PathBuf,
+    requests: mpsc::Sender<mpsc::Sender<FixtureRelease>>,
 }
 
 #[derive(Default)]
@@ -58,6 +119,9 @@ impl RetainedResult {
         }
         if c.microphone_test_running() {
             return Err("麦克风正在测试。请在设置中停止测试或等待结束。");
+        }
+        if c.file_jobs.busy() {
+            return Err("音频文件转写正在运行或清理。请等待当前任务结束。");
         }
         if c.busy() {
             return Err("文字投递尚未完成。请等待当前任务结束。");
@@ -132,6 +196,18 @@ impl Notice {
 }
 
 impl State {
+    fn busy(&self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::Checking { .. } => Some(("checking", "An update check is already running.")),
+            Self::Downloading(..) => Some((
+                "downloading",
+                "The App is downloading and verifying an update.",
+            )),
+            Self::Installing => Some(("installing", "The App is handling update installation.")),
+            _ => None,
+        }
+    }
+
     fn checked(manual: bool, result: app_update::Result<Check>, previous: Option<Cached>) -> Self {
         match result {
             Ok(Check::Available(candidate)) => Self::Offered(candidate, None),
@@ -271,10 +347,7 @@ impl Delegate {
                 _ => None,
             };
             item.setToolTip(detail.as_deref());
-            item.setEnabled(!matches!(
-                update.state,
-                State::Checking { .. } | State::Downloading(..) | State::Installing
-            ));
+            item.setEnabled(update.state.busy().is_none());
         }
         if let Some(item) = self.ivars().update_refresh_item.get() {
             item.setHidden(!update.state.can_refresh());
@@ -308,55 +381,135 @@ impl Delegate {
     }
 
     pub(super) fn start_update_check(&self, manual: bool) {
-        let (installed, home) = location();
+        if let Err(("unsupported", reason)) = self.request_update_check(manual)
+            && manual
+        {
+            let notice = Notice::failure("无法检查更新", reason);
+            self.update_message(
+                notice.title,
+                &notice.detail(&current_version()),
+                notice.show_release,
+            );
+        }
+    }
+
+    pub(super) fn control_update_check(&self) -> Response {
+        match self.request_update_check(true) {
+            Ok(()) => Response::ok(self.update_snapshot()),
+            Err((code, reason)) => {
+                let mut response = Response::error(code, reason);
+                response.data = self.update_snapshot();
+                response
+            }
+        }
+    }
+
+    pub(super) fn update_snapshot(&self) -> serde_json::Value {
+        let update = self.ivars().update.borrow();
+        let quitting = self.ivars().quitting.get();
+        let active = update.state.busy().map(|(state, _)| state);
+        let last = &update.last_check;
+        let state = if quitting {
+            "quitting"
+        } else if let Some(active) = active {
+            active
+        } else if matches!(update.state, State::Ready(..)) {
+            "ready_to_install"
+        } else {
+            last.state.unwrap_or("idle")
+        };
+        serde_json::json!({
+            "state": state,
+            "busy": quitting || active.is_some(),
+            "current_version": update.running_version(),
+            "latest_version": last.latest,
+            "latest_version_stale": last.latest.is_some()
+                && (active == Some("checking") || last.state == Some("failed")),
+            "last_check_state": last.state,
+            "reason": last.reason,
+        })
+    }
+
+    fn request_update_check(&self, manual: bool) -> Result<(), (&'static str, &'static str)> {
         let mut update = self.ivars().update.borrow_mut();
-        if matches!(
-            update.state,
-            State::Checking { .. } | State::Downloading(..) | State::Installing
-        ) {
-            return;
+        if self.ivars().quitting.get() {
+            return Err(("busy", "The App is quitting."));
+        }
+        if let Some((_, reason)) = update.state.busy() {
+            return Err(("busy", reason));
         }
         update.next = Some(Instant::now() + CHECK_INTERVAL);
+        #[cfg(debug_assertions)]
+        let fixture = update.fixture.clone();
+        #[cfg(debug_assertions)]
+        let (installed, home) = fixture.as_ref().map_or_else(location, |fixture| {
+            (fixture.installed.clone(), fixture.home.clone())
+        });
+        #[cfg(not(debug_assertions))]
+        let (installed, home) = location();
         if !app_update::checkable_installation(&installed, &home) {
-            drop(update);
-            if manual {
-                let notice =
-                    Notice::failure("无法检查更新", "请使用应用程序目录中的 VoicePort.app。");
-                self.update_message(
-                    notice.title,
-                    &notice.detail(&current_version()),
-                    notice.show_release,
-                );
-            }
-            return;
+            let reason = "请使用应用程序目录中的 VoicePort.app。";
+            update.last_check.record(&Err(reason));
+            return Err(("unsupported", reason));
         }
-        let running = current_version();
+        let running = update.running_version();
         let (sender, receiver) = mpsc::channel();
-        if std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name("voiceport-update-check".into())
             .spawn(move || {
+                #[cfg(debug_assertions)]
+                if let Some(fixture) = fixture {
+                    let (reply, release) = mpsc::channel();
+                    let result = fixture
+                        .requests
+                        .send(reply)
+                        .ok()
+                        .and_then(|()| release.recv_timeout(Duration::from_secs(8)).ok());
+                    let _ = sender.send(app_update::check_fixture_release(
+                        &running,
+                        result.unwrap_or(Err("检查更新已中断。")),
+                    ));
+                    return;
+                }
                 let _ = sender.send(app_update::check(&home, &running));
-            })
-            .is_ok()
-        {
-            let previous = match std::mem::take(&mut update.state) {
-                State::Offered(candidate, _) => Some(Cached::Offer(candidate)),
-                State::Ready(staged, _) => Some(Cached::Download(staged)),
-                _ => None,
-            };
+            });
+        let previous = match std::mem::take(&mut update.state) {
+            State::Offered(candidate, _) => Some(Cached::Offer(candidate)),
+            State::Ready(staged, _) => Some(Cached::Download(staged)),
+            _ => None,
+        };
+        let result = if worker.is_ok() {
             update.state = State::Checking {
                 manual,
                 receiver,
                 previous,
             };
-        } else if manual {
-            update.state = State::Notice(Notice::failure(
-                "无法检查更新",
-                "无法启动后台检查，请稍后重试。",
-            ));
-        }
+            Ok(())
+        } else {
+            let reason = "无法启动后台检查，请稍后重试。";
+            update.last_check.record(&Err(reason));
+            update.state = State::checked(manual, Err(reason), previous);
+            Err(("update_check_failed", reason))
+        };
         drop(update);
         self.update_menu();
+        result
+    }
+
+    #[cfg(debug_assertions)]
+    pub(super) fn configure_update_fixture(
+        &self,
+        home: PathBuf,
+        installed: PathBuf,
+        requests: mpsc::Sender<mpsc::Sender<FixtureRelease>>,
+    ) {
+        let mut update = self.ivars().update.borrow_mut();
+        update.initialized = true;
+        update.fixture = Some(CheckFixture {
+            home,
+            installed,
+            requests,
+        });
     }
 
     fn offer_update(&self) {
@@ -600,7 +753,9 @@ impl Delegate {
             update.initialized = true;
             update.automatic = NSUserDefaults::standardUserDefaults()
                 .boolForKey(&NSString::from_str(AUTO_UPDATE_PREF));
-            update.next = Some(Instant::now() + FIRST_CHECK);
+            update
+                .next
+                .get_or_insert_with(|| Instant::now() + FIRST_CHECK);
             drop(update);
             self.update_menu();
             return;
@@ -641,7 +796,10 @@ impl Delegate {
         // The same timer drives dictation and IPC. Publish results in the menu
         // and open dialogs only from explicit menu actions, outside this callback.
         update.state = match finished {
-            Completion::Check(manual, result) => State::checked(manual, result, previous),
+            Completion::Check(manual, result) => {
+                update.last_check.record(&result);
+                State::checked(manual, result, previous)
+            }
             Completion::Stage(Ok(staged), failure) => State::Ready(staged, failure),
             Completion::Stage(Err(error), _) => {
                 State::Notice(Notice::failure("无法准备更新", error))

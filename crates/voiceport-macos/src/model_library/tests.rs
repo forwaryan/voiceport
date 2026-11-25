@@ -353,7 +353,8 @@ fn import_publishes_verified_copy_without_modifying_source() {
     assert!(!paths.model(&TEST_MODEL).join("old-format-marker").exists());
     assert_eq!(paths.installation(&TEST_MODEL), Installation::Current);
     assert_eq!(stages(&paths), 0);
-    remove(&paths, &TEST_MODEL, &cancel).unwrap();
+    let identity = removal_identity(&paths, &TEST_MODEL).unwrap();
+    remove(&paths, &TEST_MODEL, identity, &cancel).unwrap();
     assert!(source.is_dir());
     assert!(!paths.model(&TEST_MODEL).exists());
 }
@@ -728,10 +729,27 @@ fn lock_excludes_second_writer_and_releases_after_drop() {
     assert!(Lock::acquire(&root).is_ok());
 }
 #[test]
+fn confirmed_removal_cannot_delete_a_replacement() {
+    let (_temp, paths, _) = fixture();
+    let original = paths.model(&TEST_MODEL);
+    fs::create_dir(&original).unwrap();
+    let identity = removal_identity(&paths, &TEST_MODEL).unwrap();
+    let previous = paths.root.join("previous-copy");
+    fs::rename(&original, &previous).unwrap();
+    fs::create_dir(&original).unwrap();
+    assert!(remove(&paths, &TEST_MODEL, identity, &AtomicBool::new(false)).is_err());
+    assert!(previous.is_dir() && original.is_dir());
+    let current = removal_identity(&paths, &TEST_MODEL).unwrap();
+    assert!(remove(&paths, &TEST_MODEL, current, &AtomicBool::new(false)).is_ok());
+    assert!(previous.is_dir() && !original.exists());
+}
+
+#[test]
 fn remove_refuses_symlink_and_preserves_target() {
     let (_temp, paths, source) = fixture();
     std::os::unix::fs::symlink(&source, paths.model(&TEST_MODEL)).unwrap();
-    assert!(remove(&paths, &TEST_MODEL, &AtomicBool::new(false)).is_err());
+    assert!(removal_identity(&paths, &TEST_MODEL).is_err());
+    assert!(remove(&paths, &TEST_MODEL, (0, 0), &AtomicBool::new(false)).is_err());
     assert_eq!(
         fs::read(source.join(TEST_MODEL.assets[0].name)).unwrap(),
         b"abc"
