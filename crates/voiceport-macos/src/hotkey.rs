@@ -3,6 +3,7 @@ use crate::{delivery::model::ApplicationTarget, shortcut::Shortcut};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 use std::{
+    cell::Cell,
     ffi::c_void,
     marker::PhantomData,
     ptr,
@@ -21,6 +22,9 @@ const EVENT_NOT_HANDLED: i32 = -9874;
 const HOTKEY_EXISTS: i32 = -9878;
 const SIGNATURE: u32 = u32::from_be_bytes(*b"VPOR");
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
+const PRESSED: u32 = 5;
+const RELEASED: u32 = 6;
+const EXCLUSIVE: u32 = 1; // kEventHotKeyExclusive
 
 #[repr(C)]
 struct EventTypeSpec {
@@ -58,6 +62,9 @@ unsafe extern "C" {
         result: *mut NativeRef,
     ) -> i32;
     fn UnregisterEventHotKey(hotkey: NativeRef) -> i32;
+    fn GetEventKind(event: NativeRef) -> u32;
+    fn GetEventTime(event: NativeRef) -> f64;
+    fn GetCurrentEventTime() -> f64;
     fn GetEventParameter(
         event: NativeRef,
         name: u32,
@@ -69,20 +76,101 @@ unsafe extern "C" {
     ) -> i32;
 }
 
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGEventSourceKeyState(state: i32, key: u16) -> bool;
+}
+
 struct Context {
     sender: Sender<HotKeyEvent>,
     id: u32,
+    edges: Cell<Edges>,
 }
 
-pub(crate) struct HotKeyEvent {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Stroke {
+    registration: u32,
+    sequence: u64,
+}
+
+impl Stroke {
+    pub(crate) fn fixture_stroke(sequence: u64) -> Self {
+        Self {
+            registration: 1,
+            sequence,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Edge {
+    Press(Stroke),
+    Release(Stroke),
+}
+
+/// Tracks one physical stroke per registration. Source timestamps exclude
+/// delayed pre-sample edges; the token excludes events from replaced bindings.
+#[derive(Clone, Copy, Default)]
+struct Edges {
+    watermark: Option<f64>,
+    sequence: u64,
+    active: Option<Stroke>,
+    wait_for_up: bool,
+}
+
+impl Edges {
+    fn transition(&mut self, registration: u32, kind: u32, at: f64) -> Option<Edge> {
+        if !at.is_finite() || self.watermark.is_some_and(|old| at <= old) {
+            return None;
+        }
+        self.watermark = Some(at);
+        if self.wait_for_up {
+            if kind == RELEASED {
+                self.wait_for_up = false;
+            }
+            return None;
+        }
+        match kind {
+            PRESSED if self.active.is_none() => {
+                self.sequence = self.sequence.checked_add(1)?;
+                let stroke = Stroke {
+                    registration,
+                    sequence: self.sequence,
+                };
+                self.active = Some(stroke);
+                Some(Edge::Press(stroke))
+            }
+            RELEASED => self.active.take().map(Edge::Release),
+            _ => None,
+        }
+    }
+
+    fn reconcile(&mut self, registration: u32, key_down: bool, at: f64) -> Option<Edge> {
+        if (self.active.is_none() && !self.wait_for_up) || key_down {
+            return None;
+        }
+        self.transition(registration, RELEASED, at)
+    }
+}
+
+pub(crate) enum HotKeyEvent {
+    Press(KeyPress),
+    Release(Stroke),
+}
+
+pub(crate) struct KeyPress {
+    pub stroke: Stroke,
     pub at: Instant,
     pub application: Option<Retained<NSRunningApplication>>,
     pub target: Option<ApplicationTarget>,
 }
 
-impl HotKeyEvent {
-    fn capture() -> Self {
-        let at = Instant::now();
+impl KeyPress {
+    fn capture(stroke: Stroke, native_at: f64) -> Self {
+        let now = Instant::now();
+        let elapsed = (unsafe { GetCurrentEventTime() } - native_at).max(0.0);
+        // A stalled dispatch must not make an old native press look fresh.
+        let at = now - std::time::Duration::from_secs_f64(elapsed.min(60.0));
         let application = (unsafe { libc::pthread_main_np() } == 1)
             .then(|| NSWorkspace::sharedWorkspace().frontmostApplication())
             .flatten();
@@ -93,6 +181,7 @@ impl HotKeyEvent {
             })
         });
         Self {
+            stroke,
             at,
             application,
             target,
@@ -164,7 +253,8 @@ impl GlobalHotKey {
             handler: ptr::null_mut(),
             context: Box::new(Context {
                 sender,
-                id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+                id: 0,
+                edges: Cell::default(),
             }),
             _main_thread: PhantomData,
         }
@@ -177,17 +267,18 @@ impl GlobalHotKey {
             return Err(RegistrationError::MainThread);
         }
         self.unregister();
-        let event_type = EventTypeSpec {
+        self.context.id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let event_types = [PRESSED, RELEASED].map(|kind| EventTypeSpec {
             class: u32::from_be_bytes(*b"keyb"),
-            kind: 5,
-        };
+            kind,
+        });
         let target = unsafe { GetApplicationEventTarget() };
         let status = unsafe {
             InstallEventHandler(
                 target,
-                pressed,
-                1,
-                &event_type,
+                handle_edge,
+                event_types.len(),
+                event_types.as_ptr(),
                 (&mut *self.context as *mut Context).cast(),
                 &mut self.handler,
             )
@@ -205,7 +296,7 @@ impl GlobalHotKey {
                     id: self.context.id,
                 },
                 target,
-                0,
+                EXCLUSIVE,
                 &mut self.reference,
             )
         };
@@ -213,10 +304,16 @@ impl GlobalHotKey {
             self.unregister();
             return Err(RegistrationError::Shortcut(status));
         }
+        self.context.edges.set(Edges {
+            watermark: Some(unsafe { GetCurrentEventTime() }),
+            wait_for_up: unsafe { CGEventSourceKeyState(1, shortcut.key_code() as u16) },
+            ..Edges::default()
+        });
         Ok(())
     }
 
     pub fn unregister(&mut self) {
+        self.context.edges.set(Edges::default());
         if !self.reference.is_null() {
             unsafe { UnregisterEventHotKey(self.reference) };
             self.reference = ptr::null_mut();
@@ -226,6 +323,21 @@ impl GlobalHotKey {
             self.handler = ptr::null_mut();
         }
     }
+
+    pub(crate) fn active_stroke(&self, shortcut: Shortcut) -> Option<Stroke> {
+        let mut edges = self.context.edges.get();
+        if edges.active.is_some() || edges.wait_for_up {
+            // Sample only the registered non-modifier key while a stroke is
+            // open; no monitor, event tap or user keystroke contents are read.
+            let down = unsafe { CGEventSourceKeyState(1, shortcut.key_code() as u16) };
+            let at = unsafe { GetCurrentEventTime() };
+            if let Some(Edge::Release(stroke)) = edges.reconcile(self.context.id, down, at) {
+                let _ = self.context.sender.send(HotKeyEvent::Release(stroke));
+            }
+            self.context.edges.set(edges);
+        }
+        edges.active
+    }
 }
 
 impl Drop for GlobalHotKey {
@@ -234,7 +346,7 @@ impl Drop for GlobalHotKey {
     }
 }
 
-unsafe extern "C" fn pressed(_: NativeRef, event: NativeRef, context: *mut c_void) -> i32 {
+unsafe extern "C" fn handle_edge(_: NativeRef, event: NativeRef, context: *mut c_void) -> i32 {
     if event.is_null() || context.is_null() {
         return EVENT_NOT_HANDLED;
     }
@@ -259,8 +371,58 @@ unsafe extern "C" fn pressed(_: NativeRef, event: NativeRef, context: *mut c_voi
     if status != 0 || identity.signature != SIGNATURE || identity.id != context.id {
         return EVENT_NOT_HANDLED;
     }
-    // Bind the application here, before the AppKit timer may process a later
-    // activation. No field contents or Accessibility target are read here.
-    let _ = context.sender.send(HotKeyEvent::capture());
+    let at = unsafe { GetEventTime(event) };
+    let mut edges = context.edges.get();
+    let edge = edges.transition(context.id, unsafe { GetEventKind(event) }, at);
+    context.edges.set(edges);
+    if let Some(edge) = edge {
+        // Bind the application here, before the AppKit timer may process a
+        // later activation. A release never recaptures the application.
+        let _ = context.sender.send(match edge {
+            Edge::Press(stroke) => HotKeyEvent::Press(KeyPress::capture(stroke, at)),
+            Edge::Release(stroke) => HotKeyEvent::Release(stroke),
+        });
+    }
     0
+}
+
+#[test]
+fn shortcut_edges_ignore_repeats_missed_release_and_late_edges() {
+    let mut edges = Edges::default();
+    let Some(Edge::Press(first)) = edges.transition(1, PRESSED, 1.) else {
+        panic!("press")
+    };
+    assert_eq!(edges.transition(1, PRESSED, 2.), None);
+    assert_eq!(edges.reconcile(1, true, 3.), None);
+    assert_eq!(edges.reconcile(1, false, 4.), Some(Edge::Release(first)));
+    assert_eq!(edges.transition(1, PRESSED, 3.5), None);
+    let Some(Edge::Press(second)) = edges.transition(1, PRESSED, 5.) else {
+        panic!("second press")
+    };
+    assert_ne!(first, second);
+    assert_eq!(edges.transition(1, RELEASED, 4.5), None);
+    assert_eq!(edges.active, Some(second));
+    assert_eq!(
+        edges.transition(1, RELEASED, 6.),
+        Some(Edge::Release(second))
+    );
+    assert_eq!(edges.transition(1, RELEASED, 7.), None);
+    assert_ne!(
+        Edges::default().transition(2, PRESSED, 1.),
+        Some(Edge::Press(first))
+    );
+}
+
+#[test]
+fn shortcut_registration_while_key_is_down_requires_a_fresh_press() {
+    let mut edges = Edges {
+        wait_for_up: true,
+        ..Edges::default()
+    };
+    assert_eq!(edges.transition(1, PRESSED, 1.), None);
+    assert_eq!(edges.reconcile(1, false, 2.), None);
+    assert!(matches!(
+        edges.transition(1, PRESSED, 3.),
+        Some(Edge::Press(_))
+    ));
 }

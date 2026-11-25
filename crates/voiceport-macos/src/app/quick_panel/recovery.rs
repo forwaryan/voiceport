@@ -1,106 +1,26 @@
-use super::*;
-use objc2::{Message, rc::Weak};
-use voiceport_control::{
-    DeliveryState, DictationBlockReason, GuiDictationReceipt, TranscriptionState,
+use super::{
+    recovery_model::{CopyOnce, Presentation},
+    *,
 };
+use objc2::{Message, rc::Weak};
 
-const COLLAPSED_HEIGHT: f64 = 104.;
-const EXPANDED_HEIGHT: f64 = 208.;
+const COLLAPSED_HEIGHT: f64 = 112.;
+const EXPANDED_HEIGHT: f64 = COLLAPSED_HEIGHT + 104.;
 
-#[derive(Clone, Copy)]
-struct ResultText<'a> {
-    generation: u64,
-    text: &'a str,
-    delivery: &'static str,
-    detail: Option<&'static str>,
+fn current_presentation(c: &Controller) -> Option<Presentation> {
+    Presentation::from_receipt(
+        c.state.phase,
+        c.state.generation(),
+        !c.transcript.trim().is_empty(),
+        &c.gui_dictation_receipt()?,
+    )
 }
 
-impl<'a> ResultText<'a> {
-    fn current(c: &'a Controller) -> Option<Self> {
-        // Only the GUI receipt for this Controller generation owns this text.
-        Self::from_receipt(
-            c.state.phase,
-            c.state.generation(),
-            &c.transcript,
-            &c.gui_dictation_receipt()?,
-        )
-    }
-
-    fn from_receipt(
-        phase: Phase,
-        generation: u64,
-        text: &'a str,
-        receipt: &GuiDictationReceipt,
-    ) -> Option<Self> {
-        if phase != Phase::Ready
-            || generation != receipt.generation
-            || receipt.transcription != TranscriptionState::Completed
-            || text.trim().is_empty()
-        {
-            return None;
-        }
-        let (delivery, detail) = if receipt.session != generation
-            || receipt.block_reason == Some(DictationBlockReason::RetryPanelOnly)
-        {
-            // The receipt preserves earlier operations after an explicit retry.
-            ("本次重试结果未投递，请检查原输入框是否已有文字。", None)
-        } else {
-            let delivery = match receipt.delivery.state {
-                DeliveryState::NotSent if receipt.delivery.submitted_operations == 0 => {
-                    "本次文字未投递。"
-                }
-                DeliveryState::Waiting => "投递结果不明，请先检查原输入框。",
-                DeliveryState::Confirmed
-                    if !receipt.delivery.stopped && receipt.failure_stage.is_none() =>
-                {
-                    "已确认投递。"
-                }
-                DeliveryState::NotSent
-                | DeliveryState::PartiallySent
-                | DeliveryState::Confirmed => "已尝试投递，可能已有部分文字。请先检查原输入框。",
-                DeliveryState::Submitted => "已提交投递请求，请先检查原输入框是否收到。",
-                DeliveryState::AwaitingConfirmation | DeliveryState::Uncertain => {
-                    "投递结果不明，请先检查原输入框，避免重复粘贴。"
-                }
-            };
-            (
-                delivery,
-                completed_delivery_failure(phase, true, receipt.failure_stage.as_deref()),
-            )
-        };
-        Some(Self {
-            generation,
-            text,
-            delivery,
-            detail,
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Access {
-    Collapsed,
-    Expanded,
-    CopyAttempted,
-}
-
-impl Access {
-    fn reveal(self, displayed: u64, result: ResultText<'_>) -> Option<Self> {
-        (self == Self::Collapsed && displayed == result.generation).then_some(Self::Expanded)
-    }
-
-    fn claim_copy<'a>(
-        access: &Cell<Self>,
-        displayed: u64,
-        result: ResultText<'a>,
-    ) -> Option<&'a str> {
-        if access.get() != Self::Expanded || displayed != result.generation {
-            return None;
-        }
-        // Consume before native clipboard access so duplicate callbacks cannot write twice.
-        access.set(Self::CopyAttempted);
-        Some(result.text)
-    }
+/// Closing the popover clears its AppKit view and text, but never rearms copy.
+#[derive(Default)]
+pub(super) struct ResultCard {
+    visible: RefCell<Option<Card>>,
+    copy_once: CopyOnce,
 }
 
 define_class!(
@@ -132,11 +52,12 @@ impl RecoveryActions {
     }
 }
 
-pub(super) struct Card {
+struct Card {
     generation: u64,
-    access: Cell<Access>,
+    expanded: Cell<bool>,
     view: Retained<NSView>,
     delivery: Retained<NSTextField>,
+    next: Retained<NSTextField>,
     detail: Retained<NSTextField>,
     show: Retained<NSButton>,
     copy: Retained<NSButton>,
@@ -148,22 +69,20 @@ pub(super) struct Card {
 impl Card {
     fn new(d: &Delegate, parent: &NSView, target: &RecoveryActions, generation: u64) -> Self {
         let mtm = d.mtm();
-        let view = NSView::initWithFrame(
-            NSView::alloc(mtm),
-            rect(0., HEADER_Y, WIDTH, COLLAPSED_HEIGHT),
-        );
+        let view = NSView::initWithFrame(NSView::alloc(mtm), rect(0., 0., WIDTH, COLLAPSED_HEIGHT));
         parent.addSubview(&view);
-        d.surface(&view, rect(12., 4., WIDTH - 24., COLLAPSED_HEIGHT - 10.));
-        let title = d.label(&view, "本次转写", rect(24., 75., WIDTH - 48., 17.), 12.);
+        d.surface(&view, rect(12., 4., WIDTH - 24., COLLAPSED_HEIGHT - 6.));
+        let title = d.label(&view, "本次转写", rect(24., 95., WIDTH - 48., 15.), 12.);
         title.setFont(Some(&NSFont::boldSystemFontOfSize(12.)));
-        let delivery = d.caption(&view, "", rect(24., 46., WIDTH - 48., 30.));
+        let delivery = d.label(&view, "", rect(24., 79., WIDTH - 48., 16.), 12.);
         delivery.setAccessibilityIdentifier(Some(ns_string!("voiceport.quick.delivery")));
-        let detail = d.caption(&view, "", rect(24., 29., WIDTH - 48., 16.));
+        let next = d.caption(&view, "", rect(24., 50., WIDTH - 48., 29.));
+        next.setAccessibilityIdentifier(Some(ns_string!("voiceport.quick.delivery.next")));
+        let detail = d.caption(&view, "", rect(24., 35., WIDTH - 48., 15.));
         detail.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
         let action = |title, selector, id, x, width| {
-            let button = d.button(&view, title, selector, x, 2., width);
+            let button = panel_button(d, &view, title, selector, rect(x, 8., width, 27.));
             unsafe { button.setTarget(Some(target)) };
-            button.setControlSize(NSControlSize::Small);
             button.setAccessibilityIdentifier(Some(id));
             button
         };
@@ -215,9 +134,10 @@ impl Card {
         view.addSubview(&scroll);
         Self {
             generation,
-            access: Cell::new(Access::Collapsed),
+            expanded: Cell::new(false),
             view,
             delivery,
+            next,
             detail,
             show,
             copy,
@@ -227,26 +147,45 @@ impl Card {
         }
     }
 
-    fn reveal(&self, sender: &NSButton, result: ResultText<'_>) {
-        if !std::ptr::eq(&*self.show, sender) {
-            return;
+    fn update(&self, result: Presentation, unlocked: bool, attempted: bool) {
+        set_label_text(&self.delivery, result.status);
+        set_label_text(&self.next, result.next);
+        set_label_text(&self.detail, result.reason.unwrap_or_default());
+        self.detail
+            .setToolTip(result.reason.map(NSString::from_str).as_deref());
+        let actionable = unlocked && result.allows_reveal(self.generation);
+        self.show.setEnabled(actionable);
+        self.copy.setEnabled(actionable && !attempted);
+    }
+
+    fn reveal(&self, sender: &NSButton, result: Presentation, text: &str, attempted: bool) -> bool {
+        if !std::ptr::eq(&*self.show, sender)
+            || self.expanded.get()
+            || !result.allows_reveal(self.generation)
+        {
+            return false;
         }
-        let Some(access) = self.access.get().reveal(self.generation, result) else {
-            return;
-        };
-        self.access.set(access);
-        self.text.setString(&NSString::from_str(result.text));
+        self.expanded.set(true);
+        self.text.setString(&NSString::from_str(text));
         self.text.scrollPoint(NSPoint::ZERO);
         self.scroll.setHidden(false);
         self.show.setHidden(true);
         self.copy.setHidden(false);
+        if attempted {
+            set_label_text(&self.feedback, "已尝试；可选中文字");
+        }
         self.view.setFrameSize(NSSize::new(WIDTH, EXPANDED_HEIGHT));
+        true
     }
 
-    fn copy(&self, result: ResultText<'_>) -> Option<String> {
-        let text = Access::claim_copy(&self.access, self.generation, result)?;
+    fn claim_copy(&self, sender: &NSButton, result: Presentation, copy_once: &CopyOnce) -> bool {
+        if !std::ptr::eq(&*self.copy, sender)
+            || !copy_once.claim(self.generation, self.expanded.get(), result)
+        {
+            return false;
+        }
         self.copy.setEnabled(false);
-        Some(text.into())
+        true
     }
 
     fn feedback(&self, copied: bool) {
@@ -269,35 +208,146 @@ impl Drop for Card {
 }
 
 impl QuickPanel {
+    pub(super) fn append_recovery_key_views(&self, controls: &mut Vec<Retained<NSView>>) {
+        if let Some(card) = self.recovery.visible.borrow().as_ref() {
+            // AppKit skips disabled controls. Keep the visible button linked
+            // when a receipt settles without changing the card's layout.
+            if card.expanded.get() {
+                controls.push(card.copy.clone().into_super().into_super());
+                controls.push(card.text.clone().into_super().into_super());
+            } else {
+                controls.push(card.show.clone().into_super().into_super());
+            }
+        }
+    }
+
     pub(super) fn clear_recovery(&self) {
-        self.recovery.borrow_mut().take();
+        self.recovery.visible.borrow_mut().take();
     }
 
     pub(super) fn update_recovery(&self, d: &Delegate, c: &Controller, idle: bool) -> f64 {
-        let Some(result) = ResultText::current(c).filter(|_| idle && !d.ivars().quitting.get())
-        else {
+        self.present_recovery(
+            d,
+            current_presentation(c).filter(|_| !d.ivars().quitting.get()),
+            idle && d.quick_actions_unlocked(),
+        )
+    }
+
+    fn present_recovery(&self, d: &Delegate, result: Option<Presentation>, unlocked: bool) -> f64 {
+        let Some(result) = result else {
             self.clear_recovery();
             return 0.;
         };
-        let mut card = self.recovery.borrow_mut();
+        let mut card = self.recovery.visible.borrow_mut();
         if card
             .as_ref()
             .is_none_or(|card| card.generation != result.generation)
         {
-            let parent = self.popover.contentViewController().unwrap().view();
             *card = Some(Card::new(
                 d,
-                &parent,
+                &self.recovery_slot,
                 &self.recovery_actions,
                 result.generation,
             ));
         }
         let card = card.as_ref().unwrap();
-        set_label_text(&card.delivery, result.delivery);
-        set_label_text(&card.detail, result.detail.unwrap_or_default());
-        card.detail
-            .setToolTip(result.detail.map(NSString::from_str).as_deref());
+        card.update(
+            result,
+            unlocked,
+            self.recovery.copy_once.attempted(result.generation),
+        );
         card.view.frame().size.height
+    }
+
+    #[cfg(debug_assertions)]
+    fn fixture_receipt(waiting: bool) -> Presentation {
+        use crate::lifecycle::Phase;
+        use voiceport_control::{
+            DeliveryReceipt, DeliveryState, GuiDictationReceipt, TranscriptionState,
+        };
+
+        let (phase, state) = if waiting {
+            (Phase::Delivering, DeliveryState::Waiting)
+        } else {
+            (Phase::Ready, DeliveryState::Uncertain)
+        };
+        Presentation::from_receipt(
+            phase,
+            7,
+            true,
+            &GuiDictationReceipt {
+                session: 7,
+                generation: 7,
+                automatic: true,
+                transcription: TranscriptionState::Completed,
+                delivery: DeliveryReceipt {
+                    state,
+                    ..Default::default()
+                },
+                method: None,
+                failure_stage: Some("readback".into()),
+                block_reason: None,
+            },
+        )
+        .expect("synthetic receipt must be displayable")
+    }
+
+    #[cfg(debug_assertions)]
+    pub(super) fn fixture_recovery(&self, d: &Delegate, reveal: bool) -> (f64, Retained<NSButton>) {
+        let result = Self::fixture_receipt(false);
+        self.present_recovery(d, Some(result), true);
+        let card = self.recovery.visible.borrow();
+        let card = card.as_ref().unwrap();
+        assert_eq!(card.delivery.stringValue().to_string(), result.status);
+        if reveal {
+            assert!(card.reveal(
+                &card.show,
+                result,
+                "仅供测试的合成文字 · Synthetic result",
+                false
+            ));
+        } else {
+            assert!(card.text.string().is_empty());
+        }
+        let action = if reveal { &card.copy } else { &card.show };
+        (card.view.frame().size.height, action.clone())
+    }
+
+    #[cfg(debug_assertions)]
+    pub(super) fn fixture_recovery_copy_once(&self, d: &Delegate) {
+        let result = Self::fixture_receipt(false);
+        let waiting = Self::fixture_receipt(true);
+        {
+            let visible = self.recovery.visible.borrow();
+            let card = visible.as_ref().unwrap();
+            assert!(!card.claim_copy(&card.copy, waiting, &self.recovery.copy_once));
+            assert!(card.claim_copy(&card.copy, result, &self.recovery.copy_once));
+            assert!(!card.claim_copy(&card.copy, result, &self.recovery.copy_once));
+        }
+        self.clear_recovery();
+        self.present_recovery(d, Some(waiting), true);
+        {
+            let visible = self.recovery.visible.borrow();
+            let card = visible.as_ref().unwrap();
+            assert!(!card.show.isEnabled());
+            assert!(card.text.string().is_empty());
+            assert!(!card.reveal(&card.show, waiting, "synthetic text", false));
+        }
+        self.present_recovery(d, Some(result), true);
+        let visible = self.recovery.visible.borrow();
+        let card = visible.as_ref().unwrap();
+        assert!(card.show.isEnabled());
+        assert!(card.reveal(&card.show, result, "synthetic text", true));
+        assert!(!card.copy.isEnabled());
+        assert!(!card.claim_copy(&card.copy, result, &self.recovery.copy_once));
+        println!(
+            "quick-panel fixture: waiting recovery and once-per-generation copy verified without a clipboard"
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    pub(super) fn fixture_recovery_is_empty(&self) -> bool {
+        self.recovery.visible.borrow().is_none()
     }
 }
 
@@ -311,15 +361,32 @@ impl Delegate {
         let Some(panel) = self.recovery_panel() else {
             return;
         };
+        let focused = sender
+            .window()
+            .filter(|window| window.firstResponder().as_deref() == Some(&****sender));
+        let mut next = None;
         self.with_controller(|c| {
             if !c.busy()
-                && let Some(card) = panel.recovery.borrow().as_ref()
-                && let Some(result) = ResultText::current(c)
+                && let Some(card) = panel.recovery.visible.borrow().as_ref()
+                && let Some(result) = current_presentation(c)
+                && card.reveal(
+                    sender,
+                    result,
+                    &c.transcript,
+                    panel.recovery.copy_once.attempted(result.generation),
+                )
             {
-                card.reveal(sender, result);
+                next = Some(if card.copy.isEnabled() {
+                    card.copy.clone().into_super().into_super()
+                } else {
+                    card.text.clone().into_super().into_super()
+                });
             }
         });
         self.refresh();
+        if let (Some(window), Some(next)) = (focused, next) {
+            window.makeFirstResponder(Some(&next));
+        }
     }
 
     fn copy_quick_recovery(&self, sender: &NSButton) {
@@ -328,115 +395,20 @@ impl Delegate {
         };
         let transcript = {
             let controller = self.ivars().controller.borrow();
-            let card = panel.recovery.borrow();
+            let card = panel.recovery.visible.borrow();
             controller.as_ref().filter(|c| !c.busy()).and_then(|c| {
                 let card = card.as_ref()?;
-                if !std::ptr::eq(&*card.copy, sender) {
-                    return None;
-                }
-                card.copy(ResultText::current(c)?)
+                card.claim_copy(sender, current_presentation(c)?, &panel.recovery.copy_once)
+                    .then(|| c.transcript.clone())
             })
         };
         if let Some(transcript) = transcript {
             let copied = Delivery::copy(&transcript);
-            if let Some(card) = panel.recovery.borrow().as_ref()
+            if let Some(card) = panel.recovery.visible.borrow().as_ref()
                 && std::ptr::eq(&*card.copy, sender)
             {
                 card.feedback(copied);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn receipt(generation: u64, state: DeliveryState) -> GuiDictationReceipt {
-        GuiDictationReceipt {
-            session: generation,
-            generation,
-            automatic: true,
-            transcription: TranscriptionState::Completed,
-            delivery: voiceport_control::DeliveryReceipt {
-                state,
-                ..Default::default()
-            },
-            method: None,
-            failure_stage: None,
-            block_reason: None,
-        }
-    }
-
-    #[test]
-    fn result_requires_current_completed_nonempty_gui_generation() {
-        let mut receipt = receipt(7, DeliveryState::Submitted);
-        assert!(ResultText::from_receipt(Phase::Ready, 8, "old text", &receipt).is_none());
-        for phase in [
-            Phase::Idle,
-            Phase::Recording,
-            Phase::Stopping,
-            Phase::Failed,
-        ] {
-            assert!(ResultText::from_receipt(phase, 7, "old text", &receipt).is_none());
-        }
-        assert!(ResultText::from_receipt(Phase::Ready, 7, "  \n", &receipt).is_none());
-        receipt.transcription = TranscriptionState::Cancelled;
-        assert!(ResultText::from_receipt(Phase::Ready, 7, "cancelled text", &receipt).is_none());
-    }
-
-    #[test]
-    fn explicit_reveal_and_copy_require_the_same_generation_once() {
-        let receipt = receipt(7, DeliveryState::NotSent);
-        let result = ResultText::from_receipt(Phase::Ready, 7, "最终🙂\n文字", &receipt).unwrap();
-        let mut writes = Vec::new();
-        let access = Cell::new(Access::Collapsed);
-        let clicked_copy = |generation, writes: &mut Vec<&str>| {
-            if let Some(text) = Access::claim_copy(&access, generation, result) {
-                writes.push(text);
-            }
-        };
-        clicked_copy(7, &mut writes);
-        assert!(writes.is_empty());
-        assert_eq!(access.get().reveal(6, result), None);
-        access.set(access.get().reveal(7, result).unwrap());
-        assert_eq!(access.get().reveal(7, result), None);
-        clicked_copy(6, &mut writes);
-        assert!(writes.is_empty());
-        clicked_copy(7, &mut writes);
-        clicked_copy(7, &mut writes);
-        assert_eq!(writes, ["最终🙂\n文字"]);
-        access.set(Access::Collapsed);
-        clicked_copy(7, &mut writes);
-        assert_eq!(writes.len(), 1);
-    }
-
-    #[test]
-    fn attempts_uncertainty_confirmation_and_retry_have_distinct_feedback() {
-        for (state, prefix) in [
-            (DeliveryState::NotSent, "本次文字未投递"),
-            (DeliveryState::PartiallySent, "已尝试投递"),
-            (DeliveryState::Submitted, "已提交投递请求"),
-            (DeliveryState::AwaitingConfirmation, "投递结果不明"),
-            (DeliveryState::Uncertain, "投递结果不明"),
-            (DeliveryState::Confirmed, "已确认投递"),
-        ] {
-            let receipt = receipt(7, state);
-            let result = ResultText::from_receipt(Phase::Ready, 7, "文字", &receipt).unwrap();
-            assert!(result.delivery.starts_with(prefix));
-        }
-        let mut interrupted = receipt(7, DeliveryState::Confirmed);
-        interrupted.delivery.stopped = true;
-        interrupted.failure_stage = Some("focus".into());
-        let result = ResultText::from_receipt(Phase::Ready, 7, "文字", &interrupted).unwrap();
-        assert!(result.delivery.starts_with("已尝试投递"));
-        assert!(result.detail.unwrap().contains("无法确认原输入框"));
-
-        let mut receipt = receipt(8, DeliveryState::Submitted);
-        receipt.session = 7;
-        receipt.failure_stage = Some("readback".into());
-        let result = ResultText::from_receipt(Phase::Ready, 8, "重试文字", &receipt).unwrap();
-        assert!(result.delivery.contains("本次重试结果未投递"));
-        assert_eq!(result.detail, None);
     }
 }

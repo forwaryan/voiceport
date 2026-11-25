@@ -10,6 +10,14 @@ mod audio;
 #[path = "../src/controller.rs"]
 mod controller;
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "../src/dictation_dictionary.rs"]
+mod dictation_dictionary;
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "../src/dictation_workflows.rs"]
+mod dictation_workflows;
+#[cfg(target_os = "macos")]
 #[allow(dead_code, unused_imports)]
 #[path = "../src/local_audio.rs"]
 mod local_audio;

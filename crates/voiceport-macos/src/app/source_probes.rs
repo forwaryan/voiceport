@@ -1,5 +1,5 @@
 //! All catalog sources, explicit sample requests, stable row identities.
-use super::*;
+use super::{source_manager::destination::Destination, *};
 use crate::local_models::{Entry, SessionSource};
 use objc2::Message;
 
@@ -17,6 +17,7 @@ pub(super) struct PanelState {
     summary: OnceCell<Retained<NSTextField>>,
     rows: RefCell<Vec<Row>>,
     closed: Cell<bool>,
+    located_id: RefCell<Option<String>>,
 }
 define_class!(
     #[unsafe(super = NSObject)]
@@ -47,9 +48,11 @@ define_class!(
         }
         #[unsafe(method(testAllProbes:))]
         fn test_all(&self, _sender: Option<&AnyObject>) {
-            let ids = self.ivars().rows.borrow().iter().map(|row| row.entry.id.clone()).collect();
+            let ids = self.ivars().rows.borrow().iter().filter(|row| row.entry.source.is_ok()).map(|row| row.entry.id.clone()).collect();
             self.start(ids);
         }
+        #[unsafe(method(closeSourceProbes:))]
+        fn close_action(&self, _sender: Option<&AnyObject>) { self.close(); }
         #[unsafe(method(cancelProbes:))]
         fn cancel(&self, _sender: Option<&AnyObject>) {
             self.ivars().owner.with_controller(|c| {
@@ -65,6 +68,18 @@ impl Panel {
     }
     pub(super) fn bring_forward(&self) {
         self.window().makeKeyAndOrderFront(None);
+    }
+    fn locate(&self, id: &str) {
+        *self.ivars().located_id.borrow_mut() = Some(id.into());
+        self.refresh();
+        let rows = self.ivars().rows.borrow();
+        let Some(row) = rows.iter().find(|row| row.entry.id == id) else {
+            return;
+        };
+        row.test.scrollRectToVisible(row.test.bounds());
+        if row.test.isEnabled() {
+            self.window().makeFirstResponder(Some(&row.test));
+        }
     }
     pub(super) fn close(&self) {
         self.window().performClose(None);
@@ -149,8 +164,15 @@ impl Panel {
                     13.,
                 );
                 title.setToolTip(Some(&NSString::from_str(&entry.id)));
-                owner.caption(&view, kind(entry), rect(8., y + 30., width - 116., 17.));
-                let result = owner.caption(&view, "未测试", rect(8., y + 6., width - 116., 24.));
+                let destination = kind(entry);
+                let route = owner.label(
+                    &view,
+                    &destination,
+                    rect(8., y + 28., width - 116., 20.),
+                    11.,
+                );
+                route.setToolTip(Some(&NSString::from_str(&destination)));
+                let result = owner.label(&view, "未测试", rect(8., y + 6., width - 116., 22.), 11.);
                 let test = self.button(
                     &view,
                     "测试",
@@ -163,8 +185,8 @@ impl Panel {
                     entry.id
                 ))));
                 test.setAccessibilityLabel(Some(&NSString::from_str(&format!(
-                    "使用内置样例测试{}",
-                    entry.title
+                    "使用内置样例测试{}（{}）",
+                    entry.title, entry.id
                 ))));
                 rows.push(Row {
                     entry: entry.clone(),
@@ -176,31 +198,34 @@ impl Panel {
             scroll.setDocumentView(Some(&view));
             // Rebuild only when catalog identities/configuration actually change.
             view.scrollPoint(NSPoint::new(0., height));
+            self.window().recalculateKeyViewLoop();
         }
         for row in self.ivars().rows.borrow().iter() {
             let result = c.source_tests.row(&row.entry);
             let (text, detail) = result
                 .map(|result| (result.display(), result.detail.clone()))
-                .unwrap_or_else(|| ("未测试 · 耗时 —".into(), row.entry.detail.clone()));
-            use crate::source_tests::Status;
-            let color = match result.map(|result| result.status) {
-                Some(Status::Success) => NSColor::systemGreenColor(),
-                Some(Status::Failed) => NSColor::systemRedColor(),
-                Some(Status::TimedOut | Status::CleanupPending) => NSColor::systemOrangeColor(),
-                _ => NSColor::secondaryLabelColor(),
-            };
-            row.result.setTextColor(Some(&color));
+                .unwrap_or_else(|| {
+                    (
+                        if row.entry.source.is_ok() {
+                            "未测试 · 耗时 —"
+                        } else {
+                            "未测试 · 来源不可用"
+                        }
+                        .into(),
+                        row.entry.detail.clone(),
+                    )
+                });
             if row.result.stringValue().to_string() != text {
                 row.result.setStringValue(&NSString::from_str(&text));
             }
             row.result.setToolTip(Some(&NSString::from_str(&detail)));
-            row.test.setEnabled(ready);
+            row.test.setEnabled(ready && row.entry.source.is_ok());
         }
         self.ivars()
             .all
             .get()
             .unwrap()
-            .setEnabled(ready && !c.catalog.entries.is_empty());
+            .setEnabled(ready && c.catalog.entries.iter().any(|e| e.source.is_ok()));
         self.ivars()
             .cancel
             .get()
@@ -211,30 +236,47 @@ impl Panel {
         } else {
             c.source_tests.summary()
         };
-        self.ivars()
-            .summary
-            .get()
-            .unwrap()
-            .setStringValue(&NSString::from_str(&summary));
+        let summary = match self.ivars().located_id.borrow().as_deref() {
+            Some(id) => match c.catalog.entries.iter().find(|e| e.id == id) {
+                Some(entry) => format!("已定位：{}（{}） · {summary}", entry.title, entry.id),
+                None => format!("定位的来源已变化 · {summary}"),
+            },
+            None => summary,
+        };
+        let field = self.ivars().summary.get().unwrap();
+        let summary = NSString::from_str(&summary);
+        if *field.stringValue() != *summary {
+            field.setStringValue(&summary);
+            field.setToolTip(Some(&summary));
+        }
     }
 }
-fn kind(entry: &Entry) -> &'static str {
+fn kind(entry: &Entry) -> String {
     match &entry.source {
-        Ok(SessionSource::ChatGpt) => "云端 · ChatGPT 转写请求",
-        Ok(SessionSource::Local(_)) => "本机 · 模型加载与解码",
-        Ok(SessionSource::Plugin(plugin))
-            if plugin.manifest.adapter == crate::plugins::Adapter::Http =>
-        {
-            "云端 / HTTP · 转写请求"
+        Ok(SessionSource::ChatGpt) => Destination::ChatGpt.summary(),
+        Ok(SessionSource::Local(_)) => Destination::OnDevice.summary(),
+        Ok(SessionSource::Plugin(plugin)) => {
+            Destination::configured(Some(&plugin.manifest), Some(&plugin.source)).summary()
         }
-        Ok(SessionSource::Plugin(_)) => "本机适配器 · 完整转写请求（可能联网）",
-        Err(_) => "未就绪 · 检查来源配置或安装状态",
+        Err(_) => format!("未就绪 · {}", entry.detail),
     }
 }
 pub(super) fn show(owner: &Delegate) {
+    show_panel(owner, None);
+}
+pub(super) fn show_located(owner: &Delegate, id: &str) {
+    show_panel(owner, Some(id));
+}
+fn show_panel(owner: &Delegate, id: Option<&str>) {
     let existing = owner.ivars().source_probe_panel.borrow().clone();
     if let Some(panel) = existing {
         panel.bring_forward();
+        if let Some(id) = id {
+            panel.locate(id);
+        } else {
+            panel.ivars().located_id.borrow_mut().take();
+            panel.refresh();
+        }
         return;
     }
     let panel = Panel::alloc(owner.mtm()).set_ivars(PanelState {
@@ -246,6 +288,7 @@ pub(super) fn show(owner: &Delegate) {
         summary: OnceCell::new(),
         rows: RefCell::new(Vec::new()),
         closed: Cell::new(false),
+        located_id: RefCell::new(None),
     });
     let panel: Retained<Panel> = unsafe { msg_send![super(panel), init] };
     let screen = NSScreen::mainScreen(owner.mtm()).map(|s| s.visibleFrame().size);
@@ -268,7 +311,7 @@ pub(super) fn show(owner: &Delegate) {
     let view = window.contentView().unwrap();
     let all = panel.button(
         &view,
-        "测试全部来源",
+        "测试可用来源",
         sel!(testAllProbes:),
         rect(16., height - 48., 128., 30.),
     );
@@ -280,10 +323,18 @@ pub(super) fn show(owner: &Delegate) {
         rect(152., height - 48., 144., 30.),
     );
     cancel.setAccessibilityIdentifier(Some(ns_string!("voiceport.source-tests.cancel")));
-    let summary = owner.caption(
+    let done = panel.button(
+        &view,
+        "关闭",
+        sel!(closeSourceProbes:),
+        rect(width - 96., height - 48., 80., 30.),
+    );
+    done.setKeyEquivalent(ns_string!("\u{1b}"));
+    let summary = owner.label(
         &view,
         "未开始测试",
-        rect(16., height - 78., width - 32., 24.),
+        rect(16., height - 82., width - 32., 30.),
+        11.,
     );
     let scroll = NSScrollView::initWithFrame(
         NSScrollView::alloc(owner.mtm()),
@@ -303,4 +354,7 @@ pub(super) fn show(owner: &Delegate) {
     panel.refresh();
     panel.window().center();
     panel.bring_forward();
+    if let Some(id) = id {
+        panel.locate(id);
+    }
 }

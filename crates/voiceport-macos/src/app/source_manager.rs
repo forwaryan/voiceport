@@ -1,7 +1,8 @@
 //! Modeless source management. Browsing and saving never run an adapter.
 use super::*;
 use crate::plugins::{Adapter, FieldKind, Manifest, Source, Store};
-mod destination;
+pub(super) mod destination;
+mod diagnostics;
 mod draft;
 mod editor;
 mod library;

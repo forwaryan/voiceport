@@ -4,7 +4,7 @@ use std::net::IpAddr;
 
 const RETRY: &str = "转写失败且录音可用时，VoicePort 会在本机保留这段录音供手动重试。重试仍使用录音开始时的原来源与配置，可能再次向该目的地交付音频。成功、取消或正常退出时，VoicePort 会尝试清理本机录音。远端服务和外部程序按自己的规则处理音频。VoicePort 无法确认对方是否保留或何时删除。";
 
-pub(super) enum Destination {
+pub(in crate::app) enum Destination {
     OnDevice,
     ChatGpt,
     LoopbackHttp(String),
@@ -15,7 +15,7 @@ pub(super) enum Destination {
 }
 
 impl Destination {
-    pub(super) fn configured(plugin: Option<&Manifest>, source: Option<&Source>) -> Self {
+    pub(in crate::app) fn configured(plugin: Option<&Manifest>, source: Option<&Source>) -> Self {
         let Some(plugin) = plugin.filter(|plugin| {
             source.is_none_or(|source| {
                 source.plugin_id == plugin.id && source.plugin_version == plugin.version
@@ -65,7 +65,18 @@ impl Destination {
         }
     }
 
-    pub(super) fn details(&self) -> String {
+    /// Only include an origin: never repeat the configured path, query or secrets.
+    pub(in crate::app) fn summary(&self) -> String {
+        match self {
+            Self::ChatGpt => "远端服务 · ChatGPT".into(),
+            Self::LoopbackHttp(origin) => format!("本机 HTTP · {origin}（可能转发）"),
+            Self::RemoteHttp(origin) => format!("远端 HTTP · {origin}"),
+            Self::ExternalProgram => "外部程序 · 本机录音路径（可能转发）".into(),
+            other => other.label().into(),
+        }
+    }
+
+    pub(in crate::app) fn details(&self) -> String {
         let destination = match self {
             Self::OnDevice => "音频在此设备由已安装的模型转写。VoicePort 不会为此来源上传录音。".into(),
             Self::ChatGpt => "停止录音后会将音频发给 ChatGPT 转写服务。可选的系统语音预览在本机处理。".into(),

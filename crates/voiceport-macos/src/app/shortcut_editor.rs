@@ -1,27 +1,55 @@
 //! Shortcut changes commit only after native registration succeeds.
 use super::*;
-use crate::shortcut::Shortcut;
+use crate::shortcut::{Shortcut, ShortcutMode};
 
 impl Delegate {
     pub(super) fn settings_locked(&self) -> bool {
         self.ivars().managing_sources.get()
             || self.ivars().managing_models.get()
             || self.ivars().editing_shortcut.get()
+            || self.ivars().workflow_dialog.get()
     }
 
-    pub(super) fn change_shortcut(&self) {
-        let idle = self
-            .ivars()
+    fn may_change_shortcut(&self) -> bool {
+        self.ivars()
             .controller
             .borrow()
             .as_ref()
-            .is_some_and(|c| !c.busy());
-        if !idle
-            || self.settings_locked()
-            || self.ivars().quitting.get()
-            || self.ivars().permission_rx.borrow().is_some()
-            || self.ivars().pending_hotkey.borrow().is_some()
+            .is_some_and(|c| !c.busy())
+            && !self.settings_locked()
+            && !self.ivars().quitting.get()
+            && self.ivars().permission_rx.borrow().is_none()
+            && self.ivars().pending_hotkey.borrow().is_none()
+    }
+
+    pub(super) fn change_shortcut_mode(&self) {
+        if self.may_change_shortcut()
+            && let Some(control) = self.ivars().shortcut_mode_control.get()
         {
+            let mode = if control.indexOfSelectedItem() == 1 {
+                ShortcutMode::Hold
+            } else {
+                ShortcutMode::Toggle
+            };
+            if self.ivars().shortcut_mode.replace(mode) != mode {
+                // An edge queued under the previous mode does not start a new mode.
+                if let Some(rx) = self.ivars().hotkey_rx.borrow().as_ref() {
+                    while rx.try_recv().is_ok() {}
+                }
+                self.ivars().hold_session.set(None);
+                unsafe {
+                    NSUserDefaults::standardUserDefaults().setObject_forKey(
+                        Some(&NSString::from_str(mode.preference())),
+                        &NSString::from_str(ShortcutMode::PREFERENCE),
+                    );
+                }
+            }
+        }
+        self.refresh();
+    }
+
+    pub(super) fn change_shortcut(&self) {
+        if !self.may_change_shortcut() {
             self.refresh();
             return;
         }
@@ -45,6 +73,13 @@ impl Delegate {
                 let value = crate::shortcut_recorder::record(
                     self.mtm(),
                     self.ivars().shortcut_binding.get(),
+                    |candidate| {
+                        let (tx, _rx) = std::sync::mpsc::channel();
+                        let mut probe = crate::hotkey::GlobalHotKey::new(tx);
+                        // Drop immediately. This is a point-in-time test; Save
+                        // rechecks before committing the preference.
+                        probe.register(candidate).map_err(|error| error.to_string())
+                    },
                 );
                 self.ivars().editing_shortcut.set(false);
                 value
@@ -59,6 +94,7 @@ impl Delegate {
             match self.install_hotkey(candidate) {
                 Ok(()) => {
                     self.ivars().shortcut_binding.set(candidate);
+                    self.ivars().hold_session.set(None);
                     *self.ivars().shortcut_notice.borrow_mut() =
                         Some(format!("已保存：{}", candidate.label()));
                     let defaults = NSUserDefaults::standardUserDefaults();
@@ -80,7 +116,7 @@ impl Delegate {
                 }
                 Err(error) => {
                     *self.ivars().shortcut_notice.borrow_mut() = Some(format!(
-                        "无法注册；保留 {}。",
+                        "{error} 保留 {}。",
                         self.ivars().shortcut_binding.get().label()
                     ));
                     self.with_controller(|c| c.message = format!("{error} 已保留原快捷键设置。"));

@@ -1,8 +1,9 @@
 //! A shortcut keeps its key-down application across later AppKit activations.
 use super::*;
 use crate::{
-    hotkey::HotKeyEvent,
+    hotkey::{HotKeyEvent, KeyPress, Stroke},
     input_target::{self, ApplicationTarget, StartRoute},
+    shortcut::ShortcutMode,
 };
 use serde_json::json;
 
@@ -20,6 +21,33 @@ fn foreground() -> Option<ApplicationTarget> {
         .and_then(identity)
 }
 
+/// A release may affect only the controller generation begun by its down edge.
+#[derive(Clone, Copy)]
+pub(super) struct HoldSession {
+    stroke: Stroke,
+    generation: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ReleaseAction {
+    Ignore,
+    CancelPreparation,
+    StopRecording,
+}
+
+impl HoldSession {
+    fn release(self, stroke: Stroke, generation: u64, phase: Phase) -> ReleaseAction {
+        if self.stroke != stroke || self.generation != generation {
+            return ReleaseAction::Ignore;
+        }
+        match phase {
+            Phase::Permissions => ReleaseAction::CancelPreparation,
+            Phase::Recording => ReleaseAction::StopRecording,
+            _ => ReleaseAction::Ignore,
+        }
+    }
+}
+
 impl Delegate {
     pub(super) fn start_with_trace(&self, c: &mut Controller, start: impl FnOnce(&mut Controller)) {
         let previous_generation = c.state.generation();
@@ -32,22 +60,139 @@ impl Delegate {
         }
     }
 
-    pub(super) fn handle_hotkey(&self, event: HotKeyEvent) {
-        if self.ivars().pending_hotkey.borrow_mut().take().is_some() {
-            self.reject_hotkey("cancelled_handoff", "已取消返回输入位置。");
+    /// Consume releases before the controller polls permissions or the app
+    /// retries a foreground handoff. Neither may begin after an observed up.
+    pub(super) fn poll_shortcut(&self) {
+        if self.ivars().shortcut_mode.get() != ShortcutMode::Hold {
+            if let Some(press) = self.ivars().pending_hotkey.take() {
+                self.route_hotkey(press, false, false);
+            }
             return;
         }
+        self.poll_held_events(self.active_shortcut_stroke());
+    }
+
+    fn active_shortcut_stroke(&self) -> Option<Stroke> {
+        self.ivars()
+            .hotkey
+            .borrow()
+            .as_ref()
+            .and_then(|hotkey| hotkey.active_stroke(self.ivars().shortcut_binding.get()))
+    }
+
+    pub(super) fn hold_start_allowed(
+        &self,
+        generation: u64,
+        sample: impl FnOnce() -> Option<Stroke>,
+    ) -> bool {
+        let Some(session) = self
+            .ivars()
+            .hold_session
+            .get()
+            .filter(|s| s.generation == generation)
+        else {
+            return true;
+        };
+        if sample() == Some(session.stroke) {
+            return true;
+        }
+        self.ivars().hold_session.set(None);
+        false
+    }
+
+    pub(super) fn poll_dictation(&self, controller: &mut Controller) {
+        controller.poll_with_start_gate(|generation| {
+            self.hold_start_allowed(generation, || self.active_shortcut_stroke())
+        });
+    }
+
+    fn poll_held_events(&self, active: Option<Stroke>) {
+        let pending_at_entry = self
+            .ivars()
+            .pending_hotkey
+            .borrow()
+            .as_ref()
+            .map(|p| p.stroke);
+        loop {
+            let event = self
+                .ivars()
+                .hotkey_rx
+                .borrow()
+                .as_ref()
+                .and_then(|rx| rx.try_recv().ok());
+            match event {
+                Some(HotKeyEvent::Press(press)) if active == Some(press.stroke) => {
+                    self.handle_press(press, true);
+                }
+                Some(HotKeyEvent::Release(stroke)) => self.handle_release(stroke),
+                Some(HotKeyEvent::Press(_)) => {} // Already released before this tick.
+                None => break,
+            }
+        }
+        let pending_now = self
+            .ivars()
+            .pending_hotkey
+            .borrow()
+            .as_ref()
+            .map(|p| p.stroke);
+        if pending_at_entry == pending_now
+            && let Some(event) = self.ivars().pending_hotkey.take()
+        {
+            if active == Some(event.stroke) {
+                self.route_hotkey(event, false, true);
+            } else {
+                self.cancel_hotkey_handoff("released_before_start", "已松开快捷键，未开始录音。");
+            }
+        }
+    }
+
+    pub(super) fn poll_toggle_shortcut(&self) {
+        if self.ivars().shortcut_mode.get() != ShortcutMode::Toggle {
+            return;
+        }
+        if let Some(hotkey) = self.ivars().hotkey.borrow().as_ref() {
+            hotkey.active_stroke(self.ivars().shortcut_binding.get());
+        }
+        loop {
+            let event = self
+                .ivars()
+                .hotkey_rx
+                .borrow()
+                .as_ref()
+                .and_then(|rx| rx.try_recv().ok());
+            match event {
+                Some(HotKeyEvent::Press(press)) => {
+                    self.handle_press(press, false);
+                    break;
+                }
+                Some(HotKeyEvent::Release(_)) => {} // Toggle has no key-up action.
+                None => break,
+            }
+        }
+    }
+
+    fn handle_press(&self, event: KeyPress, held_mode: bool) {
         if self.ivars().quitting.get()
             || self.settings_locked()
             || self.ivars().permission_rx.borrow().is_some()
+            || (held_mode && event.at.elapsed() >= input_target::START_DEADLINE)
         {
+            return;
+        }
+        if self.ivars().pending_hotkey.borrow().is_some() {
+            if !held_mode {
+                self.ivars().pending_hotkey.take();
+                self.reject_hotkey("cancelled_handoff", "已取消返回输入位置。");
+            }
             return;
         }
         let mut start = false;
         let mut automatic = false;
         self.with_controller(|c| {
             if c.state.phase == Phase::Recording {
-                c.stop();
+                if !held_mode {
+                    c.stop();
+                }
             } else {
                 start = !c.busy();
                 automatic = c.automatic;
@@ -64,16 +209,73 @@ impl Delegate {
             if let Some(trace) = self.ivars().last_start_trace.borrow_mut().as_mut() {
                 trace["outcome"] = "panel_only".into();
             }
-            self.with_controller(|c| self.start_with_trace(c, Controller::start));
+            self.with_controller(|c| {
+                self.start_from_press(c, event.stroke, held_mode, Controller::start)
+            });
             return;
         }
-        self.route_hotkey(event, true);
+        self.route_hotkey(event, true, held_mode);
     }
 
-    pub(super) fn poll_hotkey_start(&self) {
-        let pending = self.ivars().pending_hotkey.borrow_mut().take();
-        if let Some(event) = pending {
-            self.route_hotkey(event, false);
+    fn handle_release(&self, stroke: Stroke) {
+        if self
+            .ivars()
+            .pending_hotkey
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| p.stroke == stroke)
+            && self.ivars().shortcut_mode.get() == ShortcutMode::Hold
+        {
+            self.ivars().pending_hotkey.take();
+            self.cancel_hotkey_handoff("released_before_start", "已松开快捷键，未开始录音。");
+        }
+        if let Some(session) = self
+            .ivars()
+            .hold_session
+            .get()
+            .filter(|s| s.stroke == stroke)
+        {
+            self.ivars().hold_session.set(None);
+            self.with_controller(|c| {
+                match session.release(stroke, c.state.generation(), c.state.phase) {
+                    ReleaseAction::CancelPreparation => c.cancel_released_shortcut(),
+                    ReleaseAction::StopRecording => c.stop(),
+                    ReleaseAction::Ignore => {}
+                }
+            });
+        }
+    }
+
+    pub(super) fn cancel_shortcut_session(&self) -> bool {
+        self.ivars().hold_session.set(None);
+        if self.ivars().pending_hotkey.take().is_none() {
+            return false;
+        }
+        self.cancel_hotkey_handoff("cancelled_handoff", "已取消返回输入位置，未开始录音。");
+        true
+    }
+
+    fn cancel_hotkey_handoff(&self, code: &str, message: &str) {
+        if let Some(trace) = self.ivars().last_start_trace.borrow_mut().as_mut() {
+            trace["outcome"] = code.into();
+        }
+        self.with_controller(|c| c.message = message.into());
+    }
+
+    fn start_from_press(
+        &self,
+        c: &mut Controller,
+        stroke: Stroke,
+        held_mode: bool,
+        start: impl FnOnce(&mut Controller),
+    ) {
+        let before = c.state.generation();
+        self.start_with_trace(c, start);
+        let generation = c.state.generation();
+        if held_mode && generation != before && c.state.phase == Phase::Permissions {
+            self.ivars()
+                .hold_session
+                .set(Some(HoldSession { stroke, generation }));
         }
     }
 
@@ -84,7 +286,7 @@ impl Delegate {
         self.with_controller(|c| self.start_with_trace(c, |c| c.reject_start(message)));
     }
 
-    fn route_hotkey(&self, event: HotKeyEvent, first: bool) {
+    fn route_hotkey(&self, event: KeyPress, first: bool, held_mode: bool) {
         if self.ivars().quitting.get()
             || self.settings_locked()
             || self.ivars().permission_rx.borrow().is_some()
@@ -118,7 +320,9 @@ impl Delegate {
                 }
                 if let Some(target) = event.target {
                     self.with_controller(|c| {
-                        self.start_with_trace(c, |c| c.start_in_application(&target));
+                        self.start_from_press(c, event.stroke, held_mode, |c| {
+                            c.start_in_application(&target)
+                        });
                     });
                 }
             }
@@ -160,5 +364,219 @@ impl Delegate {
                 },
             ),
         }
+    }
+}
+
+/// Synthetic input through the same delegate queue as Carbon. The injected
+/// accepted start creates a controller generation but never requests audio.
+pub(super) fn isolated_event_regression(mtm: MainThreadMarker) {
+    let delegate = Delegate::new(mtm);
+    delegate.ivars().shortcut_mode.set(ShortcutMode::Hold);
+    *delegate.ivars().controller.borrow_mut() = Some(Controller::new());
+    let (tx, rx) = std::sync::mpsc::channel();
+    *delegate.ivars().hotkey_rx.borrow_mut() = Some(rx);
+    let stroke = Stroke::fixture_stroke(1);
+    let old_stroke = Stroke::fixture_stroke(0);
+    let press = || KeyPress {
+        stroke,
+        at: std::time::Instant::now(),
+        application: None,
+        target: None,
+    };
+    let promised = |c: &mut Controller| {
+        assert!(c.state.begin().is_some());
+    };
+
+    // A complete short tap already released before the timer must not start,
+    // nor attempt a foreground lookup (the synthetic press has no target).
+    tx.send(HotKeyEvent::Press(press())).unwrap();
+    tx.send(HotKeyEvent::Release(stroke)).unwrap();
+    delegate.poll_held_events(None);
+    delegate.with_controller(|c| assert_eq!(c.state.generation(), 0));
+    assert!(delegate.ivars().last_start_trace.borrow().is_none());
+
+    // A held focus handoff is abandoned on up before it can be retried.
+    *delegate.ivars().pending_hotkey.borrow_mut() = Some(press());
+    *delegate.ivars().last_start_trace.borrow_mut() =
+        Some(json!({"outcome":"waiting_for_keypress_target"}));
+    tx.send(HotKeyEvent::Release(stroke)).unwrap();
+    delegate.poll_held_events(None);
+    assert!(delegate.ivars().pending_hotkey.borrow().is_none());
+    assert_eq!(
+        delegate.ivars().last_start_trace.borrow().as_ref().unwrap()["outcome"],
+        "released_before_start"
+    );
+
+    // Route release through the actual controller cancellation path, with no
+    // recorder or captured target. A stale edge must not cancel preparation.
+    delegate.with_controller(|c| delegate.start_from_press(c, stroke, true, promised));
+    let generation = delegate.ivars().hold_session.get().unwrap().generation;
+    tx.send(HotKeyEvent::Release(old_stroke)).unwrap();
+    delegate.poll_held_events(Some(stroke));
+    delegate.with_controller(|c| assert_eq!(c.state.phase, Phase::Permissions));
+    tx.send(HotKeyEvent::Release(stroke)).unwrap();
+    delegate.poll_held_events(None);
+    delegate.with_controller(|c| {
+        assert_eq!(c.state.phase, Phase::Idle);
+        assert_ne!(c.state.generation(), generation);
+        assert!(!c.state.permissions(generation, true));
+    });
+    assert!(delegate.ivars().hold_session.get().is_none());
+
+    // The first sample sees the press, but launch must use the latest sample
+    // when Controller consumes the actual synthetic permission event.
+    for release_while_preparing in [true, false] {
+        let active = Cell::new(Some(stroke));
+        let captures = Cell::new(0);
+        delegate.with_controller(|c| {
+            assert_eq!(active.get(), Some(stroke));
+            delegate.start_from_press(c, stroke, true, |c| {
+                assert!(
+                    c.start_pinned_with_permissions(
+                        crate::local_models::SessionSource::ChatGpt,
+                        String::new(),
+                        false,
+                        || {
+                            if release_while_preparing {
+                                active.set(None);
+                            }
+                            ("authorized", "denied")
+                        },
+                    )
+                    .is_some()
+                );
+            });
+            if !release_while_preparing {
+                active.set(None);
+            }
+            c.poll_with_capture(
+                |generation| delegate.hold_start_allowed(generation, || active.get()),
+                |_, _, _, _| {
+                    captures.set(captures.get() + 1);
+                    Ok(false)
+                },
+            );
+            assert_eq!(
+                captures.get(),
+                0,
+                "release before permission consumption entered capture"
+            );
+            assert_eq!(c.state.phase, Phase::Idle);
+            assert!(!c.busy() && !c.can_retry_recording());
+        });
+        assert!(delegate.ivars().hold_session.get().is_none());
+    }
+
+    // A kept press can start. A stale release cannot stop it, and the matching
+    // release reaches Stop (the synthetic recorder owns no audio to transcribe).
+    for held_mode in [true, false] {
+        delegate.with_controller(|c| {
+            delegate.start_from_press(c, stroke, held_mode, |c| {
+                assert!(
+                    c.start_pinned_with_permissions(
+                        crate::local_models::SessionSource::ChatGpt,
+                        String::new(),
+                        false,
+                        || ("authorized", "denied"),
+                    )
+                    .is_some()
+                );
+            });
+            let mut captures = 0;
+            c.poll_with_capture(
+                |generation| {
+                    delegate.hold_start_allowed(generation, || {
+                        assert!(held_mode, "toggle must not query HID");
+                        Some(stroke)
+                    })
+                },
+                |_, _, _, _| {
+                    captures += 1;
+                    Ok(false)
+                },
+            );
+            assert_eq!(captures, 1);
+            assert_eq!(c.state.phase, Phase::Recording);
+        });
+        delegate.handle_release(old_stroke);
+        delegate.with_controller(|c| assert_eq!(c.state.phase, Phase::Recording));
+        delegate.handle_release(stroke);
+        delegate.with_controller(|c| {
+            if held_mode {
+                assert_ne!(c.state.phase, Phase::Recording);
+            } else {
+                assert_eq!(c.state.phase, Phase::Recording);
+                c.stop();
+            }
+            assert!(!c.busy() && !c.can_retry_recording());
+        });
+    }
+    println!(
+        "shortcut_permission_boundary: pre/post-queue release blocked with zero capture or transcription, kept hold and unchanged toggle controls passed"
+    );
+
+    // Explicit Cancel before handoff is terminal and does not start anything.
+    *delegate.ivars().pending_hotkey.borrow_mut() = Some(press());
+    assert!(delegate.cancel_shortcut_session());
+    assert!(!delegate.cancel_shortcut_session());
+    println!(
+        "shortcut_events: synthetic queue verified short tap, released foreground handoff, preparation cancellation and stale release; no system input or recording"
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lifecycle::Lifecycle;
+
+    #[test]
+    fn shortcut_release_during_preparation_invalidates_queued_permission() {
+        let stroke = Stroke::fixture_stroke(1);
+        let mut session = Lifecycle::default();
+        let generation = session.begin().unwrap();
+        let hold = HoldSession { stroke, generation };
+        assert_eq!(
+            hold.release(stroke, generation, session.phase),
+            ReleaseAction::CancelPreparation
+        );
+        session.cancel(false);
+        assert!(!session.permissions(generation, true));
+        assert_eq!(session.phase, Phase::Idle);
+    }
+
+    #[test]
+    fn shortcut_only_matching_release_stops_active_generation() {
+        let stroke = Stroke::fixture_stroke(1);
+        let mut session = Lifecycle::default();
+        let generation = session.begin().unwrap();
+        assert!(session.permissions(generation, true));
+        let hold = HoldSession { stroke, generation };
+        assert_eq!(
+            hold.release(Stroke::fixture_stroke(2), generation, session.phase),
+            ReleaseAction::Ignore
+        );
+        assert_eq!(
+            hold.release(stroke, generation, session.phase),
+            ReleaseAction::StopRecording
+        );
+        session.transcribe(); // manual stop, maximum duration, or end of audio
+        for phase in [
+            session.phase,
+            Phase::Delivering,
+            Phase::Ready,
+            Phase::Failed,
+        ] {
+            assert_eq!(
+                hold.release(stroke, generation, phase),
+                ReleaseAction::Ignore
+            );
+        }
+        session.cancel(false);
+        let next_generation = session.begin().unwrap();
+        assert!(session.permissions(next_generation, true));
+        assert_eq!(
+            hold.release(stroke, next_generation, session.phase),
+            ReleaseAction::Ignore
+        );
     }
 }

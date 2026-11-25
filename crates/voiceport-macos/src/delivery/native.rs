@@ -479,7 +479,12 @@ fn web_content(element: &OwnedCf) -> Result<bool, Failure> {
     Ok(false)
 }
 
-fn keyboard_pacing(bundle: &str, role: &str, terminal: bool, web: bool) -> Option<KeyboardPacing> {
+pub(super) fn keyboard_pacing(
+    bundle: &str,
+    role: &str,
+    terminal: bool,
+    web: bool,
+) -> Option<KeyboardPacing> {
     if terminal {
         return None;
     }

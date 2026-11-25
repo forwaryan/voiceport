@@ -14,13 +14,26 @@ use objc2_foundation::{
 use std::cell::{Cell, OnceCell, RefCell};
 mod control;
 mod control_probes;
+mod dictation_page;
+mod dictation_workflows;
+mod first_run;
 mod hotkey_start;
+#[doc(hidden)]
+pub use first_run::first_run_field_fixture;
+mod microphone;
 mod model_manager;
 mod picker;
+mod preferences;
 mod quick_panel;
 mod shortcut_editor;
 mod source_manager;
 mod source_probes;
+
+#[doc(hidden)]
+pub fn isolated_shortcut_regression(mtm: MainThreadMarker) {
+    preferences::isolated_layout_regression(mtm);
+    hotkey_start::isolated_event_regression(mtm);
+}
 
 const COPY_SUCCESS: &str = "文字已复制。";
 const COPY_FAILURE: &str = "复制失败，请选中文字手动复制。";
@@ -63,6 +76,7 @@ fn completed_delivery_failure(
     })
 }
 
+#[cfg(test)]
 fn delivery_failure_description(reason: &str, message: &str) -> String {
     let action = match message {
         COPY_SUCCESS => "文字已复制，可回到输入框手动粘贴。",
@@ -143,23 +157,13 @@ enum StatusAppearance {
     Working,
     Attention,
 }
-impl StatusAppearance {
-    fn symbol(self) -> &'static str {
-        match self {
-            Self::Ready => "waveform",
-            Self::Recording => "record.circle.fill",
-            Self::Working => "ellipsis.circle",
-            Self::Attention => "mic.slash",
-        }
-    }
-}
-
 #[derive(Default)]
 struct Ivars {
     controller: RefCell<Option<Controller>>,
     control: RefCell<control::Control>,
     status: OnceCell<Retained<NSStatusItem>>,
     quick_panel: OnceCell<quick_panel::QuickPanel>,
+    first_run: OnceCell<first_run::Panel>,
     context_menu: OnceCell<Retained<NSMenu>>,
     menu_toggle: OnceCell<Retained<NSMenuItem>>,
     menu_state: OnceCell<Retained<NSMenuItem>>,
@@ -167,24 +171,16 @@ struct Ivars {
     menu_cancel: OnceCell<Retained<NSMenuItem>>,
     menu_copy: OnceCell<Retained<NSMenuItem>>,
     status_appearance: Cell<Option<StatusAppearance>>,
-    empty_hint: OnceCell<Retained<NSView>>,
     page_tabs: OnceCell<Retained<NSSegmentedControl>>,
     dictation_page: OnceCell<Retained<NSView>>,
+    dictation_result: OnceCell<dictation_page::Page>,
     settings_page: OnceCell<Retained<NSView>>,
-    notice_icon: OnceCell<Retained<NSImageView>>,
-    notice_appearance: Cell<Option<StatusAppearance>>,
-    notice_action: OnceCell<Retained<NSButton>>,
-    shortcut_hint: OnceCell<Retained<NSTextField>>,
-    cancel: OnceCell<Retained<NSButton>>,
-    copy: OnceCell<Retained<NSButton>>,
     window: OnceCell<Retained<NSWindow>>,
     show_window_on_launch: Cell<bool>,
     show_models_on_launch: Cell<bool>,
-    message: OnceCell<Retained<NSTextField>>,
-    details: OnceCell<Retained<NSTextField>>,
-    transcript: OnceCell<Retained<NSTextView>>,
-    toggle: OnceCell<Retained<NSButton>>,
-    retry: OnceCell<Retained<NSButton>>,
+    dictionary_settings: OnceCell<Retained<NSButton>>,
+    preset_settings: OnceCell<Retained<NSButton>>,
+    workflow_dialog: Cell<bool>,
     automatic: OnceCell<Retained<NSSwitch>>,
     language: OnceCell<Retained<NSPopUpButton>>,
     source: OnceCell<Retained<NSPopUpButton>>,
@@ -194,12 +190,15 @@ struct Ivars {
     manage_models: OnceCell<Retained<NSButton>>,
     managing_models: Cell<bool>,
     model_manager: RefCell<Option<Retained<model_manager::Manager>>>,
+    microphone_panel: RefCell<Option<Retained<microphone::Panel>>>,
     manage_sources: OnceCell<Retained<NSButton>>,
     test_source: OnceCell<Retained<NSButton>>,
     managing_sources: Cell<bool>,
     source_manager: RefCell<Option<Retained<source_manager::Manager>>>,
     source_probe_panel: RefCell<Option<Retained<source_probes::Panel>>>,
     shortcut: OnceCell<Retained<NSPopUpButton>>,
+    shortcut_mode_control: OnceCell<Retained<NSPopUpButton>>,
+    settings_input_slots: OnceCell<preferences::InputSlots>,
     shortcut_feedback: OnceCell<Retained<NSTextField>>,
     shortcut_notice: RefCell<Option<String>>,
     timer: OnceCell<Retained<NSTimer>>,
@@ -210,7 +209,9 @@ struct Ivars {
     editing_shortcut: Cell<bool>,
     hotkey: RefCell<Option<crate::hotkey::GlobalHotKey>>,
     hotkey_rx: RefCell<Option<std::sync::mpsc::Receiver<crate::hotkey::HotKeyEvent>>>,
-    pending_hotkey: RefCell<Option<crate::hotkey::HotKeyEvent>>,
+    pending_hotkey: RefCell<Option<crate::hotkey::KeyPress>>,
+    hold_session: Cell<Option<hotkey_start::HoldSession>>,
+    shortcut_mode: Cell<crate::shortcut::ShortcutMode>,
     last_start_trace: RefCell<Option<serde_json::Value>>,
     permission_rx: RefCell<Option<std::sync::mpsc::Receiver<(u64, crate::audio::AudioEvent)>>>,
     prepare_permissions: OnceCell<Retained<NSButton>>,
@@ -232,6 +233,7 @@ define_class!(
                 self.show_window();
             } else {
                 self.refresh();
+                self.show_first_run_if_new();
             }
         }
         #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
@@ -269,18 +271,34 @@ define_class!(
     impl Delegate {
         #[unsafe(method(preparePermissions:))]
         fn prepare_permissions_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().permission_rx.borrow().is_some() || self.settings_locked() { return; }
-            let idle = self.ivars().controller.try_borrow().is_ok_and(|slot| slot.as_ref().is_some_and(|c| !c.busy()));
-            if !idle || self.ivars().quitting.get() { return; }
-            let (sender, receiver) = std::sync::mpsc::channel();
-            *self.ivars().permission_rx.borrow_mut() = Some(receiver);
-            let mut use_speech = true;
-            self.with_controller(|c| {
-                use_speech = c.uses_system_speech();
-                c.message = if use_speech { "正在准备麦克风与系统语音权限；不会开始录音。" } else { "正在准备麦克风权限；此来源不需要系统语音识别权限，不会开始录音。" }.into();
-            });
-            self.refresh();
-            crate::audio::Recorder::request_permissions_for_source(0, sender, use_speech);
+            self.prepare_permission_check(first_run::PermissionCheck::CurrentSource);
+        }
+        #[unsafe(method(showFirstRunChecks:))]
+        fn show_first_run_action(&self, _sender: Option<&AnyObject>) { self.show_first_run_checks(); }
+        #[unsafe(method(closeFirstRunChecks:))]
+        fn close_first_run_action(&self, _sender: Option<&AnyObject>) { self.close_first_run_checks(); }
+        #[unsafe(method(runFirstRunCheck:))]
+        fn run_first_run_action(&self, _sender: Option<&AnyObject>) { self.run_first_run_check(); }
+        #[unsafe(method(firstRunMicrophone:))]
+        fn first_run_microphone_action(&self, _sender: Option<&AnyObject>) {
+            self.prepare_permission_check(first_run::PermissionCheck::Microphone);
+        }
+        #[unsafe(method(firstRunSpeech:))]
+        fn first_run_speech_action(&self, _sender: Option<&AnyObject>) {
+            self.prepare_permission_check(first_run::PermissionCheck::Speech);
+        }
+        #[unsafe(method(firstRunAccessibility:))]
+        fn first_run_accessibility_action(&self, _sender: Option<&AnyObject>) {
+            self.request_first_run_accessibility();
+        }
+        #[unsafe(method(firstRunShortcut:))]
+        fn first_run_shortcut_action(&self, _sender: Option<&AnyObject>) {
+            self.preferences_action(sel!(showPreferences:), None);
+            self.close_first_run_checks();
+        }
+        #[unsafe(method(firstRunTranscribeOnly:))]
+        fn first_run_transcribe_only_action(&self, _sender: Option<&AnyObject>) {
+            self.transcribe_only_from_first_run();
         }
         #[unsafe(method(toggle:))]
         fn toggle_action(&self, _sender: Option<&AnyObject>) {
@@ -301,7 +319,8 @@ define_class!(
         }
         #[unsafe(method(cancel:))]
         fn cancel_action(&self, _sender: Option<&AnyObject>) {
-            self.with_controller(|c| c.cancel()); self.refresh();
+            if !self.cancel_shortcut_session() { self.with_controller(|c| c.cancel()); }
+            self.refresh();
         }
         #[unsafe(method(retry:))]
         fn retry_action(&self, _sender: Option<&AnyObject>) {
@@ -335,21 +354,20 @@ define_class!(
         fn preferences_action(&self, _sender: Option<&AnyObject>) {
             self.show_window(); self.select_page(true);
         }
-        #[unsafe(method(resolveNotice:))]
-        fn notice_action(&self, _sender: Option<&AnyObject>) {
-            let (idle, delivery_failed) = self.ivars().controller.borrow().as_ref().map_or((false, false), |c| {
-                (!c.busy(), completed_delivery_failure(c.state.phase, !c.transcript.is_empty(), c.delivery_failure_stage()).is_some())
-            });
-            if delivery_failed {
-                self.show_details();
-            } else if idle && self.ivars().hotkey_error.borrow().is_some() {
-                self.select_page(true);
-            } else if idle && !Delivery::trusted() && self.ivars().controller.borrow().as_ref().is_some_and(|c| c.automatic) {
-                Delivery::request_accessibility();
-            } else { self.show_details(); }
+        #[unsafe(method(toggleDictationDiagnostics:))]
+        fn toggle_dictation_diagnostics(&self, _sender: Option<&AnyObject>) {
+            if let Some(page) = self.ivars().dictation_result.get() { page.toggle_details(); }
+            self.refresh();
         }
-        #[unsafe(method(showDetails:))]
-        fn details_action(&self, _sender: Option<&AnyObject>) { self.show_details(); }
+        #[unsafe(method(editDictationCopy:))]
+        fn edit_dictation_copy(&self, _sender: Option<&AnyObject>) {
+            if let Some(page) = self.ivars().dictation_result.get() { page.toggle_edit(); }
+            self.refresh();
+        }
+        #[unsafe(method(copyDictationResult:))]
+        fn copy_dictation_result(&self, _sender: Option<&AnyObject>) {
+            if let Some(page) = self.ivars().dictation_result.get() { page.copy(Delivery::copy); }
+        }
         #[unsafe(method(requestAccessibility:))]
         fn accessibility_action(&self, _sender: Option<&AnyObject>) { Delivery::request_accessibility(); }
         #[unsafe(method(toggleAutomatic:))]
@@ -388,6 +406,10 @@ define_class!(
             }
             self.refresh();
         }
+        #[unsafe(method(microphoneSettings:))]
+        fn microphone_settings_action(&self, _sender: Option<&AnyObject>) {
+            if !self.ivars().quitting.get() { microphone::show(self); }
+        }
         #[unsafe(method(manageModels:))]
         fn manage_models_action(&self, _sender: Option<&AnyObject>) {
             let existing = self.ivars().model_manager.borrow().clone();
@@ -412,26 +434,36 @@ define_class!(
                 unsafe { NSUserDefaults::standardUserDefaults().setObject_forKey(Some(&NSString::from_str(&c.language)), ns_string!("language")); }
             }); self.refresh();
         }
+        #[unsafe(method(showPersonalDictionary:))]
+        fn dictionary_action(&self, _sender: Option<&AnyObject>) { self.show_dictionary(); }
+        #[unsafe(method(showDictationPresets:))]
+        fn presets_action(&self, _sender: Option<&AnyObject>) { self.show_presets(); }
+        #[unsafe(method(showOriginalTranscript:))]
+        fn original_action(&self, _sender: Option<&AnyObject>) { self.show_original_transcript(); }
         #[unsafe(method(cycleShortcut:))]
         fn shortcut_action(&self, _sender: Option<&AnyObject>) {
             self.change_shortcut();
         }
+        #[unsafe(method(selectShortcutMode:))]
+        fn shortcut_mode_action(&self, _sender: Option<&AnyObject>) {
+            self.change_shortcut_mode();
+        }
         #[unsafe(method(tick:))]
         fn tick(&self, _sender: Option<&AnyObject>) {
-            self.poll_hotkey_start();
+            self.poll_shortcut();
             let permission_reply = self.ivars().permission_rx.borrow().as_ref().and_then(|rx| rx.try_recv().ok());
-            if let Some((_, crate::audio::AudioEvent::Permissions { microphone, speech })) = permission_reply {
+            if let Some((_, crate::audio::AudioEvent::Permissions { .. })) = permission_reply {
                 self.ivars().permission_rx.borrow_mut().take();
-                self.with_controller(|c| c.message = format!("权限检查：麦克风{}；{}；辅助功能{}。未开始录音。", if microphone { "已允许" } else { "未允许" }, if !c.uses_system_speech() { "此来源无需系统语音识别权限" } else if speech { "系统语音识别已允许" } else { "系统语音识别未允许（无设备端预览）" }, if Delivery::trusted() { "已允许" } else { "未允许" }));
+                let (microphone, speech) = crate::audio::Recorder::permission_status();
+                self.with_controller(|c| c.message = format!("权限检查：麦克风{}；{}；辅助功能{}。未开始录音。", if microphone == "authorized" { "已允许" } else { "未允许" }, if !c.uses_system_speech() { "此来源无需系统语音识别权限" } else if speech == "authorized" { "系统语音识别已允许" } else { "系统语音识别未允许（无设备端预览）" }, if Delivery::trusted() { "已允许" } else { "未允许" }));
             }
-            let pressed = self.ivars().hotkey_rx.borrow().as_ref().and_then(|rx| rx.try_recv().ok());
             self.with_controller(|c| {
                 if self.ivars().quitting.get() && !self.ivars().shutdown_started.get() {
                     c.cancel(); self.ivars().shutdown_started.set(true);
                 }
-                c.poll();
+                self.poll_dictation(c);
             });
-            if let Some(event) = pressed { self.handle_hotkey(event); }
+            self.poll_toggle_shortcut();
             if self.ivars().show_models_on_launch.get()
                 && self.ivars().controller.borrow().as_ref().is_some_and(|c| !c.busy() && !c.discovering()) {
                 self.ivars().show_models_on_launch.set(false);
@@ -445,8 +477,14 @@ define_class!(
             self.refresh();
             let probes = self.ivars().source_probe_panel.borrow().clone();
             if let Some(probes) = probes { probes.refresh(); }
+            let sources = self.ivars().source_manager.borrow().clone();
+            if let Some(sources) = sources { sources.refresh_diagnostics(); }
             let models = self.ivars().model_manager.borrow().clone();
             if let Some(models) = models { models.refresh(); }
+            let microphone = self.ivars().microphone_panel.borrow().clone();
+            if let Some(microphone) = microphone {
+                if self.ivars().quitting.get() { microphone.close(); } else { microphone.refresh(); }
+            }
             if self.ivars().quitting.get() {
                 if self.ivars().editing_shortcut.get() { NSApplication::sharedApplication(self.mtm()).abortModal(); }
                 let manager = self.ivars().source_manager.borrow().clone();
@@ -509,7 +547,13 @@ impl Delegate {
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         for (title, action, symbol) in [
             ("打开结果与设置…", sel!(showWindow:), "macwindow"),
+            (
+                "首次使用与自检…",
+                sel!(showFirstRunChecks:),
+                "checkmark.circle",
+            ),
             ("语音模型…", sel!(manageModels:), "internaldrive"),
+            ("麦克风设置…", sel!(microphoneSettings:), "mic"),
             ("开始听写", sel!(toggle:), "mic"),
             ("复制最近文字", sel!(copyText:), "doc.on.doc"),
             ("取消听写", sel!(cancel:), "xmark.circle"),
@@ -571,6 +615,7 @@ impl Delegate {
     fn initialize(&self) {
         let defaults = NSUserDefaults::standardUserDefaults();
         let mut controller = Controller::new();
+        controller.microphone_uid = microphone::preference(&defaults);
         if defaults
             .objectForKey(ns_string!("automaticPaste"))
             .is_some()
@@ -586,6 +631,7 @@ impl Delegate {
             .stringForKey(ns_string!("transcriptionSource"))
             .map(|s| s.to_string())
             .unwrap_or_else(|| crate::local_models::CHATGPT.into());
+        dictation_workflows::load(&mut controller, &defaults);
         controller.catalog = crate::local_models::Catalog::pending(&controller.source_id);
         controller.refresh_catalog();
         let saved = defaults
@@ -596,6 +642,14 @@ impl Delegate {
             defaults.boolForKey(ns_string!("alternativeShortcut")),
         );
         self.ivars().shortcut_binding.set(shortcut);
+        let mode = defaults
+            .stringForKey(&NSString::from_str(
+                crate::shortcut::ShortcutMode::PREFERENCE,
+            ))
+            .map(|v| v.to_string());
+        self.ivars()
+            .shortcut_mode
+            .set(crate::shortcut::ShortcutMode::load(mode.as_deref()));
         *self.ivars().controller.borrow_mut() = Some(controller);
         let _ = crate::storage::cleanup_expired();
         if let Err(message) = self.install_hotkey(shortcut) {
@@ -726,272 +780,16 @@ impl Delegate {
         }
         if let Some(tabs) = self.ivars().page_tabs.get() {
             tabs.setSelectedSegment(if settings { 1 } else { 0 });
-        }
-    }
-    fn show_details(&self) {
-        let Some(window) = self.ivars().window.get() else {
-            return;
-        };
-        if window.attachedSheet().is_some() {
-            return;
-        }
-        let Ok(slot) = self.ivars().controller.try_borrow() else {
-            return;
-        };
-        let Some(c) = slot.as_ref() else {
-            return;
-        };
-        let details = format!(
-            "{}\n\n{} · {} 秒\n{}",
-            c.message,
-            c.preview_status,
-            c.seconds(),
-            c.delivery_status
-        );
-        let alert = NSAlert::new(self.mtm());
-        alert.setMessageText(ns_string!("听写状态详情"));
-        alert.setInformativeText(&NSString::from_str(&details));
-        alert.addButtonWithTitle(ns_string!("知道了"));
-        alert.beginSheetModalForWindow_completionHandler(window, None);
-    }
-    fn build_dictation_page(&self, page: &NSView) {
-        let title = self.label(page, "让想法，落在光标处。", rect(0., 380., 550., 28.), 21.);
-        title.setFont(Some(&NSFont::systemFontOfSize_weight(21., unsafe {
-            NSFontWeightSemibold
-        })));
-        self.caption(
-            page,
-            "先点好输入位置，再用快捷键开始。",
-            rect(0., 358., 550., 18.),
-        );
-
-        self.surface(page, rect(0., 282., 572., 62.));
-        let _ = self.ivars().notice_icon.set(self.icon(
-            page,
-            "checkmark.circle",
-            rect(16., 302., 22., 22.),
-        ));
-        let message = self.label(page, "", rect(50., 315., 392., 20.), 13.);
-        message.setFont(Some(&NSFont::systemFontOfSize_weight(13., unsafe {
-            NSFontWeightMedium
-        })));
-        let _ = self.ivars().message.set(message);
-        let details = self.caption(page, "", rect(50., 291., 392., 24.));
-        details.setMaximumNumberOfLines(2);
-        let _ = self.ivars().details.set(details);
-        let action = self.button(page, "查看详情", sel!(resolveNotice:), 454., 297., 104.);
-        action.setControlSize(NSControlSize::Small);
-        let _ = self.ivars().notice_action.set(action);
-
-        self.surface(page, rect(0., 88., 572., 178.));
-        self.caption(page, "本次转写", rect(16., 236., 300., 18.));
-        let copy = self.button(page, "复制文字", sel!(copyText:), 472., 228., 88.);
-        copy.setImage(symbol_image("doc.on.doc", 12.).as_deref());
-        copy.setImagePosition(NSCellImagePosition::ImageLeading);
-        copy.setControlSize(NSControlSize::Small);
-        let _ = self.ivars().copy.set(copy);
-        let scroll = NSScrollView::initWithFrame(
-            NSScrollView::alloc(self.mtm()),
-            rect(10., 100., 552., 128.),
-        );
-        scroll.setHasVerticalScroller(true);
-        scroll.setAutohidesScrollers(true);
-        scroll.setBorderType(NSBorderType::NoBorder);
-        scroll.setDrawsBackground(false);
-        let text =
-            NSTextView::initWithFrame(NSTextView::alloc(self.mtm()), rect(0., 0., 530., 128.));
-        text.setEditable(false);
-        text.setSelectable(true);
-        text.setFont(Some(&NSFont::systemFontOfSize(14.)));
-        text.setTextColor(Some(&NSColor::textColor()));
-        text.setDrawsBackground(false);
-        text.setTextContainerInset(NSSize::new(6., 6.));
-        text.setAccessibilityIdentifier(Some(ns_string!("voiceport.transcript")));
-        text.setAccessibilityLabel(Some(ns_string!("识别结果")));
-        scroll.setDocumentView(Some(&text));
-        page.addSubview(&scroll);
-        let _ = self.ivars().transcript.set(text);
-        let empty = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 110., 572., 114.));
-        self.icon(&empty, "waveform", rect(270., 72., 32., 28.));
-        let hint = self.label(
-            &empty,
-            "说句话，让文字自然出现。",
-            rect(0., 40., 572., 22.),
-            14.,
-        );
-        hint.setAlignment(NSTextAlignment::Center);
-        let hint = self.caption(
-            &empty,
-            "停录后生成最终文字，你来确认发送。",
-            rect(0., 18., 572., 18.),
-        );
-        hint.setAlignment(NSTextAlignment::Center);
-        page.addSubview(&empty);
-        let _ = self.ivars().empty_hint.set(empty);
-
-        let toggle = self.button(page, "开始听写", sel!(toggle:), 0., 30., 136.);
-        toggle.setFrame(rect(0., 30., 136., 36.));
-        toggle.setControlSize(NSControlSize::Large);
-        toggle.setBezelStyle(NSBezelStyle::Push);
-        toggle.setBezelColor(Some(&NSColor::controlAccentColor()));
-        toggle.setImage(symbol_image("mic.fill", 15.).as_deref());
-        toggle.setImagePosition(NSCellImagePosition::ImageLeading);
-        let _ = self.ivars().toggle.set(toggle);
-        let hint = self.caption(page, "", rect(152., 38., 168., 20.));
-        let _ = self.ivars().shortcut_hint.set(hint);
-        let _ =
-            self.ivars()
-                .cancel
-                .set(self.button(page, "取消听写", sel!(cancel:), 360., 32., 96.));
-        let _ =
-            self.ivars()
-                .retry
-                .set(self.button(page, "重试转写", sel!(retry:), 464., 32., 108.));
-        self.caption(
-            page,
-            "文字不会自动发送；关闭窗口后，可从右上角图标打开。",
-            rect(0., 0., 540., 18.),
-        );
-        let info = self.button(page, "", sel!(showDetails:), 548., -4., 24.);
-        info.setBordered(false);
-        info.setImage(symbol_image("info.circle", 14.).as_deref());
-        info.setToolTip(Some(ns_string!("查看完整听写状态")));
-        info.setAccessibilityLabel(Some(ns_string!("查看完整听写状态")));
-    }
-    fn build_settings_page(&self, page: &NSView) {
-        let title = self.label(page, "偏好设置", rect(0., 380., 550., 28.), 21.);
-        title.setFont(Some(&NSFont::systemFontOfSize_weight(21., unsafe {
-            NSFontWeightSemibold
-        })));
-        self.caption(
-            page,
-            "按你的习惯，调整每一次听写。",
-            rect(0., 358., 550., 18.),
-        );
-        self.surface(page, rect(0., 100., 572., 244.));
-        self.label(page, "转写来源", rect(16., 312., 90., 20.), 13.);
-        let source = self.popup(page, &[], sel!(selectSource:), rect(112., 305., 268., 30.));
-        source.setAccessibilityLabel(Some(ns_string!("转写来源")));
-        let _ = self.ivars().source.set(source);
-        let models = self.button(page, "语音模型…", sel!(manageModels:), 380., 305., 100.);
-        models.setAccessibilityIdentifier(Some(ns_string!("voiceport.models.open")));
-        let _ = self.ivars().manage_models.set(models);
-        let _ = self.ivars().refresh_models.set(self.button(
-            page,
-            "刷新",
-            sel!(refreshModels:),
-            480.,
-            305.,
-            76.,
-        ));
-        let _ = self.ivars().source_detail.set(self.caption(
-            page,
-            "正在检查已安装的模型…",
-            rect(16., 268., 540., 32.),
-        ));
-        for (y, title, subtitle) in [
-            (
-                242.,
-                "自动输入到原光标",
-                "停止后，将文字送回开始时的输入位置。",
-            ),
-            (
-                188.,
-                "识别语言",
-                "选择模型或服务支持的语言；自动检测仅覆盖其实际支持范围。",
-            ),
-            (
-                134.,
-                "开始 / 停止快捷键",
-                "在其他应用中，也能随时开始听写。",
-            ),
-        ] {
-            self.label(page, title, rect(16., y, 350., 20.), 13.);
-            let caption = self.caption(page, subtitle, rect(16., y - 20., 350., 18.));
-            if title == "开始 / 停止快捷键" {
-                let _ = self.ivars().shortcut_feedback.set(caption);
+            if let Some(window) = self.ivars().window.get() {
+                window.setAutorecalculatesKeyViewLoop(settings);
+                if settings {
+                    window.recalculateKeyViewLoop();
+                } else if let Some(result) = self.ivars().dictation_result.get() {
+                    result.link_key_views(tabs);
+                    window.setInitialFirstResponder(Some(tabs));
+                }
             }
         }
-        for y in [260., 206., 152.] {
-            let line = NSBox::initWithFrame(NSBox::alloc(self.mtm()), rect(16., y, 540., 1.));
-            line.setBoxType(NSBoxType::Separator);
-            page.addSubview(&line);
-        }
-        let automatic =
-            NSSwitch::initWithFrame(NSSwitch::alloc(self.mtm()), rect(512., 234., 42., 28.));
-        unsafe {
-            automatic.setTarget(Some(self));
-            automatic.setAction(Some(sel!(toggleAutomatic:)));
-        }
-        automatic.setAccessibilityLabel(Some(ns_string!("自动输入到原光标")));
-        page.addSubview(&automatic);
-        let _ = self.ivars().automatic.set(automatic);
-        let language = self.popup(
-            page,
-            &voiceport_core::language::LANGUAGES
-                .iter()
-                .map(|(_, name)| *name)
-                .collect::<Vec<_>>(),
-            sel!(cycleLanguage:),
-            rect(424., 180., 132., 30.),
-        );
-        language.setAccessibilityLabel(Some(ns_string!("识别语言")));
-        let _ = self.ivars().language.set(language);
-        let shortcut = self.popup(
-            page,
-            &["⌃ ⌥ 空格", "⌃ ⇧ 空格", "自定义…"],
-            sel!(cycleShortcut:),
-            rect(368., 126., 188., 30.),
-        );
-        shortcut.setAccessibilityLabel(Some(ns_string!("开始 / 停止快捷键")));
-        let _ = self.ivars().shortcut.set(shortcut);
-
-        let _ = self.ivars().manage_sources.set(self.button(
-            page,
-            "管理来源…",
-            sel!(manageSources:),
-            350.,
-            0.,
-            110.,
-        ));
-        let _ = self.ivars().test_source.set(self.button(
-            page,
-            "测试各来源连通性与耗时…",
-            sel!(testSource:),
-            90.,
-            0.,
-            250.,
-        ));
-        self.surface(page, rect(0., 24., 572., 68.));
-        self.icon(page, "hand.raised", rect(16., 60., 20., 22.));
-        self.label(page, "辅助功能", rect(46., 68., 300., 20.), 13.);
-        self.caption(
-            page,
-            "允许 VoicePort 将文字输入其他应用。",
-            rect(46., 48., 360., 18.),
-        );
-        let accessibility = self.button(
-            page,
-            "前往授权",
-            sel!(requestAccessibility:),
-            440.,
-            54.,
-            116.,
-        );
-        let _ = self.ivars().accessibility.set(accessibility);
-        let prepare = self.button(
-            page,
-            "检查麦克风与语音权限…",
-            sel!(preparePermissions:),
-            12.,
-            24.,
-            300.,
-        );
-        prepare.setBordered(false);
-        prepare.setAlignment(NSTextAlignment::Left);
-        prepare.setContentTintColor(Some(&NSColor::controlAccentColor()));
-        prepare.setFont(Some(&NSFont::systemFontOfSize(12.)));
-        let _ = self.ivars().prepare_permissions.set(prepare);
     }
     fn show_window(&self) {
         self.close_quick_panel();
@@ -1045,7 +843,10 @@ impl Delegate {
             line.setBoxType(NSBoxType::Separator);
             view.addSubview(&line);
             let dictation = NSView::initWithFrame(NSView::alloc(mtm), rect(24., 20., 572., 408.));
-            self.build_dictation_page(&dictation);
+            let _ = self
+                .ivars()
+                .dictation_result
+                .set(dictation_page::Page::build(mtm, self, &dictation));
             view.addSubview(&dictation);
             let _ = self.ivars().dictation_page.set(dictation);
             let settings = NSView::initWithFrame(NSView::alloc(mtm), rect(24., 20., 572., 408.));
@@ -1055,6 +856,7 @@ impl Delegate {
             let _ = self.ivars().settings_page.set(settings);
             window.center();
             let _ = self.ivars().window.set(window);
+            self.select_page(false);
         }
         self.refresh();
         if let Some(window) = self.ivars().window.get() {
@@ -1088,8 +890,11 @@ impl Delegate {
         }
         let recording = c.state.phase == Phase::Recording;
         let trusted = Delivery::trusted();
+        self.refresh_first_run(c, trusted);
         let shortcut_label = self.ivars().shortcut_binding.get().label();
         let shortcut = shortcut_label.as_str();
+        let mode = self.ivars().shortcut_mode.get();
+        let shortcut_instruction = mode.instruction();
         let hotkey_failed = self.ivars().hotkey_error.borrow().is_some();
         let delivery_failure = completed_delivery_failure(
             c.state.phase,
@@ -1123,18 +928,15 @@ impl Delegate {
                 if hotkey_failed {
                     "快捷键未注册，请在设置中更换"
                 } else {
-                    "开始 / 停止听写"
+                    shortcut_instruction
                 }
             )));
         }
         if let Some(item) = self.ivars().menu_cancel.get() {
-            item.setEnabled(c.busy());
+            item.setEnabled(c.busy() || returning_to_input);
         }
         if let Some(item) = self.ivars().menu_copy.get() {
             item.setEnabled(!c.transcript.is_empty());
-        }
-        if let Some(hint) = self.ivars().empty_hint.get() {
-            hint.setHidden(!c.transcript.is_empty());
         }
         let title = if recording {
             "停止并转写"
@@ -1150,17 +952,17 @@ impl Delegate {
                     && (recording || !c.busy()),
             );
         }
-        if let Some(button) = self.ivars().toggle.get() {
-            button.setTitle(&NSString::from_str(title));
-            button.setEnabled(
-                !preparing_permissions
-                    && !returning_to_input
-                    && !self.settings_locked()
-                    && (recording || !c.busy()),
-            );
-        }
         let idle =
             !c.busy() && !preparing_permissions && !returning_to_input && !self.settings_locked();
+        for button in [
+            self.ivars().dictionary_settings.get(),
+            self.ivars().preset_settings.get(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            button.setEnabled(idle);
+        }
         if let Some(button) = self.ivars().manage_models.get() {
             button.setEnabled((idle && !c.discovering()) || self.ivars().managing_models.get());
         }
@@ -1199,83 +1001,62 @@ impl Delegate {
                 button.setEnabled(enabled);
             }
         }
-        let full_details = NSString::from_str(&format!(
-            "{}\n{} · {} 秒\n{}",
-            c.message,
-            c.preview_status,
-            c.seconds(),
-            c.delivery_status
-        ));
-        if let Some(label) = self.ivars().message.get() {
-            label.setStringValue(&NSString::from_str(state_text));
-            label.setToolTip(Some(&full_details));
-        }
-        let description = if let Some(reason) = delivery_failure {
-            delivery_failure_description(reason, &c.message)
-        } else if idle && hotkey_failed {
-            "当前快捷键不可用，请到设置里换一组。".into()
-        } else if idle && c.automatic && !trusted {
-            "在系统设置中重新允许当前版本，即可输入到其他应用。".into()
-        } else if recording {
-            format!("{} · {} 秒", c.preview_status, c.seconds())
-        } else {
-            // Keep technical diagnostics available in the detail sheet while
-            // presenting the actionable message without its internal stage tag.
-            let message = if c.message.starts_with('[') {
-                c.message
-                    .split_once("] ")
-                    .map_or(c.message.as_str(), |(_, text)| text)
-            } else {
-                &c.message
-            };
-            message.to_string()
-        };
-        if let Some(label) = self.ivars().details.get() {
-            label.setStringValue(&NSString::from_str(&description));
-            label.setToolTip(Some(&full_details));
-        }
-        if let Some(button) = self.ivars().notice_action.get() {
-            button.setTitle(&NSString::from_str(if delivery_failure.is_some() {
-                "查看详情"
-            } else if idle && hotkey_failed {
-                "设置快捷键"
-            } else if idle && c.automatic && !trusted {
-                "前往授权"
-            } else {
-                "查看详情"
-            }));
-        }
-        if self.ivars().notice_appearance.get() != Some(appearance)
-            && let Some(icon) = self.ivars().notice_icon.get()
-        {
-            icon.setImage(symbol_image(appearance.symbol(), 22.).as_deref());
-            let tint = match appearance {
-                StatusAppearance::Ready => NSColor::systemGreenColor(),
-                StatusAppearance::Recording => NSColor::systemRedColor(),
-                StatusAppearance::Working => NSColor::controlAccentColor(),
-                StatusAppearance::Attention => NSColor::systemOrangeColor(),
-            };
-            icon.setContentTintColor(Some(&tint));
-            self.ivars().notice_appearance.set(Some(appearance));
-        }
-        if let Some(label) = self.ivars().shortcut_hint.get() {
-            label.setStringValue(&NSString::from_str(&format!("{shortcut}  开始 / 停止")));
-        }
-        if let Some(button) = self.ivars().cancel.get() {
-            button.setHidden(!c.busy());
-        }
-        if let Some(button) = self.ivars().copy.get() {
-            button.setHidden(c.transcript.is_empty());
-        }
-        if let Some(text) = self.ivars().transcript.get()
-            && text.string().to_string() != c.transcript
-        {
-            text.setString(&NSString::from_str(&c.transcript));
-        }
-        if let Some(button) = self.ivars().retry.get() {
-            let available = c.state.retry_available && c.state.phase == Phase::Failed;
-            button.setHidden(!available);
-            button.setEnabled(available);
+        if let Some(page) = self.ivars().dictation_result.get() {
+            let receipt = c.gui_dictation_receipt();
+            let diagnostics = c.gui_dictation_diagnostics();
+            let origin = c.visible_transcript.map(|source| match source {
+                crate::controller::VisibleTranscript::Preview(generation) => {
+                    dictation_page::TranscriptOrigin {
+                        generation,
+                        final_text: false,
+                    }
+                }
+                crate::controller::VisibleTranscript::Final(generation) => {
+                    dictation_page::TranscriptOrigin {
+                        generation,
+                        final_text: true,
+                    }
+                }
+            });
+            page.refresh(dictation_page::Snapshot {
+                receipt: receipt.as_ref(),
+                diagnostics: diagnostics.as_ref(),
+                origin,
+                original: &c.transcript,
+                raw_available: c.raw_transcript.is_some(),
+                can_open_raw: idle,
+                shortcut: &format!(
+                    "{shortcut}  {}",
+                    if hotkey_failed {
+                        "快捷键未注册"
+                    } else {
+                        shortcut_instruction
+                    }
+                ),
+                activity: dictation_page::Activity {
+                    title: if recording
+                        || !c.state.can_start()
+                        || preparing_permissions
+                        || returning_to_input
+                        || c.source_tests.busy()
+                    {
+                        Some(state_text)
+                    } else {
+                        None
+                    },
+                    recording,
+                    can_toggle: !preparing_permissions
+                        && !returning_to_input
+                        && !self.settings_locked()
+                        && (recording || !c.busy()),
+                    can_cancel: c.busy() || returning_to_input,
+                    can_retry: !self.settings_locked()
+                        && c.can_retry_recording()
+                        && receipt
+                            .as_ref()
+                            .is_some_and(|r| r.generation == c.state.generation()),
+                },
+            });
         }
         if let Some(control) = self.ivars().automatic.get() {
             let state = if c.automatic {
@@ -1306,10 +1087,18 @@ impl Delegate {
             let text = notice.as_deref().unwrap_or(if hotkey_failed {
                 "快捷键不可用，请换一组或点自定义。"
             } else {
-                "选择预设，或点自定义后按下组合键。"
+                "选择预设，或点自定义后试按组合键。"
             });
             label.setStringValue(&NSString::from_str(text));
             label.setToolTip(Some(&NSString::from_str(&c.message)));
+        }
+        if let Some(control) = self.ivars().shortcut_mode_control.get() {
+            if control.indexOfSelectedItem() != mode.index() {
+                control.selectItemAtIndex(mode.index());
+            }
+            if control.isEnabled() != idle {
+                control.setEnabled(idle);
+            }
         }
         if let Some(control) = self.ivars().shortcut.get() {
             let selected = self.ivars().shortcut_binding.get().preset_index();
@@ -1329,7 +1118,7 @@ impl Delegate {
             control.setToolTip(Some(&NSString::from_str(if hotkey_failed {
                 "快捷键未注册，请选择另一组。"
             } else {
-                "在目标应用中按此快捷键开始和停止听写。"
+                shortcut_instruction
             })));
             if control.isEnabled() != idle {
                 control.setEnabled(idle);
@@ -1355,7 +1144,7 @@ impl Delegate {
                 NSString::from_str(&format!("VoicePort · {source_title} · {state_text}"));
             status.setAccessibilityLabel(Some(&description));
             status.setToolTip(Some(&NSString::from_str(&format!(
-                "VoicePort · {state_text}\n当前转写：{source_title}\n{shortcut} 开始 / 停止听写\n点击快速切换 · 右键更多操作"
+                "VoicePort · {state_text}\n当前转写：{source_title}\n{shortcut} {shortcut_instruction}\n点击快速切换 · 右键更多操作"
             ))));
         }
     }
@@ -1383,9 +1172,19 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
 
 pub fn run() {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
+    #[cfg(debug_assertions)]
+    if let [flag, directory] = arguments.as_slice()
+        && flag == "--quick-panel-fixture"
+    {
+        let mtm = MainThreadMarker::new().expect("fixture starts on the main thread");
+        objc2::rc::autoreleasepool(|_| {
+            quick_panel::fixture::run(mtm, std::path::Path::new(directory))
+        });
+        return;
+    }
     if arguments.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "VoicePort Rust macOS\n  --show-window             Explicitly open results and settings (normal launch stays in the menu bar)\n  --show-models             Open the local speech model library\n  --smoke-test              Build menu and exit without recording or network\n  --check-input-permission  Print input authorization JSON for this execution context\n  --diagnose-input          Inspect focused input metadata without writing\n  --input-self-test         Write fixed text only to the dedicated development fixture\n  --help                   Show this help"
+            "VoicePort Rust macOS\n  --show-window             Explicitly open results and settings (skip the first-run window)\n  --show-models             Open the local speech model library\n  --smoke-test              Build menu and exit without recording or network\n  --check-input-permission  Print input authorization JSON for this execution context\n  --diagnose-input          Inspect focused input metadata without writing\n  --input-self-test         Write fixed text only to the dedicated development fixture\n  --help                   Show this help"
         );
         return;
     }

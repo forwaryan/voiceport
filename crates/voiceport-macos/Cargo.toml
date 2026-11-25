@@ -15,6 +15,11 @@ path = "tests/stop_failure.rs"
 harness = false
 
 [[test]]
+name = "dictation_page_native"
+path = "tests/dictation_page_native.rs"
+harness = false
+
+[[test]]
 name = "clipboard_layout"
 path = "tests/clipboard_layout.rs"
 harness = false
@@ -22,6 +27,11 @@ harness = false
 [[test]]
 name = "shortcut_native"
 path = "tests/shortcut_native.rs"
+harness = false
+
+[[test]]
+name = "first_run_native"
+path = "tests/first_run_native.rs"
 harness = false
 
 [dependencies]
@@ -39,6 +49,8 @@ ring = "0.17"
 objc2 = "0.6.4"
 objc2-foundation = "0.3.2"
 objc2-app-kit = "0.3.2"
+objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = ["AudioComponent", "AUComponent", "AudioUnitProperties"] }
+objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware"] }
 objc2-av-foundation = "0.3.2"
 objc2-avf-audio = "0.3.2"
 objc2-speech = "0.3.2"

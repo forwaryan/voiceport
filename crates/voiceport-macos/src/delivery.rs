@@ -4,6 +4,8 @@
 //! clipboard/Command+V path; no menu, helper process or Return key is used.
 #[cfg(test)]
 mod callback_tests;
+#[cfg(test)]
+mod compatibility_matrix;
 #[doc(hidden)]
 pub mod model;
 mod native;
@@ -98,7 +100,8 @@ impl Delivery {
         self.begin_with_capture(|| native::capture(target, shortcut))
     }
 
-    #[cfg(test)]
+    /// Bind an owned fixture directly to the ordinary delivery path. The
+    /// caller supplies the whole target boundary, so native capture is skipped.
     pub(crate) fn begin_fixture(&mut self, target: Box<dyn Target>) -> Result<(), String> {
         self.begin_with_capture(|| Ok(native::Captured::Ordinary(target)))
     }
@@ -366,7 +369,7 @@ impl Delivery {
             return self.final_status();
         }
         if self.failure.is_some() {
-            self.retain_preview();
+            self.retain_preview_inner();
             return self.retained();
         }
         if self
@@ -515,6 +518,10 @@ impl Delivery {
         if let Err(failure) = self.on_main() {
             return Some(failure.message());
         }
+        self.poll_captured()
+    }
+
+    fn poll_captured(&mut self) -> Option<String> {
         if let Some(Session::Ordinary(span)) = self.session.as_mut() {
             let pending = span.has_pending();
             if !pending {

@@ -5,8 +5,10 @@ use block2::RcBlock;
 use local_state::{LocalRefresh, ModelView, PrimaryAction, RefreshReason};
 use objc2::Message;
 use std::{os::unix::fs::MetadataExt, path::PathBuf, time::Instant};
+mod browse;
 mod cloud;
 mod local_state;
+use browse::{Browse, Order, Preview};
 mod presentation;
 use presentation::ROW_HEIGHT;
 
@@ -29,7 +31,7 @@ struct LocalView {
     current_title: String,
     source_id: String,
     language: String,
-    installed_only: bool,
+    browse: Browse,
     ready: bool,
     working: Option<&'static str>,
     cancelling: bool,
@@ -53,6 +55,10 @@ pub(super) struct State {
     engine: OnceCell<Retained<NSButton>>,
     language: OnceCell<Retained<NSPopUpButton>>,
     tabs: OnceCell<Retained<NSSegmentedControl>>,
+    browse_bar: OnceCell<Retained<NSView>>,
+    browse_language: OnceCell<Retained<NSPopUpButton>>,
+    browse_preview: OnceCell<Retained<NSPopUpButton>>,
+    browse_order: OnceCell<Retained<NSPopUpButton>>,
     scroll: OnceCell<Retained<NSScrollView>>,
     list: OnceCell<Retained<NSView>>,
     empty: OnceCell<Retained<NSTextField>>,
@@ -343,6 +349,7 @@ impl Manager {
         let ready = self.ready();
         self.ivars().scroll.get().unwrap().setHidden(cloud_page);
         self.ivars().tabs.get().unwrap().setHidden(cloud_page);
+        self.ivars().browse_bar.get().unwrap().setHidden(cloud_page);
         self.ivars().engine.get().unwrap().setHidden(cloud_page);
         self.ivars()
             .cloud
@@ -419,7 +426,30 @@ impl Manager {
             current_title,
             source_id: c.source_id.clone(),
             language: c.language.clone(),
-            installed_only: self.ivars().tabs.get().unwrap().selectedSegment() == 1,
+            browse: Browse {
+                installed_only: self.ivars().tabs.get().unwrap().selectedSegment() == 1,
+                language: voiceport_core::language::code(
+                    self.ivars()
+                        .browse_language
+                        .get()
+                        .unwrap()
+                        .indexOfSelectedItem() as usize,
+                ),
+                preview: Preview::from_index(
+                    self.ivars()
+                        .browse_preview
+                        .get()
+                        .unwrap()
+                        .indexOfSelectedItem(),
+                ),
+                order: Order::from_index(
+                    self.ivars()
+                        .browse_order
+                        .get()
+                        .unwrap()
+                        .indexOfSelectedItem(),
+                ),
+            },
             ready,
             working: self.ivars().active_model.get(),
             cancelling: self.ivars().cancelling.get(),
@@ -464,12 +494,8 @@ impl Manager {
         } else {
             ns_string!("安装识别引擎")
         });
-        let installed_only = view.installed_only;
-        let visible = view
-            .rows
-            .iter()
-            .filter(|row| !installed_only || row.installed())
-            .count();
+        let positions = view.browse.positions(&view.rows);
+        let visible = positions.iter().flatten().count();
         let list = self.ivars().list.get().unwrap();
         let list_height = (visible as f64 * ROW_HEIGHT)
             .max(self.ivars().scroll.get().unwrap().contentSize().height);
@@ -480,30 +506,21 @@ impl Manager {
         let empty = self.ivars().empty.get().unwrap();
         empty.setFrameOrigin(NSPoint::new(28., list_height - 104.));
         empty.setHidden(visible != 0);
-        self.set_summary(
-            &if installed_only {
-                format!("{visible} 款已安装")
-            } else {
-                format!("{visible} 款可选")
-            },
-            206.,
-        );
-        let mut position = 0;
+        self.set_summary(&format!("{visible} 款符合条件"), 206.);
         for row in self.ivars().rows.borrow().iter() {
-            let model = &view.rows[row.index];
-            let own = model.owned();
-            let usable = model.primary == PrimaryAction::Use;
-            let selected = view.source_id == row.definition.id;
-            let hidden = installed_only && !model.installed();
-            row.view.setHidden(hidden);
-            if hidden {
+            let position = positions[row.index];
+            row.view.setHidden(position.is_none());
+            let Some(position) = position else {
                 continue;
-            }
+            };
             row.view.setFrameOrigin(NSPoint::new(
                 0.,
                 list_height - (position + 1) as f64 * ROW_HEIGHT,
             ));
-            position += 1;
+            let model = &view.rows[row.index];
+            let own = model.owned();
+            let usable = model.primary == PrimaryAction::Use;
+            let selected = view.source_id == row.definition.id;
             let installation = model.installation;
             let working = view.working == Some(row.definition.id);
             let status = if working {
@@ -784,7 +801,7 @@ fn discard_queued_hotkeys(receiver: &std::sync::mpsc::Receiver<crate::hotkey::Ho
 }
 
 fn page_height(height: f64) -> f64 {
-    height.max(480.)
+    height.max(516.)
 }
 
 fn model_size(bytes: u64) -> String {
@@ -814,6 +831,10 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
         engine: OnceCell::new(),
         language: OnceCell::new(),
         tabs: OnceCell::new(),
+        browse_bar: OnceCell::new(),
+        browse_language: OnceCell::new(),
+        browse_preview: OnceCell::new(),
+        browse_order: OnceCell::new(),
         scroll: OnceCell::new(),
         list: OnceCell::new(),
         empty: OnceCell::new(),
@@ -845,10 +866,13 @@ mod tests {
     #[test]
     fn keys_queued_under_model_lock_do_not_survive_close() {
         let (sender, receiver) = std::sync::mpsc::channel();
-        let event = || crate::hotkey::HotKeyEvent {
-            at: std::time::Instant::now(),
-            application: None,
-            target: None,
+        let event = || {
+            crate::hotkey::HotKeyEvent::Press(crate::hotkey::KeyPress {
+                stroke: crate::hotkey::Stroke::fixture_stroke(1),
+                at: std::time::Instant::now(),
+                application: None,
+                target: None,
+            })
         };
         sender.send(event()).unwrap();
         sender.send(event()).unwrap();
@@ -868,7 +892,7 @@ mod tests {
     fn short_screen_uses_scrollable_page_without_filter_overlap() {
         for content_height in [1., 383., 503., 623., 740.] {
             let layout = page_height(content_height);
-            let filter_bottom = layout - 158.;
+            let filter_bottom = layout - 194.;
             let list = presentation::list_frame(620., layout);
             let list_top = list.origin.y + list.size.height;
             assert!(
