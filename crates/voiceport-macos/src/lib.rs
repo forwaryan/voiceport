@@ -43,6 +43,8 @@ mod source_tests;
 #[cfg(target_os = "macos")]
 mod status_icon;
 #[cfg(target_os = "macos")]
+mod status_overlay;
+#[cfg(target_os = "macos")]
 #[doc(hidden)]
 pub use app::first_run_field_fixture;
 #[cfg(target_os = "macos")]

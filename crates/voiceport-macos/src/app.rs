@@ -28,6 +28,7 @@ mod quick_panel;
 mod shortcut_editor;
 mod source_manager;
 mod source_probes;
+mod status_overlay;
 
 #[doc(hidden)]
 pub fn isolated_shortcut_regression(mtm: MainThreadMarker) {
@@ -170,6 +171,8 @@ struct Ivars {
     menu_shortcut: OnceCell<Retained<NSMenuItem>>,
     menu_cancel: OnceCell<Retained<NSMenuItem>>,
     menu_copy: OnceCell<Retained<NSMenuItem>>,
+    overlay: RefCell<status_overlay::Overlay>,
+    overlay_menu: OnceCell<Retained<NSMenuItem>>,
     status_appearance: Cell<Option<StatusAppearance>>,
     page_tabs: OnceCell<Retained<NSSegmentedControl>>,
     dictation_page: OnceCell<Retained<NSView>>,
@@ -248,6 +251,7 @@ define_class!(
         #[unsafe(method(applicationShouldTerminate:))]
         fn should_terminate(&self, _app: &NSApplication) -> NSApplicationTerminateReply {
             self.ivars().quitting.set(true);
+            if let Ok(mut overlay) = self.ivars().overlay.try_borrow_mut() { overlay.close(); }
             let manager = self.ivars().source_manager.borrow().clone();
             if let Some(manager) = manager { manager.close_for_shutdown(); }
             let probes = self.ivars().source_probe_panel.borrow().clone();
@@ -370,6 +374,11 @@ define_class!(
         }
         #[unsafe(method(requestAccessibility:))]
         fn accessibility_action(&self, _sender: Option<&AnyObject>) { Delivery::request_accessibility(); }
+        #[unsafe(method(toggleDictationOverlay:))]
+        fn dictation_overlay_action(&self, _sender: Option<&AnyObject>) {
+            status_overlay::set_enabled(!status_overlay::enabled());
+            self.refresh();
+        }
         #[unsafe(method(toggleAutomatic:))]
         fn automatic_action(&self, _sender: Option<&AnyObject>) {
             if self.settings_locked() { return; }
@@ -570,6 +579,10 @@ impl Delegate {
             }
         }
         menu.addItem(&NSMenuItem::separatorItem(mtm));
+        let overlay = self.menu_item("显示听写提示", sel!(toggleDictationOverlay:), "");
+        overlay.setState(status_overlay::checked(status_overlay::enabled()));
+        menu.addItem(&overlay);
+        let _ = self.ivars().overlay_menu.set(overlay);
         menu.addItem(&self.menu_item("退出 VoicePort", sel!(terminate:), ""));
         // A fixed, compact slot avoids shifting neighboring menu extras as
         // recording and processing states change. Template images follow macOS.
@@ -872,6 +885,24 @@ impl Delegate {
         let Some(c) = slot.as_ref() else {
             return;
         };
+        let overlay_enabled = status_overlay::enabled();
+        if let Ok(mut overlay) = self.ivars().overlay.try_borrow_mut() {
+            if self.ivars().quitting.get() {
+                overlay.close();
+            } else {
+                overlay.update(
+                    self.mtm(),
+                    c.overlay_snapshot(overlay_enabled),
+                    overlay_enabled,
+                );
+            }
+        }
+        if let Some(item) = self.ivars().overlay_menu.get() {
+            let state = status_overlay::checked(overlay_enabled);
+            if item.state() != state {
+                item.setState(state);
+            }
+        }
         let preparing_permissions = self.ivars().permission_rx.borrow().is_some();
         let returning_to_input = self.ivars().pending_hotkey.borrow().is_some();
         if let Some(button) = self.ivars().prepare_permissions.get() {

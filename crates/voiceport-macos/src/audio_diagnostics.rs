@@ -62,6 +62,7 @@ pub(super) struct CaptureObservation {
     callbacks: u64,
     observed_frames: u64,
     signal: InputSignal,
+    live_level: Option<(Instant, u8)>,
 }
 
 impl CaptureObservation {
@@ -72,6 +73,7 @@ impl CaptureObservation {
             callbacks: 0,
             observed_frames: 0,
             signal: InputSignal::NoCallbacks,
+            live_level: None,
         }
     }
 
@@ -82,10 +84,17 @@ impl CaptureObservation {
 
     pub(super) fn unavailable(&mut self) {
         self.signal = InputSignal::Unknown;
+        self.live_level = None;
     }
 
-    /// Called with a nonempty, bounds-checked PCM prefix. Samples remain in
-    /// their native buffer. The peak is discarded at the end of this call.
+    pub(super) fn live_level(&self, now: Instant) -> Option<u8> {
+        self.live_level.and_then(|(observed, level)| {
+            (now.checked_duration_since(observed)? < Duration::from_millis(300)).then_some(level)
+        })
+    }
+
+    /// Observe the bounds-checked PCM prefix once. Only a short-lived, coarse
+    /// pre-mix level (not PCM, a device name, or a speech decision) is retained.
     pub(super) fn observe(
         &mut self,
         frames: usize,
@@ -93,11 +102,7 @@ impl CaptureObservation {
         sample: impl Fn(usize, usize) -> f64,
         now: impl FnOnce() -> Instant,
     ) {
-        let first_frame = if self.observed_frames == 0 {
-            self.started.finish(now)
-        } else {
-            None
-        };
+        let observed = now();
         let mut peak = 0.0_f64;
         for frame in 0..frames {
             for channel in 0..channels {
@@ -110,8 +115,13 @@ impl CaptureObservation {
             }
         }
         if self.observed_frames == 0 {
-            self.first_frame = first_frame;
+            self.first_frame = self.started.finish(|| observed);
         }
+        let level = [0.005, 0.02, 0.08, 0.32]
+            .into_iter()
+            .take_while(|threshold| peak >= *threshold)
+            .count() as u8;
+        self.live_level = Some((observed, level));
         self.observed_frames += frames as u64;
         let signal = if peak >= SIGNAL_PEAK {
             InputSignal::Signal
@@ -138,6 +148,24 @@ impl CaptureObservation {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn status_overlay_meter_is_coarse_recent_and_pre_mix() {
+        use super::{CaptureObservation, Duration, Instant, StageTimer};
+        let now = Instant::now();
+        let mut observation = CaptureObservation::new(StageTimer::start(|| now));
+        assert_eq!(observation.live_level(now), None);
+        observation.observe(8, 2, |_, ch| if ch == 0 { 0.1 } else { -0.1 }, || now);
+        assert_eq!(observation.live_level(now), Some(3));
+        assert_eq!(
+            observation.live_level(now + Duration::from_millis(300)),
+            None
+        );
+        observation.observe(8, 2, |_, _| 0., || now);
+        assert_eq!(observation.live_level(now), Some(0));
+        observation.observe(8, 2, |_, _| f64::NAN, || now);
+        assert_eq!(observation.live_level(now), None);
+    }
+
     #[test]
     fn stage_timers_measure_overlap_independently_with_a_substitute_clock() {
         use super::{Duration, Instant, StageTimer, StageTimings};
@@ -170,8 +198,11 @@ mod tests {
         assert_eq!(observation.snapshot().timings.capture_first_frame, None);
         observation.callback();
         observation.observe(2, 1, |_, _| 0.0, || started + Duration::from_millis(5));
+        let later = started + Duration::from_millis(310);
+        assert_eq!(observation.live_level(later), None);
         observation.callback();
-        observation.observe(2, 1, |_, _| 0.02, || panic!("first frame already timed"));
+        observation.observe(2, 1, |_, _| 0.04, || later);
+        assert_eq!(observation.live_level(later), Some(2));
         let snapshot = observation.snapshot();
         assert_eq!(snapshot.signal, InputSignal::Unknown);
         assert_eq!(snapshot.callbacks, Some(4));

@@ -9,6 +9,7 @@ mod compatibility_matrix;
 #[doc(hidden)]
 pub mod model;
 mod native;
+pub(crate) use native::overlay_focus::OverlayFocus;
 
 use model::{
     ChunkedInput, Failure, MenuPaste, OwnedSpan, PasteTarget, Target, Terminal, TerminalTarget,
@@ -212,6 +213,13 @@ impl Delivery {
     pub fn failure_stage(&self) -> Option<&'static str> {
         self.failure.map(Failure::stage)
     }
+    pub(crate) fn original_focus_changed(&self) -> bool {
+        matches!(
+            self.failure,
+            Some(Failure::FocusApplicationChanged | Failure::FocusElementChanged)
+        )
+    }
+
     /// Content-free evidence retained after completion or failure. Submitted
     /// clipboard/terminal events are never presented as confirmed field text.
     pub fn receipt(&self) -> model::DeliveryReceipt {

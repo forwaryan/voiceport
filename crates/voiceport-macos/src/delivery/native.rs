@@ -5,6 +5,7 @@ use super::model::{
 mod clipboard;
 mod focus;
 mod modifiers;
+pub(crate) mod overlay_focus;
 mod paste_key;
 mod wechat;
 use block2::RcBlock;

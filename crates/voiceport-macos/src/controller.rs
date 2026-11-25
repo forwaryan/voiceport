@@ -272,6 +272,7 @@ pub struct Controller {
     delivery_settle: Option<Phase>,
     gui_receipt: Option<GuiDictationReceipt>,
     gui_owns_delivery: bool,
+    overlay_origin_pid: Option<i32>,
     gui_diagnostics: GuiDiagnostics,
     stop_failure: Option<String>,
     testing: bool,
@@ -320,6 +321,7 @@ impl Controller {
             delivery_settle: None,
             gui_receipt: None,
             gui_owns_delivery: false,
+            overlay_origin_pid: None,
             gui_diagnostics: GuiDiagnostics::default(),
             stop_failure: None,
             testing: false,
@@ -399,6 +401,28 @@ impl Controller {
     pub(crate) fn input_method(&self) -> Option<&'static str> {
         self.delivery.method()
     }
+    fn foreground_pid() -> Option<i32> {
+        objc2_app_kit::NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .map(|app| app.processIdentifier())
+    }
+
+    pub(crate) fn overlay_snapshot(&self, enabled: bool) -> crate::status_overlay::Snapshot {
+        let attempt = self
+            .gui_receipt
+            .as_ref()
+            .filter(|_| !self.gui_owns_delivery || !self.delivery.original_focus_changed());
+        crate::status_overlay::Snapshot::project(
+            &self.state,
+            attempt.map(|receipt| (receipt.generation, receipt.transcription)),
+            self.gui_owns_delivery && self.delivery.has_pending(),
+            self.overlay_origin_pid,
+            (enabled && self.state.phase == Phase::Recording)
+                .then(|| self.recorder.live_level())
+                .flatten(),
+        )
+    }
+
     /// Read the latest GUI session, even after another CLI operation takes over.
     pub(crate) fn gui_dictation_receipt(&self) -> Option<GuiDictationReceipt> {
         let mut receipt = self.gui_receipt.clone()?;
@@ -541,6 +565,9 @@ impl Controller {
                 return;
             }
         };
+        let origin = target
+            .map(|target| target.pid)
+            .or_else(Self::foreground_pid);
         if let Some((generation, use_speech)) = self.prepare_start_in_application(
             source,
             self.language.clone(),
@@ -548,6 +575,7 @@ impl Controller {
             target,
             true,
         ) {
+            self.overlay_origin_pid = origin;
             Recorder::request_permissions_for_source(
                 generation,
                 self.events_tx.clone(),
@@ -828,6 +856,7 @@ impl Controller {
             receipt.generation = generation;
             receipt.transcription = TranscriptionState::Pending;
             receipt.block_reason = Some(BlockReason::RetryPanelOnly);
+            self.overlay_origin_pid = Self::foreground_pid();
             self.gui_diagnostics.timings = StageTimings {
                 capture_first_frame: self.gui_diagnostics.timings.capture_first_frame,
                 ..StageTimings::default()
@@ -1928,6 +1957,7 @@ pub(crate) mod stop_failure_regression {
         use crate::delivery::model::{
             Failure as InputFailure, Snapshot, Target, TextRange, byte_range,
         };
+        use crate::status_overlay::Stage;
         use std::{cell::RefCell, rc::Rc};
         use voiceport_control::DeliveryState;
 
@@ -1992,8 +2022,11 @@ pub(crate) mod stop_failure_regression {
                     |delivery| delivery.begin_fixture(Box::new(Receiver(receiver.clone()))),
                 )
                 .unwrap();
+            assert_eq!(c.overlay_snapshot(true).stage, Some(Stage::Preparing));
             assert!(c.state.permissions(generation, true));
+            assert_eq!(c.overlay_snapshot(true).stage, Some(Stage::Recording));
             assert!(c.state.transcribe());
+            assert_eq!(c.overlay_snapshot(true).stage, Some(Stage::Transcribing));
             c.active = Some(ActiveJob {
                 generation,
                 cancel: CancellationToken::new(),
@@ -2071,6 +2104,7 @@ pub(crate) mod stop_failure_regression {
                 .unwrap();
             finish(&mut c, &outgoing, preceding, "迟到结果");
             assert_eq!(c.gui_dictation_receipt().unwrap(), pending, "{case}");
+            assert_eq!(c.overlay_snapshot(true).stage, Some(Stage::Transcribing));
             assert!(c.transcript.is_empty());
             assert_eq!(receiver.borrow().writes, 0);
 
@@ -2082,6 +2116,7 @@ pub(crate) mod stop_failure_regression {
             }
             finish(&mut c, &outgoing, generation, result);
             assert_eq!(c.state.phase, Phase::Ready, "{case}");
+            assert_eq!(c.overlay_snapshot(true).stage, None);
             let receipt = c.gui_dictation_receipt().unwrap();
             assert_eq!(receipt.delivery.state, state, "{case}");
             assert_eq!(receipt.failure_stage.as_deref(), stage, "{case}");
@@ -2147,6 +2182,7 @@ pub(crate) mod stop_failure_regression {
             .prepare_start(SessionSource::ChatGpt, "zh".into(), false)
             .unwrap();
         assert!(cli > automatic.generation);
+        assert_eq!(c.overlay_snapshot(true).stage, None);
         assert_eq!(c.gui_dictation_receipt().unwrap(), automatic);
         c.cancel();
         assert_eq!(c.gui_dictation_receipt().unwrap(), automatic);
@@ -2161,7 +2197,9 @@ pub(crate) mod stop_failure_regression {
         assert_eq!(receipt.failure_stage, None);
         assert_eq!(receipt.delivery, Default::default());
         assert_eq!(receipt.block_reason, Some(BlockReason::PanelOnly));
+        assert_eq!(c.overlay_snapshot(true).stage, Some(Stage::Preparing));
         c.cancel();
+        assert_eq!(c.overlay_snapshot(true).stage, None);
         let cancelled = c.gui_dictation_receipt().unwrap();
         assert_eq!(cancelled.generation, panel);
         assert_eq!(cancelled.transcription, TranscriptionState::Cancelled);
@@ -2209,7 +2247,15 @@ pub(crate) mod stop_failure_regression {
         let (jobs, incoming) = mpsc::sync_channel(1);
         let (outgoing, results) = mpsc::channel();
         c.worker = Some(Worker { jobs, results });
+        let recording = c.overlay_snapshot(true);
+        assert_eq!(recording.stage, Some(Stage::Recording));
+        // Synthetic PCM went through the actual capture sink, but scheduling can
+        // delay this observation past the meter's freshness window.
+        assert!(recording.level.is_none_or(|level| level == 3));
+        assert_eq!(c.overlay_snapshot(false).level, None);
         c.stop();
+        assert_eq!(c.overlay_snapshot(true).stage, Some(Stage::Transcribing));
+        assert_eq!(c.overlay_snapshot(true).level, None);
         let job = incoming
             .try_recv()
             .expect("one ASR request for audible input");

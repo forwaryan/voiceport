@@ -340,6 +340,15 @@ impl Recorder {
         self.capture_diagnostics
     }
 
+    pub(crate) fn live_level(&self) -> Option<u8> {
+        // The main run loop never waits for the tap or the encoder.
+        let state = self.sink.as_ref()?.state.try_lock().ok()?;
+        if !state.accepting {
+            return None;
+        }
+        state.diagnostics.live_level(Instant::now())
+    }
+
     fn mark_capture_unknown(&mut self) {
         self.capture_diagnostics
             .get_or_insert_with(CaptureDiagnostics::default)

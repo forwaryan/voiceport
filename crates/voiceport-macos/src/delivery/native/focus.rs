@@ -182,16 +182,25 @@ pub(super) fn resolve(pid: libc::pid_t) -> Result<Resolved, Failure> {
 /// AX positions use screen points with a top-left origin. Missing geometry is
 /// diagnostic null, never a reason to guess a field or reject valid delivery.
 pub(super) fn bounds(element: &OwnedCf) -> serde_json::Value {
-    use core_graphics::geometry::{CGPoint, CGSize};
     let tree = NativeTree {
         started: Instant::now(),
     };
-    let (Ok(position), Ok(size)) = (
-        tree.attribute(element.0, "AXPosition"),
-        tree.attribute(element.0, "AXSize"),
-    ) else {
-        return serde_json::Value::Null;
-    };
+    bounds_rect(|key| tree.attribute(element.0, key).ok()).map_or(serde_json::Value::Null, |rect| {
+        geometry(
+            rect.origin.x,
+            rect.origin.y,
+            rect.size.width,
+            rect.size.height,
+        )
+    })
+}
+
+pub(super) fn bounds_rect(
+    mut read: impl FnMut(&str) -> Option<OwnedCf>,
+) -> Option<core_graphics::geometry::CGRect> {
+    use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+    let position = read("AXPosition")?;
+    let size = read("AXSize")?;
     let mut point = CGPoint::new(0.0, 0.0);
     let mut dimensions = CGSize::new(0.0, 0.0);
     let valid = unsafe {
@@ -202,14 +211,16 @@ pub(super) fn bounds(element: &OwnedCf) -> serde_json::Value {
             && AXValueGetValue(position.0, 1, (&mut point as *mut CGPoint).cast())
             && AXValueGetValue(size.0, 2, (&mut dimensions as *mut CGSize).cast())
     };
-    if !valid {
-        return serde_json::Value::Null;
-    }
-    geometry(point.x, point.y, dimensions.width, dimensions.height)
+    (valid && valid_geometry(point.x, point.y, dimensions.width, dimensions.height))
+        .then(|| CGRect::new(&point, &dimensions))
+}
+
+fn valid_geometry(x: f64, y: f64, width: f64, height: f64) -> bool {
+    [x, y, width, height].into_iter().all(f64::is_finite) && width > 0.0 && height > 0.0
 }
 
 fn geometry(x: f64, y: f64, width: f64, height: f64) -> serde_json::Value {
-    if ![x, y, width, height].into_iter().all(f64::is_finite) || width <= 0.0 || height <= 0.0 {
+    if !valid_geometry(x, y, width, height) {
         return serde_json::Value::Null;
     }
     serde_json::json!({
