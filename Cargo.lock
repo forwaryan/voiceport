@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "voiceport-cli"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -1610,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "voiceport-control"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "libc",
  "serde",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "voiceport-core"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "base64 0.22.1",
  "dirs",
@@ -1634,7 +1634,7 @@ dependencies = [
 
 [[package]]
 name = "voiceport-macos"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "base64 0.22.1",
  "block2",
@@ -1664,7 +1664,7 @@ dependencies = [
 
 [[package]]
 name = "voiceport-windows"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "tempfile",
  "tokio",
