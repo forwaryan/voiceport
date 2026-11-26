@@ -25,6 +25,10 @@ mod file_transcription;
 pub use file_transcription::isolated_file_transcription_regression;
 mod first_run;
 mod hotkey_start;
+#[cfg(debug_assertions)]
+mod menu_accept_fixture;
+#[cfg(debug_assertions)]
+mod menu_source_accept;
 mod menu_surface;
 #[doc(hidden)]
 pub use first_run::first_run_field_fixture;
@@ -390,7 +394,11 @@ define_class!(
             self.with_controller(|c| { c.message = copy_feedback(&c.transcript, Delivery::copy).into(); }); self.refresh();
         }
         #[unsafe(method(showQuickPanel:))]
-        fn quick_panel_action(&self, _sender: Option<&AnyObject>) { self.toggle_quick_panel(); }
+        fn quick_panel_action(&self, _sender: Option<&AnyObject>) {
+            #[cfg(debug_assertions)]
+            menu_accept_fixture::before_status_action();
+            self.toggle_quick_panel();
+        }
         #[unsafe(method(selectQuickSource:))]
         fn quick_source_action(&self, sender: &NSButton) { self.select_quick_source(sender); }
         #[unsafe(method(resolveQuickSource:))]
@@ -563,6 +571,8 @@ define_class!(
             }
             self.refresh();
             self.refresh_file_page();
+            #[cfg(debug_assertions)]
+            menu_accept_fixture::observe_hidden(self);
             let probes = self.ivars().source_probe_panel.borrow().clone();
             if let Some(probes) = probes { probes.refresh(); }
             let sources = self.ivars().source_manager.borrow().clone();
@@ -1347,6 +1357,15 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
 
 pub fn run() {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
+    #[cfg(debug_assertions)]
+    if std::env::current_exe().is_ok_and(|path| path.file_name().is_some_and(|name| name == "voiceport-menu-fixture")) {
+        let [flag, directory, scene, boot, aqua, launch @ ..] = arguments.as_slice() else { std::process::exit(78) };
+        if flag != "--private-menu-accept" {
+            std::process::exit(78);
+        }
+        menu_accept_fixture::run(directory, scene, boot, aqua, launch);
+        return;
+    }
     if let Some((mode, args)) = arguments.split_first()
         && mode == "--apply-staged-update"
     {

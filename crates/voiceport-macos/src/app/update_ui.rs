@@ -607,6 +607,8 @@ impl Delegate {
             return Err(("unsupported", reason));
         }
         let running = update.running_version();
+        #[cfg(debug_assertions)]
+        let fixture_seconds = if super::menu_accept_fixture::is_active() { 45 } else { 8 };
         let (sender, receiver) = mpsc::channel();
         let worker = std::thread::Builder::new()
             .name("voiceport-update-check".into())
@@ -618,7 +620,7 @@ impl Delegate {
                         .requests
                         .send(reply)
                         .ok()
-                        .and_then(|()| release.recv_timeout(Duration::from_secs(8)).ok());
+                        .and_then(|()| release.recv_timeout(Duration::from_secs(fixture_seconds)).ok());
                     let _ = sender.send(app_update::check_fixture_release(
                         &running,
                         result.unwrap_or(Err("检查更新已中断。")),

@@ -227,7 +227,11 @@ impl Delegate {
                 ns_string!("transcriptionSource"),
             );
         }
-        NSUserDefaults::standardUserDefaults().synchronize();
+        let _synchronized = NSUserDefaults::standardUserDefaults().synchronize();
+        #[cfg(debug_assertions)]
+        if super::menu_accept_fixture::observing_sources() {
+            super::menu_source_accept::record_write(_synchronized);
+        }
     }
     pub(super) fn poll_control(&self) {
         // First settle an owned operation, before a later GUI session can expose a new transcript.

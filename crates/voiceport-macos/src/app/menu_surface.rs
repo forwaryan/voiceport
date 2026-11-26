@@ -278,6 +278,10 @@ impl DeviceRefresh {
 }
 
 fn query_device(preferred: Option<String>) -> std::io::Result<Receiver<DeviceResult>> {
+    #[cfg(debug_assertions)]
+    if let Some(reply) = super::menu_accept_fixture::device_result() {
+        return reply;
+    }
     let (reply, receive) = mpsc::channel();
     std::thread::Builder::new()
         .name("voiceport-menu-device".into())
