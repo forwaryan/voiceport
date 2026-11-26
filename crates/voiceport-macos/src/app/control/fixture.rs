@@ -272,8 +272,15 @@ fn synthetic_audio(folder: &Path) -> [PathBuf; 3] {
 
 pub fn isolated_control_regression(mtm: MainThreadMarker, cli: &Path) {
     let app = NSApplication::sharedApplication(mtm);
-    let folder = tempfile::tempdir_in("/tmp").unwrap();
-    let folder = folder.path().canonicalize().unwrap();
+    let native_folder = std::env::var_os("VOICEPORT_HOSTED_FILES_DIR").filter(|_| {
+        objc2_foundation::NSBundle::mainBundle().bundleIdentifier().as_deref()
+            == Some(objc2_foundation::ns_string!("org.voiceport.files-acceptance-fixture"))
+    });
+    let temporary = native_folder.is_none().then(|| tempfile::tempdir_in("/tmp").unwrap());
+    let folder = match &native_folder {
+        Some(path) => Path::new(path),
+        None => temporary.as_ref().unwrap().path(),
+    }.canonicalize().unwrap();
     let socket = folder.join("ipc/control.sock");
     let owner = Delegate::new(mtm);
     let defaults = Defaults::new();
@@ -295,6 +302,20 @@ pub fn isolated_control_regression(mtm: MainThreadMarker, cli: &Path) {
     owner.ivars().control.borrow_mut().server = Some(Server::bind(&socket).unwrap());
     let fixture = Fixture { cli, socket, owner };
     let call = |words: &[&str], exit| fixture.call(words, exit);
+    if native_folder.is_some() {
+        let open = || assert_eq!(call(&["app", "open", "files"], 0)["data"], json!({
+            "page": "file", "state": "user_action_required", "next": "choose_audio_file"
+        }));
+        let passed = super::super::file_transcription::isolated_file_entry_routes(&fixture.owner, open, &folder);
+        drop(fixture.owner.ivars().control.borrow_mut().server.take());
+        assert!(!fixture.socket.exists());
+        if !passed {
+            drop(defaults);
+            std::process::exit(78);
+        }
+        println!("files_gui_cleanup window_closed=true socket_removed=true");
+        return;
+    }
     assert_eq!(
         call(&["history", "list"], 0)["data"],
         json!({"enabled":false,"entries":[]})

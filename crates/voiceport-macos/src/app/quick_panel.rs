@@ -723,6 +723,16 @@ impl Delegate {
 }
 
 impl QuickPanel {
+    #[cfg(debug_assertions)]
+    pub(super) fn fixture_source_state(&self, app: &NSApplication) -> Option<(isize, bool, bool)> {
+        let window = self.disclosure.window().filter(|window| self.is_shown() && window.isVisible())?;
+        let focused = app.isActive() && window.isKeyWindow()
+            && app.keyWindow().as_deref() == Some(&*window)
+            && window.firstResponder().as_deref() == Some(&****self.disclosure)
+            && self.disclosure.isEnabled() && !self.disclosure.isHiddenOrHasHiddenAncestor();
+        Some((window.windowNumber(), self.expanded.get(), focused))
+    }
+
     pub(super) fn is_shown(&self) -> bool {
         self.popover.isShown()
     }

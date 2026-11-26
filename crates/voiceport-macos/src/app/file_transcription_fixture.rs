@@ -567,3 +567,146 @@ pub fn isolated_file_transcription_regression(mtm: MainThreadMarker) {
     );
     source_selection(&app, &input);
 }
+
+// Appended only to the private copy of app/file_transcription_fixture.rs.
+pub(in crate::app) fn isolated_file_entry_routes(
+    owner: &Delegate,
+    open_with_cli: impl Fn(),
+    folder: &Path,
+) -> bool {
+    use objc2_foundation::{NSDate, NSRunLoop};
+
+    fn await_native(timeout: u64, mut predicate: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(timeout);
+        while !predicate() {
+            assert!(Instant::now() < deadline, "native window or sheet not observed");
+            NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.01));
+        }
+    }
+
+    let app = NSApplication::sharedApplication(owner.mtm());
+    let _ = app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    if app.activationPolicy() != NSApplicationActivationPolicy::Accessory {
+        eprintln!("files_gui_unavailable accessory_policy");
+        return false;
+    }
+    assert!(app.delegate().is_none());
+    app.finishLaunching();
+    hosted_focus_observation("start", &app, None);
+    owner.with_controller(|c| {
+        c.language = "en".into();
+        c.file_jobs.use_test_transcriber(transcribe);
+    });
+    assert!(owner.ivars().file_page.get().is_none());
+    open_with_cli();
+    let page = owner.file_page();
+    let window = page.view.window().expect("CLI must mount the file page");
+    assert!(std::ptr::eq(&*window, &**owner.ivars().window.get().unwrap()));
+    hosted_focus_observation("first", &app, Some(&window));
+    let key_deadline = Instant::now() + Duration::from_secs(5);
+    while !(app.isActive() && window.isKeyWindow() && window.isVisible()
+        && app.keyWindow().as_deref() == Some(&*window))
+    {
+        if Instant::now() >= key_deadline {
+            hosted_focus_observation("final", &app, Some(&window));
+            window.close();
+            assert!(!window.isVisible());
+            eprintln!("files_gui_unavailable positive_key_window");
+            return false;
+        }
+        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.01));
+    }
+    hosted_focus_observation("final", &app, Some(&window));
+    println!("files_gui_key owned_window=true");
+    assert!(!page.view.isHidden());
+    assert!(page.fixture.borrow().is_none());
+    assert!(page.panel.borrow().is_none());
+    assert!(page.operation.borrow().is_none());
+
+    let shell = owner.ivars().workbench.get().unwrap();
+    shell.select(workbench::Page::Result);
+    assert!(page.view.isHidden());
+    owner.build_context_menu();
+    let menu = owner.ivars().context_menu.get().unwrap();
+    let item = menu
+        .itemArray()
+        .iter()
+        .find(|item| item.action() == Some(sel!(showFileTranscription:)))
+        .expect("file entry in the actual context menu");
+    let target = item.target().unwrap();
+    assert!(unsafe { app.sendAction_to_from(item.action().unwrap(), Some(&target), Some(&item)) });
+    assert!(!page.view.isHidden());
+    assert!(std::ptr::eq(page, owner.file_page()));
+    assert!(window.attachedSheet().is_none());
+
+    let trigger = |button: &NSButton| {
+        assert!(unsafe { app.sendAction_to_from(button.action().unwrap(), Some(owner), Some(button)) });
+    };
+    let check_sheet = |button: &NSButton, kind: &str| {
+        await_native(5, || window.isKeyWindow());
+        trigger(button);
+        await_native(5, || window.attachedSheet().is_some());
+        let sheet = window.attachedSheet().unwrap();
+        let panel = page.panel.borrow().clone().expect("production panel retained");
+        let panel_window: &NSWindow = &panel;
+        assert!(std::ptr::eq(&*sheet, panel_window));
+        assert!(std::ptr::eq(&*sheet.sheetParent().unwrap(), &*window));
+        println!("files_gui_sheet {kind} attached");
+        owner.close_file_sheet();
+        await_native(5, || window.attachedSheet().is_none() && page.panel.borrow().is_none());
+        println!("files_gui_sheet {kind} cleared");
+    };
+    check_sheet(&page.choose, "open");
+    assert!(page.selection.borrow().is_none());
+
+    let input = folder.join("mounted-drop.wav");
+    let audio = crate::plugin_runtime::sample();
+    fs::write(&input, &audio).unwrap();
+    let url = NSURL::fileURLWithPath(&NSString::from_str(input.to_str().unwrap()));
+    let item = NSPasteboardItem::new();
+    assert!(item.setString_forType(&url.absoluteString().unwrap(), unsafe {
+        NSPasteboardTypeFileURL
+    }));
+    assert!(page.view.accept_drop(Some(&NSArray::from_slice(&[&*item]))));
+    assert_eq!(page.file_label.stringValue().to_string(), "mounted-drop.wav");
+    assert!(page.operation.borrow().is_none());
+    assert_eq!(CALLS.load(Ordering::SeqCst), 0);
+    shell.select(workbench::Page::Settings);
+    open_with_cli();
+    assert!(std::ptr::eq(page, owner.file_page()));
+    assert_eq!(page.file_label.stringValue().to_string(), "mounted-drop.wav");
+    assert_eq!(page.start.title().to_string(), "同意发送并转写");
+
+    trigger(&page.start);
+    wait_for_state(owner, page, State::Ready);
+    let operation = operation_id(page);
+    shell.select(workbench::Page::Result);
+    open_with_cli();
+    assert!(std::ptr::eq(page, owner.file_page()));
+    assert_eq!(operation_id(page), operation);
+    assert_eq!(page.result.string().to_string(), TEXT);
+    assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+    check_sheet(&page.save_text, "txt");
+    check_sheet(&page.save_markdown, "markdown");
+
+    for (format, expected) in [
+        (ExportFormat::Text, TEXT),
+        (ExportFormat::Markdown, "# 转写结果\n\n    合成音频结果\n    Synthetic transcript\n"),
+    ] {
+        let path = folder.join(format!("file.{}", format.extension()));
+        assert!(!path.exists(), "sheet cancellation must leave outputs absent");
+        let url = NSURL::fileURLWithPath(&NSString::from_str(path.to_str().unwrap()));
+        page.finish_export(owner, &operation, Some(&url), format);
+        assert_eq!(fs::read_to_string(&path).unwrap(), expected);
+        fs::write(&path, b"occupied\n").unwrap();
+        page.finish_export(owner, &operation, Some(&url), format);
+        assert_eq!(fs::read(&path).unwrap(), b"occupied\n");
+        assert!(page.notice.stringValue().to_string().contains("无法保存"));
+        assert_eq!(page.result.string().to_string(), TEXT);
+    }
+    assert_eq!(fs::read(input).unwrap(), audio);
+    window.close();
+    await_native(5, || !window.isVisible() && !window.isKeyWindow() && window.attachedSheet().is_none());
+    println!("PASS native file entries, drop=programmatic-item, key and sheet parent, page reuse and both exports");
+    true
+}

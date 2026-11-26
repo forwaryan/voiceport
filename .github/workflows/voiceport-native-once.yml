@@ -1,0 +1,35 @@
+name: VoicePort isolated native routes
+run-name: VoicePort isolated native routes (${{ github.sha }})
+
+on:
+  push:
+    branches: [ci/voiceport-native-4975037a7ecc-r2]
+
+permissions:
+  contents: read
+
+jobs:
+  aqua:
+    if: github.event.created && !github.event.deleted && github.run_attempt == '1'
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: '1.95.0'
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Establish synthetic key focus, then check native routes
+        shell: bash
+        run: python3 -I -B scripts/hosted_native_routes.py
+      - name: Keep only the synthetic receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: voiceport-native-receipt-${{ github.run_id }}
+          path: ${{ runner.temp }}/voiceport-native-receipt/receipt.json
+          retention-days: 3
+          if-no-files-found: ignore
