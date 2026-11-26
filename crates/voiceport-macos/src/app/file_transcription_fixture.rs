@@ -12,13 +12,14 @@ use std::{
     net::TcpListener,
     os::unix::fs::PermissionsExt,
     path::Path,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
 use voiceport_core::CancellationToken;
 
 const TEXT: &str = "合成音频结果\nSynthetic transcript";
 static CALLS: AtomicUsize = AtomicUsize::new(0);
+static RELEASE_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 fn transcribe(
     plan: &Plan,
@@ -45,6 +46,36 @@ fn transcribe(
     assert_eq!(fs::read(audio).unwrap(), crate::plugin_runtime::sample());
     CALLS.fetch_add(1, Ordering::SeqCst);
     Ok(TEXT.into())
+}
+
+fn known_failure(
+    plan: &Plan,
+    audio: &Path,
+    cancel: &CancellationToken,
+    custody: &Custody,
+) -> Result<String, service::Error> {
+    transcribe(plan, audio, cancel, custody)?;
+    Err(service::Error::new("transcription_error", "合成来源失败。"))
+}
+
+fn delayed_result(
+    plan: &Plan,
+    audio: &Path,
+    cancel: &CancellationToken,
+    custody: &Custody,
+) -> Result<String, service::Error> {
+    let text = transcribe(plan, audio, cancel, custody)?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !RELEASE_CANCELLED.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(4));
+    }
+    assert!(cancel.is_cancelled());
+    Ok(text)
+}
+
+fn operation_id(page: &Page) -> String {
+    page.operation.borrow().as_ref().unwrap().id.clone()
 }
 
 fn assert_no_request(listener: &TcpListener) {
@@ -91,7 +122,7 @@ fn source_selection(app: &NSApplication, input: &Path) {
     store.save(&config).unwrap();
     owner.with_controller(|c| c.catalog.add_configured(&Store::load(&config).unwrap()));
     let owner = &*owner;
-    let page = owner.file_page();
+    let page = owner.file_page_with_bounds(rect(0., 0., PAGE_WIDTH, PAGE_HEIGHT));
     page.fixture.borrow_mut().replace(FixtureChoices::default());
     let choose = || {
         let input = NSURL::fileURLWithPath(&NSString::from_str(input.to_str().unwrap()));
@@ -163,7 +194,7 @@ fn source_selection(app: &NSApplication, input: &Path) {
     assert_eq!(page.start.title().to_string(), "同意发送并转写");
     assert_eq!(
         page.destination.stringValue().to_string(),
-        format!("去向：{tail_origin}（本机服务，可能转发） · English")
+        format!("音频去向：{tail_origin}（本机服务，可能转发） · English")
     );
     assert!(page.start.isEnabled());
 
@@ -240,12 +271,11 @@ fn source_selection(app: &NSApplication, input: &Path) {
         result.len()
     )
     .unwrap();
-    wait_for_result(owner, page);
+    wait_for_state(owner, page, State::Ready);
     assert_no_request(&wrong);
     assert_no_request(&tail);
     owner.with_controller(|c| {
-        let id = page.operation.borrow();
-        let (status, text) = c.file_jobs.result(id.as_ref().unwrap()).unwrap();
+        let (status, text) = c.file_jobs.result(&operation_id(page)).unwrap();
         assert_eq!(status.target, actual);
         assert_eq!(status.delivery, "none");
         assert_eq!(text, Some(TEXT));
@@ -257,19 +287,24 @@ fn source_selection(app: &NSApplication, input: &Path) {
         assert_eq!(c.source_id, CHATGPT);
     });
     assert_eq!(page.result.string().to_string(), TEXT);
-    assert!(!page.window.isVisible());
+    assert!(page.view.window().is_none());
     assert_eq!(fs::read(input).unwrap(), crate::plugin_runtime::sample());
     println!(
         "PASS AppKit source identities and unique titles; missing/stale ID clears plan; 0 requests before consent, 1 to tail and 0 to other sources; delivery:none; input unchanged"
     );
 }
 
-fn wait_for_result(owner: &Delegate, page: &Page) {
+fn wait_for_state(owner: &Delegate, page: &Page, state: State) {
+    let operation = operation_id(page);
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        owner.with_controller(|c| c.file_jobs.poll());
+        let mut current = None;
+        owner.with_controller(|c| {
+            c.file_jobs.poll();
+            current = Some(c.file_jobs.status(&operation).unwrap().state);
+        });
         owner.refresh_file_page();
-        if page.save_text.isEnabled() {
+        if current == Some(state) {
             break;
         }
         assert!(Instant::now() < deadline, "{}", page.notice.stringValue());
@@ -290,7 +325,39 @@ pub fn isolated_file_transcription_regression(mtm: MainThreadMarker) {
         c.transcript = "untouched dictation result".into();
         c.file_jobs.use_test_transcriber(transcribe);
     });
-    let page = owner.file_page();
+    let bounds = rect(0., 0., 540., 392.);
+    let page = owner.file_page_with_bounds(bounds);
+    let view = page.content_view();
+    assert_eq!(view.frame(), bounds);
+    // The view is retained on the main thread and has not been mounted yet.
+    assert!(unsafe { view.superview() }.is_none() && view.window().is_none());
+    let host = NSView::initWithFrame(NSView::alloc(mtm), bounds);
+    host.addSubview(&view);
+    let [
+        choose,
+        source,
+        start_control,
+        cancel,
+        result,
+        text,
+        markdown,
+    ] = page.key_views();
+    assert!(choose.isDescendantOf(&view) && source.isDescendantOf(&view));
+    assert!(start_control.isDescendantOf(&view) && cancel.isDescendantOf(&view));
+    assert!(
+        result.isDescendantOf(&view)
+            && text.isDescendantOf(&view)
+            && markdown.isDescendantOf(&view)
+    );
+    assert!(
+        page.result
+            .enclosingScrollView()
+            .unwrap()
+            .frame()
+            .size
+            .height
+            > 100.
+    );
     page.fixture.borrow_mut().replace(FixtureChoices::default());
     let folder = tempfile::tempdir().unwrap();
     let input = folder.path().join("synthetic input.wav");
@@ -328,22 +395,26 @@ pub fn isolated_file_transcription_regression(mtm: MainThreadMarker) {
     assert!(page.operation.borrow().is_none());
     assert!(page.result.isSelectable() && !page.result.isEditable());
     assert!(!page.save_text.isEnabled());
-    let start = || {
+    let trigger = |button: &NSButton| {
         assert!(unsafe {
-            app.sendAction_to_from(
-                page.start.action().unwrap(),
-                Some(&owner),
-                Some(&*page.start),
-            )
+            app.sendAction_to_from(button.action().unwrap(), Some(&owner), Some(button))
         });
+    };
+    let launch = || {
+        trigger(&page.start);
         assert!(!page.start.isEnabled());
         assert!(!page.choose.isEnabled());
         assert!(page.cancel.isEnabled());
-        wait_for_result(&owner, page);
+        assert!(!page.save_text.isEnabled() && !page.save_markdown.isEnabled());
+        assert_eq!(page.activity.stringValue().to_string(), "正在转写…");
+    };
+    let start = || {
+        launch();
+        wait_for_state(&owner, page, State::Ready);
+        assert!(page.save_text.isEnabled() && page.save_markdown.isEnabled());
         assert_eq!(page.result.string().to_string(), TEXT);
         owner.with_controller(|c| {
-            let id = page.operation.borrow();
-            let (status, text) = c.file_jobs.result(id.as_ref().unwrap()).unwrap();
+            let (status, text) = c.file_jobs.result(&operation_id(page)).unwrap();
             assert_eq!(status.delivery, "none");
             assert_eq!(text, Some(TEXT));
             assert_eq!(c.state.generation(), 0);
@@ -354,11 +425,16 @@ pub fn isolated_file_transcription_regression(mtm: MainThreadMarker) {
             assert_eq!(c.source_id, CHATGPT);
         });
     };
-    start();
-    let first_operation = page.operation.borrow().clone();
-    assert_eq!(CALLS.load(Ordering::SeqCst), 1);
     let txt = folder.path().join("result.txt");
     let md = folder.path().join("result.md");
+    start();
+    let first_operation = operation_id(page);
+    assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+    assert!(!txt.exists() && !md.exists());
+    assert_eq!(
+        page.result_caption.stringValue().to_string(),
+        "synthetic input.wav · 仅在此页显示"
+    );
     let save = |path: &Path, button: &NSButton| {
         page.fixture.borrow_mut().as_mut().unwrap().save = Some(url(path));
         assert!(unsafe {
@@ -378,14 +454,25 @@ pub fn isolated_file_transcription_regression(mtm: MainThreadMarker) {
     assert_eq!(page.result.string().to_string(), TEXT);
     assert!(page.notice.stringValue().to_string().contains("无法保存"));
 
+    let next_input = folder.path().join("next synthetic.wav");
+    fs::write(&next_input, &audio).unwrap();
     let item = NSPasteboardItem::new();
     assert!(
-        item.setString_forType(&input_url.absoluteString().unwrap(), unsafe {
+        item.setString_forType(&url(&next_input).absoluteString().unwrap(), unsafe {
             NSPasteboardTypeFileURL
         })
     );
     assert!(area.accept_drop(Some(&NSArray::from_slice(&[&*item]))));
     assert!(page.start.isEnabled());
+    assert_eq!(
+        page.file_label.stringValue().to_string(),
+        "next synthetic.wav"
+    );
+    assert_eq!(page.activity.stringValue().to_string(), "待转写");
+    assert_eq!(
+        page.result_caption.stringValue().to_string(),
+        "synthetic input.wav · 仅在此页显示"
+    );
     assert!(!area.accept_drop(Some(&NSArray::from_slice(&[&*item, &*item]))));
     assert!(page.notice.stringValue().to_string().contains("一个"));
     assert!(!page.start.isEnabled());
@@ -393,9 +480,87 @@ pub fn isolated_file_transcription_regression(mtm: MainThreadMarker) {
     assert!(area.accept_drop(Some(&NSArray::from_slice(&[&*item]))));
     assert_eq!(CALLS.load(Ordering::SeqCst), 1);
     start();
-    assert_ne!(first_operation, *page.operation.borrow());
+    assert_ne!(first_operation, operation_id(page));
     assert_eq!(CALLS.load(Ordering::SeqCst), 2);
-    assert!(!page.window.isVisible());
+    assert_eq!(
+        page.result_caption.stringValue().to_string(),
+        "next synthetic.wav · 仅在此页显示"
+    );
+
+    let choose_url = |input: &NSURL| {
+        page.fixture.borrow_mut().as_mut().unwrap().open = Some(NSArray::from_slice(&[input]));
+        trigger(&page.choose);
+    };
+    choose_url(&input_url);
+    owner.with_controller(|c| c.file_jobs.use_test_transcriber(known_failure));
+    launch();
+    let failed = operation_id(page);
+    wait_for_state(&owner, page, State::Failed);
+    assert_eq!(page.activity.stringValue().to_string(), "转写失败");
+    assert_eq!(page.notice.stringValue().to_string(), "合成来源失败。");
+    assert_eq!(page.start.title().to_string(), "同意发送并重试");
+    assert!(page.start.isEnabled());
+    assert!(!page.save_text.isEnabled() && page.result.string().is_empty());
+    assert_eq!(CALLS.load(Ordering::SeqCst), 3);
+
+    owner.with_controller(|c| c.file_jobs.use_test_transcriber(transcribe));
+    start();
+    assert_ne!(failed, operation_id(page));
+    assert_eq!(CALLS.load(Ordering::SeqCst), 4);
+    assert_eq!(
+        page.result_caption.stringValue().to_string(),
+        "synthetic input.wav · 仅在此页显示"
+    );
+    assert!(page.notice.stringValue().is_empty());
+
+    choose_url(&input_url);
+    owner.with_controller(|c| c.file_jobs.use_test_transcriber(delayed_result));
+    launch();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while CALLS.load(Ordering::SeqCst) < 5 {
+        assert!(
+            Instant::now() < deadline,
+            "transcriber did not enter before cancel"
+        );
+        std::thread::sleep(Duration::from_millis(4));
+    }
+    trigger(&page.cancel);
+    assert_eq!(page.activity.stringValue().to_string(), "正在取消…");
+    assert!(!page.choose.isEnabled() && !page.start.isEnabled() && !page.cancel.isEnabled());
+    RELEASE_CANCELLED.store(true, Ordering::SeqCst);
+    wait_for_state(&owner, page, State::Cancelled);
+    assert_eq!(CALLS.load(Ordering::SeqCst), 5);
+    assert_eq!(page.start.title().to_string(), "同意发送并重试");
+    assert!(page.start.isEnabled());
+    assert!(page.notice.stringValue().to_string().contains("无法撤回"));
+    assert!(!page.save_text.isEnabled() && page.result.string().is_empty());
+
+    owner.with_controller(|c| c.file_jobs.use_test_transcriber(transcribe));
+    let corrupt_input = folder.path().join("corrupt.wav");
+    fs::write(&corrupt_input, b"not WAV audio").unwrap();
+    choose_url(&url(&corrupt_input));
+    launch();
+    wait_for_state(&owner, page, State::Failed);
+    assert!(!page.start.isEnabled());
+    assert!(page.notice.stringValue().to_string().contains("完整解码"));
+    assert_eq!(CALLS.load(Ordering::SeqCst), 5);
+
+    choose_url(&url(&next_input));
+    fs::write(&next_input, b"changed after selection").unwrap();
+    launch();
+    wait_for_state(&owner, page, State::Failed);
+    assert!(!page.start.isEnabled());
+    assert!(
+        page.notice
+            .stringValue()
+            .to_string()
+            .contains("文件在转写前发生变化")
+    );
+    assert_eq!(CALLS.load(Ordering::SeqCst), 5);
+    assert!(page.view.window().is_none());
+    println!(
+        "PASS file workbench draft/result separation, explicit retry with original descriptor, cancellation discards late text, corrupt/changed audio requires reselection"
+    );
     assert_eq!(fs::read(&input).unwrap(), audio);
     println!(
         "PASS AppKit chooser/drop -> decoded file -> authorized fixture -> selectable result -> explicit TXT/Markdown; no-clobber; input unchanged; delivery:none; dictation generation unchanged"

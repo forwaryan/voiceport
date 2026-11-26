@@ -22,7 +22,7 @@ pub(in crate::app::quick_panel) fn run(
     assert!(source.controller.list_recent_dictations(5).is_empty());
 
     let (first, first_target) = source.begin(true, true);
-    source.finish(first, "第一段🙂");
+    source.finish_at(first, "第一段🙂", 1_793_658_240_000);
     let first_summary = source.controller.list_recent_dictations(1).remove(0);
     assert_eq!(first_summary.delivery.state, DeliveryState::Confirmed);
     assert_eq!(first_target.borrow().snapshot.text, "A第一段🙂B");
@@ -42,7 +42,7 @@ pub(in crate::app::quick_panel) fn run(
         source.controller.list_recent_dictations(5).as_slice(),
         std::slice::from_ref(&first_summary)
     );
-    source.finish(second, "第二段");
+    source.finish_at(second, "第二段", 1_793_658_300_000);
     let pending = source.controller.list_recent_dictations(5);
     assert_eq!(pending.len(), 2);
     assert_eq!(
@@ -120,12 +120,15 @@ pub(in crate::app::quick_panel) fn run(
     assert_eq!(first_target.borrow().writes, 1);
     assert_eq!(second_target.borrow().writes, 1);
     assert_eq!(source.controller.transcript, "第二段");
-    let area = NSView::initWithFrame(NSView::alloc(d.mtm()), rect(0., 0., 572., 450.));
-    let page = dictation_page::Page::build(d.mtm(), d, &area);
     let receipt = source.controller.gui_dictation_receipt().unwrap();
-    page.refresh(dictation_page::Snapshot {
-        receipt: Some(&receipt),
-        diagnostics: None,
+    let snapshot = dictation_page::Snapshot {
+        attempt: Some(dictation_page::ResultDetails {
+            receipt: &receipt,
+            diagnostics: None,
+            source: None,
+            target: None,
+        }),
+        retained: None,
         origin: Some(dictation_page::TranscriptOrigin {
             generation: second,
             final_text: true,
@@ -141,19 +144,22 @@ pub(in crate::app::quick_panel) fn run(
             can_cancel: false,
             can_retry: false,
         },
-    });
-    page.toggle_edit();
-    page.result.setString(ns_string!("只保留在临时编辑控件"));
-    page.copy(|copy| {
-        assert_eq!(copy, "只保留在临时编辑控件");
-        true
+    };
+    super::super::fixture::result_scene(d, snapshot, output, |page| {
+        page.toggle_edit();
+        assert!(page.result.isEditable());
+        page.result.setString(ns_string!("只保留在临时编辑控件"));
+        page.copy(|copy| {
+            assert_eq!(copy, "只保留在临时编辑控件");
+            true
+        });
     });
     assert_eq!(
         source.controller.read_recent_dictation(&confirmed[0].id),
         Some("第二段")
     );
     assert_eq!(source.controller.list_recent_dictations(5), confirmed);
-    super::super::fixture::capture(panel, output, "dark-small-history.png");
+    super::super::fixture::capture(panel, window, output, "dark-small-history.png");
     println!(
         "recent-history: two real Controller finals, one old-entry memory copy, one target write each, delayed receipt retains ID and metadata contains no text"
     );
@@ -364,4 +370,5 @@ pub(in crate::app::quick_panel) fn run(
     println!(
         "recent-history: count 5, 16 KiB entry and 48 KiB text budget, whole or unavailable, stale control rejection, in-flight clear, opt-out and fresh instance"
     );
+    crate::app::recent_dictations::workbench::run_fixture(d.mtm());
 }

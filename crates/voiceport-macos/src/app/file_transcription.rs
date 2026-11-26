@@ -8,10 +8,24 @@ use std::{collections::HashSet, ffi::CStr, os::unix::ffi::OsStrExt, path::PathBu
 
 const SINGLE_FILE: service::Error =
     service::Error::new("invalid_file_count", "请只选择一个本地音频文件。");
-const FILE_HINT: &str = "拖入 WAV、M4A 或 MP3";
+const FILE_HINT: &str = "拖入 WAV、M4A 或 MP3 · 最多 20 MB / 180 秒";
+const RESULT_HINT: &str = "文字保留在此页，导出时才保存";
+const PAGE_WIDTH: f64 = 572.;
+const PAGE_HEIGHT: f64 = 436.;
+
+struct Selection {
+    input: Input,
+    name: String,
+    attempted: bool,
+}
+
+struct PageOperation {
+    id: String,
+    file_name: String,
+}
 
 pub(super) struct Page {
-    window: Retained<NSWindow>,
+    view: Retained<DropArea>,
     choose: Retained<NSButton>,
     file_label: Retained<NSTextField>,
     source: Retained<NSPopUpButton>,
@@ -21,13 +35,14 @@ pub(super) struct Page {
     activity: Retained<NSTextField>,
     notice: Retained<NSTextField>,
     result: Retained<NSTextView>,
+    result_caption: Retained<NSTextField>,
     save_text: Retained<NSButton>,
     save_markdown: Retained<NSButton>,
     panel: RefCell<Option<Retained<NSSavePanel>>>,
-    input: RefCell<Option<Input>>,
+    selection: RefCell<Option<Selection>>,
     plan: RefCell<Option<Plan>>,
     language: RefCell<String>,
-    operation: RefCell<Option<String>>,
+    operation: RefCell<Option<PageOperation>>,
     displayed_result: RefCell<Option<String>>,
     displayed_error: Cell<Option<&'static str>>,
     #[cfg(debug_assertions)]
@@ -41,7 +56,7 @@ fn set_label(field: &NSTextField, value: &str) {
     }
 }
 
-fn disambiguate_source_titles(rows: &mut [(String, String)]) {
+pub(super) fn disambiguate_source_titles(rows: &mut [(String, String)]) {
     let key = |title: &str| {
         NSString::from_str(title)
             .precomposedStringWithCanonicalMapping()
@@ -156,34 +171,21 @@ impl DropArea {
 }
 
 impl Page {
-    fn build(owner: &Delegate) -> Self {
+    fn build(owner: &Delegate, bounds: NSRect) -> Self {
         let mtm = owner.mtm();
-        let window = unsafe {
-            NSWindow::initWithContentRect_styleMask_backing_defer(
-                NSWindow::alloc(mtm),
-                rect(0., 0., 572., 436.),
-                NSWindowStyleMask::Titled
-                    | NSWindowStyleMask::Closable
-                    | NSWindowStyleMask::Miniaturizable,
-                NSBackingStoreType::Buffered,
-                true,
-            )
-        };
-        unsafe {
-            window.setReleasedWhenClosed(false);
-        }
-        window.setTitle(ns_string!("音频文件转写"));
-        let area = DropArea::new(owner, rect(0., 0., 572., 436.));
-        window.setContentView(Some(&area));
+        let area = DropArea::new(owner, rect(0., 0., PAGE_WIDTH, PAGE_HEIGHT));
         let choose = owner.button(
             &area,
-            "选取音频…",
+            "选择音频…",
             sel!(chooseFileTranscription:),
             18.,
             385.,
             120.,
         );
-        let file_label = owner.label(&area, FILE_HINT, rect(150., 393., 402., 20.), 13.);
+        let file_label = owner.label(&area, FILE_HINT, rect(150., 391., 398., 22.), 13.);
+        file_label.setLineBreakMode(NSLineBreakMode::ByTruncatingMiddle);
+        file_label.setMaximumNumberOfLines(1);
+        file_label.setAccessibilityIdentifier(Some(ns_string!("voiceport.file.selection")));
         let source_label = owner.label(&area, "来源", rect(24., 354., 74., 22.), 13.);
         let source = owner.popup(
             &area,
@@ -193,7 +195,9 @@ impl Page {
         );
         source_label.setAccessibilityIdentifier(Some(ns_string!("voiceport.file.source-label")));
         source.setAccessibilityLabel(Some(ns_string!("文件转写来源")));
-        let destination = owner.label(&area, "", rect(24., 314., 524., 31.), 12.);
+        let destination = owner.label(&area, "", rect(24., 312., 524., 32.), 12.);
+        destination
+            .setAccessibilityIdentifier(Some(ns_string!("voiceport.file.audio-destination")));
         let start = owner.button(
             &area,
             "开始转写",
@@ -212,11 +216,20 @@ impl Page {
         );
         let activity = owner.label(&area, "", rect(317., 284., 231., 22.), 13.);
         activity.setAccessibilityIdentifier(Some(ns_string!("voiceport.file.state")));
+        let notice = owner.label(&area, "", rect(24., 244., 524., 32.), 12.);
+        notice.setAccessibilityIdentifier(Some(ns_string!("voiceport.file.notice")));
+        let result_heading = owner.label(&area, "转写结果", rect(24., 219., 84., 22.), 14.);
+        result_heading.setFont(Some(&NSFont::boldSystemFontOfSize(14.)));
+        let result_caption = owner.caption(&area, RESULT_HINT, rect(112., 219., 436., 21.));
+        result_caption.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+        result_caption.setMaximumNumberOfLines(1);
+        result_caption
+            .setAccessibilityIdentifier(Some(ns_string!("voiceport.file.result-details")));
         let scroll =
-            NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(24., 88., 524., 179.));
+            NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(24., 52., 524., 162.));
         scroll.setHasVerticalScroller(true);
         scroll.setBorderType(NSBorderType::BezelBorder);
-        let result = NSTextView::initWithFrame(NSTextView::alloc(mtm), rect(0., 0., 524., 179.));
+        let result = NSTextView::initWithFrame(NSTextView::alloc(mtm), rect(0., 0., 524., 162.));
         result.setEditable(false);
         result.setSelectable(true);
         result.setRichText(false);
@@ -239,7 +252,7 @@ impl Page {
             "导出 TXT…",
             sel!(exportFileTranscriptionText:),
             18.,
-            47.,
+            12.,
             132.,
         );
         let save_markdown = owner.button(
@@ -247,38 +260,39 @@ impl Page {
             "导出 Markdown…",
             sel!(exportFileTranscriptionMarkdown:),
             158.,
-            47.,
+            12.,
             166.,
         );
-        let notice = owner.label(&area, "", rect(24., 9., 524., 32.), 12.);
-        notice.setAccessibilityIdentifier(Some(ns_string!("voiceport.file.notice")));
-        window.setInitialFirstResponder(Some(&choose));
-        let key_views: [&NSView; 7] = [
-            &choose,
-            &source,
-            &start,
-            &cancel,
-            &result,
-            &save_text,
-            &save_markdown,
-        ];
-        for (previous, next) in key_views
-            .into_iter()
-            .zip(key_views.into_iter().cycle().skip(1))
-        {
-            unsafe {
-                previous.setNextKeyView(Some(next));
-            }
+        let fixed_width: [&NSView; 5] = [&choose, &source_label, &start, &cancel, &result_heading];
+        for view in fixed_width {
+            view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
         }
-        window.setAutorecalculatesKeyViewLoop(false);
+        let flexible_width: [&NSView; 6] = [
+            &file_label,
+            &source,
+            &destination,
+            &activity,
+            &notice,
+            &result_caption,
+        ];
+        for view in flexible_width {
+            view.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewMinYMargin
+                    | NSAutoresizingMaskOptions::ViewWidthSizable,
+            );
+        }
+        scroll.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable
+                | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
         start.setEnabled(false);
         cancel.setEnabled(false);
         source.setEnabled(false);
         save_text.setEnabled(false);
         save_markdown.setEnabled(false);
-        window.center();
+        area.setFrame(bounds);
         Self {
-            window,
+            view: area,
             choose,
             file_label,
             source,
@@ -288,10 +302,11 @@ impl Page {
             activity,
             notice,
             result,
+            result_caption,
             save_text,
             save_markdown,
             panel: RefCell::new(None),
-            input: RefCell::new(None),
+            selection: RefCell::new(None),
             plan: RefCell::new(None),
             language: RefCell::new(String::new()),
             operation: RefCell::new(None),
@@ -302,6 +317,22 @@ impl Page {
         }
     }
 
+    pub(super) fn content_view(&self) -> Retained<NSView> {
+        self.view.clone().into_super()
+    }
+
+    pub(super) fn key_views(&self) -> [&NSView; 7] {
+        [
+            &self.choose,
+            &self.source,
+            &self.start,
+            &self.cancel,
+            &self.result,
+            &self.save_text,
+            &self.save_markdown,
+        ]
+    }
+
     fn accept_selection(
         &self,
         owner: &Delegate,
@@ -310,28 +341,35 @@ impl Page {
         if owner.ivars().quitting.get() || !self.choose.isEnabled() {
             return false;
         }
-        let path = match selection.and_then(|path| Input::open(&path).map(|input| (path, input))) {
-            Ok((path, input)) => {
-                *self.input.borrow_mut() = Some(input);
-                path
-            }
-            Err(error) => {
-                self.input.borrow_mut().take();
-                self.plan.borrow_mut().take();
-                set_label(&self.file_label, FILE_HINT);
-                set_label(&self.destination, "");
-                owner.with_controller(|controller| self.refresh(controller));
-                set_label(&self.notice, error.message);
-                return false;
-            }
-        };
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        let display: String = name
+        let (path, input) =
+            match selection.and_then(|path| Input::open(&path).map(|input| (path, input))) {
+                Ok(selected) => selected,
+                Err(error) => {
+                    self.selection.borrow_mut().take();
+                    self.plan.borrow_mut().take();
+                    set_label(&self.file_label, FILE_HINT);
+                    self.file_label.setToolTip(None);
+                    set_label(&self.destination, "");
+                    self.destination.setToolTip(None);
+                    owner.with_controller(|controller| self.refresh(controller));
+                    set_label(&self.notice, error.message);
+                    return false;
+                }
+            };
+        let name: String = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
             .chars()
             .map(|c| if c.is_control() { '�' } else { c })
-            .take(96)
             .collect();
-        set_label(&self.file_label, &display);
+        set_label(&self.file_label, &name);
+        self.file_label.setToolTip(Some(&NSString::from_str(&name)));
+        self.selection.replace(Some(Selection {
+            input,
+            name,
+            attempted: false,
+        }));
         set_label(&self.notice, "");
         owner.with_controller(|controller| {
             *self.language.borrow_mut() = controller.language.clone();
@@ -356,7 +394,7 @@ impl Page {
     }
 
     fn select_source(&self, owner: &Delegate) {
-        if self.input.borrow().is_none() {
+        if self.selection.borrow().is_none() || !self.choose.isEnabled() {
             return;
         }
         owner.with_controller(|controller| {
@@ -373,18 +411,16 @@ impl Page {
                         .iter()
                         .find(|(code, _)| *code == plan.target.language)
                         .map_or("自动检测", |(_, name)| name);
-                    set_label(&self.destination, &format!("去向：{label} · {language}"));
-                    let title = if plan.target.destination.requires_confirmation() {
-                        "同意发送并转写"
-                    } else {
-                        "开始转写"
-                    };
-                    self.start.setTitle(&NSString::from_str(title));
+                    let detail = format!("音频去向：{label} · {language}");
+                    set_label(&self.destination, &detail);
+                    self.destination
+                        .setToolTip(Some(&NSString::from_str(&detail)));
                     *self.plan.borrow_mut() = Some(plan);
                 }
                 Err(message) => {
                     set_label(&self.destination, message);
-                    self.start.setTitle(ns_string!("开始转写"));
+                    self.destination
+                        .setToolTip(Some(&NSString::from_str(message)));
                     self.plan.borrow_mut().take();
                 }
             }
@@ -393,31 +429,49 @@ impl Page {
     }
 
     fn start(&self, owner: &Delegate) {
-        if owner.ivars().quitting.get() || self.panel.borrow().is_some() {
+        if owner.ivars().quitting.get() || !self.start.isEnabled() {
             return;
         }
-        if self.plan.borrow().as_ref().is_some_and(|plan| {
-            picker::selected_id(&self.source).as_deref() != Some(plan.target.source.as_str())
-        }) {
+        let Some(plan) = self.plan.borrow().clone() else {
+            return;
+        };
+        if picker::selected_id(&self.source).as_deref() != Some(plan.target.source.as_str()) {
             // A changed selection needs its own destination prompt and consent.
             self.select_source(owner);
             return;
         }
         owner.with_controller(|controller| {
-            if controller.busy() || self.plan.borrow().is_none() {
+            if controller.busy() {
                 return;
             }
-            let Some(input) = self.input.borrow_mut().take() else {
-                return;
+            let launch = {
+                let mut selection = self.selection.borrow_mut();
+                let Some(selection) = selection.as_mut() else {
+                    return;
+                };
+                controller
+                    .start_prepared_file(selection.input.clone(), plan, true)
+                    .map(|status| {
+                        selection.attempted = true;
+                        controller.file_jobs.keep_for_page(&status.operation);
+                        self.operation.replace(Some(PageOperation {
+                            id: status.operation,
+                            file_name: selection.name.clone(),
+                        }));
+                        self.displayed_error.set(None);
+                    })
             };
-            let plan = self.plan.borrow_mut().take().expect("selected file source");
-            match controller.start_prepared_file(input, plan, true) {
-                Ok(status) => {
-                    controller.file_jobs.keep_for_page(&status.operation);
-                    *self.operation.borrow_mut() = Some(status.operation);
-                    set_label(&self.notice, "");
+            match launch {
+                Ok(()) => set_label(&self.notice, ""),
+                Err(error) => {
+                    if error.code == "source_changed" {
+                        self.selection.borrow_mut().take();
+                        self.plan.borrow_mut().take();
+                        set_label(&self.destination, "");
+                        self.destination.setToolTip(None);
+                    }
+                    set_label(&self.notice, error.message);
                 }
-                Err(error) => set_label(&self.notice, error.message),
             }
             self.refresh(controller);
         });
@@ -426,25 +480,51 @@ impl Page {
     fn refresh(&self, controller: &Controller) {
         let operation = self.operation.borrow();
         let current = operation
-            .as_deref()
-            .and_then(|id| controller.file_jobs.result(id).ok());
+            .as_ref()
+            .and_then(|job| controller.file_jobs.result(&job.id).ok());
         let status = current.map(|(status, _)| status);
-        let pending =
-            status.is_some_and(|status| matches!(status.state, State::Working | State::Cancelling));
-        let has_result = status.is_some_and(|status| status.state == State::Ready);
+        let state = status.map(|status| status.state);
+        let error = status.and_then(|status| status.error.as_ref());
+        let pending = matches!(state, Some(State::Working | State::Cancelling));
+        let has_result = state == Some(State::Ready);
+        let needs_new_file = error.is_some_and(|error| {
+            matches!(
+                error.code,
+                "invalid_audio" | "file_changed" | "file_read_error"
+            )
+        });
+        let attempted = self
+            .selection
+            .borrow()
+            .as_ref()
+            .is_some_and(|file| file.attempted);
+        if attempted && (has_result || needs_new_file) {
+            self.selection.borrow_mut().take();
+            self.plan.borrow_mut().take();
+        }
+        let selected = self.selection.borrow().is_some();
+        let new_selection = selected && !attempted;
         let can_select = !pending && self.panel.borrow().is_none();
         self.choose.setEnabled(can_select);
-        self.source
-            .setEnabled(can_select && self.input.borrow().is_some());
-        self.start.setEnabled(
-            can_select
-                && !controller.busy()
-                && self.input.borrow().is_some()
-                && self.plan.borrow().is_some(),
-        );
-        let cleanup = status
-            .and_then(|status| status.error.as_ref())
-            .is_some_and(|error| error.code == "cleanup_pending");
+        self.source.setEnabled(can_select && selected);
+        let plan = self.plan.borrow();
+        self.start
+            .setEnabled(can_select && !controller.busy() && selected && plan.is_some());
+        let retry =
+            selected && attempted && matches!(state, Some(State::Failed | State::Cancelled));
+        let external = plan
+            .as_ref()
+            .is_some_and(|plan| plan.target.destination.requires_confirmation());
+        let start_title = match (external, retry) {
+            (true, true) => ns_string!("同意发送并重试"),
+            (false, true) => ns_string!("重试转写"),
+            (true, false) => ns_string!("同意发送并转写"),
+            (false, false) => ns_string!("开始转写"),
+        };
+        if *self.start.title() != *start_title {
+            self.start.setTitle(start_title);
+        }
+        let cleanup = error.is_some_and(|error| error.code == "cleanup_pending");
         let cancel_title = if cleanup {
             ns_string!("检查退出状态")
         } else {
@@ -454,39 +534,46 @@ impl Page {
             self.cancel.setTitle(cancel_title);
         }
         self.cancel
-            .setEnabled(cleanup || status.is_some_and(|status| status.state == State::Working));
+            .setEnabled(cleanup || state == Some(State::Working));
         self.save_text.setEnabled(can_select && has_result);
         self.save_markdown.setEnabled(can_select && has_result);
-        let activity = match status {
-            Some(status) => match status.state {
-                State::Working => "正在转写…",
-                State::Cancelling => "正在取消…",
-                State::Ready if self.input.borrow().is_some() => "显示上次结果",
-                State::Ready => "转写完成",
-                State::Failed => "转写失败",
-                State::Cancelled => "已取消",
-            },
-            None if controller.busy() => "正在处理其他任务…",
+        let activity = match state {
+            _ if cleanup => "等待外部程序退出",
+            Some(State::Working) => "正在转写…",
+            Some(State::Cancelling) => "正在取消…",
+            _ if controller.busy() => "正在处理其他任务…",
+            _ if new_selection => "待转写",
+            Some(State::Ready) => "转写完成",
+            Some(State::Failed) => "转写失败",
+            Some(State::Cancelled) => "已取消",
             None => "",
         };
         set_label(&self.activity, activity);
-        let error = status.and_then(|status| status.error.as_ref());
-        if self.displayed_error.replace(error.map(|error| error.code))
-            != error.map(|error| error.code)
-            && let Some(error) = error
-        {
-            set_label(&self.notice, error.message);
+        let error_code = error.map(|error| error.code);
+        if self.displayed_error.replace(error_code) != error_code {
+            let message = if state == Some(State::Cancelled)
+                && status.is_some_and(|status| status.target.destination.requires_confirmation())
+            {
+                "文件转写已取消。已发送的音频无法撤回。"
+            } else {
+                error.map_or("", |error| error.message)
+            };
+            set_label(&self.notice, message);
         }
-        let desired = if has_result {
-            operation.as_deref()
-        } else {
-            None
-        };
+        let result_job = operation.as_ref().filter(|_| has_result);
+        let desired = result_job.map(|job| job.id.as_str());
         let mut displayed = self.displayed_result.borrow_mut();
         if displayed.as_deref() != desired {
             let text = current.and_then(|(_, text)| text).unwrap_or_default();
             self.result.setString(&NSString::from_str(text));
             *displayed = desired.map(str::to_owned);
+            let caption = result_job.map_or_else(
+                || RESULT_HINT.into(),
+                |job| format!("{} · 仅在此页显示", job.file_name),
+            );
+            set_label(&self.result_caption, &caption);
+            self.result_caption
+                .setToolTip(result_job.map(|_| NSString::from_str(&caption)).as_deref());
         }
     }
 
@@ -518,21 +605,26 @@ impl Page {
 
 impl Delegate {
     fn file_page(&self) -> &Page {
-        self.ivars().file_page.get_or_init(|| Page::build(self))
+        self.ivars().file_page.get().expect("mounted file page")
+    }
+
+    pub(super) fn file_page_with_bounds(&self, bounds: NSRect) -> &Page {
+        self.ivars()
+            .file_page
+            .get_or_init(|| Page::build(self, bounds))
     }
 
     fn present_file_page(&self) -> &Page {
-        let page = self.file_page();
-        self.close_quick_panel();
-        self.with_controller(|controller| page.refresh(controller));
         #[cfg(debug_assertions)]
-        if page.fixture.borrow().is_some() {
+        if let Some(page) = self.ivars().file_page.get()
+            && page.fixture.borrow().is_some()
+        {
+            self.with_controller(|controller| page.refresh(controller));
             return page;
         }
-        page.window.makeKeyAndOrderFront(None);
-        #[allow(deprecated)]
-        NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
-        page
+        self.show_workbench_page(workbench::Page::Files);
+        self.refresh_file_page();
+        self.file_page()
     }
 
     pub(super) fn show_file_transcription(&self) {
@@ -556,6 +648,9 @@ impl Delegate {
             }
             return;
         }
+        let Some(window) = page.view.window() else {
+            return;
+        };
         let panel = NSOpenPanel::openPanel(self.mtm());
         panel.setCanChooseFiles(true);
         panel.setCanChooseDirectories(false);
@@ -570,10 +665,11 @@ impl Delegate {
             ns_string!("mp3"),
         ])));
         *page.panel.borrow_mut() = Some(panel.clone().into_super());
+        self.refresh_file_page();
         let owner = self.retain();
         let selected_panel = panel.clone();
         panel.beginSheetModalForWindow_completionHandler(
-            &page.window,
+            &window,
             &RcBlock::new(move |response| {
                 let page = owner.file_page();
                 page.panel.borrow_mut().take();
@@ -596,8 +692,8 @@ impl Delegate {
     pub(super) fn cancel_file_transcription(&self) {
         let page = self.file_page();
         self.with_controller(|controller| {
-            if let Some(operation) = page.operation.borrow().as_deref() {
-                let _ = controller.file_jobs.cancel(operation);
+            if let Some(operation) = page.operation.borrow().as_ref() {
+                let _ = controller.file_jobs.cancel(&operation.id);
             }
             page.refresh(controller);
         });
@@ -608,7 +704,7 @@ impl Delegate {
         if self.ivars().quitting.get() || !page.save_text.isEnabled() {
             return;
         }
-        let Some(operation) = page.operation.borrow().clone() else {
+        let Some(operation) = page.operation.borrow().as_ref().map(|job| job.id.clone()) else {
             return;
         };
         #[cfg(debug_assertions)]
@@ -618,6 +714,9 @@ impl Delegate {
             }
             return;
         }
+        let Some(window) = page.view.window() else {
+            return;
+        };
         let panel = NSSavePanel::savePanel(self.mtm());
         panel.setCanCreateDirectories(true);
         let extension = NSString::from_str(format.extension());
@@ -629,10 +728,11 @@ impl Delegate {
         #[allow(deprecated)]
         panel.setAllowedFileTypes(Some(&NSArray::from_slice(&[&*extension])));
         *page.panel.borrow_mut() = Some(panel.clone());
+        self.refresh_file_page();
         let owner = self.retain();
         let selected_panel = panel.clone();
         panel.beginSheetModalForWindow_completionHandler(
-            &page.window,
+            &window,
             &RcBlock::new(move |response| {
                 let page = owner.file_page();
                 page.panel.borrow_mut().take();

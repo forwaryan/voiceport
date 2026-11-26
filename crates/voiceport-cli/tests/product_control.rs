@@ -12,7 +12,7 @@ fn binaries() -> [&'static str; 2] {
 fn offline_help_and_invalid_arguments_never_connect() {
     for bin in binaries() {
         for (group, usage) in [
-            ("app", "app capabilities"),
+            ("app", "app open files"),
             ("preferences", "preferences set language"),
             ("models", "models refresh"),
             ("microphone", "microphone test-start"),
@@ -116,6 +116,16 @@ fn real_binaries_and_transport_carry_product_requests_and_mock_receipts() {
         Example {
             args: &["app", "open", "quick-panel"],
             wire: json!({"command":"open", "page":"quick_panel"}),
+            stdin: None,
+        },
+        Example {
+            args: &["app", "open", "files"],
+            wire: json!({"command":"open", "page":"file"}),
+            stdin: None,
+        },
+        Example {
+            args: &["app", "open", "file"],
+            wire: json!({"command":"open", "page":"file"}),
             stdin: None,
         },
         Example {

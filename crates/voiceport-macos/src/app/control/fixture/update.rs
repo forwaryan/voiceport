@@ -137,6 +137,9 @@ pub(super) fn verify(fixture: &Fixture<'_>, folder: &Path) {
     let incompatible = wait_for(fixture, "incompatible");
     assert_eq!(incompatible["latest_version"], newer);
     assert_eq!(incompatible["reason"], "此版本缺少 macOS arm64 更新包。");
+    begin().send(Ok(release(newer, true))).unwrap();
+    wait_for(fixture, "update_available");
+    fixture.owner.verify_update_progress_views(newer);
     read_only();
     assert_eq!(fs::read(&marker).unwrap(), b"old fixture bundle");
     assert_eq!(fs::read_dir(&installed).unwrap().count(), 1);
@@ -149,5 +152,4 @@ pub(super) fn verify(fixture: &Fixture<'_>, folder: &Path) {
     println!(
         "PASS production update IPC: versions, explicit lookup, duplicate busy, cached stale after refresh failure, no update, local newer, incompatible release, read-only status and untouched fixture bundle"
     );
-    fixture.owner.verify_update_progress_menu();
 }

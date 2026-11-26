@@ -34,7 +34,7 @@ pub(crate) struct Staged {
 }
 
 impl Staged {
-    #[cfg(test)]
+    #[cfg(any(test, debug_assertions))]
     pub(crate) fn fixture(version: &str) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let original = BundleId::read(directory.path()).unwrap();

@@ -117,7 +117,7 @@ pub(crate) struct Job {
     status: Arc<Mutex<Option<(Instant, String)>>>,
     result: Receiver<String>,
     deadline: Instant,
-    measuring: bool,
+    last_update: Option<Instant>,
 }
 
 impl Job {
@@ -159,12 +159,17 @@ impl Job {
             status,
             result,
             deadline,
-            measuring: false,
+            last_update: None,
         })
     }
 
     pub fn measuring(&self) -> bool {
-        self.measuring
+        self.last_update.is_some()
+    }
+
+    pub fn display_is_stale(&self, now: Instant) -> bool {
+        self.last_update
+            .is_some_and(|updated| now.saturating_duration_since(updated) > STALE)
     }
 
     pub fn status(&mut self, now: Instant) -> Result<Option<String>, String> {
@@ -178,7 +183,7 @@ impl Job {
         {
             self.deadline = *updated + WAIT;
             if now < self.deadline {
-                self.measuring = true;
+                self.last_update = Some(*updated);
                 return Ok(Some(text.clone()));
             }
         }

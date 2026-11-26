@@ -43,6 +43,7 @@ const GUIDES: &[(&str, &str)] = &[
 const HELP: &str = "voiceport [--json] [--socket ABSOLUTE_PATH] COMMAND
 
 status | app status/capabilities/show/open/quit
+app open files (aliases: app open file, file open)
 app update check/status
 sources list/show/destination/add/update/remove/select/secret/test
 sources probe ID|--all [--language CODE|auto] [--accept-upload]

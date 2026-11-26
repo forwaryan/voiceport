@@ -69,8 +69,15 @@ impl DownloadSnapshot {
         (self.received <= total).then(|| (self.received * 100 / total).min(99))
     }
 
+    pub(crate) fn stalled(self, now: Instant) -> bool {
+        !self.verifying
+            && self
+                .last_chunk
+                .is_some_and(|last| now.duration_since(last) >= STALE_AFTER)
+    }
+
     pub(crate) fn rate(self, now: Instant) -> Option<f64> {
-        if self.verifying || now.duration_since(self.last_chunk?) >= STALE_AFTER {
+        if self.verifying || self.stalled(now) {
             return None;
         }
         self.rate
@@ -95,8 +102,11 @@ mod tests {
         progress.received_at(800, third);
         assert_eq!(progress.snapshot().rate(third), Some(400.0));
         let resume = third + STALE_AFTER;
+        assert!(!progress.snapshot().stalled(third));
+        assert!(progress.snapshot().stalled(resume));
         assert_eq!(progress.snapshot().rate(resume), None);
         progress.received_at(1200, resume);
+        assert!(!progress.snapshot().stalled(resume));
         assert_eq!(progress.snapshot().rate(resume), None);
         let next = resume + SAMPLE_INTERVAL;
         progress.received_at(1400, next);

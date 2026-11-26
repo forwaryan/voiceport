@@ -7,14 +7,14 @@ mod dictation_page;
 #[cfg(target_os = "macos")]
 fn main() {
     use block2::RcBlock;
-    use dictation_page::{Activity, Page, Snapshot, TranscriptOrigin};
+    use dictation_page::{Activity, Page, ResultDetails, Snapshot, TranscriptOrigin};
     use objc2::{MainThreadMarker, MainThreadOnly, msg_send, sel};
     use objc2_app_kit::*;
     use objc2_foundation::{NSObject, NSPoint, NSRange, NSRect, NSSize, NSString};
     use std::cell::Cell;
     use voiceport_control::{
-        CaptureSignal, CaptureSummary, DeliveryReceipt, DeliveryState, DictationTimings,
-        GuiDictationDiagnostics, GuiDictationReceipt, TranscriptionState,
+        CaptureSignal, CaptureSummary, DeliveryReceipt, DeliveryState, DictationBlockReason,
+        DictationTimings, GuiDictationDiagnostics, GuiDictationReceipt, TranscriptionState,
     };
 
     let mtm = MainThreadMarker::new().expect("fixture must run on the OS main thread");
@@ -36,19 +36,20 @@ fn main() {
         let view = window.contentView().unwrap();
         let target = NSObject::new();
         let page = Page::build(mtm, &target, &view);
+        assert!(std::ptr::eq(page.view(), &*view));
         let start = NSButton::initWithFrame(NSButton::alloc(mtm), NSRect::ZERO);
         view.addSubview(&start);
-        page.link_key_views(&start);
-        assert!(
-            unsafe { start.nextKeyView() }
-                .as_deref()
-                .is_some_and(|v| std::ptr::eq(v, &***page.disclosure))
-        );
-        assert!(
-            unsafe { page.copy.nextKeyView() }
-                .as_deref()
-                .is_some_and(|v| std::ptr::eq(v, &***page.result))
-        );
+        let start: &NSView = &start;
+        let keys = page.key_views();
+        for (from, to) in std::iter::once(start)
+            .chain(keys)
+            .zip(keys.into_iter().chain(std::iter::once(start)))
+        {
+            unsafe { from.setNextKeyView(Some(to)) };
+        }
+        assert!(std::ptr::eq(keys[0], &***page.disclosure));
+        assert!(std::ptr::eq(keys[4], &***page.copy));
+        assert!(std::ptr::eq(keys[5], &***page.result));
         assert_eq!(
             page.disclosure.action(),
             Some(sel!(toggleDictationDiagnostics:))
@@ -57,21 +58,22 @@ fn main() {
         assert_eq!(page.copy.action(), Some(sel!(copyDictationResult:)));
 
         let receipt = GuiDictationReceipt {
-            session: 17,
+            session: 18,
             generation: 18,
             automatic: true,
             transcription: TranscriptionState::Completed,
             delivery: DeliveryReceipt {
-                state: DeliveryState::Submitted,
+                state: DeliveryState::Confirmed,
                 submitted_operations: 1,
+                confirmed_operations: 1,
                 ..Default::default()
             },
-            method: Some("clipboard_final".into()),
+            method: Some("accessibility".into()),
             failure_stage: None,
             block_reason: None,
         };
         let diagnostics = GuiDictationDiagnostics {
-            session: 17,
+            session: 18,
             generation: 18,
             capture: Some(CaptureSummary {
                 generation: 17,
@@ -94,10 +96,16 @@ fn main() {
             can_cancel: false,
             can_retry: false,
         };
+        let attempt = ResultDetails {
+            receipt: &receipt,
+            diagnostics: Some(&diagnostics),
+            source: Some("合成来源 · 简体中文 · 在本机处理"),
+            target: Some("原目标夹具"),
+        };
         let refresh = |generation, final_text| {
             page.refresh(Snapshot {
-                receipt: Some(&receipt),
-                diagnostics: Some(&diagnostics),
+                attempt: Some(attempt),
+                retained: None,
                 origin: Some(TranscriptOrigin {
                     generation,
                     final_text,
@@ -130,10 +138,12 @@ fn main() {
         assert!(page.disclosure.isAccessibilityExpanded());
         assert_eq!(
             page.diagnostic.accessibilityLabel().unwrap().to_string(),
-            "本轮诊断详情（只读）"
+            "投递详情（只读）"
         );
         let detail = page.diagnostic.string().to_string();
-        assert!(detail.contains("已提交，接收未验证") && !detail.contains("原输入框已确认"));
+        assert!(detail.contains("原位确认：已读回原输入框并确认全部写入"));
+        assert!(detail.contains("原目标应用：原目标夹具"));
+        assert!(detail.contains("来源设置：合成来源 · 简体中文 · 在本机处理"));
         assert!(detail.contains("采集尝试 17") && detail.contains("转写：50 ms"));
         page.toggle_edit();
         refresh(18, true);
@@ -193,6 +203,127 @@ fn main() {
         refresh(19, false);
         assert!(!page.edit.isEnabled() && !page.copy.isEnabled());
         page.copy(|_| panic!("preview must not enter final-copy action"));
+
+        let show = |attempt: Option<ResultDetails<'_>>,
+                    retained: Option<ResultDetails<'_>>,
+                    generation: Option<u64>,
+                    text: &str| {
+            page.refresh(Snapshot {
+                attempt,
+                retained,
+                origin: generation.map(|generation| TranscriptOrigin {
+                    generation,
+                    final_text: true,
+                }),
+                original: text,
+                raw_available: false,
+                can_open_raw: false,
+                shortcut: "",
+                activity,
+            });
+        };
+        show(Some(attempt), None, Some(18_u64), &original);
+        page.toggle_details();
+        show(Some(attempt), None, Some(18), &original);
+        assert!(window.makeFirstResponder(Some(&page.result)));
+        let selection = NSRange::new(1, 2);
+        page.result.setSelectedRange(selection);
+        page.toggle_details();
+        assert!(
+            focus_is(&page.result),
+            "collapse preserves a focused transcript"
+        );
+        assert_eq!(NSTextInputClient::selectedRange(&*page.result), selection);
+        page.toggle_details();
+        assert!(window.makeFirstResponder(Some(&page.diagnostic)));
+        page.toggle_details();
+        assert!(focus_is(&page.disclosure), "hidden details release focus");
+        page.toggle_details();
+
+        for (state, confirmed, detail) in [
+            (DeliveryState::Submitted, 0, "已提交，接收未验证"),
+            (DeliveryState::Uncertain, 0, "投递结果不明"),
+            (DeliveryState::PartiallySent, 1, "已执行部分写入"),
+        ] {
+            let indeterminate = GuiDictationReceipt {
+                delivery: DeliveryReceipt {
+                    state,
+                    submitted_operations: 2,
+                    confirmed_operations: confirmed,
+                    stopped: state != DeliveryState::Submitted,
+                },
+                failure_stage: (state != DeliveryState::Submitted).then(|| "focus".to_owned()),
+                ..receipt.clone()
+            };
+            let shown = ResultDetails {
+                receipt: &indeterminate,
+                ..attempt
+            };
+            show(Some(shown), None, Some(18), &original);
+            assert!(!page.edit.isEnabled() && page.copy.isEnabled());
+            let details = page.diagnostic.string().to_string();
+            assert!(details.contains(detail));
+            assert!(details.contains("原目标应用：原目标夹具"));
+            assert!(!details.contains("确认全部写入"));
+            if confirmed > 0 {
+                assert!(details.contains("整轮未确认"));
+            }
+            page.copy(|copied| {
+                assert_eq!(copied, original);
+                true
+            });
+        }
+
+        let rejected = GuiDictationReceipt {
+            generation: 19,
+            session: 19,
+            transcription: TranscriptionState::NotStarted,
+            delivery: DeliveryReceipt::default(),
+            block_reason: Some(DictationBlockReason::StartRejected),
+            method: None,
+            ..receipt.clone()
+        };
+        let latest = ResultDetails {
+            receipt: &rejected,
+            diagnostics: None,
+            source: Some("新来源夹具"),
+            target: Some("切换后的应用夹具"),
+        };
+        show(Some(latest), Some(attempt), Some(18), &original);
+        let old_detail = page.diagnostic.string().to_string();
+        assert!(old_detail.contains("原目标应用：原目标夹具"));
+        assert!(old_detail.contains("来源设置：合成来源"));
+        assert!(old_detail.contains("最近一次尝试：本轮未开始"));
+        assert!(!old_detail.contains("切换后的应用夹具") && !old_detail.contains("新来源夹具"));
+        page.copy(|copied| {
+            assert_eq!(copied, original);
+            true
+        });
+        let retry = GuiDictationReceipt {
+            generation: 20,
+            block_reason: Some(DictationBlockReason::RetryPanelOnly),
+            ..receipt.clone()
+        };
+        show(
+            Some(ResultDetails {
+                receipt: &retry,
+                ..attempt
+            }),
+            None,
+            Some(20),
+            "重试正文",
+        );
+        let retry_detail = page.diagnostic.string().to_string();
+        assert!(retry_detail.contains("原尝试的投递回执"));
+        assert!(retry_detail.contains("读回记录属于原尝试"));
+        assert!(
+            !retry_detail.contains("转写：50 ms"),
+            "wrong-generation diagnostics were injected"
+        );
+        show(None, None, None, "");
+        assert!(!page.copy.isEnabled() && !page.edit.isEnabled());
+        assert!(!page.disclosure.isAccessibilityExpanded() && !page.disclosure.isEnabled());
+        page.copy(|_| panic!("empty result must not enter final-copy action"));
 
         let srgb = NSColorSpace::sRGBColorSpace();
         let linear = |c: f64| {

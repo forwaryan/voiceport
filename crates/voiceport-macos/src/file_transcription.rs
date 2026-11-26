@@ -8,11 +8,14 @@ use serde::Serialize;
 use std::{
     collections::VecDeque,
     fs::{File, Metadata, OpenOptions, Permissions},
-    io::{Read, Write},
+    io::Write,
     net::IpAddr,
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::Path,
-    sync::mpsc::{self, Receiver, TryRecvError},
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, TryRecvError},
+    },
 };
 use voiceport_core::{CancellationToken, TranscriptionClient, audio::MAXIMUM_AUDIO_BYTES};
 
@@ -158,8 +161,9 @@ impl Format {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Input {
-    file: File,
+    file: Arc<File>,
     selected: Metadata,
     format: Format,
 }
@@ -196,13 +200,13 @@ impl Input {
             return Err(TOO_LARGE);
         }
         Ok(Self {
-            file,
+            file: Arc::new(file),
             selected,
             format,
         })
     }
 
-    fn stage(mut self, cancel: &CancellationToken) -> Result<Snapshot, Error> {
+    fn stage(self, cancel: &CancellationToken) -> Result<Snapshot, Error> {
         check_cancel(cancel)?;
         self.verify_unchanged()?;
         let directory = tempfile::Builder::new()
@@ -225,8 +229,12 @@ impl Input {
             check_cancel(cancel)?;
             let count = remaining.min(buffer.len() as u64) as usize;
             let chunk = &mut buffer[..count];
-            self.file.read_exact(chunk).map_err(|_| CHANGED)?;
-            if remaining == self.selected.len() && !self.format.matches_header(chunk) {
+            // A GUI retry uses the original file descriptor and starts at byte zero.
+            let offset = self.selected.len() - remaining;
+            self.file
+                .read_exact_at(chunk, offset)
+                .map_err(|_| CHANGED)?;
+            if offset == 0 && !self.format.matches_header(chunk) {
                 return Err(INVALID_AUDIO);
             }
             snapshot.write_all(chunk).map_err(|_| STAGING)?;
@@ -257,6 +265,7 @@ impl Input {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Plan {
     pub target: Target,
     source: SessionSource,

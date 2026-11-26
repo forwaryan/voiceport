@@ -12,7 +12,7 @@ use objc2::runtime::AnyObject;
 use objc2_app_kit::NSApplicationActivationPolicy;
 use objc2_foundation::{NSBundle, NSObject, NSRange, NSTimer};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     os::unix::fs::MetadataExt,
     panic::{AssertUnwindSafe, catch_unwind},
     process::Command,
@@ -76,12 +76,36 @@ const BUNDLE_ID: &str = "org.voiceport.status-overlay-focus-fixture";
 const UNAVAILABLE: i32 = 78;
 const BASELINE_TIMEOUT: Duration = Duration::from_secs(5);
 const SELECTION: NSRange = NSRange::new(1, 0);
-const STAGES: [(Stage, &str, Option<u8>, bool); 5] = [
-    (Stage::Preparing, "正在准备听写", None, false),
-    (Stage::Recording, "正在录音", Some(3), false),
-    (Stage::Recording, "正在录音", Some(3), true),
-    (Stage::Transcribing, "正在转写", None, true),
-    (Stage::Delivering, "正在输入文字", None, true),
+const STAGES: [(Stage, &str, bool, usize); 9] = [
+    (Stage::Preparing, "正在准备听写", false, 0),
+    (
+        Stage::Capture(CaptureStage::Opening),
+        "正在打开麦克风",
+        false,
+        0,
+    ),
+    (
+        Stage::Capture(CaptureStage::Recording),
+        "正在录音",
+        false,
+        3,
+    ),
+    (Stage::Capture(CaptureStage::Recording), "正在录音", true, 0),
+    (
+        Stage::Capture(CaptureStage::Recovering),
+        "正在恢复麦克风",
+        false,
+        0,
+    ),
+    (Stage::Capture(CaptureStage::Resumed), "正在录音", false, 3),
+    (
+        Stage::Capture(CaptureStage::Finalizing),
+        "正在停止麦克风",
+        false,
+        0,
+    ),
+    (Stage::Transcribing, "正在转写", false, 0),
+    (Stage::Delivering, "正在输入文字", false, 0),
 ];
 
 #[link(name = "Security", kind = "framework")]
@@ -233,7 +257,6 @@ pub(crate) fn run(mtm: MainThreadMarker, boot_id: &str, session_id: &str) -> ! {
 }
 
 struct Fixture {
-    screen: Screen,
     target: Retained<NSWindow>,
     editor: Retained<NSTextView>,
     starting: Instant,
@@ -274,11 +297,7 @@ impl Fixture {
             eprintln!("status-overlay-focus: no NSScreen / WindowServer fixture surface");
             return None;
         };
-        let screen = Screen {
-            frame: screen.frame(),
-            visible: screen.visibleFrame(),
-        };
-        let safe = screen.visible;
+        let safe = screen.visibleFrame();
         let target_frame = rect(safe.origin.x + 36., safe.origin.y + 70., 360., 160.);
         let target = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -308,7 +327,6 @@ impl Fixture {
         #[allow(deprecated)] // The test also supports macOS 13.
         app.activateIgnoringOtherApps(true);
         Some(Self {
-            screen,
             target,
             editor,
             starting: Instant::now(),
@@ -364,7 +382,7 @@ impl Fixture {
             }
         } else if focus.is_positive() {
             println!("status-overlay-focus: positive native baseline {focus:?}");
-            let mut inspection = Inspection::new(mtm, &self.screen, self.target.frame());
+            let mut inspection = Inspection::new(mtm, self.target.frame());
             inspection.show_next();
             self.inspection = Some(inspection);
         } else if self.starting.elapsed() >= BASELINE_TIMEOUT {
@@ -378,32 +396,86 @@ impl Fixture {
 
     fn close(mut self) {
         if let Some(inspection) = &mut self.inspection {
-            inspection.panel.hide();
+            inspection.overlay.close();
         }
         self.target.close();
     }
 }
 
 struct Inspection {
-    panel: Panel,
-    frame: NSRect,
+    mtm: MainThreadMarker,
+    overlay: Overlay,
+    target_frame: NSRect,
     pointer: NSPoint,
     next_step: usize,
 }
 
 impl Inspection {
-    fn new(mtm: MainThreadMarker, screen: &Screen, target_frame: NSRect) -> Self {
-        let panel = Panel::new(mtm);
-        let pointer = NSEvent::mouseLocation();
-        let frame = place(
-            std::slice::from_ref(screen),
-            Bounds {
-                field: Some(target_frame),
-                window: Some(target_frame),
+    fn new(mtm: MainThreadMarker, target_frame: NSRect) -> Self {
+        Self {
+            mtm,
+            overlay: Overlay::default(),
+            target_frame,
+            pointer: NSEvent::mouseLocation(),
+            next_step: 0,
+        }
+    }
+
+    fn update(&mut self, generation: u64, stage: Option<Stage>, reduce_motion: bool) -> bool {
+        let sampled = Cell::new(false);
+        self.overlay.update_with_motion(
+            self.mtm,
+            Snapshot {
+                generation,
+                stage,
+                origin_pid: Some(std::process::id() as i32),
             },
-            pointer,
-        )
-        .expect("the synthetic window needs room for an unobstructed panel");
+            true,
+            || {
+                sampled.set(true);
+                Some(3)
+            },
+            || reduce_motion,
+        );
+        sampled.get()
+    }
+
+    fn show_next(&mut self) {
+        if let Some(&(stage, _, reduce_motion, bars)) = STAGES.get(self.next_step) {
+            assert_eq!(self.update(1, Some(stage), reduce_motion), bars > 0);
+        } else {
+            let recording = Some(Stage::Capture(CaptureStage::Recording));
+            match self.next_step - STAGES.len() {
+                0 => {
+                    assert!(!self.update(2, None, false)); // Cancel invalidates generation 1.
+                    assert!(!self.update(1, recording, false));
+                }
+                1 => {
+                    assert!(self.update(3, recording, false));
+                    assert!(self.overlay.panel.as_ref().unwrap().window.isVisible());
+                    self.overlay.close();
+                    assert!(!self.update(4, recording, false));
+                }
+                _ => unreachable!(),
+            }
+        }
+        self.next_step += 1;
+    }
+
+    fn check_previous_and_advance(&mut self) -> bool {
+        let panel = self.overlay.panel.as_ref().unwrap();
+        let Some(&(stage, text, reduce_motion, bars)) = STAGES.get(self.next_step - 1) else {
+            assert!(!panel.window.isVisible());
+            if self.next_step == STAGES.len() + 1 {
+                self.show_next();
+                return false;
+            }
+            println!(
+                "status-overlay-focus: cancellation and quit preserved key window, AX identity, responder and caret"
+            );
+            return true;
+        };
+        assert!(panel.window.isVisible());
         assert!(
             panel
                 .window
@@ -411,50 +483,15 @@ impl Inspection {
                 .contains(NSWindowStyleMask::NonactivatingPanel)
         );
         assert!(panel.window.ignoresMouseEvents());
-        assert!(!panel.window.canBecomeKeyWindow());
-        assert!(!panel.window.canBecomeMainWindow());
-        assert_eq!(overlap(frame, target_frame), 0.);
-        Self {
-            panel,
-            frame,
-            pointer,
-            next_step: 0,
-        }
-    }
-
-    fn show_next(&mut self) {
-        if let Some(&(stage, _, level, reduce_motion)) = STAGES.get(self.next_step) {
-            self.panel.show(self.frame, stage, level, reduce_motion);
-        } else {
-            self.panel.hide();
-        }
-        self.next_step += 1;
-    }
-
-    fn check_previous_and_advance(&mut self) -> bool {
-        let Some(&(stage, text, level, reduce_motion)) = STAGES.get(self.next_step - 1) else {
-            assert!(!self.panel.window.isVisible());
-            println!(
-                "status-overlay-focus: hide preserved key window, AX identity, responder and caret"
-            );
-            return true;
-        };
-        assert!(self.panel.window.isVisible());
-        assert!(!self.panel.window.isKeyWindow() && !self.panel.window.isMainWindow());
-        assert_eq!(self.panel.label.stringValue().to_string(), text);
+        assert!(!panel.window.canBecomeKeyWindow() && !panel.window.canBecomeMainWindow());
+        assert!(!panel.window.isKeyWindow() && !panel.window.isMainWindow());
+        assert_eq!(overlap(panel.window.frame(), self.target_frame), 0.);
+        assert_eq!(panel.label.stringValue().to_string(), text);
+        assert_eq!(panel.label.accessibilityLabel().unwrap().to_string(), text);
+        assert!(panel.label.fittingSize().width <= panel.label.frame().size.width);
         assert_eq!(
-            self.panel.label.accessibilityLabel().unwrap().to_string(),
-            text
-        );
-        assert!(self.panel.label.fittingSize().width <= self.panel.label.frame().size.width);
-        let visible_bars = self.panel.bars.iter().filter(|bar| !bar.isHidden()).count();
-        assert_eq!(
-            visible_bars,
-            if reduce_motion {
-                0
-            } else {
-                usize::from(level.unwrap_or(0))
-            }
+            panel.bars.iter().filter(|bar| !bar.isHidden()).count(),
+            bars
         );
         println!(
             "status-overlay-focus: {stage:?} reduce_motion={reduce_motion} preserved native focus"

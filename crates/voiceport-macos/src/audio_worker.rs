@@ -59,24 +59,48 @@ impl Lane {
     }
 
     pub fn inventory(&self) -> Result<Inventory, String> {
+        self.query(devices::inputs)
+    }
+
+    pub fn input_snapshot(&self) -> Result<Inventory<InputSnapshot>, String> {
+        self.query(|| {
+            Ok(InputSnapshot {
+                observed: Instant::now(),
+                devices: devices::inputs(),
+                system: devices::system_input_preview(),
+                permission: Recorder::microphone_permission_status(),
+            })
+        })
+    }
+
+    fn query<T: Send + 'static>(
+        &self,
+        read: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Result<Inventory<T>, String> {
+        let deadline = Instant::now() + WAIT;
         let (tx, result) = mpsc::sync_channel(1);
         self.spawn(move || {
-            let _ = tx.send(devices::inputs());
+            let _ = tx.send(read());
         })?;
-        Ok(Inventory {
-            result,
-            deadline: Instant::now() + WAIT,
-        })
+        Ok(Inventory { result, deadline })
     }
 }
 
-pub(crate) struct Inventory {
-    result: Receiver<Result<Vec<devices::Device>, String>>,
+/// Observations for the input-device page. Never used by capture or test admission.
+pub(crate) struct InputSnapshot {
+    pub observed: Instant,
+    pub devices: Result<Vec<devices::Device>, String>,
+    pub system: Result<devices::Device, String>,
+    pub permission: &'static str,
+}
+
+pub(crate) struct Inventory<T = Vec<devices::Device>> {
+    result: Receiver<Result<T, String>>,
     deadline: Instant,
 }
 
-impl Inventory {
-    pub fn poll(&self) -> Option<Result<Vec<devices::Device>, String>> {
+impl<T> Inventory<T> {
+    pub fn poll(&self) -> Option<Result<T, String>> {
         if Instant::now() >= self.deadline {
             return Some(Err("等待读取系统音频设备超时。".into()));
         }

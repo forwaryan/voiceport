@@ -1,7 +1,7 @@
 //! A collapsed-by-default view of the controller's process-local history.
 use super::*;
 use crate::controller::recent_dictations::{MAX_ENTRIES, RecentDictationMetadata};
-use objc2_foundation::{NSDate, NSDateFormatter, NSDateFormatterStyle};
+#[cfg(debug_assertions)]
 use voiceport_control::DeliveryState;
 
 const TOOLBAR: f64 = 36.;
@@ -428,24 +428,7 @@ fn focus_if_current(sender: &NSButton, next: &NSButton) {
 }
 
 fn update_row(row: &Row, selected: bool) {
-    let date =
-        NSDate::dateWithTimeIntervalSince1970(row.summary.created_at_unix_ms as f64 / 1_000.);
-    let date = NSDateFormatter::localizedStringFromDate_dateStyle_timeStyle(
-        &date,
-        NSDateFormatterStyle::ShortStyle,
-        NSDateFormatterStyle::MediumStyle,
-    );
-    let receipt = row.summary.delivery;
-    let status = match (receipt.state, receipt.stopped) {
-        (DeliveryState::NotSent, true) => "投递已停止",
-        (DeliveryState::NotSent, false) => "未投递",
-        (DeliveryState::Waiting, _) => "等待投递",
-        (DeliveryState::AwaitingConfirmation, _) => "等待确认",
-        (DeliveryState::PartiallySent, _) => "部分投递",
-        (DeliveryState::Confirmed, _) => "已确认",
-        (DeliveryState::Submitted, _) => "已提交，未验证",
-        (DeliveryState::Uncertain, _) => "结果不明",
-    };
+    let (date, status) = crate::app::recent_dictations::row_presentation(&row.summary);
     let title = NSString::from_str(&format!(
         "{} {date} · {status}",
         if selected { "▾" } else { "▸" }
