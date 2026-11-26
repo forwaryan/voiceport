@@ -82,6 +82,22 @@
 
 独立观察：1 次（2026-11-25）。
 
+## 托管原生验收须读回启动、前台和清理（2026-11-26）
+
+- **核对同一 guest 的入口与前台。** 预检从实际生成的 `.app` 读回 `Contents/MacOS` 下的物理 basename、`Info.plist` 的 `CFBundleExecutable` 和 launcher 实际生成的 `argv`，核对被测可执行文件的真实入口守卫。逐项做负控，覆盖物理名称改错、plist 名称不符、参数错误和未满足的入口守卫条件，确认在相应阶段拒绝且未进入目标场景。先在同一获准、独占的 Aqua guest 用已知合成目标建立真前台正控，读回 key、AX 焦点、光标及释放。对受测路由在 AppKit 启动完成、首个真实入口返回、有界等待首次满足判据或到期时，分别保存实际激活策略、应用活动与前台归属、目标窗口可见性、是否可成为 key、窗口自身 `isKeyWindow` 及 `NSApp.keyWindow` 归属。只有目标可见、应用 active、窗口自身为 key、应用的 key window 指向同窗同时成立，才记真前台覆盖。对照每次只改一个启动因素并保留实际退出，离屏证据按其实际范围使用。
+- **分别取得失败与清理回执。** 记录驱动首个白名单失败阶段及实际退出、应用由内核观测的退出、租约关闭方及其时点，并逐项读回本次持有的窗口、弹层或模态界面（owned surface）、socket 与专用持久状态的清理。驱动失败后先保留租约并有界请求应用按正常路径清理，必要时才强制退出。清理回执齐全后可继续独立场景，同时保留首败；清理未知时停在缺口处。
+- **保留原失败与修复范围。** 旧启动器将 Sources 打包为 `voiceport-source-fixture`，提取自实际 Debug 入口的守卫实退 `2`，未到 ready。对齐到 `voiceport-menu-fixture` 后，离线入口正例和错误参数等负控通过。托管 Aqua 的 Shell、Files 随后在首次 key 正基线各退出 `78`，四个前台条件共用一个失败码；激活缺在哪一环仍未确认。Sources 的 Swift 驱动实退 `1`，编排随后关闭租约，应用内核实退 `1`。原回执未定位驱动的首个失败断言，也未确认专用偏好域清理。分时读回与有界清理的诊断补丁仅通过离线编译、链接、脱敏与退出控制检查，真实前台验收仍待完成。[原托管作业](https://github.com/forwaryan/voiceport/actions/runs/45769750849/job/139739285614)
+
+独立观察：1 次（2026-11-26）。
+
+## 原生弹层命中与系统前台身份分别验收（2026-11-26）
+
+- **规则：** 实际 key window、键盘导航和 VoiceOver 各取回执。菜单路由分别记录生产 selector 实收、AppKit 弹层和窗口、同 PID 的在屏窗口与系统 AX 精确命中、以及 `NSWorkspace` 的前台 PID。等待在期限内满足对应可交互判据才计时，超时后另存诊断和原失败阶段。见 [原生焦点正基线](LOOP_EXECUTION.md#原生焦点与分块输入反例)。
+- **原因与窗口证据：** r3 的合成正控通过，Shell、Device 已取得目标 key window，两者实退 `78`，对应 `NSApplication.isFullKeyboardAccessEnabled()` 为假，即「系统设置 → 键盘 → 键盘导航」未开启。辅助功能（Accessibility）的 Full Keyboard Access 和 VoiceOver 状态各自取证。Shell/Files 手动入口及 Files、History 按各自合成判据通过。外部 AX、VoiceOver 和 Finder 均未执行。
+- **菜单证据与清理：** Sources、Warm、Blocked、Stall 均有 selector 首次实收 `left_up`，AppKit 采样见弹层已显示、窗口可见、应用 active。Sources 等待 `visiblePopover` 超时后的采样中，同 PID 在屏、AX 精确命中和控件 enabled 成立，该次超时后采样的系统前台 PID 未匹配；其余场景的这份 AX 样本为空，根因仍待确认。前三项止于 `visiblePopover`，Stall 止于 `visibleContextMenu`。`menu_scenes` 为空，逐侧 p95 和停顿负控未获通过回执。四项分别记录驱动实退 `1`、内核观测 App 实退 `0`、opener 实退 `0`、有序 abort 和传输清理通过，且未触发租约提前中止。确认清理后继续独立场景，各自保留失败。见 [退出与清理记录](LOOP_EXECUTION.md#验证逐项写盘退出与清理分开记录)及[正式 r3 作业](https://github.com/forwaryan/voiceport/actions/runs/45779871798/job/139772446438)。
+
+独立观察：1 次（2026-11-26）。
+
 ## 恢复接入和退出清理须在实际阻塞阶段验证（2026-11-26）
 
 - **规则：** 在替代设备打开或复核已进入后改变合成权限或默认设备，核对接入、最终转写和失败回执。默认输入组合查询的探针要在 ID 已取出、设备详情仍在读取时切换默认，保持两台设备可用。另验证最终 ID 读出后、接纳前送达的变化通知。验证退出清理时，先证明录音缓存已创建且输入释放已阻塞，由父进程在子进程退出后、夹具清理前核对缓存。
