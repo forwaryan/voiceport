@@ -100,8 +100,12 @@ impl Storage {
                 root,
                 directory,
                 lease,
+                marker: made[SESSION],
                 name,
-                audio: Mutex::new(audio),
+                audio: Mutex::new(AudioOutput {
+                    file: audio,
+                    prepared: false,
+                }),
             }),
             Err(error) => {
                 remove_files(&root, directory.as_raw_fd(), &name, &made);
@@ -269,8 +273,15 @@ pub struct Recording {
     root: Root,
     directory: File,
     lease: File,
+    marker: libc::stat,
     name: String,
-    audio: Mutex<File>,
+    audio: Mutex<AudioOutput>,
+}
+
+#[derive(Debug)]
+struct AudioOutput {
+    file: File,
+    prepared: bool,
 }
 
 impl Recording {
@@ -300,14 +311,30 @@ impl Recording {
         }
         let stat = info(file.as_raw_fd())?;
         require(private_file(&stat) && matches_at(self.directory.as_raw_fd(), AUDIO, &stat))?;
-        *self.audio.lock().map_err(|_| unavailable())? = file;
+        let mut output = self.audio.lock().map_err(|_| unavailable())?;
+        require(matches_directory(
+            self.root.directory.as_raw_fd(),
+            &self.name,
+            self.directory.as_raw_fd(),
+        ))?;
+        *output = AudioOutput {
+            file,
+            prepared: true,
+        };
         Ok(())
     }
 
     /// After the encoder closes, reject replaced, linked, empty or unprotected
     /// output. This must pass before stop() returns an uploadable Arc.
     pub(crate) fn validate_finalized(&self) -> io::Result<()> {
-        let audio = self.audio.lock().map_err(|_| unavailable())?;
+        // Cancellation may unlink this inode even while sync_all is running.
+        // Hold the mutex only while taking a reference to the descriptor.
+        let audio = self
+            .audio
+            .lock()
+            .map_err(|_| unavailable())?
+            .file
+            .try_clone()?;
         let stat = info(audio.as_raw_fd())?;
         require(
             self.root.still_linked()
@@ -322,6 +349,79 @@ impl Recording {
         )?;
         audio.sync_all()
     }
+
+    /// Revoke this exact capture while the encoder may still hold the file open.
+    /// Renaming the directory first also prevents the native initializer from
+    /// reopening or recreating the original URL after cancellation.
+    pub(crate) fn discard_unfinished(&self) -> io::Result<()> {
+        let output = self.audio.lock().map_err(|_| unavailable())?;
+        let parent = self.root.directory.as_raw_fd();
+        let directory = self.directory.as_raw_fd();
+        let output_inode = info(output.file.as_raw_fd())?;
+        let check_audio = || match info_at(directory, AUDIO) {
+            Ok(stat) => {
+                require(if output.prepared {
+                    private_file(&stat)
+                        && stat.st_dev == output_inode.st_dev
+                        && stat.st_ino == output_inode.st_ino
+                } else {
+                    // Until secure_audio_file, the initializer owns this slot
+                    // and may replace the original empty file with a new inode.
+                    regular_owned(&stat)
+                })?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        };
+        let lease = info(self.lease.as_raw_fd())?;
+        require(
+            self.root.still_linked()
+                && matches_directory(parent, &self.name, directory)
+                && matches_at(directory, SESSION, &self.marker)
+                && matches_at(directory, LEASE, &lease)
+                && names(directory)?
+                    .iter()
+                    .all(|name| [SESSION, LEASE, AUDIO].contains(&name.as_str())),
+        )?;
+        check_audio()?;
+        let discarded = format!("{}.discarding", self.name);
+        let from = cstring(self.name.as_bytes())?;
+        let to = cstring(discarded.as_bytes())?;
+        if unsafe {
+            libc::renameatx_np(
+                parent,
+                from.as_ptr(),
+                parent,
+                to.as_ptr(),
+                libc::RENAME_EXCL,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        require(matches_directory(parent, &discarded, directory))?;
+        require(matches_at(directory, SESSION, &self.marker))?;
+        unlink_at(directory, SESSION, 0)?;
+        require(matches_at(directory, LEASE, &lease))?;
+        unlink_at(directory, LEASE, 0)?;
+        // A lookup already in progress at rename may still finish once in this
+        // directory. Unlink the reserved output again if it beat the first rmdir.
+        for _ in 0..2 {
+            if check_audio()? {
+                match unlink_at(directory, AUDIO, 0) {
+                    Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                    _ => {}
+                }
+            }
+            require(matches_directory(parent, &discarded, directory))?;
+            match unlink_at(parent, &discarded, libc::AT_REMOVEDIR) {
+                Err(error) if error.raw_os_error() == Some(libc::ENOTEMPTY) => continue,
+                result => return result,
+            }
+        }
+        Err(unavailable())
+    }
 }
 
 impl Drop for Recording {
@@ -334,7 +434,7 @@ impl Drop for Recording {
             .audio
             .lock()
             .ok()
-            .and_then(|file| info(file.as_raw_fd()).ok());
+            .and_then(|output| info(output.file.as_raw_fd()).ok());
         if !original_audio.is_some_and(|stat| matches_at(self.directory.as_raw_fd(), AUDIO, &stat))
         {
             return;
@@ -677,4 +777,63 @@ fn read_marker<T: serde::de::DeserializeOwned>(
     file.read_exact(&mut bytes)?;
     require(same_file(&before, &info(file.as_raw_fd())?) && matches_at(directory, name, &before))?;
     Ok((serde_json::from_slice(&bytes)?, before))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn isolated_store() -> (tempfile::TempDir, Storage) {
+        let folder = tempfile::tempdir_in("/tmp").unwrap();
+        let store = Storage::at(folder.path().canonicalize().unwrap().join(NAMESPACE));
+        (folder, store)
+    }
+
+    #[test]
+    fn discard_revokes_the_path_without_waiting_for_an_open_writer() {
+        let (_folder, store) = isolated_store();
+        let recording = store.create_recording().unwrap();
+        let other = store.create_recording().unwrap();
+        let mut writer = std::fs::OpenOptions::new()
+            .append(true)
+            .open(recording.path())
+            .unwrap();
+        recording.secure_audio_file().unwrap();
+        writer.write_all(b"synthetic PCM").unwrap();
+        recording.discard_unfinished().unwrap();
+        writer
+            .write_all(b"late write to the unlinked inode")
+            .unwrap();
+        drop(writer);
+        assert!(recording.validate_finalized().is_err());
+        assert!(!recording.path().parent().unwrap().exists());
+        assert!(other.path().exists());
+        assert_eq!(std::fs::read_dir(store.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn discard_accepts_the_initializer_output_but_preserves_a_secured_replacement() {
+        let (_folder, store) = isolated_store();
+        let unprepared = store.create_recording().unwrap();
+        let replace_audio = |recording: &Recording| {
+            std::fs::remove_file(recording.path()).unwrap();
+            create_file(
+                recording.directory.as_raw_fd(),
+                AUDIO,
+                b"synthetic replacement",
+            )
+            .unwrap();
+        };
+        replace_audio(&unprepared);
+        unprepared.discard_unfinished().unwrap();
+        assert!(!unprepared.path().parent().unwrap().exists());
+
+        let prepared = store.create_recording().unwrap();
+        prepared.secure_audio_file().unwrap();
+        replace_audio(&prepared);
+        assert!(prepared.discard_unfinished().is_err());
+        let retained = prepared.path().to_owned();
+        drop(prepared);
+        assert_eq!(std::fs::read(retained).unwrap(), b"synthetic replacement");
+    }
 }

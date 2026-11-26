@@ -1,7 +1,7 @@
 //! Native microphone settings. Inventory refresh only reads HAL; recording is
 //! exclusively owned by the controller after an explicit test-button action.
 use super::*;
-use crate::audio::devices::{self, Device};
+use crate::audio::{devices::Device, worker::Inventory};
 use objc2::Message;
 
 pub(super) fn preference(defaults: &NSUserDefaults) -> Option<String> {
@@ -58,6 +58,7 @@ pub(super) struct State {
     level: OnceCell<Retained<NSTextField>>,
     test: OnceCell<Retained<NSButton>>,
     rows: RefCell<Vec<Choice>>,
+    query: RefCell<Option<Inventory>>,
 }
 
 define_class!(
@@ -128,6 +129,32 @@ impl Panel {
     }
 
     fn inventory(&self) {
+        if self.ivars().query.borrow().is_some() {
+            return;
+        }
+        let owner = &self.ivars().owner;
+        let query = owner
+            .ivars()
+            .controller
+            .borrow()
+            .as_ref()
+            .map(Controller::read_microphones);
+        match query {
+            Some(Ok(query)) => {
+                self.ivars().query.replace(Some(query));
+                self.ivars()
+                    .inventory_note
+                    .get()
+                    .unwrap()
+                    .setStringValue(ns_string!("正在读取输入设备…"));
+            }
+            Some(Err(error)) => self.show_inventory(Err(error)),
+            None => {}
+        }
+        self.refresh();
+    }
+
+    fn show_inventory(&self, result: Result<Vec<Device>, String>) {
         let owner = &self.ivars().owner;
         let uid = owner
             .ivars()
@@ -135,7 +162,6 @@ impl Panel {
             .borrow()
             .as_ref()
             .and_then(|c| c.microphone_uid.clone());
-        let result = devices::inputs();
         let (rows, index) = choices(&result, uid.as_deref());
         let select = self.ivars().selection.get().unwrap();
         select.removeAllItems();
@@ -156,12 +182,21 @@ impl Panel {
             .setStringValue(&NSString::from_str(match &result {
                 Ok(list) if list.is_empty() => "未发现可用输入。请检查连接后刷新设备。",
                 Ok(_) => "同名设备末尾的标识用于区分；临时回退不会更改偏好。",
-                Err(_) => "无法读取设备列表；未更改原偏好。请尝试刷新设备。",
+                Err(error) => error,
             }));
-        self.refresh();
     }
 
     pub(super) fn refresh(&self) {
+        let result = self
+            .ivars()
+            .query
+            .borrow()
+            .as_ref()
+            .and_then(Inventory::poll);
+        if let Some(result) = result {
+            self.ivars().query.borrow_mut().take();
+            self.show_inventory(result);
+        }
         let owner = &self.ivars().owner;
         let slot = owner.ivars().controller.borrow();
         let Some(c) = slot.as_ref() else {
@@ -173,9 +208,9 @@ impl Panel {
             .selection
             .get()
             .unwrap()
-            .setEnabled(!c.busy() && allowed);
+            .setEnabled(!c.busy() && self.ivars().query.borrow().is_none() && allowed);
         let test = self.ivars().test.get().unwrap();
-        test.setEnabled(running || (!c.busy() && allowed));
+        test.setEnabled(running || (!c.busy() && !c.audio_input_busy() && allowed));
         test.setTitle(if running {
             ns_string!("停止测试")
         } else {
@@ -220,6 +255,7 @@ pub(super) fn show(owner: &Delegate) {
         level: OnceCell::new(),
         test: OnceCell::new(),
         rows: RefCell::default(),
+        query: RefCell::default(),
     });
     let panel: Retained<Panel> = unsafe { msg_send![super(panel), init] };
     let window = unsafe {

@@ -4,7 +4,6 @@ use crate::{
         Delegate, microphone, model_manager, source_manager::destination::Destination,
         status_overlay,
     },
-    audio::Recorder,
     controller::{Controller, VisibleTranscript},
     dictation_dictionary::{Dictionary, format_rules, parse_rules},
     dictation_workflows::Preset,
@@ -143,6 +142,84 @@ impl Delegate {
         }))
     }
 
+    pub(super) fn begin_microphone_inventory(
+        &self,
+        control: &mut Control,
+        c: &Controller,
+        pending: Pending,
+        select: Option<String>,
+    ) {
+        if control.microphone_inventory.is_some() || c.audio_input_busy() {
+            pending.respond(busy());
+            return;
+        }
+        match c.read_microphones() {
+            Ok(query) => {
+                control.microphone_inventory = Some(MicrophoneInventory {
+                    pending,
+                    query,
+                    select,
+                    generation: c.state.generation(),
+                    preferred: c.microphone_uid.clone(),
+                })
+            }
+            Err(_) => pending.respond(err(
+                "device_error",
+                "Could not enumerate microphone devices.",
+            )),
+        }
+    }
+
+    pub(super) fn poll_microphone_inventory(&self, control: &mut Control) {
+        let Some(inventory) = &control.microphone_inventory else {
+            return;
+        };
+        let expired = inventory.pending.expired();
+        let result = if expired {
+            None
+        } else {
+            inventory.query.poll()
+        };
+        if !expired && result.is_none() {
+            return;
+        }
+        let inventory = control.microphone_inventory.take().unwrap();
+        let reply = if expired {
+            err(
+                "timeout",
+                "Request expired while reading microphone devices.",
+            )
+        } else if let Some(Ok(devices)) = result {
+            let mut reply = busy();
+            self.with_controller(|c| {
+                if let Some(uid) = inventory.select {
+                    if self.ivars().quitting.get() || c.busy() || self.settings_locked()
+                        || control.preparing() || self.ivars().permission_rx.borrow().is_some()
+                        || self.ivars().pending_hotkey.borrow().is_some()
+                        || !c.state.accepts(inventory.generation) || c.microphone_uid != inventory.preferred
+                    {
+                        return;
+                    }
+                    if !devices.iter().any(|device| device.uid == uid) {
+                        reply = missing();
+                        return;
+                    }
+                    microphone::set_preference(c, Some(uid));
+                    reply = microphone_status(c, control.microphone_operation.as_deref());
+                } else {
+                    reply = Response::ok(json!({
+                        "devices": devices.iter().map(|d| json!({"uid":d.uid,"name":d.name,"label":d.label()})).collect::<Vec<_>>(),
+                        "preferred_uid": c.microphone_uid,
+                    }));
+                }
+            });
+            reply
+        } else {
+            err("device_error", "Could not enumerate microphone devices.")
+        };
+        inventory.pending.respond(reply);
+    }
+
     pub(super) fn control_microphone(
         &self,
         control: &mut Control,
@@ -152,12 +229,6 @@ impl Delegate {
     ) -> Response {
         use MicrophoneRequest::*;
         match request {
-            List => match crate::audio::devices::inputs() {
-                Ok(devices) => Response::ok(
-                    json!({"devices":devices.iter().map(|d| json!({"uid":d.uid, "name":d.name, "label":d.label()})).collect::<Vec<_>>(), "preferred_uid":c.microphone_uid}),
-                ),
-                Err(_) => err("device_error", "Could not enumerate microphone devices."),
-            },
             Status => microphone_status(c, control.microphone_operation.as_deref()),
             TestStop { operation } => {
                 if control.microphone_operation.as_deref() != Some(&operation) {
@@ -168,22 +239,19 @@ impl Delegate {
                 }
                 microphone_status(c, Some(&operation))
             }
-            _ if locked || c.busy() => busy(),
-            Select { uid } => {
-                if let Some(id) = &uid {
-                    match crate::audio::devices::inputs() {
-                        Ok(devices) if devices.iter().any(|device| device.uid == *id) => {}
-                        Ok(_) => return missing(),
-                        Err(_) => {
-                            return err(
-                                "device_error",
-                                "Could not verify the requested microphone.",
-                            );
-                        }
-                    }
-                }
-                microphone::set_preference(c, uid);
+            _ if locked
+                || c.busy()
+                || c.audio_input_busy()
+                || control.microphone_inventory.is_some() =>
+            {
+                busy()
+            }
+            Select { uid: None } => {
+                microphone::set_preference(c, None);
                 microphone_status(c, control.microphone_operation.as_deref())
+            }
+            List | Select { uid: Some(_) } => {
+                unreachable!("inventory requests are dispatched separately")
             }
             TestStart { confirm } => {
                 if !confirm {
@@ -192,7 +260,7 @@ impl Delegate {
                         "Confirm the local microphone level test.",
                     );
                 }
-                if Recorder::permission_status().0 != "authorized" {
+                if c.capture_permission_status().0 != "authorized" {
                     return err(
                         "permission_denied",
                         "Allow VoicePort microphone access in the first-run panel before testing.",
@@ -400,15 +468,23 @@ pub(super) fn gui_result(c: &Controller, generation: u64, original: bool) -> Res
     )
 }
 
+pub(super) struct MicrophoneInventory {
+    pending: Pending,
+    query: crate::audio::worker::Inventory,
+    select: Option<String>,
+    generation: u64,
+    preferred: Option<String>,
+}
+
 fn microphone_status(c: &Controller, operation: Option<&str>) -> Response {
-    let running = c.microphone_test_running();
-    let owned = running && c.microphone_test_id() == operation;
+    let running = c.microphone_test_measuring();
+    let owned = c.microphone_test_running() && c.microphone_test_id() == operation;
     Response::ok(json!({
         "preferred_uid":c.microphone_uid, "active_route":c.microphone_route(),
-        "permission":Recorder::permission_status().0,
+        "permission":c.capture_permission_status().0,
         "test":{
-            "operation":operation, "running":owned, "device_in_test":running,
-            "detail":owned.then(|| c.microphone_test_status()),
+            "operation":operation, "running":owned && running, "pending":owned && !running, "device_in_test":running,
+            "detail":c.microphone_test_detail(operation),
             "recorded":false,"uploaded":false
         },
     }))

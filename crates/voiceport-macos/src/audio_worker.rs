@@ -1,0 +1,382 @@
+//! One native audio operation at a time. AppKit owns only commands and plain
+//! replies. A blocked framework call keeps the slot until native teardown ends.
+use super::{EventSender, Recorder, devices};
+use crate::{local_audio, storage::Recording};
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError},
+    },
+    time::{Duration, Instant},
+};
+
+pub(crate) const WAIT: Duration = Duration::from_secs(5);
+const AUDIO_POLL: Duration = Duration::from_millis(100);
+pub(crate) const AUDIO_BUSY: &str =
+    "系统音频仍在处理，暂不能打开麦克风。若一直无法恢复，请退出并重新打开 VoicePort。";
+pub(crate) const START_TIMEOUT: &str = "等待麦克风超时，本轮未开始录音。";
+pub(crate) const RECOVERY_TIMEOUT: &str = "等待麦克风恢复超时，本轮音频未提交转写。";
+pub(crate) const STOP_TIMEOUT: &str = "等待麦克风停止超时，本轮音频未提交转写。";
+const CANCELLED: &str = "本轮音频操作已取消。";
+
+#[derive(Default)]
+pub(crate) struct Lane {
+    reserved: Arc<AtomicBool>,
+    #[cfg(debug_assertions)]
+    pub(crate) fixture: Option<devices::fixture::Backend>,
+}
+
+struct Reservation(Arc<AtomicBool>);
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+impl Lane {
+    pub fn busy(&self) -> bool {
+        self.reserved.load(Ordering::Acquire)
+    }
+
+    pub(super) fn spawn(&self, run: impl FnOnce() + Send + 'static) -> Result<(), String> {
+        if self.reserved.swap(true, Ordering::AcqRel) {
+            return Err(AUDIO_BUSY.into());
+        }
+        let reservation = Reservation(self.reserved.clone());
+        #[cfg(debug_assertions)]
+        let fixture = self.fixture.clone();
+        std::thread::Builder::new()
+            .name("voiceport-audio".into())
+            .spawn(move || {
+                let _reservation = reservation;
+                #[cfg(debug_assertions)]
+                devices::fixture::set_current(fixture);
+                objc2::rc::autoreleasepool(|_| run());
+            })
+            .map(|_| ()) // Dropping the handle never joins the native thread.
+            .map_err(|_| "无法启动音频线程，请重试。".into())
+    }
+
+    pub fn inventory(&self) -> Result<Inventory, String> {
+        let (tx, result) = mpsc::sync_channel(1);
+        self.spawn(move || {
+            let _ = tx.send(devices::inputs());
+        })?;
+        Ok(Inventory {
+            result,
+            deadline: Instant::now() + WAIT,
+        })
+    }
+}
+
+pub(crate) struct Inventory {
+    result: Receiver<Result<Vec<devices::Device>, String>>,
+    deadline: Instant,
+}
+
+impl Inventory {
+    pub fn poll(&self) -> Option<Result<Vec<devices::Device>, String>> {
+        if Instant::now() >= self.deadline {
+            return Some(Err("等待读取系统音频设备超时。".into()));
+        }
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err("音频设备读取已结束。".into())),
+        }
+    }
+}
+
+pub(crate) struct Start {
+    pub generation: u64,
+    pub events: EventSender,
+    pub speech: bool,
+    pub language: String,
+    pub preferred_uid: Option<String>,
+    pub local: Option<local_audio::Input>,
+}
+
+pub(crate) enum Reply {
+    Prepared,
+    Started {
+        preview: bool,
+        lease: Arc<Recording>,
+        route: String,
+    },
+    Recovering,
+    Route(String),
+    Stopped {
+        result: Result<(), String>,
+        diagnostics: Option<super::CaptureDiagnostics>,
+    },
+    Failed(String),
+}
+
+enum Command {
+    Commit,
+    Stop,
+}
+
+// Stop immediately closes tap admission while preserving the admitted audio
+// for finalization. Cancel closes it without producing a usable recording.
+#[derive(Clone, Default)]
+pub(super) struct Activity(Arc<AtomicU8>);
+impl Activity {
+    const ACCEPTING: u8 = 0;
+    const STOPPING: u8 = 1;
+    const CANCELLED: u8 = 2;
+
+    pub fn accepting(&self) -> bool {
+        self.0.load(Ordering::Acquire) == Self::ACCEPTING
+    }
+
+    fn stopping(&self) -> bool {
+        self.0.load(Ordering::Acquire) == Self::STOPPING
+    }
+
+    fn cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire) == Self::CANCELLED
+    }
+}
+
+pub(crate) struct Capture {
+    pub generation: u64,
+    pub deadline: Instant,
+    pub replies: Receiver<Reply>,
+    commands: SyncSender<Command>,
+    activity: Activity,
+    // Only validated Stop acceptance can transfer this path out of the capture.
+    pending_recording: Arc<Mutex<Option<Arc<Recording>>>>,
+    checking: Arc<AtomicU64>,
+    level: Arc<AtomicU8>,
+}
+
+impl Capture {
+    pub fn begin(lane: &Lane, start: Start) -> Result<Self, String> {
+        let (commands, command_rx) = mpsc::sync_channel(1);
+        let (reply_tx, replies) = mpsc::channel();
+        let activity = Activity::default();
+        let pending_recording = Arc::new(Mutex::new(None));
+        let checking = Arc::new(AtomicU64::new(0));
+        let level = Arc::new(AtomicU8::new(0));
+        let generation = start.generation;
+        let deadline = Instant::now() + WAIT;
+        let worker = Worker {
+            commands: command_rx,
+            replies: reply_tx,
+            activity: activity.clone(),
+            checking: checking.clone(),
+            level: level.clone(),
+        };
+        let worker_recording = pending_recording.clone();
+        lane.spawn(move || {
+            let result = worker.run(start, deadline, &worker_recording);
+            if let Err(error) = result
+                && !worker.activity.cancelled()
+            {
+                let _ = worker.replies.send(Reply::Failed(error));
+            }
+        })?;
+        Ok(Self {
+            generation,
+            deadline,
+            replies,
+            commands,
+            activity,
+            pending_recording,
+            checking,
+            level,
+        })
+    }
+
+    pub fn commit(&self) -> Result<(), String> {
+        self.commands
+            .try_send(Command::Commit)
+            .map_err(|_| "麦克风准备已结束，请重新开始。".into())
+    }
+
+    pub fn stop(&self) -> Result<(), String> {
+        self.activity
+            .0
+            .compare_exchange(
+                Activity::ACCEPTING,
+                Activity::STOPPING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|_| CANCELLED.to_owned())?;
+        self.commands
+            .try_send(Command::Stop)
+            .map_err(|_| "录音线程已结束，请重新开始。".into())
+    }
+
+    pub fn take_finalized(&self) -> Result<Arc<Recording>, String> {
+        self.pending_recording
+            .lock()
+            .expect("capture recording custody")
+            .take()
+            .ok_or_else(|| "录音已不可用。".into())
+    }
+
+    pub fn checking(&self) -> Option<u64> {
+        let check = self.checking.load(Ordering::Acquire);
+        (check % 2 == 1).then_some(check)
+    }
+
+    pub fn level(&self) -> Option<u8> {
+        self.level.load(Ordering::Relaxed).checked_sub(1)
+    }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        self.activity
+            .0
+            .store(Activity::CANCELLED, Ordering::Release);
+        let recording = self
+            .pending_recording
+            .lock()
+            .expect("capture recording custody")
+            .take();
+        if let Some(recording) = recording
+            && let Err(error) = recording.discard_unfinished()
+        {
+            eprintln!("无法撤销未完成的录音缓存：{error}");
+        }
+    }
+}
+
+struct Worker {
+    commands: Receiver<Command>,
+    replies: mpsc::Sender<Reply>,
+    activity: Activity,
+    checking: Arc<AtomicU64>,
+    level: Arc<AtomicU8>,
+}
+
+impl Worker {
+    fn check(&self, deadline: Instant) -> Result<(), String> {
+        if !self.activity.accepting() {
+            Err(CANCELLED.into())
+        } else if Instant::now() >= deadline {
+            Err(START_TIMEOUT.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn run(
+        &self,
+        start: Start,
+        deadline: Instant,
+        pending_recording: &Mutex<Option<Arc<Recording>>>,
+    ) -> Result<(), String> {
+        let push = |reply| self.replies.send(reply).map_err(|_| CANCELLED.to_owned());
+        let check = || self.check(deadline);
+        check()?;
+        let timer = super::StageTimer::start(Instant::now);
+        let (route, input) = objc2::rc::autoreleasepool(|_| {
+            Recorder::prepare_input(start.preferred_uid.as_deref(), &check)
+        })?;
+        let commit = || {
+            push(Reply::Prepared)?;
+            match self
+                .commands
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                Ok(Command::Commit) => check(),
+                Err(RecvTimeoutError::Timeout) => Err(START_TIMEOUT.into()),
+                _ => Err(CANCELLED.into()),
+            }
+        };
+        let preferred_uid = start.preferred_uid.clone();
+        let mut recorder = Recorder::new();
+        let preview = objc2::rc::autoreleasepool(|_| {
+            recorder.start_prepared(
+                super::PreparedCapture {
+                    route,
+                    input,
+                    started: timer,
+                },
+                start,
+                self.activity.clone(),
+                &check,
+                commit,
+                || {
+                    let store = super::capture_storage().map_err(|error| error.to_string())?;
+                    // The slot covers only local cache creation and registration.
+                    // Quit can wait for those syscalls without waiting for AVFoundation.
+                    let mut pending = pending_recording.lock().expect("capture recording custody");
+                    check()?;
+                    let recording = Arc::new(store.create_recording().map_err(|e| e.to_string())?);
+                    *pending = Some(recording.clone());
+                    Ok(recording)
+                },
+            )
+        })?;
+        push(Reply::Started {
+            preview,
+            lease: recorder.lease().expect("started recorder owns its lease"),
+            route: recorder.route().unwrap().summary(),
+        })?;
+        loop {
+            match self.commands.recv_timeout(AUDIO_POLL) {
+                Ok(Command::Stop) if !self.activity.cancelled() => {
+                    let result =
+                        objc2::rc::autoreleasepool(|_| recorder.stop_native_capture()).map(|_| ());
+                    let diagnostics = recorder.capture_diagnostics();
+                    drop(recorder);
+                    if self.activity.cancelled() {
+                        return Ok(());
+                    }
+                    return push(Reply::Stopped {
+                        result,
+                        diagnostics,
+                    });
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                _ => return Ok(()),
+            }
+            if self.activity.cancelled() {
+                return Ok(());
+            }
+            if self.activity.stopping() {
+                continue;
+            }
+            self.checking.fetch_add(1, Ordering::Release);
+            let deadline = Instant::now() + WAIT;
+            let recover = || {
+                if self.activity.cancelled() {
+                    Err(CANCELLED.into())
+                } else if self.activity.stopping() {
+                    Err("麦克风在结束录音前已断开；未转写本轮音频，请重新开始。".into())
+                } else if Instant::now() >= deadline {
+                    Err(RECOVERY_TIMEOUT.into())
+                } else {
+                    Ok(())
+                }
+            };
+            let recovered = objc2::rc::autoreleasepool(|_| {
+                recorder.recover_input(preferred_uid.as_deref(), &recover, || {
+                    push(Reply::Recovering)
+                })
+            });
+            let recovered = recovered?;
+            if Instant::now() >= deadline && !self.activity.stopping() {
+                return Err(RECOVERY_TIMEOUT.into());
+            }
+            if recovered {
+                // This Activity belongs to the same capture generation as the
+                // tap. Stop/cancel that won during recovery cannot finalize it.
+                recover()?;
+                push(Reply::Route(recorder.route().unwrap().summary()))?;
+            }
+            self.checking.fetch_add(1, Ordering::Release);
+            self.level.store(
+                recorder.live_level().map_or(0, |n| n + 1),
+                Ordering::Relaxed,
+            );
+        }
+    }
+}

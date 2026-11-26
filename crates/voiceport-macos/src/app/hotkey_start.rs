@@ -73,6 +73,10 @@ impl Delegate {
     }
 
     fn active_shortcut_stroke(&self) -> Option<Stroke> {
+        #[cfg(debug_assertions)]
+        if let Some(stroke) = self.ivars().audio_fixture_stroke.get() {
+            return stroke;
+        }
         self.ivars()
             .hotkey
             .borrow()
@@ -189,7 +193,7 @@ impl Delegate {
         let mut start = false;
         let mut automatic = false;
         self.with_controller(|c| {
-            if c.state.phase == Phase::Recording {
+            if c.state.phase == Phase::Recording || c.opening_microphone() {
                 if !held_mode {
                     c.stop();
                 }

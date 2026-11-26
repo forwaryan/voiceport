@@ -58,7 +58,10 @@ pub use app::isolated_shortcut_regression;
 pub use app::run;
 #[cfg(all(target_os = "macos", debug_assertions))]
 #[doc(hidden)]
-pub use app::{isolated_control_regression, isolated_file_transcription_regression};
+pub use app::{
+    isolated_audio_start_regression, isolated_control_regression,
+    isolated_file_transcription_regression,
+};
 #[cfg(target_os = "macos")]
 pub mod audio;
 #[cfg(target_os = "macos")]
