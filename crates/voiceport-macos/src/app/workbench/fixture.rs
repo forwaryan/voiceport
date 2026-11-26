@@ -2,6 +2,13 @@
 use super::*;
 
 pub(in crate::app) fn isolated_regression(mtm: MainThreadMarker) {
+    if std::env::var("VOICEPORT_SHELL_ACCEPTANCE").as_deref() == Ok("isolated-gui")
+        && objc2_foundation::NSBundle::mainBundle().bundleIdentifier().as_deref()
+            == Some(objc2_foundation::ns_string!("org.voiceport.workbench-focus-fixture"))
+    {
+        accept_shell_gui::run(mtm);
+        return;
+    }
     let _application = NSApplication::sharedApplication(mtm);
     for language in [Language::Chinese, Language::English] {
         let (window, workbench) = Workbench::build(mtm, language);
@@ -192,3 +199,6 @@ pub(in crate::app) fn isolated_regression(mtm: MainThreadMarker) {
         "workbench_native: native groups, bilingual names, selection, key loop, appearance and production window reuse passed offscreen"
     );
 }
+
+#[path = "accept_shell_gui.rs"]
+mod accept_shell_gui;
