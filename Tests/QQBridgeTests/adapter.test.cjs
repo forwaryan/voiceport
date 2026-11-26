@@ -328,22 +328,27 @@ test('timeout during encoding emits once and late encoder completion cannot open
   onlyRecord(f, { event: 'error', code: 'timeout' });
 });
 
-test('timeout on a live bridge destroys the actual socket without retries', async t => {
+test('timeout on a live bridge destroys the actual socket without retries', { timeout: 2000 }, async t => {
   const bridge = await bridgeFixture(t, socket => socket.write(line({ type: 'accepted' })));
+  // Advance the adapter deadline only after the real socket has received a request.
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
   const f = invocation(t, { timeoutMs: 30 });
   f.input.end(line(request(bridge.socketPath)));
-  await bridge.seen;
+  const received = await Promise.race([bridge.seen, f.done.then(() => null)]);
+  assert.ok(received, 'adapter finished before the bridge received its request');
+  t.mock.timers.tick(30);
   await f.done;
   onlyRecord(f, { event: 'error', code: 'timeout' });
   await bridge.disconnected;
   assert.equal(bridge.connections(), 1);
 });
 
-test('SIGTERM cancellation destroys the actual socket and emits exactly one error', async t => {
+test('SIGTERM cancellation destroys the actual socket and emits exactly one error', { timeout: 2000 }, async t => {
   const bridge = await bridgeFixture(t, socket => socket.write(line({ type: 'accepted' })));
   const f = invocation(t);
   f.input.end(line(request(bridge.socketPath)));
-  await bridge.seen;
+  const received = await Promise.race([bridge.seen, f.done.then(() => null)]);
+  assert.ok(received, 'adapter finished before the bridge received its request');
   f.processObject.emit('SIGTERM');
   await f.done;
   onlyRecord(f, { event: 'error', code: 'cancelled' });
