@@ -17,7 +17,22 @@ mod shortcut_recorder;
 use voiceport_macos::delivery;
 
 #[cfg(target_os = "macos")]
+#[path = "../fixtures/hosted_aqua_entry.rs"]
+mod hosted_aqua_entry;
+
+#[cfg(target_os = "macos")]
 fn main() {
+    if std::env::current_exe().is_ok_and(|path| path.file_name().is_some_and(|name| name == "voiceport-shell-fixture")) {
+        let args: Vec<_> = std::env::args().skip(1).collect();
+        let [mode, boot, aqua, launch @ ..] = args.as_slice() else { std::process::exit(78) };
+        if mode != "--hosted-shell" || std::env::var("VOICEPORT_SHELL_ACCEPTANCE").as_deref() != Ok("isolated-gui") {
+            std::process::exit(78);
+        }
+        hosted_aqua_entry::enter(boot, aqua, launch, "org.voiceport.workbench-focus-fixture", 100);
+        let mtm = objc2::MainThreadMarker::new().expect("fixture on the OS main thread");
+        objc2::rc::autoreleasepool(|_| voiceport_macos::isolated_shortcut_regression(mtm));
+        return;
+    }
     use shortcut::{COMMAND, CONTROL, OPTION, SHIFT, Shortcut};
     use std::sync::mpsc;
     let mtm = objc2::MainThreadMarker::new().expect("requires the OS main thread");

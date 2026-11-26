@@ -393,6 +393,10 @@ impl Delegate {
     ) -> Retained<NSAlert> {
         // A choice saved without an alert keeps the quick panel and its focus path.
         self.close_quick_panel();
+        #[cfg(debug_assertions)]
+        if super::menu_accept_fixture::observing_sources() {
+            super::menu_source_accept::record_closed_before_alert(self);
+        }
         let alert = NSAlert::new(self.mtm());
         alert.setMessageText(&NSString::from_str(title));
         alert.setInformativeText(&NSString::from_str(detail));

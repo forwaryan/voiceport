@@ -13,6 +13,24 @@ use objc2_foundation::{
 };
 use std::cell::{Cell, OnceCell, RefCell};
 mod control;
+
+#[cfg(debug_assertions)]
+fn hosted_focus_observation(owner: &Delegate, phase: &str, app: &NSApplication, window: Option<&NSWindow>) {
+    let notices = owner.ivars().hosted_window_notifications.get();
+    eprintln!("hosted-lifecycle {phase} running={} launched={} activated={} target_became_key={}",
+        app.isRunning(), notices & 1 != 0, notices & 2 != 0, notices & 4 != 0);
+    let frontmost = NSWorkspace::sharedWorkspace().frontmostApplication()
+        .is_some_and(|candidate| candidate.processIdentifier() as u32 == std::process::id());
+    if let Some(window) = window {
+        let key = app.keyWindow();
+        eprintln!("hosted-focus {phase} active={} frontmost={} visible={} can_key={} is_key={} key_present={} owned_key={}",
+            app.isActive(), frontmost, window.isVisible(), window.canBecomeKeyWindow(),
+            window.isKeyWindow(), key.is_some(), key.as_deref() == Some(window));
+    } else {
+        eprintln!("hosted-focus {phase} accessory={} active={} frontmost={}",
+            app.activationPolicy() == NSApplicationActivationPolicy::Accessory, app.isActive(), frontmost);
+    }
+}
 #[cfg(debug_assertions)]
 pub use control::{
     isolated_audio_start_regression, isolated_control_regression, isolated_performance_baseline,
@@ -25,6 +43,10 @@ mod file_transcription;
 pub use file_transcription::isolated_file_transcription_regression;
 mod first_run;
 mod hotkey_start;
+#[cfg(debug_assertions)]
+mod menu_accept_fixture;
+#[cfg(debug_assertions)]
+mod menu_source_accept;
 mod menu_surface;
 #[doc(hidden)]
 pub use first_run::first_run_field_fixture;
@@ -177,6 +199,12 @@ enum StatusAppearance {
 }
 #[derive(Default)]
 struct Ivars {
+    #[cfg(debug_assertions)]
+    hosted_window_run: RefCell<Option<Box<dyn FnOnce(&Delegate, &NSApplication) -> i32>>>,
+    #[cfg(debug_assertions)]
+    hosted_window_exit: Cell<Option<i32>>,
+    #[cfg(debug_assertions)]
+    hosted_window_notifications: Cell<u8>,
     controller: RefCell<Option<Controller>>,
     control: RefCell<control::Control>,
     status: OnceCell<Retained<NSStatusItem>>,
@@ -272,6 +300,14 @@ define_class!(
     unsafe impl NSApplicationDelegate for Delegate {
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn launched(&self, _notification: &NSNotification) {
+            #[cfg(debug_assertions)]
+            if self.ivars().hosted_window_run.borrow().is_some() {
+                // Start after AppKit has returned from its launch notification.
+                unsafe { NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                    0.001, self, sel!(hostedWindowProbe:), None, false,
+                ) };
+                return;
+            }
             self.build_menu();
             if self.ivars().show_window_on_launch.get() {
                 self.show_window();
@@ -390,7 +426,11 @@ define_class!(
             self.with_controller(|c| { c.message = copy_feedback(&c.transcript, Delivery::copy).into(); }); self.refresh();
         }
         #[unsafe(method(showQuickPanel:))]
-        fn quick_panel_action(&self, _sender: Option<&AnyObject>) { self.toggle_quick_panel(); }
+        fn quick_panel_action(&self, _sender: Option<&AnyObject>) {
+            #[cfg(debug_assertions)]
+            let _fixture_action = menu_accept_fixture::before_status_action();
+            self.toggle_quick_panel();
+        }
         #[unsafe(method(selectQuickSource:))]
         fn quick_source_action(&self, sender: &NSButton) { self.select_quick_source(sender); }
         #[unsafe(method(resolveQuickSource:))]
@@ -529,6 +569,24 @@ define_class!(
         fn refresh_voiceport_action(&self, _sender: Option<&AnyObject>) { self.start_update_check(true); }
         #[unsafe(method(toggleAutoUpdate:))]
         fn toggle_auto_update_action(&self, _sender: Option<&AnyObject>) { self.toggle_auto_update(); }
+        #[cfg(debug_assertions)]
+        #[unsafe(method(hostedWindowProbe:))]
+        fn hosted_window_probe(&self, _sender: Option<&AnyObject>) {
+            let Some(run) = self.ivars().hosted_window_run.borrow_mut().take() else { return };
+            let app = NSApplication::sharedApplication(self.mtm());
+            let code = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                assert!(app.isRunning());
+                run(self, &app)
+            })).unwrap_or(1);
+            self.ivars().hosted_window_exit.set(Some(code));
+            app.stop(None);
+            // Wake this application's event loop so stop: takes effect outside the timer.
+            let wake = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+                NSEventType::ApplicationDefined, NSPoint::ZERO, NSEventModifierFlags::empty(),
+                0., 0, None, 0, 0, 0,
+            ).unwrap();
+            app.postEvent_atStart(&wake, true);
+        }
         #[unsafe(method(tick:))]
         fn tick(&self, _sender: Option<&AnyObject>) {
             self.poll_shortcut();
@@ -563,6 +621,8 @@ define_class!(
             }
             self.refresh();
             self.refresh_file_page();
+            #[cfg(debug_assertions)]
+            menu_accept_fixture::observe_hidden(self);
             let probes = self.ivars().source_probe_panel.borrow().clone();
             if let Some(probes) = probes { probes.refresh(); }
             let sources = self.ivars().source_manager.borrow().clone();
@@ -1345,8 +1405,98 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(w, h))
 }
 
+#[cfg(debug_assertions)]
+fn pump_hosted_window(app: &NSApplication, seconds: f64) {
+    use objc2_foundation::{NSDate, NSDefaultRunLoopMode};
+    let deadline = NSDate::dateWithTimeIntervalSinceNow(seconds);
+    // The two startup modes use the same AppKit event dispatch during each
+    // fixture wait, including the one-shot probe already inside NSApp.run.
+    if let Some(event) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
+        NSEventMask::Any, Some(&deadline), unsafe { NSDefaultRunLoopMode }, true,
+    ) {
+        app.sendEvent(&event);
+    }
+}
+
+#[cfg(debug_assertions)]
+fn run_hosted_window(
+    owner: &Retained<Delegate>,
+    app: &NSApplication,
+    run: impl FnOnce(&Delegate, &NSApplication) -> i32 + 'static,
+) -> i32 {
+    use objc2_foundation::NSNotificationCenter;
+    use std::ptr::NonNull;
+
+    let center = NSNotificationCenter::defaultCenter();
+    let launch = unsafe { NSApplicationDidFinishLaunchingNotification };
+    let active = unsafe { NSApplicationDidBecomeActiveNotification };
+    let key = unsafe { NSWindowDidBecomeKeyNotification };
+    let observers = [(launch, 1), (active, 2), (key, 4)].map(|(name, bit)| {
+        let target = owner.clone();
+        let observe = block2::RcBlock::new(move |note: NonNull<NSNotification>| {
+            if bit == 4 {
+                let window = target.ivars().window.get().map(|window| &***window as &AnyObject);
+                let object = unsafe { note.as_ref().object() };
+                if !window.zip(object.as_deref()).is_some_and(|(window, object)| std::ptr::eq(window, object)) {
+                    return;
+                }
+            }
+            let notices = &target.ivars().hosted_window_notifications;
+            notices.set(notices.get() | bit);
+        });
+        let delivered_by = (bit != 4).then_some(app as &AnyObject);
+        unsafe { center.addObserverForName_object_queue_usingBlock(Some(name), delivered_by, None, &observe) }
+    });
+    let code = match std::env::var("VOICEPORT_HOSTED_WINDOW_LOOP").as_deref() {
+        Ok("app-run") => {
+            owner.ivars().hosted_window_run.replace(Some(Box::new(run)));
+            run_with_delegate(app, owner, || {});
+            app.setDelegate(None);
+            owner.ivars().hosted_window_exit.get().unwrap_or(1)
+        }
+        Ok("manual") | Err(std::env::VarError::NotPresent) => {
+            app.finishLaunching();
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(owner, app))).unwrap_or(1)
+        }
+        _ => 1,
+    };
+    for observer in observers {
+        unsafe { center.removeObserver((*observer).as_ref()) };
+    }
+    owner.close_file_sheet();
+    owner.close_quick_panel();
+    if let Some(status) = owner.ivars().status.get() {
+        NSStatusBar::systemStatusBar().removeStatusItem(status);
+    }
+    if let Some(window) = owner.ivars().window.get() {
+        window.close();
+        assert!(!window.isVisible() && !window.isKeyWindow() && window.attachedSheet().is_none());
+    }
+    owner.ivars().controller.replace(None);
+    owner.ivars().control.borrow_mut().server.take();
+    code
+}
+
+fn run_with_delegate(app: &NSApplication, delegate: &Delegate, initialize: impl FnOnce()) {
+    app.setDelegate(Some(ProtocolObject::from_ref(delegate)));
+    initialize();
+    app.run();
+    if let Some(timer) = delegate.ivars().timer.get() {
+        timer.invalidate();
+    }
+}
+
 pub fn run() {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
+    #[cfg(debug_assertions)]
+    if std::env::current_exe().is_ok_and(|path| path.file_name().is_some_and(|name| name == "voiceport-menu-fixture")) {
+        let [flag, directory, scene, boot, aqua, launch @ ..] = arguments.as_slice() else { std::process::exit(78) };
+        if flag != "--private-menu-accept" {
+            std::process::exit(78);
+        }
+        menu_accept_fixture::run(directory, scene, boot, aqua, launch);
+        return;
+    }
     if let Some((mode, args)) = arguments.split_first()
         && mode == "--apply-staged-update"
     {
@@ -1443,10 +1593,5 @@ pub fn run() {
         }
         std::process::exit(1);
     }
-    app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-    delegate.initialize();
-    app.run();
-    if let Some(timer) = delegate.ivars().timer.get() {
-        timer.invalidate();
-    }
+    run_with_delegate(&app, &delegate, || delegate.initialize());
 }

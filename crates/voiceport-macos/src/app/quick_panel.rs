@@ -362,14 +362,21 @@ impl Delegate {
             return;
         };
         let app = NSApplication::sharedApplication(self.mtm());
-        if let Some(event) = app.currentEvent()
+        let current_event = app.currentEvent();
+        #[cfg(debug_assertions)]
+        super::menu_accept_fixture::trace_route(current_event.as_deref());
+        if let Some(event) = current_event
             && event.r#type() == NSEventType::RightMouseUp
             && let Some(menu) = self.ivars().context_menu.get()
         {
             self.close_quick_panel();
             self.ivars().context_menu_visible.set(true);
             self.prepare_context_menu();
+            #[cfg(debug_assertions)]
+            super::menu_accept_fixture::trace_status("popup_enter", "none");
             NSMenu::popUpContextMenu_withEvent_forView(menu, &event, &button);
+            #[cfg(debug_assertions)]
+            super::menu_accept_fixture::trace_status("popup_return", "none");
             self.ivars().context_menu_visible.set(false);
             return;
         }
@@ -411,6 +418,8 @@ impl Delegate {
         if !panel.popover.isShown() {
             self.prepare_quick_panel(panel);
             panel.scroll_to_top();
+            #[cfg(debug_assertions)]
+            super::menu_accept_fixture::trace_status("activation_request", "none");
             #[allow(deprecated)]
             NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
             panel.popover.showRelativeToRect_ofView_preferredEdge(
@@ -429,6 +438,10 @@ impl Delegate {
                 panel.relink_key_views();
                 window.makeFirstResponder(Some(&window));
                 panel.scroll_to_top();
+            }
+            #[cfg(debug_assertions)]
+            if super::menu_accept_fixture::is_active() {
+                super::menu_accept_fixture::trace_surface(&NSApplication::sharedApplication(self.mtm()), &panel.popover);
             }
         }
     }
@@ -723,6 +736,16 @@ impl Delegate {
 }
 
 impl QuickPanel {
+    #[cfg(debug_assertions)]
+    pub(super) fn fixture_source_state(&self, app: &NSApplication) -> Option<(isize, bool, bool)> {
+        let window = self.disclosure.window().filter(|window| self.is_shown() && window.isVisible())?;
+        let focused = app.isActive() && window.isKeyWindow()
+            && app.keyWindow().as_deref() == Some(&*window)
+            && window.firstResponder().as_deref() == Some(&****self.disclosure)
+            && self.disclosure.isEnabled() && !self.disclosure.isHiddenOrHasHiddenAncestor();
+        Some((window.windowNumber(), self.expanded.get(), focused))
+    }
+
     pub(super) fn is_shown(&self) -> bool {
         self.popover.isShown()
     }
