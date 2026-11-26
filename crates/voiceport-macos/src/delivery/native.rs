@@ -146,7 +146,7 @@ pub(super) fn copy(text: &str) -> bool {
     unsafe { board.setString_forType(&NSString::from_str(text), NSPasteboardTypeString) }
 }
 
-fn frontmost() -> Result<(libc::pid_t, String), Failure> {
+fn frontmost_application() -> Result<Retained<NSRunningApplication>, Failure> {
     let app = NSWorkspace::sharedWorkspace()
         .frontmostApplication()
         .ok_or(Failure::Focus)?;
@@ -157,12 +157,18 @@ fn frontmost() -> Result<(libc::pid_t, String), Failure> {
     if pid <= 0 {
         return Err(Failure::Focus);
     }
-    Ok((
-        pid,
-        app.bundleIdentifier()
-            .map(|s| s.to_string())
-            .unwrap_or_default(),
-    ))
+    Ok(app)
+}
+
+fn bundle_identifier(app: &NSRunningApplication) -> String {
+    app.bundleIdentifier()
+        .map(|s| s.to_string())
+        .unwrap_or_default()
+}
+
+fn frontmost() -> Result<(libc::pid_t, String), Failure> {
+    let app = frontmost_application()?;
+    Ok((app.processIdentifier(), bundle_identifier(&app)))
 }
 
 fn attribute(element: CFTypeRef, name: &str) -> Result<OwnedCf, i32> {
@@ -554,6 +560,7 @@ fn normalize_composer_placeholder(mut snapshot: Snapshot, placeholder: &str) -> 
 pub(super) fn capture(
     expected: Option<&crate::delivery::model::ApplicationTarget>,
     stop_shortcut: Option<model::StopShortcut>,
+    original_application: Option<&mut Option<String>>,
 ) -> Result<Captured, Failure> {
     if !main_thread() {
         return Err(Failure::MainThread);
@@ -564,7 +571,9 @@ pub(super) fn capture(
     if secure_input() {
         return Err(Failure::SecureInput);
     }
-    let (pid, bundle) = frontmost()?;
+    let app = frontmost_application()?;
+    let pid = app.processIdentifier();
+    let bundle = bundle_identifier(&app);
     // Reject a changed shortcut target before any asynchronous preparation.
     if expected.is_some_and(|target| target.pid != pid || target.bundle != bundle) {
         return Err(Failure::FocusApplicationChanged);
@@ -572,6 +581,13 @@ pub(super) fn capture(
     // One monitor owns the session's immutable stop chord across capability
     // discovery, delayed focus and all clipboard fallback targets.
     let monitor = UserMonitor::start(stop_shortcut)?;
+    if let Some(original_application) = original_application {
+        *original_application = app
+            .localizedName()
+            .map(|name| name.to_string())
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| (!bundle.is_empty()).then(|| bundle.clone()));
+    }
     let element = match focused(pid) {
         Ok(element) => element,
         Err(failure) if wechat_window_fallback(&bundle, failure) => {

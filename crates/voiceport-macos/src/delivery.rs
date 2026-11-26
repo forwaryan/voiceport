@@ -97,8 +97,16 @@ impl Delivery {
         &mut self,
         target: Option<&crate::delivery::model::ApplicationTarget>,
     ) -> Result<(), String> {
+        self.begin_in_application_reporting(target, None)
+    }
+
+    pub(crate) fn begin_in_application_reporting(
+        &mut self,
+        target: Option<&model::ApplicationTarget>,
+        original_application: Option<&mut Option<String>>,
+    ) -> Result<(), String> {
         let shortcut = self.stop_shortcut;
-        self.begin_with_capture(|| native::capture(target, shortcut))
+        self.begin_with_capture(|| native::capture(target, shortcut, original_application))
     }
 
     /// Bind an owned fixture directly to the ordinary delivery path. The

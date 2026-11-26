@@ -110,8 +110,16 @@ impl Recorder {
     }
 
     /// Read-only status; never creates a recorder engine or requests access.
-    pub fn permission_status() -> (&'static str, &'static str) {
-        let microphone = match unsafe { AVMediaTypeAudio } {
+    fn microphone_permission_status() -> &'static str {
+        #[cfg(debug_assertions)]
+        if let Some(fixture) = devices::fixture::current() {
+            return if fixture.authorized() {
+                "authorized"
+            } else {
+                "denied"
+            };
+        }
+        match unsafe { AVMediaTypeAudio } {
             Some(media) => match unsafe { AVCaptureDevice::authorizationStatusForMediaType(media) }
             {
                 AVAuthorizationStatus::Authorized => "authorized",
@@ -121,7 +129,11 @@ impl Recorder {
                 _ => "unknown",
             },
             None => "unavailable",
-        };
+        }
+    }
+
+    pub fn permission_status() -> (&'static str, &'static str) {
+        let microphone = Self::microphone_permission_status();
         let speech = match unsafe { SFSpeechRecognizer::authorizationStatus() } {
             SFSpeechRecognizerAuthorizationStatus::Authorized => "authorized",
             SFSpeechRecognizerAuthorizationStatus::Denied => "denied",

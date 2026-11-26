@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "text_license": "CC0-1.0",
+  "text_origin": "Original synthetic benchmark utterances contributed with this fixture",
+  "synth": {
+    "engine": "eSpeak NG",
+    "version": "1.52.0",
+    "words_per_minute": 145,
+    "gap_ms": 100,
+    "pcm": "mono signed 16-bit little-endian WAV"
+  },
+  "samples": [
+    {
+      "id": "zh-schedule",
+      "group": "zh",
+      "asr_language": "zh",
+      "reference": "今天下午三点开会，请带上测试记录。",
+      "segments": [["cmn", "今天下午三点开会，请带上测试记录。"]]
+    },
+    {
+      "id": "zh-correction",
+      "group": "zh",
+      "asr_language": "zh",
+      "reference": "把周五的提醒改到周一，先保存草稿，再核对版本。",
+      "segments": [["cmn", "把周五的提醒改到周一，先保存草稿，再核对版本。"]]
+    },
+    {
+      "id": "mixed-build",
+      "group": "zh-en",
+      "asr_language": "",
+      "reference": "请用 Rust CLI 检查状态，然后打开 VoicePort。",
+      "segments": [["cmn", "请用"], ["en-us", "Rust CLI"], ["cmn", "检查状态，然后打开"], ["en-us", "VoicePort"]]
+    },
+    {
+      "id": "mixed-export",
+      "group": "zh-en",
+      "asr_language": "",
+      "reference": "把 JSON 文件放进 build 目录，确认 status 输出。",
+      "segments": [["cmn", "把"], ["en-us", "JSON"], ["cmn", "文件放进"], ["en-us", "build"], ["cmn", "目录，确认"], ["en-us", "status"], ["cmn", "输出"]]
+    }
+  ]
+}

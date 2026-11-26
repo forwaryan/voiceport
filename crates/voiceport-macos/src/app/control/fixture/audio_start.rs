@@ -5,9 +5,13 @@ use crate::{
     hotkey::{HotKeyEvent, KeyPress, Stroke},
     local_models::{CHATGPT, Catalog},
     shortcut::ShortcutMode,
+    status_overlay::{CaptureStage, Stage, Visibility},
     storage::{NAMESPACE, Storage},
 };
 use objc2_foundation::NSDate;
+
+mod performance;
+pub use performance::isolated_performance_baseline;
 
 pub(super) fn pump() {
     let end = NSDate::dateWithTimeIntervalSinceNow(0.012);
@@ -348,11 +352,32 @@ pub fn isolated_audio_start_regression(
         }))
         .unwrap();
     until(|| backend.counts().0 > first.0);
+    let mut visibility = Visibility::default();
+    let mut opening = None;
+    owner.with_controller(|c| {
+        let snapshot = c.overlay_snapshot();
+        assert_eq!(snapshot.stage, Some(Stage::Capture(CaptureStage::Opening)));
+        assert_eq!(visibility.observe(snapshot, true), snapshot.stage);
+        assert_eq!(c.audio_release_notice(), None);
+        opening = Some(snapshot);
+    });
     owner.ivars().audio_fixture_stroke.set(Some(None));
     edges.send(HotKeyEvent::Release(stroke)).unwrap();
     phase(&fixture, Phase::Idle);
+    owner.with_controller(|c| {
+        assert_eq!(visibility.observe(c.overlay_snapshot(), true), None);
+        assert_eq!(visibility.observe(opening.unwrap(), true), None);
+        assert!(c.audio_release_notice().is_some());
+    });
+    owner.toggle_action(sel!(toggle:), None);
+    assert_eq!(backend.counts().0, first.0 + 1);
     resume.send(true).unwrap();
     released(&fixture);
+    owner.with_controller(|c| {
+        assert_eq!(c.audio_release_notice(), None);
+        assert_eq!(c.overlay_snapshot().stage, None);
+        assert_eq!(c.transcript, "Previous result");
+    });
     assert_eq!(backend.counts(), (first.0 + 1, first.1, first.2, first.3));
     asr.assert_no_job();
     owner.ivars().shortcut_mode.set(ShortcutMode::Toggle);
@@ -393,6 +418,59 @@ pub fn isolated_audio_start_regression(
     released(&fixture);
     assert_eq!(backend.counts().2, first.2);
     asr.assert_no_job();
+
+    // Run the GUI start through recovery and stop, advancing the same overlay
+    // projection used by Delegate::refresh without opening a desktop window.
+    let mut stage = |expected| {
+        let mut snapshot = None;
+        until(|| {
+            owner.with_controller(|c| snapshot = Some(c.overlay_snapshot()));
+            snapshot.unwrap().stage == expected
+        });
+        let snapshot = snapshot.unwrap();
+        assert_eq!(visibility.observe(snapshot, true), expected);
+        snapshot.generation
+    };
+    let resume = backend.block_next_open();
+    owner.toggle_action(sel!(toggle:), None);
+    let generation = stage(Some(Stage::Capture(CaptureStage::Opening)));
+    resume.send(true).unwrap();
+    assert_eq!(
+        stage(Some(Stage::Capture(CaptureStage::Recording))),
+        generation
+    );
+    sampled(&fixture);
+    let resume = backend.block_next_open();
+    backend.set_default(2);
+    backend.disconnect(1);
+    assert_eq!(
+        stage(Some(Stage::Capture(CaptureStage::Recovering))),
+        generation
+    );
+    resume.send(true).unwrap();
+    assert_eq!(
+        stage(Some(Stage::Capture(CaptureStage::Resumed))),
+        generation
+    );
+    let (resume, entered) = backend.block_next_release();
+    owner.toggle_action(sel!(toggle:), None);
+    assert_eq!(
+        stage(Some(Stage::Capture(CaptureStage::Finalizing))),
+        generation
+    );
+    until(|| entered.try_recv().is_ok());
+    asr.assert_no_job();
+    resume.send(true).unwrap();
+    assert_eq!(stage(Some(Stage::Transcribing)), generation);
+    until(|| asr.complete(generation));
+    phase(&fixture, Phase::Ready);
+    assert_eq!(stage(None), generation);
+    released(&fixture);
+    backend.disconnect(0);
+    backend.set_default(1);
+    println!(
+        "audio-start GUI overlay: opening, recovery, finalization and transcribing share one generation"
+    );
 
     // Double-check the permission and device context after a delayed open.
     for permission_changes in [true, false] {

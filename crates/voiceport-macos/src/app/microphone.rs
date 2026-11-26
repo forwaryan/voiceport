@@ -1,8 +1,12 @@
-//! Native microphone settings. Inventory refresh only reads HAL; recording is
-//! exclusively owned by the controller after an explicit test-button action.
+//! The input-device page presents observations from the shared audio lane.
+//! Only an explicit level-test action can request audio capture here.
 use super::*;
-use crate::audio::{devices::Device, worker::Inventory};
-use objc2::Message;
+use objc2::rc::Weak;
+use objc2_app_kit::NSAutoresizingMaskOptions as Mask;
+use std::time::Instant;
+
+mod presentation;
+use presentation::{Activity, Catalog, Choice};
 
 pub(super) fn preference(defaults: &NSUserDefaults) -> Option<String> {
     defaults
@@ -26,39 +30,27 @@ pub(super) fn set_preference(c: &mut Controller, uid: Option<String>) {
     c.microphone_uid = uid;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum Choice {
-    System,
-    Device(Device),
-    Retained(String),
-}
-
-fn choices(result: &Result<Vec<Device>, String>, saved: Option<&str>) -> (Vec<Choice>, usize) {
-    let mut rows = vec![Choice::System];
-    if let Ok(inputs) = result {
-        rows.extend(inputs.iter().cloned().map(Choice::Device));
-    }
-    let position = saved.map_or(0, |uid| {
-        rows.iter()
-            .position(|choice| matches!(choice, Choice::Device(d) if d.uid == uid))
-            .unwrap_or_else(|| {
-                rows.push(Choice::Retained(uid.to_owned()));
-                rows.len() - 1
-            })
-    });
-    (rows, position)
+struct Controls {
+    root: Retained<NSView>,
+    selection: Retained<NSPopUpButton>,
+    refresh: Retained<NSButton>,
+    inventory: Retained<NSTextField>,
+    system: Retained<NSTextField>,
+    permission: Retained<NSTextField>,
+    activity: Retained<NSTextField>,
+    actual: Retained<NSTextField>,
+    test: Retained<NSButton>,
+    level: Retained<NSTextField>,
 }
 
 pub(super) struct State {
-    owner: Retained<Delegate>,
-    window: OnceCell<Retained<NSWindow>>,
-    selection: OnceCell<Retained<NSPopUpButton>>,
-    inventory_note: OnceCell<Retained<NSTextField>>,
-    actual: OnceCell<Retained<NSTextField>>,
-    level: OnceCell<Retained<NSTextField>>,
-    test: OnceCell<Retained<NSButton>>,
+    owner: Weak<Delegate>,
+    controls: OnceCell<Controls>,
+    was_visible: Cell<bool>,
+    catalog: RefCell<Catalog>,
     rows: RefCell<Vec<Choice>>,
-    query: RefCell<Option<Inventory>>,
+    test_id: RefCell<Option<String>>,
+    test_start_error: RefCell<Option<String>>,
 }
 
 define_class!(
@@ -67,47 +59,50 @@ define_class!(
     #[ivars = State]
     pub(super) struct Panel;
     unsafe impl NSObjectProtocol for Panel {}
-    unsafe impl NSWindowDelegate for Panel {
-        #[unsafe(method(windowWillClose:))]
-        fn will_close(&self, _notice: &NSNotification) {
-            let keep = self.retain();
-            keep.window().setDelegate(None);
-            let owner = &keep.ivars().owner;
-            owner.with_controller(|c| c.stop_microphone_test());
-            owner.ivars().microphone_panel.borrow_mut().take();
-        }
-    }
     impl Panel {
         #[unsafe(method(refreshMicrophones:))]
-        fn refresh_action(&self, _sender: Option<&AnyObject>) { self.inventory(); }
+        fn refresh_action(&self, _sender: Option<&AnyObject>) {
+            self.request_snapshot();
+        }
 
         #[unsafe(method(chooseMicrophone:))]
         fn choose_action(&self, _sender: Option<&AnyObject>) {
-            let owner = &self.ivars().owner;
-            let index = self.ivars().selection.get().unwrap().indexOfSelectedItem() as usize;
-            let rows = self.ivars().rows.borrow();
-            let uid = match rows.get(index) {
-                Some(Choice::System) => None,
-                Some(Choice::Device(device)) => Some(device.uid.clone()),
-                _ => return,
-            };
-            drop(rows);
-            let allowed = self.selection_allowed();
+            let index = self.controls().selection.indexOfSelectedItem() as usize;
+            let choice = self.ivars().rows.borrow().get(index).cloned();
+            let catalog = self.ivars().catalog.borrow();
+            let Some(owner) = self.ivars().owner.load() else { return };
+            let allowed = self.visible() && selection_allowed(&owner);
             owner.with_controller(|c| {
-                if !c.busy() && allowed {
-                    set_preference(c, uid);
+                if !allowed || c.busy() || c.audio_input_busy() {
+                    return;
+                }
+                match choice {
+                    Some(Choice::System) => set_preference(c, None),
+                    Some(Choice::Device(device)) if catalog.can_choose(&device.uid, Instant::now()) => {
+                        set_preference(c, Some(device.uid));
+                    }
+                    _ => {}
                 }
             });
-            self.inventory();
+            drop(catalog);
+            self.refresh();
         }
 
         #[unsafe(method(testMicrophoneLevel:))]
         fn test_action(&self, _sender: Option<&AnyObject>) {
-            let owner = &self.ivars().owner;
-            let allowed = self.selection_allowed();
+            let Some(owner) = self.ivars().owner.load() else { return };
+            let allowed = self.visible() && selection_allowed(&owner);
             owner.with_controller(|c| {
-                if c.microphone_test_running() { c.stop_microphone_test(); }
-                else if allowed { c.start_microphone_test(); }
+                if self.owns_running_test(c) {
+                    c.stop_microphone_test();
+                } else if allowed && !c.busy() && !c.audio_input_busy() {
+                    c.start_microphone_test();
+                    let id = c.microphone_test_id();
+                    self.ivars().test_id.replace(id.map(str::to_owned));
+                    self.ivars().test_start_error.replace(
+                        id.is_none().then(|| c.microphone_test_status().to_owned()),
+                    );
+                }
             });
             self.refresh();
         }
@@ -115,230 +110,233 @@ define_class!(
 );
 
 impl Panel {
-    fn window(&self) -> &NSWindow {
-        self.ivars().window.get().unwrap()
+    fn controls(&self) -> &Controls {
+        self.ivars().controls.get().unwrap()
     }
 
-    fn selection_allowed(&self) -> bool {
-        let owner = &self.ivars().owner;
-        !owner.settings_locked()
-            && !owner.ivars().quitting.get()
-            && owner.ivars().permission_rx.borrow().is_none()
-            && owner.ivars().pending_hotkey.borrow().is_none()
-            && !owner.ivars().control.borrow().preparing()
+    pub(super) fn view(&self) -> Retained<NSView> {
+        self.controls().root.clone()
     }
 
-    fn inventory(&self) {
-        if self.ivars().query.borrow().is_some() {
-            return;
-        }
-        let owner = &self.ivars().owner;
-        let query = owner
-            .ivars()
-            .controller
-            .borrow()
-            .as_ref()
-            .map(Controller::read_microphones);
-        match query {
-            Some(Ok(query)) => {
-                self.ivars().query.replace(Some(query));
-                self.ivars()
-                    .inventory_note
-                    .get()
-                    .unwrap()
-                    .setStringValue(ns_string!("正在读取输入设备…"));
+    pub(super) fn tab_views(&self) -> [&NSView; 3] {
+        let ui = self.controls();
+        [&ui.selection, &ui.refresh, &ui.test]
+    }
+
+    fn visible(&self) -> bool {
+        let root = &self.controls().root;
+        !root.isHiddenOrHasHiddenAncestor()
+            && root
+                .window()
+                .is_some_and(|w| w.isVisible() && !w.isMiniaturized())
+    }
+
+    fn stop_owned_test(&self, owner: &Delegate) {
+        owner.with_controller(|c| {
+            if self.owns_running_test(c) {
+                c.stop_microphone_test();
             }
-            Some(Err(error)) => self.show_inventory(Err(error)),
-            None => {}
-        }
+        });
+    }
+
+    fn owns_running_test(&self, c: &Controller) -> bool {
+        c.microphone_test_id()
+            .is_some_and(|running| Some(running) == self.ivars().test_id.borrow().as_deref())
+    }
+
+    fn request_snapshot(&self) {
+        self.ivars().catalog.borrow_mut().request();
         self.refresh();
     }
 
-    fn show_inventory(&self, result: Result<Vec<Device>, String>) {
-        let owner = &self.ivars().owner;
-        let uid = owner
-            .ivars()
-            .controller
-            .borrow()
-            .as_ref()
-            .and_then(|c| c.microphone_uid.clone());
-        let (rows, index) = choices(&result, uid.as_deref());
-        let select = self.ivars().selection.get().unwrap();
-        select.removeAllItems();
-        for row in &rows {
-            let title = match row {
-                Choice::System => "跟随系统输入（默认）".into(),
-                Choice::Device(device) => device.label(),
-                Choice::Retained(_) => "已指定设备 · 当前不可确认（保留偏好）".into(),
-            };
-            select.addItemWithTitle(&NSString::from_str(&title));
-        }
-        select.selectItemAtIndex(index as isize);
-        self.ivars().rows.replace(rows);
-        self.ivars()
-            .inventory_note
-            .get()
-            .unwrap()
-            .setStringValue(&NSString::from_str(match &result {
-                Ok(list) if list.is_empty() => "未发现可用输入。请检查连接后刷新设备。",
-                Ok(_) => "同名设备末尾的标识用于区分；临时回退不会更改偏好。",
-                Err(error) => error,
-            }));
-    }
-
     pub(super) fn refresh(&self) {
-        let result = self
-            .ivars()
-            .query
-            .borrow()
-            .as_ref()
-            .and_then(Inventory::poll);
-        if let Some(result) = result {
-            self.ivars().query.borrow_mut().take();
-            self.show_inventory(result);
+        let Some(owner) = self.ivars().owner.load() else {
+            return;
+        };
+        let visible = self.visible();
+        let was_visible = self.ivars().was_visible.replace(visible);
+        if !visible {
+            if was_visible {
+                self.ivars().catalog.borrow_mut().suspend();
+                self.stop_owned_test(&owner);
+            }
+            return;
         }
-        let owner = &self.ivars().owner;
+        let ui = self.controls();
         let slot = owner.ivars().controller.borrow();
         let Some(c) = slot.as_ref() else {
             return;
         };
-        let running = c.microphone_test_running();
-        let allowed = self.selection_allowed();
-        self.ivars()
-            .selection
-            .get()
-            .unwrap()
-            .setEnabled(!c.busy() && self.ivars().query.borrow().is_none() && allowed);
-        let test = self.ivars().test.get().unwrap();
-        test.setEnabled(running || (!c.busy() && !c.audio_input_busy() && allowed));
-        test.setTitle(if running {
+        let allowed = selection_allowed(&owner);
+        let mut catalog = self.ivars().catalog.borrow_mut();
+        if !was_visible {
+            catalog.request();
+        }
+        let can_read = allowed && c.state.phase != Phase::Permissions && !c.audio_input_busy();
+        catalog.poll(can_read, || c.input_device_snapshot());
+        let now = Instant::now();
+        let (choices, index) = catalog.choices(c.microphone_uid.as_deref(), now);
+        if *self.ivars().rows.borrow() != choices {
+            ui.selection.removeAllItems();
+            for row in &choices {
+                ui.selection
+                    .addItemWithTitle(&NSString::from_str(&row.label()));
+            }
+            self.ivars().rows.replace(choices);
+        }
+        if ui.selection.indexOfSelectedItem() != index as isize {
+            ui.selection.selectItemAtIndex(index as isize);
+        }
+
+        let available = allowed && !c.busy() && !c.audio_input_busy();
+        if ui.selection.isEnabled() != available {
+            ui.selection.setEnabled(available);
+        }
+        let can_request = !catalog.requested();
+        if ui.refresh.isEnabled() != can_request {
+            ui.refresh.setEnabled(can_request);
+        }
+        let owns_test = self.owns_running_test(c);
+        if ui.test.isEnabled() != (owns_test || available) {
+            ui.test.setEnabled(owns_test || available);
+        }
+        let title = if owns_test {
             ns_string!("停止测试")
         } else {
             ns_string!("测试电平 · 10 秒")
-        });
-        let actual = c.microphone_route().map_or_else(
-            || "本轮实际输入：尚无已确认打开的麦克风".into(),
-            |route| {
-                if c.state.phase == Phase::Recording {
-                    format!("本轮实际输入：{route}")
-                } else {
-                    format!("本轮录音使用：{route}")
-                }
-            },
-        );
-        let label = self.ivars().actual.get().unwrap();
-        label.setStringValue(&NSString::from_str(&actual));
-        label.setToolTip(Some(&NSString::from_str(&actual)));
-        let level = self.ivars().level.get().unwrap();
-        level.setStringValue(&NSString::from_str(c.microphone_test_status()));
-        level.setToolTip(Some(&NSString::from_str(c.microphone_test_status())));
+        };
+        if &*ui.test.title() != title {
+            ui.test.setTitle(title);
+        }
+
+        let route = c.microphone_route();
+        let activity = Activity::read(c, catalog.reading(), route.is_some());
+        set_label(&ui.inventory, &catalog.note(now));
+        set_label(&ui.system, &catalog.system(now));
+        set_label(&ui.permission, &catalog.permission(now));
+        set_label(&ui.activity, activity.label());
+        set_label(&ui.actual, &activity.actual(route.as_deref()));
+        let test_id = self.ivars().test_id.borrow();
+        let start_error = self.ivars().test_start_error.borrow();
+        let level = if owns_test && c.microphone_test_display_is_stale(now) {
+            "电平读数已过期，等待输入设备响应…"
+        } else {
+            c.microphone_test_detail(test_id.as_deref())
+                .or(start_error.as_deref())
+                .unwrap_or("只测量峰值，不保存音频或转写。")
+        };
+        set_label(&ui.level, level);
     }
 
     pub(super) fn close(&self) {
-        self.window().close();
+        if let Some(owner) = self.ivars().owner.load() {
+            self.stop_owned_test(&owner);
+        }
     }
 }
 
-pub(super) fn show(owner: &Delegate) {
-    if let Some(panel) = owner.ivars().microphone_panel.borrow().as_ref() {
-        panel.inventory();
-        panel.window().makeKeyAndOrderFront(None);
-        return;
+fn selection_allowed(owner: &Delegate) -> bool {
+    !owner.settings_locked()
+        && !owner.ivars().quitting.get()
+        && owner.ivars().permission_rx.borrow().is_none()
+        && owner.ivars().pending_hotkey.borrow().is_none()
+        && !owner.ivars().control.borrow().preparing()
+}
+
+fn set_label(control: &NSTextField, value: &str) {
+    if control.stringValue().to_string() != value {
+        let value = NSString::from_str(value);
+        control.setStringValue(&value);
+        control.setToolTip(Some(&value));
     }
+}
+
+pub(super) fn build(owner: &Delegate, frame: NSRect) -> Retained<Panel> {
     let mtm = owner.mtm();
     let panel = Panel::alloc(mtm).set_ivars(State {
-        owner: owner.retain(),
-        window: OnceCell::new(),
-        selection: OnceCell::new(),
-        inventory_note: OnceCell::new(),
-        actual: OnceCell::new(),
-        level: OnceCell::new(),
-        test: OnceCell::new(),
+        owner: Weak::new(owner),
+        controls: OnceCell::new(),
+        was_visible: Cell::new(false),
+        catalog: RefCell::default(),
         rows: RefCell::default(),
-        query: RefCell::default(),
+        test_id: RefCell::default(),
+        test_start_error: RefCell::default(),
     });
     let panel: Retained<Panel> = unsafe { msg_send![super(panel), init] };
-    let window = unsafe {
-        NSWindow::initWithContentRect_styleMask_backing_defer(
-            NSWindow::alloc(mtm),
-            rect(0., 0., 500., 241.),
-            NSWindowStyleMask::Titled | NSWindowStyleMask::Closable,
-            NSBackingStoreType::Buffered,
-            false,
-        )
-    };
-    unsafe { window.setReleasedWhenClosed(false) };
-    window.setTitle(ns_string!("麦克风设置"));
-    window.setDelegate(Some(ProtocolObject::from_ref(&*panel)));
-    let view = window.contentView().unwrap();
-    owner.label(&view, "听写使用的麦克风", rect(24., 202., 452., 24.), 15.);
+    let root = NSView::initWithFrame(NSView::alloc(mtm), frame);
+    root.setAutoresizingMask(Mask::ViewWidthSizable | Mask::ViewHeightSizable);
+    let top = frame.size.height - 358.;
+    let width = frame.size.width;
+    let wide = Mask::ViewMinYMargin | Mask::ViewWidthSizable;
+    let heading = owner.label(
+        &root,
+        "听写输入偏好",
+        rect(24., top + 316., width - 48., 24.),
+        15.,
+    );
+    heading.setAutoresizingMask(wide);
     let selection = owner.popup(
-        &view,
+        &root,
         &[],
         sel!(chooseMicrophone:),
-        rect(22., 161., 336., 30.),
+        rect(22., top + 278., width - 166., 30.),
     );
+    selection.setAutoresizingMask(wide);
     selection.setAccessibilityLabel(Some(ns_string!("听写麦克风偏好")));
     selection.setAccessibilityIdentifier(Some(ns_string!("voiceport.microphone.preference")));
     let refresh = owner.button(
-        &view,
+        &root,
         "刷新设备",
         sel!(refreshMicrophones:),
-        365.,
-        161.,
+        width - 136.,
+        top + 278.,
         112.,
     );
-    unsafe {
-        selection.setTarget(Some(&*panel));
-        refresh.setTarget(Some(&*panel));
-    }
-    let inventory_note = owner.caption(&view, "", rect(24., 135., 452., 22.));
-    let actual = owner.label(&view, "", rect(24., 101., 452., 28.), 12.);
-    actual.setAccessibilityIdentifier(Some(ns_string!("voiceport.microphone.actual-route")));
+    refresh.setAutoresizingMask(Mask::ViewMinYMargin | Mask::ViewMinXMargin);
+    let inventory = owner.caption(&root, "", rect(24., top + 242., width - 48., 32.));
+    inventory.setAutoresizingMask(wide);
+    let status = |y, id: &NSString| {
+        let label = owner.label(&root, "", rect(24., top + y, width - 48., 31.), 12.);
+        label.setAutoresizingMask(wide);
+        label.setAccessibilityIdentifier(Some(id));
+        label.setMaximumNumberOfLines(2);
+        label
+    };
+    let system = status(208., ns_string!("voiceport.microphone.system-input"));
+    let permission = status(175., ns_string!("voiceport.microphone.permission"));
+    let activity = status(142., ns_string!("voiceport.microphone.activity"));
+    let actual = status(109., ns_string!("voiceport.microphone.actual-route"));
     let test = owner.button(
-        &view,
+        &root,
         "测试电平 · 10 秒",
         sel!(testMicrophoneLevel:),
         20.,
-        64.,
+        top + 67.,
         152.,
     );
+    test.setAutoresizingMask(Mask::ViewMinYMargin);
     test.setAccessibilityIdentifier(Some(ns_string!("voiceport.microphone.test")));
+    let level = status(27., ns_string!("voiceport.microphone.level"));
     unsafe {
+        selection.setTarget(Some(&*panel));
+        refresh.setTarget(Some(&*panel));
         test.setTarget(Some(&*panel));
     }
-    owner.caption(
-        &view,
-        "只显示峰值，不保存音频、不转写。",
-        rect(179., 66., 290., 25.),
-    );
-    let level = owner.label(&view, "", rect(24., 20., 452., 35.), 12.);
-    level.setAccessibilityIdentifier(Some(ns_string!("voiceport.microphone.level")));
-    level.setMaximumNumberOfLines(2);
-    panel.ivars().window.set(window).ok();
-    panel.ivars().selection.set(selection).ok();
-    panel.ivars().inventory_note.set(inventory_note).ok();
-    panel.ivars().actual.set(actual).ok();
-    panel.ivars().test.set(test).ok();
-    panel.ivars().level.set(level).ok();
-    panel.inventory();
-    panel.window().center();
-    panel.window().makeKeyAndOrderFront(None);
-    owner.ivars().microphone_panel.replace(Some(panel));
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn missing_saved_microphone_remains_selected_not_system_default() {
-        let (rows, selected) = choices(&Err("offline".into()), Some("previous"));
-        assert_eq!(
-            rows,
-            vec![Choice::System, Choice::Retained("previous".into())]
-        );
-        assert_eq!(selected, 1);
-        assert_eq!(choices(&Ok(vec![]), None), (vec![Choice::System], 0));
-    }
+    panel
+        .ivars()
+        .controls
+        .set(Controls {
+            root,
+            selection,
+            refresh,
+            inventory,
+            system,
+            permission,
+            activity,
+            actual,
+            test,
+            level,
+        })
+        .ok();
+    panel
 }

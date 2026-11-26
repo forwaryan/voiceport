@@ -12,6 +12,12 @@ use std::{
 };
 use voiceport_core::CancellationToken;
 
+#[cfg(debug_assertions)]
+#[path = "local_runtime/performance.rs"]
+mod performance;
+#[cfg(debug_assertions)]
+pub(crate) use performance::performance_file;
+
 unsafe extern "C" {
     fn vp_local_open(
         directory: *const c_char,

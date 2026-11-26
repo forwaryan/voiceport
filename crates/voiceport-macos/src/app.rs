@@ -14,7 +14,9 @@ use objc2_foundation::{
 use std::cell::{Cell, OnceCell, RefCell};
 mod control;
 #[cfg(debug_assertions)]
-pub use control::{isolated_audio_start_regression, isolated_control_regression};
+pub use control::{
+    isolated_audio_start_regression, isolated_control_regression, isolated_performance_baseline,
+};
 mod control_probes;
 mod dictation_page;
 mod dictation_workflows;
@@ -23,6 +25,7 @@ mod file_transcription;
 pub use file_transcription::isolated_file_transcription_regression;
 mod first_run;
 mod hotkey_start;
+mod menu_surface;
 #[doc(hidden)]
 pub use first_run::first_run_field_fixture;
 mod microphone;
@@ -33,14 +36,21 @@ mod quick_panel;
 mod recent_dictations;
 mod shortcut_editor;
 mod source_manager;
+mod source_page;
 mod source_probes;
 mod status_overlay;
 mod update_ui;
+mod workbench;
 
 #[doc(hidden)]
 pub fn isolated_shortcut_regression(mtm: MainThreadMarker) {
     preferences::isolated_layout_regression(mtm);
     hotkey_start::isolated_event_regression(mtm);
+    #[cfg(debug_assertions)]
+    {
+        workbench::isolated_regression(mtm);
+        source_page::fixture::native(mtm);
+    }
 }
 
 const COPY_SUCCESS: &str = "文字已复制。";
@@ -173,6 +183,9 @@ struct Ivars {
     quick_panel: OnceCell<quick_panel::QuickPanel>,
     first_run: OnceCell<first_run::Panel>,
     context_menu: OnceCell<Retained<NSMenu>>,
+    context_menu_visible: Cell<bool>,
+    menu_snapshot: RefCell<Option<menu_surface::Snapshot>>,
+    menu_device: RefCell<menu_surface::DeviceRefresh>,
     menu_toggle: OnceCell<Retained<NSMenuItem>>,
     menu_state: OnceCell<Retained<NSMenuItem>>,
     menu_shortcut: OnceCell<Retained<NSMenuItem>>,
@@ -186,11 +199,11 @@ struct Ivars {
     update_auto_item: OnceCell<Retained<NSMenuItem>>,
     update_commit: RefCell<Option<std::process::ChildStdin>>,
     status_appearance: Cell<Option<StatusAppearance>>,
-    page_tabs: OnceCell<Retained<NSSegmentedControl>>,
-    dictation_page: OnceCell<Retained<NSView>>,
+    workbench: OnceCell<Retained<workbench::Workbench>>,
     dictation_result: OnceCell<dictation_page::Page>,
     file_page: OnceCell<file_transcription::Page>,
-    settings_page: OnceCell<Retained<NSView>>,
+    history_page: OnceCell<Retained<recent_dictations::workbench::HistoryPage>>,
+    source_page: OnceCell<Retained<source_page::Page>>,
     window: OnceCell<Retained<NSWindow>>,
     show_window_on_launch: Cell<bool>,
     show_models_on_launch: Cell<bool>,
@@ -209,7 +222,7 @@ struct Ivars {
     manage_models: OnceCell<Retained<NSButton>>,
     managing_models: Cell<bool>,
     model_manager: RefCell<Option<Retained<model_manager::Manager>>>,
-    microphone_panel: RefCell<Option<Retained<microphone::Panel>>>,
+    microphone_panel: OnceCell<Retained<microphone::Panel>>,
     manage_sources: OnceCell<Retained<NSButton>>,
     test_source: OnceCell<Retained<NSButton>>,
     managing_sources: Cell<bool>,
@@ -246,6 +259,16 @@ define_class!(
     #[ivars = Ivars]
     struct Delegate;
     unsafe impl NSObjectProtocol for Delegate {}
+    unsafe impl NSWindowDelegate for Delegate {
+        #[unsafe(method(windowWillClose:))]
+        fn workbench_will_close(&self, _notification: &NSNotification) {
+            self.clear_workbench_history();
+        }
+        #[unsafe(method(windowDidMiniaturize:))]
+        fn workbench_did_miniaturize(&self, _notification: &NSNotification) {
+            self.clear_workbench_history();
+        }
+    }
     unsafe impl NSApplicationDelegate for Delegate {
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn launched(&self, _notification: &NSNotification) {
@@ -374,8 +397,7 @@ define_class!(
         fn quick_source_guidance_action(&self, _sender: Option<&AnyObject>) { self.resolve_quick_source(); }
         #[unsafe(method(quickManageSources:))]
         fn quick_manage_action(&self, _sender: Option<&AnyObject>) {
-            self.close_quick_panel();
-            self.show_window(); self.select_page(true);
+            self.show_workbench_page(workbench::Page::Settings);
             self.manage_sources_action(sel!(manageSources:), None);
         }
         #[unsafe(method(showWindow:))]
@@ -399,14 +421,9 @@ define_class!(
         fn export_file_markdown_action(&self, _sender: Option<&AnyObject>) {
             self.export_file_transcription(crate::file_transcription::ExportFormat::Markdown);
         }
-        #[unsafe(method(selectPage:))]
-        fn page_action(&self, _sender: Option<&AnyObject>) {
-            let settings = self.ivars().page_tabs.get().is_some_and(|tabs| tabs.selectedSegment() == 1);
-            self.select_page(settings);
-        }
         #[unsafe(method(showPreferences:))]
         fn preferences_action(&self, _sender: Option<&AnyObject>) {
-            self.show_window(); self.select_page(true);
+            self.show_workbench_page(workbench::Page::Settings);
         }
         #[unsafe(method(toggleDictationDiagnostics:))]
         fn toggle_dictation_diagnostics(&self, _sender: Option<&AnyObject>) {
@@ -443,14 +460,14 @@ define_class!(
         }
         #[unsafe(method(selectSource:))]
         fn source_action(&self, _sender: Option<&AnyObject>) {
-            if self.ivars().permission_rx.borrow().is_some() || self.settings_locked() { return; }
-            self.with_controller(|c| {
-                if c.busy() { return; }
-                if let Some(id) = self.ivars().source.get().and_then(|control| picker::selected_id(control))
-                    && c.catalog.entries.iter().any(|entry| entry.id == id) {
-                    self.set_source(c, id);
-                }
-            }); self.refresh();
+            if let Some(id) = self.ivars().source.get().and_then(|control| picker::selected_id(control)) {
+                self.request_dictation_source(&id);
+            }
+            self.refresh();
+        }
+        #[unsafe(method(showSources:))]
+        fn show_sources_action(&self, _sender: Option<&AnyObject>) {
+            self.show_workbench_page(workbench::Page::Sources);
         }
         #[unsafe(method(manageSources:))]
         fn manage_sources_action(&self, _sender: Option<&AnyObject>) {
@@ -465,7 +482,7 @@ define_class!(
         }
         #[unsafe(method(microphoneSettings:))]
         fn microphone_settings_action(&self, _sender: Option<&AnyObject>) {
-            if !self.ivars().quitting.get() { microphone::show(self); }
+            self.show_workbench_page(workbench::Page::Device);
         }
         #[unsafe(method(manageModels:))]
         fn manage_models_action(&self, _sender: Option<&AnyObject>) {
@@ -505,7 +522,9 @@ define_class!(
             self.change_shortcut_mode();
         }
         #[unsafe(method(updateVoicePort:))]
-        fn update_voiceport_action(&self, _sender: Option<&AnyObject>) { self.update_action(); }
+        fn update_voiceport_action(&self, _sender: Option<&AnyObject>) {
+            self.show_workbench_page(workbench::Page::Updates);
+        }
         #[unsafe(method(refreshVoicePortUpdate:))]
         fn refresh_voiceport_action(&self, _sender: Option<&AnyObject>) { self.start_update_check(true); }
         #[unsafe(method(toggleAutoUpdate:))]
@@ -537,6 +556,7 @@ define_class!(
             }
             self.poll_control();
             self.update_tick();
+            self.poll_menu_device();
             if self.ivars().cli_quit_at.get().is_some_and(|at| std::time::Instant::now() >= at) {
                 self.ivars().cli_quit_at.set(None);
                 NSApplication::sharedApplication(self.mtm()).terminate(None);
@@ -549,8 +569,7 @@ define_class!(
             if let Some(sources) = sources { sources.refresh_diagnostics(); }
             let models = self.ivars().model_manager.borrow().clone();
             if let Some(models) = models { models.refresh(); }
-            let microphone = self.ivars().microphone_panel.borrow().clone();
-            if let Some(microphone) = microphone {
+            if let Some(microphone) = self.ivars().microphone_panel.get() {
                 if self.ivars().quitting.get() { microphone.close(); } else { microphone.refresh(); }
             }
             if self.ivars().quitting.get() {
@@ -645,8 +664,9 @@ impl Delegate {
         }
         item
     }
-    fn build_menu(&self) {
+    fn build_context_menu(&self) {
         let mtm = self.mtm();
+        let _ = self.ivars().update.borrow().running_version();
         let menu = NSMenu::new(mtm);
         menu.setAutoenablesItems(false);
         let heading = self.menu_item("VoicePort · 就绪", sel!(showWindow:), "");
@@ -661,6 +681,11 @@ impl Delegate {
         for (title, action, symbol) in [
             ("打开结果与设置…", sel!(showWindow:), "macwindow"),
             ("音频文件转写…", sel!(showFileTranscription:), "waveform"),
+            (
+                "转写来源…",
+                sel!(showSources:),
+                "waveform.badge.magnifyingglass",
+            ),
             (
                 "首次使用与自检…",
                 sel!(showFirstRunChecks:),
@@ -689,7 +714,7 @@ impl Delegate {
         menu.addItem(&overlay);
         let _ = self.ivars().overlay_menu.set(overlay);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
-        let update = self.menu_item("检查更新…", sel!(updateVoicePort:), "");
+        let update = self.menu_item("软件更新…", sel!(updateVoicePort:), "");
         menu.addItem(&update);
         let _ = self.ivars().update_item.set(update);
         let refresh = self.menu_item("重新检查更新…", sel!(refreshVoicePortUpdate:), "");
@@ -698,9 +723,14 @@ impl Delegate {
         let automatic = self.menu_item("自动检查更新", sel!(toggleAutoUpdate:), "");
         menu.addItem(&automatic);
         let _ = self.ivars().update_auto_item.set(automatic);
-        self.update_menu();
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&self.menu_item("退出 VoicePort", sel!(terminate:), ""));
+        let _ = self.ivars().context_menu.set(menu);
+    }
+
+    fn build_menu(&self) {
+        let mtm = self.mtm();
+        self.build_context_menu();
         // A fixed, compact slot avoids shifting neighboring menu extras as
         // recording and processing states change. Template images follow macOS.
         let status = NSStatusBar::systemStatusBar().statusItemWithLength(28.);
@@ -717,7 +747,6 @@ impl Delegate {
             button.sendActionOn(NSEventMask::LeftMouseUp | NSEventMask::RightMouseUp);
         }
         status.setVisible(true);
-        let _ = self.ivars().context_menu.set(menu);
         let _ = self.ivars().status.set(status);
 
         let main_menu = NSMenu::new(mtm);
@@ -810,6 +839,7 @@ impl Delegate {
             let run_loop = NSRunLoop::currentRunLoop();
             run_loop.addTimer_forMode(&timer, NSRunLoopCommonModes);
             run_loop.addTimer_forMode(&timer, NSModalPanelRunLoopMode);
+            run_loop.addTimer_forMode(&timer, NSEventTrackingRunLoopMode);
         }
         let _ = self.ivars().timer.set(timer);
     }
@@ -911,126 +941,150 @@ impl Delegate {
         popup
     }
     fn select_page(&self, settings: bool) {
-        if let Some(page) = self.ivars().dictation_page.get() {
-            page.setHidden(settings);
+        if let Some(workbench) = self.ivars().workbench.get() {
+            workbench.select(if settings {
+                workbench::Page::Settings
+            } else {
+                workbench::Page::Result
+            });
         }
-        if let Some(page) = self.ivars().settings_page.get() {
-            page.setHidden(!settings);
-        }
-        if let Some(tabs) = self.ivars().page_tabs.get() {
-            tabs.setSelectedSegment(if settings { 1 } else { 0 });
-            if let Some(window) = self.ivars().window.get() {
-                window.setAutorecalculatesKeyViewLoop(settings);
-                if settings {
-                    window.recalculateKeyViewLoop();
-                } else if let Some(result) = self.ivars().dictation_result.get() {
-                    result.link_key_views(tabs);
-                    window.setInitialFirstResponder(Some(tabs));
-                }
-            }
-        }
+    }
+    fn build_workbench(
+        &self,
+        language: workbench::Language,
+    ) -> (Retained<NSWindow>, Retained<workbench::Workbench>) {
+        use workbench::Page;
+        let mtm = self.mtm();
+        let (window, shell) = workbench::Workbench::build(mtm, language);
+        let frame = shell.page_bounds();
+        let view = file_transcription::DropArea::new(self, frame);
+        let result = self
+            .ivars()
+            .dictation_result
+            .get_or_init(|| dictation_page::Page::build(mtm, self, &view));
+        shell.mount(Page::Result, result.view(), &result.key_views());
+        let settings = NSView::initWithFrame(NSView::alloc(mtm), frame);
+        self.build_settings_page(&settings);
+        let iv = self.ivars();
+        let slots = iv.settings_input_slots.get().expect("settings input slots");
+        let self_check = slots.self_check.subviews().firstObject().unwrap();
+        let input_device = slots.input_device.subviews().firstObject().unwrap();
+        shell.mount(
+            Page::Settings,
+            &settings,
+            &[
+                iv.recent_dictations_switch.get().unwrap(),
+                iv.shortcut_mode_control.get().unwrap(),
+                iv.shortcut.get().unwrap(),
+                iv.language.get().unwrap(),
+                iv.dictionary_settings.get().unwrap(),
+                iv.preset_settings.get().unwrap(),
+                iv.automatic.get().unwrap(),
+                iv.accessibility.get().unwrap(),
+                iv.prepare_permissions.get().unwrap(),
+                &self_check,
+                &input_device,
+                iv.source.get().unwrap(),
+                iv.manage_models.get().unwrap(),
+                iv.refresh_models.get().unwrap(),
+                iv.manage_sources.get().unwrap(),
+                iv.test_source.get().unwrap(),
+            ],
+        );
+        let history = iv
+            .history_page
+            .get_or_init(|| recent_dictations::workbench::HistoryPage::build(self, frame));
+        shell.mount(Page::History, history, &history.key_views());
+        let files = self.file_page_with_bounds(frame);
+        shell.mount(Page::Files, &files.content_view(), &files.key_views());
+        let sources = iv
+            .source_page
+            .get_or_init(|| source_page::Page::build(self, frame));
+        shell.mount(Page::Sources, sources, &sources.key_views());
+        let device = iv
+            .microphone_panel
+            .get_or_init(|| microphone::build(self, frame));
+        shell.mount(Page::Device, &device.view(), &device.tab_views());
+        let (updates, keys) = self.build_update_page(frame);
+        shell.mount(Page::Updates, &updates, &keys.each_ref().map(|key| &**key));
+        shell.select(Page::default());
+        (window, shell)
     }
     fn show_window(&self) {
-        self.close_quick_panel();
-        let mtm = self.mtm();
-        if self.ivars().window.get().is_none() {
-            let window = unsafe {
-                NSWindow::initWithContentRect_styleMask_backing_defer(
-                    NSWindow::alloc(mtm),
-                    rect(0., 0., 620., 520.),
-                    NSWindowStyleMask::Titled
-                        | NSWindowStyleMask::Closable
-                        | NSWindowStyleMask::Miniaturizable,
-                    NSBackingStoreType::Buffered,
-                    false,
-                )
-            };
-            unsafe {
-                window.setReleasedWhenClosed(false);
-            }
-            window.setTitle(ns_string!("VoicePort"));
-            window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
-            window.setTitlebarAppearsTransparent(true);
-            window.setBackgroundColor(Some(&NSColor::windowBackgroundColor()));
-            let view = window.contentView().expect("native window content view");
-            let brand = self.icon(&view, "waveform.circle.fill", rect(24., 464., 32., 32.));
-            brand.setContentTintColor(Some(&NSColor::controlAccentColor()));
-            let heading = self.label(&view, "VoicePort", rect(66., 478., 280., 24.), 17.);
-            heading.setFont(Some(&NSFont::systemFontOfSize_weight(17., unsafe {
-                NSFontWeightSemibold
-            })));
-            self.caption(&view, "随口说，自然成文。", rect(66., 460., 280., 18.));
-            let tabs = NSSegmentedControl::initWithFrame(
-                NSSegmentedControl::alloc(mtm),
-                rect(416., 468., 180., 28.),
-            );
-            tabs.setSegmentCount(2);
-            tabs.setLabel_forSegment(ns_string!("听写"), 0);
-            tabs.setLabel_forSegment(ns_string!("设置"), 1);
-            tabs.setWidth_forSegment(86., 0);
-            tabs.setWidth_forSegment(86., 1);
-            tabs.setTrackingMode(NSSegmentSwitchTracking::SelectOne);
-            tabs.setSelectedSegment(0);
-            unsafe {
-                tabs.setTarget(Some(self));
-                tabs.setAction(Some(sel!(selectPage:)));
-            }
-            tabs.setAccessibilityIdentifier(Some(ns_string!("voiceport.pages")));
-            view.addSubview(&tabs);
-            let _ = self.ivars().page_tabs.set(tabs);
-            let line = NSBox::initWithFrame(NSBox::alloc(mtm), rect(24., 444., 572., 1.));
-            line.setBoxType(NSBoxType::Separator);
-            view.addSubview(&line);
-            let dictation: Retained<NSView> =
-                file_transcription::DropArea::new(self, rect(24., 20., 572., 408.)).into_super();
-            let _ = self
-                .ivars()
-                .dictation_result
-                .set(dictation_page::Page::build(mtm, self, &dictation));
-            view.addSubview(&dictation);
-            let _ = self.ivars().dictation_page.set(dictation);
-            let settings = NSView::initWithFrame(NSView::alloc(mtm), rect(24., 20., 572., 408.));
-            self.build_settings_page(&settings);
-            settings.setHidden(true);
-            view.addSubview(&settings);
-            let _ = self.ivars().settings_page.set(settings);
+        self.present_workbench(None);
+    }
+    fn show_workbench_page(&self, page: workbench::Page) {
+        self.present_workbench(Some(page));
+    }
+    fn prepare_workbench(&self, page: Option<workbench::Page>) -> &NSWindow {
+        let iv = self.ivars();
+        let window = iv.window.get_or_init(|| {
+            let (window, shell) = self.build_workbench(workbench::Language::preferred());
+            window.setDelegate(Some(ProtocolObject::from_ref(self)));
             window.center();
-            let _ = self.ivars().window.set(window);
-            self.select_page(false);
+            let _ = iv.workbench.set(shell);
+            window
+        });
+        if let Some(page) = page {
+            iv.workbench
+                .get()
+                .expect("workbench for window")
+                .select(page);
         }
+        window
+    }
+    fn present_workbench(&self, page: Option<workbench::Page>) {
+        if self.ivars().quitting.get() {
+            return;
+        }
+        self.close_quick_panel();
+        let window = self.prepare_workbench(page);
+        window.makeKeyAndOrderFront(None);
         self.refresh();
-        if let Some(window) = self.ivars().window.get() {
-            window.makeKeyAndOrderFront(None);
-        }
         #[allow(deprecated)]
-        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+        NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
+    }
+    fn clear_workbench_history(&self) {
+        if let Some(history) = self.ivars().history_page.get() {
+            history.clear_display();
+        }
     }
     fn refresh(&self) {
+        self.refresh_opened_update_page();
         let Ok(slot) = self.ivars().controller.try_borrow() else {
             return;
         };
         let Some(c) = slot.as_ref() else {
             return;
         };
-        let overlay_enabled = status_overlay::enabled();
         #[cfg(debug_assertions)]
-        let overlay_enabled = self.ivars().audio_fixture_stroke.get().is_none() && overlay_enabled;
+        let overlay_enabled =
+            self.ivars().audio_fixture_stroke.get().is_none() && status_overlay::enabled();
+        #[cfg(not(debug_assertions))]
+        let overlay_enabled = status_overlay::enabled();
         if let Ok(mut overlay) = self.ivars().overlay.try_borrow_mut() {
             if self.ivars().quitting.get() {
                 overlay.close();
             } else {
-                overlay.update(
-                    self.mtm(),
-                    c.overlay_snapshot(overlay_enabled),
-                    overlay_enabled,
-                );
+                overlay.update(self.mtm(), c.overlay_snapshot(), overlay_enabled, || {
+                    c.capture_level()
+                });
             }
         }
-        if let Some(item) = self.ivars().overlay_menu.get() {
-            let state = status_overlay::checked(overlay_enabled);
-            if item.state() != state {
-                item.setState(state);
-            }
+        if self.ivars().context_menu_visible.get() {
+            self.apply_overlay_menu();
+        }
+        let trusted = c.accessibility_trusted();
+        let snapshot = self.refresh_menu_snapshot(c, trusted);
+        self.refresh_quick_panel(c, false);
+        self.refresh_first_run(c, trusted);
+        if !self
+            .ivars()
+            .window
+            .get()
+            .is_some_and(|window| window.isVisible() && !window.isMiniaturized())
+        {
+            return;
         }
         let preparing_permissions = self.ivars().permission_rx.borrow().is_some();
         let returning_to_input = self.ivars().pending_hotkey.borrow().is_some();
@@ -1049,79 +1103,20 @@ impl Delegate {
             }
         }
         let recording = c.state.phase == Phase::Recording;
-        let opening = c.opening_microphone();
-        let trusted = Delivery::trusted();
-        self.refresh_first_run(c, trusted);
-        let shortcut_label = self.ivars().shortcut_binding.get().label();
-        let shortcut = shortcut_label.as_str();
+        let state_text = snapshot.state;
+        let shortcut = snapshot.shortcut.as_str();
         let mode = self.ivars().shortcut_mode.get();
         let shortcut_instruction = mode.instruction();
         let hotkey_failed = self.ivars().hotkey_error.borrow().is_some();
-        let delivery_failure = completed_delivery_failure(
-            c.state.phase,
-            !c.transcript.is_empty(),
-            c.delivery_failure_stage(),
-        );
-        let (appearance, state_text) = match c.state.phase {
-            Phase::Recording => (StatusAppearance::Recording, "正在听写"),
-            Phase::Permissions if opening => (StatusAppearance::Working, "正在打开麦克风"),
-            Phase::Permissions => (StatusAppearance::Working, "正在准备权限"),
-            Phase::Transcribing if c.finalizing_capture() => {
-                (StatusAppearance::Working, "正在停止麦克风")
-            }
-            Phase::Transcribing => (StatusAppearance::Working, "正在转写"),
-            Phase::Delivering => (StatusAppearance::Working, "正在输入文字"),
-            Phase::Stopping => (StatusAppearance::Working, "正在停止"),
-            _ if c.file_jobs.busy() => (StatusAppearance::Working, "正在处理音频文件"),
-            _ if c.source_tests.busy() => (StatusAppearance::Working, "正在测试来源"),
-            _ if preparing_permissions => (StatusAppearance::Working, "正在准备权限"),
-            _ if returning_to_input => (StatusAppearance::Working, "正在返回输入位置"),
-            Phase::Ready if delivery_failure.is_some() => {
-                (StatusAppearance::Attention, "转写完成 · 自动输入未完成")
-            }
-            _ if hotkey_failed => (StatusAppearance::Attention, "快捷键需要设置"),
-            _ if c.automatic && !trusted => (StatusAppearance::Attention, "需要辅助功能授权"),
-            Phase::Failed => (StatusAppearance::Attention, "需要处理 · 打开查看"),
-            Phase::Ready => (StatusAppearance::Ready, "转写完成"),
-            Phase::Idle => (StatusAppearance::Ready, "就绪"),
-        };
-        if let Some(item) = self.ivars().menu_state.get() {
-            item.setTitle(&NSString::from_str(&format!("VoicePort · {state_text}")));
+        let idle = snapshot.idle;
+        if let Some(history) = self.ivars().history_page.get() {
+            history.refresh(c);
         }
-        if let Some(item) = self.ivars().menu_shortcut.get() {
-            item.setTitle(&NSString::from_str(&format!(
-                "{shortcut} · {}",
-                if hotkey_failed {
-                    "快捷键未注册，请在设置中更换"
-                } else {
-                    shortcut_instruction
-                }
-            )));
+        if let Some(sources) = self.ivars().source_page.get()
+            && !sources.isHiddenOrHasHiddenAncestor()
+        {
+            sources.refresh(c, idle && !c.discovering());
         }
-        if let Some(item) = self.ivars().menu_cancel.get() {
-            item.setEnabled((c.busy() && !c.file_jobs.busy()) || returning_to_input);
-        }
-        if let Some(item) = self.ivars().menu_copy.get() {
-            item.setEnabled(!c.transcript.is_empty());
-        }
-        let title = if opening {
-            "取消麦克风准备"
-        } else if recording {
-            "停止并转写"
-        } else {
-            "开始听写"
-        };
-        if let Some(item) = self.ivars().menu_toggle.get() {
-            item.setTitle(&NSString::from_str(title));
-            item.setEnabled(
-                !preparing_permissions
-                    && !returning_to_input
-                    && !self.settings_locked()
-                    && (opening || recording || !c.busy()),
-            );
-        }
-        let idle =
-            !c.busy() && !preparing_permissions && !returning_to_input && !self.settings_locked();
         for button in [
             self.ivars().dictionary_settings.get(),
             self.ivars().preset_settings.get(),
@@ -1170,6 +1165,8 @@ impl Delegate {
             }
         }
         if let Some(page) = self.ivars().dictation_result.get() {
+            let release_notice = c.audio_release_notice();
+            let capture_stage = c.capture_stage();
             let receipt = c.gui_dictation_receipt();
             let diagnostics = c.gui_dictation_diagnostics();
             let origin = c.visible_transcript.map(|source| match source {
@@ -1186,9 +1183,24 @@ impl Delegate {
                     }
                 }
             });
+            let context = c.gui_result_context();
             page.refresh(dictation_page::Snapshot {
-                receipt: receipt.as_ref(),
-                diagnostics: diagnostics.as_ref(),
+                attempt: receipt
+                    .as_ref()
+                    .map(|receipt| dictation_page::ResultDetails {
+                        receipt,
+                        diagnostics: diagnostics.as_ref(),
+                        source: context.source.as_deref(),
+                        target: context.target.as_deref(),
+                    }),
+                retained: c
+                    .retained_gui_result()
+                    .map(|result| dictation_page::ResultDetails {
+                        receipt: &result.receipt,
+                        diagnostics: Some(&result.diagnostics),
+                        source: result.context.source.as_deref(),
+                        target: result.context.target.as_deref(),
+                    }),
                 origin,
                 original: &c.transcript,
                 raw_available: c.raw_transcript.is_some(),
@@ -1202,21 +1214,20 @@ impl Delegate {
                     }
                 ),
                 activity: dictation_page::Activity {
-                    title: if recording
-                        || !c.state.can_start()
-                        || preparing_permissions
-                        || returning_to_input
-                        || c.source_tests.busy()
-                    {
-                        Some(state_text)
-                    } else {
-                        None
-                    },
+                    title: release_notice
+                        .or_else(|| capture_stage.map(|stage| stage.title()))
+                        .or_else(|| {
+                            (!c.state.can_start()
+                                || preparing_permissions
+                                || returning_to_input
+                                || c.source_tests.busy())
+                            .then_some(state_text)
+                        }),
                     recording,
                     can_toggle: !preparing_permissions
                         && !returning_to_input
                         && !self.settings_locked()
-                        && (recording || !c.busy()),
+                        && (recording || (!c.busy() && release_notice.is_none())),
                     can_cancel: (c.busy() && !c.file_jobs.busy()) || returning_to_input,
                     can_retry: !self.settings_locked()
                         && c.can_retry_recording()
@@ -1311,17 +1322,6 @@ impl Delegate {
                 ns_string!("辅助功能未授权，前往系统设置")
             }));
         }
-        self.refresh_quick_panel(c, state_text, shortcut, idle);
-        if let Some(status) = self.ivars().status.get().and_then(|s| s.button(self.mtm())) {
-            self.update_status_icon(&status, appearance);
-            let source_title = quick_panel::selected_title(c);
-            let description =
-                NSString::from_str(&format!("VoicePort · {source_title} · {state_text}"));
-            status.setAccessibilityLabel(Some(&description));
-            status.setToolTip(Some(&NSString::from_str(&format!(
-                "VoicePort · {state_text}\n当前转写：{source_title}\n{shortcut} {shortcut_instruction}\n点击快速切换 · 右键更多操作"
-            ))));
-        }
     }
 }
 fn symbol_image(name: &str, size: f64) -> Option<Retained<NSImage>> {
@@ -1357,12 +1357,17 @@ pub fn run() {
         return;
     }
     #[cfg(debug_assertions)]
-    if let [flag, directory] = arguments.as_slice()
+    if let [flag, directory, rest @ ..] = arguments.as_slice()
         && flag == "--quick-panel-fixture"
+        && rest.len() <= 1
     {
         let mtm = MainThreadMarker::new().expect("fixture starts on the main thread");
         objc2::rc::autoreleasepool(|_| {
-            quick_panel::fixture::run(mtm, std::path::Path::new(directory))
+            quick_panel::fixture::run(
+                mtm,
+                std::path::Path::new(directory),
+                rest.first().map(std::path::Path::new),
+            )
         });
         return;
     }

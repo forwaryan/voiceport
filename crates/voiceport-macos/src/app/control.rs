@@ -20,7 +20,9 @@ mod files;
 #[cfg(debug_assertions)]
 mod fixture;
 #[cfg(debug_assertions)]
-pub use fixture::{isolated_audio_start_regression, isolated_control_regression};
+pub use fixture::{
+    isolated_audio_start_regression, isolated_control_regression, isolated_performance_baseline,
+};
 mod history;
 mod models;
 mod product;
@@ -363,7 +365,7 @@ impl Delegate {
                     "permissions": {
                         "microphone": microphone,
                         "speech": speech,
-                        "accessibility": Delivery::trusted(),
+                        "accessibility": c.accessibility_trusted(),
                     },
                     "hotkey": {"registration": hotkey},
                     "input": {

@@ -306,6 +306,39 @@ pub(crate) fn inputs() -> Result<Vec<Device>, String> {
     Hal.inputs()
 }
 
+/// Menu metadata only. Capture still resolves and verifies its own input route.
+pub(crate) fn menu_input_name(preferred: Option<&str>) -> Result<Option<String>, String> {
+    if let Some(uid) = preferred {
+        return inputs().map(|devices| {
+            devices
+                .into_iter()
+                .find(|device| device.uid == uid)
+                .map(|device| device.label())
+        });
+    }
+    #[cfg(debug_assertions)]
+    if let Some(fixture) = fixture::current() {
+        return fixture.system_input().map(|device| Some(device.label()));
+    }
+    Hal.system_input().map(|device| Some(device.label()))
+}
+
+/// A read-only preview. Route admission still checks the actual opened input.
+pub(super) fn system_input_preview() -> Result<Device, String> {
+    fn confirm(device: Device, current: u32) -> Result<Device, String> {
+        if device.id != current {
+            return Err("读取时系统默认输入已变化，请刷新。".into());
+        }
+        Ok(device)
+    }
+
+    #[cfg(debug_assertions)]
+    if let Some(fixture) = fixture::current() {
+        return confirm(fixture.system_input()?, fixture.final_default_input_id());
+    }
+    confirm(Hal.system_input()?, Hal::default_input_id()?)
+}
+
 fn unit_device(node: &AVAudioInputNode) -> Result<u32, String> {
     let unit = unsafe { node.audioUnit() };
     if unit.is_null() {

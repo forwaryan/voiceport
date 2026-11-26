@@ -133,6 +133,18 @@ impl SyntheticDictations {
         self.poll();
     }
 
+    pub(crate) fn finish_at(&mut self, generation: u64, text: &str, timestamp_ms: u64) {
+        self.finish(generation, text);
+        let entry = self
+            .controller
+            .recent_dictations
+            .entries
+            .front_mut()
+            .unwrap();
+        assert_eq!(entry.generation, generation);
+        entry.metadata.created_at_unix_ms = timestamp_ms;
+    }
+
     pub(crate) fn poll(&mut self) {
         self.controller
             .poll_with_capture(|_| true, |_, _, _, _| panic!("unexpected capture"));

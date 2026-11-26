@@ -3,7 +3,6 @@ use super::*;
 use crate::{
     dictation_dictionary::{Dictionary, format_rules, parse_rules},
     dictation_workflows::{Preset, Workflows},
-    local_models::SessionSource,
 };
 use voiceport_core::language;
 
@@ -29,7 +28,7 @@ fn persist(preferences: &Workflows) -> Result<(), String> {
 }
 
 impl Delegate {
-    fn workflow_dialog(&self, action: impl FnOnce() -> Result<(), String>) {
+    pub(super) fn workflow_dialog(&self, action: impl FnOnce() -> Result<(), String>) {
         let iv = self.ivars();
         if self.settings_locked()
             || iv.quitting.get()
@@ -41,7 +40,6 @@ impl Delegate {
             return;
         }
         iv.workflow_dialog.set(true);
-        self.close_quick_panel();
         if let Err(error) = action() {
             self.workflow_alert("无法完成操作", &error, &["好"])
                 .runModal();
@@ -332,13 +330,7 @@ impl Delegate {
                     .clone(),
             )
         };
-        let descriptor = source.descriptor();
-        let configuration = match &source {
-            SessionSource::Plugin(snapshot) => Some(&snapshot.source),
-            _ => None,
-        };
-        let destination =
-            source_manager::destination::Destination::configured(Some(&descriptor), configuration);
+        let destination = source_manager::destination::Destination::for_session(&source);
         let language_title = language::LANGUAGES[language::index(&preset.language)].1;
         let dictionary = if preset.dictionary_enabled {
             "启用"
@@ -393,7 +385,14 @@ impl Delegate {
         Ok(())
     }
 
-    fn workflow_alert(&self, title: &str, detail: &str, buttons: &[&str]) -> Retained<NSAlert> {
+    pub(super) fn workflow_alert(
+        &self,
+        title: &str,
+        detail: &str,
+        buttons: &[&str],
+    ) -> Retained<NSAlert> {
+        // A choice saved without an alert keeps the quick panel and its focus path.
+        self.close_quick_panel();
         let alert = NSAlert::new(self.mtm());
         alert.setMessageText(&NSString::from_str(title));
         alert.setInformativeText(&NSString::from_str(detail));

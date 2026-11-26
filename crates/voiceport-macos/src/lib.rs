@@ -60,7 +60,7 @@ pub use app::run;
 #[doc(hidden)]
 pub use app::{
     isolated_audio_start_regression, isolated_control_regression,
-    isolated_file_transcription_regression,
+    isolated_file_transcription_regression, isolated_performance_baseline,
 };
 #[cfg(target_os = "macos")]
 pub mod audio;

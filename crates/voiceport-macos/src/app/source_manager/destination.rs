@@ -15,6 +15,23 @@ pub(in crate::app) enum Destination {
 }
 
 impl Destination {
+    pub(in crate::app) fn for_session(source: &crate::local_models::SessionSource) -> Self {
+        use crate::local_models::SessionSource;
+        let descriptor = source.descriptor();
+        let configured = match source {
+            SessionSource::Plugin(snapshot) => Some(&snapshot.source),
+            _ => None,
+        };
+        Self::configured(Some(&descriptor), configured)
+    }
+
+    pub(in crate::app) fn requires_confirmation(&self) -> bool {
+        matches!(
+            self,
+            Self::ChatGpt | Self::LoopbackHttp(_) | Self::RemoteHttp(_) | Self::ExternalProgram
+        )
+    }
+
     pub(in crate::app) fn configured(plugin: Option<&Manifest>, source: Option<&Source>) -> Self {
         let Some(plugin) = plugin.filter(|plugin| {
             source.is_none_or(|source| {

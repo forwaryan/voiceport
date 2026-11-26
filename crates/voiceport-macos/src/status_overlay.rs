@@ -2,12 +2,46 @@
 use crate::lifecycle::{Lifecycle, Phase};
 use voiceport_control::TranscriptionState;
 
+pub(crate) const WAITING_FOR_AUDIO_RELEASE: &str = "正在等待音频设备释放";
+
+/// Order follows a single capture. Item #47 allows one recovery per capture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum CaptureStage {
+    Opening,
+    Recording,
+    Recovering,
+    Resumed,
+    Disconnected,
+    Finalizing,
+}
+
+impl CaptureStage {
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Self::Opening => "正在打开麦克风",
+            Self::Recording | Self::Resumed => "正在录音",
+            Self::Recovering => "正在恢复麦克风",
+            Self::Disconnected => "麦克风已断开",
+            Self::Finalizing => "正在停止麦克风",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Stage {
     Preparing,
-    Recording,
+    Capture(CaptureStage),
     Transcribing,
     Delivering,
+}
+
+impl Stage {
+    pub(crate) fn shows_level(self) -> bool {
+        matches!(
+            self,
+            Self::Capture(CaptureStage::Recording | CaptureStage::Resumed)
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -15,7 +49,6 @@ pub(crate) struct Snapshot {
     pub generation: u64,
     pub stage: Option<Stage>,
     pub origin_pid: Option<i32>,
-    pub level: Option<u8>,
 }
 
 impl Snapshot {
@@ -24,15 +57,21 @@ impl Snapshot {
         gui_attempt: Option<(u64, TranscriptionState)>,
         pending_final_delivery: bool,
         origin_pid: Option<i32>,
-        level: Option<u8>,
+        capture: Option<CaptureStage>,
     ) -> Self {
         let generation = state.generation();
         use TranscriptionState::{Completed, Pending};
         let stage = match (state.phase, gui_attempt) {
             (_, Some((attempt, _))) if attempt != generation => None,
-            (Phase::Permissions, Some((_, Pending))) => Some(Stage::Preparing),
-            (Phase::Recording, Some((_, Pending))) => Some(Stage::Recording),
-            (Phase::Transcribing, Some((_, Pending))) => Some(Stage::Transcribing),
+            (Phase::Permissions, Some((_, Pending))) => {
+                Some(capture.map_or(Stage::Preparing, Stage::Capture))
+            }
+            (Phase::Recording, Some((_, Pending))) => {
+                Some(Stage::Capture(capture.unwrap_or(CaptureStage::Recording)))
+            }
+            (Phase::Transcribing, Some((_, Pending))) => {
+                Some(capture.map_or(Stage::Transcribing, Stage::Capture))
+            }
             (Phase::Delivering, Some((_, Completed))) if pending_final_delivery => {
                 Some(Stage::Delivering)
             }
@@ -42,7 +81,6 @@ impl Snapshot {
             generation,
             stage,
             origin_pid,
-            level: level.filter(|_| stage == Some(Stage::Recording)),
         }
     }
 }
@@ -93,25 +131,36 @@ impl Visibility {
 mod tests {
     #[test]
     fn real_lifecycle_projects_only_the_live_gui_attempt_and_final_queue() {
-        use super::{Lifecycle, Phase, Snapshot, Stage, Visibility};
+        use super::{CaptureStage, Lifecycle, Phase, Snapshot, Stage, Visibility};
         use voiceport_control::TranscriptionState::{Completed, Empty, Pending};
         let mut lifecycle = Lifecycle::default();
         let old = lifecycle.begin().unwrap();
         let project = |state: &Lifecycle, receipt, pending| {
-            Snapshot::project(state, receipt, pending, Some(7), Some(4))
+            Snapshot::project(state, receipt, pending, Some(7), None)
         };
         let gui = Some((old, Pending));
+        let capture =
+            |state: &Lifecycle, stage| Snapshot::project(state, gui, false, Some(7), Some(stage));
         let mut view = Visibility::default();
         assert_eq!(project(&lifecycle, None, false).stage, None); // CLI/source test
         let preparing = project(&lifecycle, gui, false);
-        assert_eq!(preparing.level, None);
         assert_eq!(view.observe(preparing, true), Some(Stage::Preparing));
+        let opening = capture(&lifecycle, CaptureStage::Opening);
+        assert_eq!(view.observe(opening, true), opening.stage);
         assert!(lifecycle.permissions(old, true));
-        let recording = project(&lifecycle, gui, true);
-        assert_eq!(recording.level, Some(4));
-        assert_eq!(view.observe(recording, true), Some(Stage::Recording));
-        assert_eq!(view.observe(preparing, true), Some(Stage::Recording));
+        let recording = capture(&lifecycle, CaptureStage::Recording);
+        assert_eq!(view.observe(recording, true), recording.stage);
+        assert_eq!(view.observe(preparing, true), recording.stage);
+        let recovering = capture(&lifecycle, CaptureStage::Recovering);
+        assert_eq!(view.observe(recovering, true), recovering.stage);
+        assert_eq!(view.observe(recording, true), recovering.stage);
+        let resumed = capture(&lifecycle, CaptureStage::Resumed);
+        assert_eq!(view.observe(resumed, true), resumed.stage);
+        assert_eq!(view.observe(recovering, true), resumed.stage);
         assert!(lifecycle.transcribe());
+        let finalizing = capture(&lifecycle, CaptureStage::Finalizing);
+        assert_eq!(view.observe(finalizing, true), finalizing.stage);
+        assert_eq!(view.observe(resumed, true), finalizing.stage);
         assert_eq!(
             view.observe(project(&lifecycle, gui, true), true),
             Some(Stage::Transcribing)

@@ -14,6 +14,9 @@ use crate::{
     plugin_process::{CLEANUP_WARNING, Custody, Failure},
     storage::Recording,
 };
+#[path = "controller/dictation_result.rs"]
+mod dictation_result;
+use dictation_result::{GuiResultContext, RetainedGuiResult};
 #[cfg(test)]
 #[path = "controller/dictation_workflow_tests.rs"]
 mod dictation_workflow_tests;
@@ -264,6 +267,7 @@ pub struct Controller {
     capture: Option<Capture>,
     capture_incoming: Option<Incoming>,
     capture_route: Option<String>,
+    capture_recovered: bool,
     capture_preview_status: Option<String>,
     capture_stop: Option<Instant>,
     input_check: Option<(u64, Instant)>,
@@ -285,6 +289,8 @@ pub struct Controller {
     allow_delivery: bool,
     delivery_settle: Option<Phase>,
     gui_receipt: Option<GuiDictationReceipt>,
+    gui_result_context: GuiResultContext,
+    retained_gui_result: Option<RetainedGuiResult>,
     recent_dictations: recent_dictations::RecentDictations,
     gui_owns_delivery: bool,
     overlay_origin_pid: Option<i32>,
@@ -361,6 +367,7 @@ impl Controller {
             capture: None,
             capture_incoming: None,
             capture_route: None,
+            capture_recovered: false,
             capture_preview_status: None,
             capture_stop: None,
             input_check: None,
@@ -382,6 +389,8 @@ impl Controller {
             allow_delivery: false,
             delivery_settle: None,
             gui_receipt: None,
+            gui_result_context: GuiResultContext::default(),
+            retained_gui_result: None,
             recent_dictations: recent_dictations::RecentDictations::default(),
             gui_owns_delivery: false,
             overlay_origin_pid: None,
@@ -494,7 +503,7 @@ impl Controller {
         None
     }
 
-    pub(crate) fn overlay_snapshot(&self, enabled: bool) -> crate::status_overlay::Snapshot {
+    pub(crate) fn overlay_snapshot(&self) -> crate::status_overlay::Snapshot {
         let attempt = self
             .gui_receipt
             .as_ref()
@@ -504,10 +513,33 @@ impl Controller {
             attempt.map(|receipt| (receipt.generation, receipt.transcription)),
             self.gui_owns_delivery && self.delivery.has_pending(),
             self.overlay_origin_pid,
-            (enabled && self.state.phase == Phase::Recording)
-                .then(|| self.capture_level())
-                .flatten(),
+            self.capture_stage(),
         )
+    }
+
+    pub(crate) fn capture_stage(&self) -> Option<crate::status_overlay::CaptureStage> {
+        use crate::status_overlay::CaptureStage;
+        self.capture.as_ref()?;
+        match self.state.phase {
+            Phase::Permissions => Some(CaptureStage::Opening),
+            Phase::Recording => Some(
+                match (self.capture_route.is_some(), self.capture_recovered) {
+                    (true, false) => CaptureStage::Recording,
+                    (false, false) => CaptureStage::Recovering,
+                    (true, true) => CaptureStage::Resumed,
+                    (false, true) => CaptureStage::Disconnected,
+                },
+            ),
+            Phase::Transcribing if self.finalizing_capture() => Some(CaptureStage::Finalizing),
+            _ => None,
+        }
+    }
+
+    /// The native slot can outlive its UI operation. Read it on each refresh so
+    /// the waiting text disappears on release without starting another capture.
+    pub(crate) fn audio_release_notice(&self) -> Option<&'static str> {
+        (self.capture.is_none() && !self.microphone_test_running() && self.audio_input_busy())
+            .then_some(crate::status_overlay::WAITING_FOR_AUDIO_RELEASE)
     }
 
     /// Read the latest GUI session, even after another CLI operation takes over.
@@ -524,6 +556,15 @@ impl Controller {
         self.gui_receipt
             .as_ref()
             .map(|receipt| self.gui_diagnostics.projection(receipt))
+    }
+    pub(crate) fn gui_result_context(&self) -> &GuiResultContext {
+        &self.gui_result_context
+    }
+    pub(crate) fn retained_gui_result(&self) -> Option<&RetainedGuiResult> {
+        self.retained_gui_result.as_ref().filter(|result| {
+            matches!(self.visible_transcript, Some(VisibleTranscript::Final(generation))
+                if generation == result.receipt.generation)
+        })
     }
     fn seal_gui_capture(&mut self, capture: Option<CaptureDiagnostics>) {
         if let Some(generation) = self.gui_diagnostics.capture_pending
@@ -594,6 +635,11 @@ impl Controller {
     pub(crate) fn read_microphones(&self) -> Result<audio::Inventory, String> {
         self.audio_lane.inventory()
     }
+    pub(crate) fn input_device_snapshot(
+        &self,
+    ) -> Result<audio::Inventory<audio::InputSnapshot>, String> {
+        self.audio_lane.input_snapshot()
+    }
     fn detach_gui_delivery(&mut self) {
         if self.gui_owns_delivery {
             self.gui_receipt = self.gui_dictation_receipt();
@@ -601,6 +647,17 @@ impl Controller {
         }
     }
     fn begin_gui_receipt(&mut self, generation: u64, automatic: bool) {
+        let context = std::mem::take(&mut self.gui_result_context);
+        if let Some(receipt) = self.gui_dictation_receipt()
+            && matches!(self.visible_transcript, Some(VisibleTranscript::Final(visible))
+                if visible == receipt.generation)
+        {
+            self.retained_gui_result = Some(RetainedGuiResult {
+                diagnostics: self.gui_diagnostics.projection(&receipt),
+                receipt,
+                context,
+            });
+        }
         self.gui_diagnostics = GuiDiagnostics::default();
         self.gui_receipt = Some(GuiDictationReceipt {
             session: generation,
@@ -742,6 +799,14 @@ impl Controller {
         let permissions = self.capture_permission_status();
         self.start_pinned_with_permissions(source, language, automatic, || permissions)
     }
+    pub(crate) fn accessibility_trusted(&self) -> bool {
+        #[cfg(debug_assertions)]
+        if self.audio_lane.fixture.is_some() {
+            return false;
+        }
+        Delivery::trusted()
+    }
+
     pub(crate) fn capture_permission_status(&self) -> (&'static str, &'static str) {
         #[cfg(debug_assertions)]
         if let Some(fixture) = &self.audio_lane.fixture {
@@ -793,9 +858,15 @@ impl Controller {
         target: Option<&crate::delivery::model::ApplicationTarget>,
         gui: bool,
     ) -> Option<(u64, bool)> {
-        self.prepare_start_with(source, language, automatic, gui, |delivery| {
-            delivery.begin_in_application(target)
-        })
+        let mut original_application = None;
+        let start = self.prepare_start_with(source, language, automatic, gui, |delivery| {
+            delivery
+                .begin_in_application_reporting(target, gui.then_some(&mut original_application))
+        });
+        if let Some(application) = original_application {
+            self.gui_result_context.target = Some(application);
+        }
+        start
     }
     fn prepare_start_with(
         &mut self,
@@ -854,6 +925,8 @@ impl Controller {
             }
         }
         if gui {
+            self.gui_result_context =
+                GuiResultContext::at_start(&source, &language, &self.catalog, &self.source_id);
             self.begin_recent_dictation(generation);
         } else {
             self.discard_recent_dictation_candidate();
@@ -911,6 +984,7 @@ impl Controller {
         self.recording = None;
         self.transcript.clear();
         self.visible_transcript = None;
+        self.retained_gui_result = None;
         self.raw_transcript = None;
         self.recorded_dictionary = Dictionary::default();
         let generation = self.state.begin()?;
@@ -1018,6 +1092,11 @@ impl Controller {
     }
     pub(crate) fn microphone_test_status(&self) -> &str {
         &self.microphone_test_status
+    }
+    pub(crate) fn microphone_test_display_is_stale(&self, now: Instant) -> bool {
+        self.microphone_test
+            .as_ref()
+            .is_some_and(|test| test.display_is_stale(now))
     }
     pub(crate) fn microphone_test_detail(&self, operation: Option<&str>) -> Option<&str> {
         operation
@@ -1418,6 +1497,7 @@ impl Controller {
         }
         self.transcript.clear();
         self.visible_transcript = None;
+        self.retained_gui_result = None;
         self.raw_transcript = None;
         self.started = Some(Instant::now());
         if let Some(incoming) = incoming {
@@ -1505,6 +1585,7 @@ impl Controller {
                 route,
             } if opening => {
                 self.capture_route = Some(route);
+                self.capture_recovered = false;
                 let incoming = self.capture_incoming.take();
                 self.capture_started(generation, preview, Some(lease), incoming);
                 if let Some(status) = self.capture_preview_status.take() {
@@ -1517,6 +1598,7 @@ impl Controller {
             }
             CaptureReply::Route(route) if self.state.phase == Phase::Recording => {
                 self.capture_route = Some(route);
+                self.capture_recovered = true;
                 self.message = "麦克风已恢复，正在继续录音。".into();
             }
             CaptureReply::Stopped {
@@ -2331,7 +2413,7 @@ pub(crate) mod stop_failure_regression {
         use crate::delivery::model::{
             Failure as InputFailure, Snapshot, Target, TextRange, byte_range,
         };
-        use crate::status_overlay::Stage;
+        use crate::status_overlay::{CaptureStage, Stage};
         use std::{cell::RefCell, rc::Rc};
         use voiceport_control::DeliveryState;
 
@@ -2396,11 +2478,14 @@ pub(crate) mod stop_failure_regression {
                     |delivery| delivery.begin_fixture(Box::new(Receiver(receiver.clone()))),
                 )
                 .unwrap();
-            assert_eq!(c.overlay_snapshot(true).stage, Some(Stage::Preparing));
+            assert_eq!(c.overlay_snapshot().stage, Some(Stage::Preparing));
             c.capture_started(generation, false, None, None);
-            assert_eq!(c.overlay_snapshot(true).stage, Some(Stage::Recording));
+            assert_eq!(
+                c.overlay_snapshot().stage,
+                Some(Stage::Capture(CaptureStage::Recording))
+            );
             assert!(c.state.transcribe());
-            assert_eq!(c.overlay_snapshot(true).stage, Some(Stage::Transcribing));
+            assert_eq!(c.overlay_snapshot().stage, Some(Stage::Transcribing));
             c.active = Some(ActiveJob {
                 generation,
                 cancel: CancellationToken::new(),
@@ -2478,7 +2563,7 @@ pub(crate) mod stop_failure_regression {
                 .unwrap();
             finish(&mut c, &outgoing, preceding, "迟到结果");
             assert_eq!(c.gui_dictation_receipt().unwrap(), pending, "{case}");
-            assert_eq!(c.overlay_snapshot(true).stage, Some(Stage::Transcribing));
+            assert_eq!(c.overlay_snapshot().stage, Some(Stage::Transcribing));
             assert!(c.transcript.is_empty());
             assert_eq!(receiver.borrow().writes, 0);
 
@@ -2490,7 +2575,7 @@ pub(crate) mod stop_failure_regression {
             }
             finish(&mut c, &outgoing, generation, result);
             assert_eq!(c.state.phase, Phase::Ready, "{case}");
-            assert_eq!(c.overlay_snapshot(true).stage, None);
+            assert_eq!(c.overlay_snapshot().stage, None);
             let receipt = c.gui_dictation_receipt().unwrap();
             assert_eq!(receipt.delivery.state, state, "{case}");
             assert_eq!(receipt.failure_stage.as_deref(), stage, "{case}");
@@ -2556,10 +2641,26 @@ pub(crate) mod stop_failure_regression {
             .prepare_start(SessionSource::ChatGpt, "zh".into(), false)
             .unwrap();
         assert!(cli > automatic.generation);
-        assert_eq!(c.overlay_snapshot(true).stage, None);
+        assert_eq!(c.overlay_snapshot().stage, None);
         assert_eq!(c.gui_dictation_receipt().unwrap(), automatic);
         c.cancel();
         assert_eq!(c.gui_dictation_receipt().unwrap(), automatic);
+        let original_source = c.gui_result_context().source.clone().unwrap();
+        c.gui_result_context.target = Some("原目标夹具".into());
+        c.language = "en".into();
+        c.reject_start("目标应用发生变化。");
+        let retained = c
+            .retained_gui_result()
+            .expect("previous final remains visible");
+        assert_eq!(retained.receipt, automatic);
+        assert_eq!(retained.diagnostics.generation, automatic.generation);
+        assert_eq!(
+            retained.context.source.as_deref(),
+            Some(original_source.as_str())
+        );
+        assert_eq!(retained.context.target.as_deref(), Some("原目标夹具"));
+        assert_eq!(c.gui_result_context().target, None);
+        assert_eq!(c.transcript, "测试");
         let (panel, _) = c
             .prepare_start_with(SessionSource::ChatGpt, "zh".into(), false, true, |_| {
                 panic!("panel-only GUI must not capture a target");
@@ -2571,11 +2672,12 @@ pub(crate) mod stop_failure_regression {
         assert_eq!(receipt.failure_stage, None);
         assert_eq!(receipt.delivery, Default::default());
         assert_eq!(receipt.block_reason, Some(BlockReason::PanelOnly));
-        assert_eq!(c.overlay_snapshot(true).stage, Some(Stage::Preparing));
+        assert_eq!(c.overlay_snapshot().stage, Some(Stage::Preparing));
         c.cancel();
-        assert_eq!(c.overlay_snapshot(true).stage, None);
+        assert_eq!(c.overlay_snapshot().stage, None);
         let cancelled = c.gui_dictation_receipt().unwrap();
         assert_eq!(cancelled.generation, panel);
+        assert_eq!(c.retained_gui_result().unwrap().receipt, automatic);
         assert_eq!(cancelled.transcription, TranscriptionState::Cancelled);
         assert_eq!(cancelled.block_reason, Some(BlockReason::Cancelled));
         finish(&mut c, &outgoing, panel, "晚于取消");
@@ -2584,6 +2686,7 @@ pub(crate) mod stop_failure_regression {
         c.workflows.dictionary_enabled = true;
         c.workflows.rules = crate::dictation_dictionary::parse_rules("北经 → 北京").unwrap();
         let (generation, corrected_receiver) = start(&mut c);
+        assert!(c.retained_gui_result().is_none());
         c.update_dictation_partial(c.state.generation(), "北经".into());
         assert_eq!(c.transcript, "北经");
         assert_eq!(corrected_receiver.borrow().writes, 0);
@@ -2621,15 +2724,16 @@ pub(crate) mod stop_failure_regression {
         let (jobs, incoming) = mpsc::sync_channel(1);
         let (outgoing, results) = mpsc::channel();
         c.worker = Some(Worker { jobs, results });
-        let recording = c.overlay_snapshot(true);
-        assert_eq!(recording.stage, Some(Stage::Recording));
+        let recording = c.overlay_snapshot();
+        assert_eq!(
+            recording.stage,
+            Some(Stage::Capture(CaptureStage::Recording))
+        );
         // Synthetic PCM went through the actual capture sink, but scheduling can
         // delay this observation past the meter's freshness window.
-        assert!(recording.level.is_none_or(|level| level == 3));
-        assert_eq!(c.overlay_snapshot(false).level, None);
+        assert!(c.capture_level().is_none_or(|level| level == 3));
         c.stop();
-        assert_eq!(c.overlay_snapshot(true).stage, Some(Stage::Transcribing));
-        assert_eq!(c.overlay_snapshot(true).level, None);
+        assert_eq!(c.overlay_snapshot().stage, Some(Stage::Transcribing));
         let job = incoming
             .try_recv()
             .expect("one ASR request for audible input");

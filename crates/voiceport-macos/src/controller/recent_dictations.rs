@@ -128,6 +128,11 @@ impl Controller {
             .find(|entry| entry.metadata.id == id)
     }
 
+    pub(crate) fn can_clear_recent_dictations(&self) -> bool {
+        let history = &self.recent_dictations;
+        history.candidate.is_some() || !history.entries.is_empty()
+    }
+
     pub(crate) fn clear_recent_dictations(&mut self) -> usize {
         self.recent_dictations.clear()
     }

@@ -12,7 +12,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub(super) use download_progress::DownloadProgress;
+pub(super) use download_progress::{DownloadProgress, DownloadSnapshot};
 pub(super) use install::{
     MANUAL_ONLY, QUIT_ACK, Staged, apply, can_install_in_app, checkable_installation,
 };
@@ -270,13 +270,13 @@ fn verify_download(bytes: &[u8], update: &Update) -> Result<()> {
 pub(super) fn stage(
     home: &Path,
     destination: &Path,
-    update: Update,
+    update: &Update,
     progress: &DownloadProgress,
 ) -> Result<Staged> {
     let target = install::PersonalInstall::current(destination)?;
-    let bytes = github::download(home, &update, progress)?;
+    let bytes = github::download(home, update, progress)?;
     progress.verifying();
-    verify_download(&bytes, &update)?;
+    verify_download(&bytes, update)?;
     install::stage(&target, &update.version, &bytes)
 }
 

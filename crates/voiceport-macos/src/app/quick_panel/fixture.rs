@@ -1,7 +1,12 @@
 //! Non-presented, main-thread AppKit fixture; never starts the VoicePort app.
 use super::*;
-use objc2_foundation::NSDictionary;
-use std::path::Path;
+use std::{path::Path, time::Instant};
+
+#[path = "visual_fixture.rs"]
+mod visual;
+pub(super) use visual::result_scene;
+
+mod refresh;
 
 pub(super) fn check_viewport(panel: &QuickPanel, view: &NSView) {
     let frame = view.convertRect_toView(view.bounds(), Some(&panel.document));
@@ -17,37 +22,30 @@ pub(super) fn check_viewport(panel: &QuickPanel, view: &NSView) {
     );
 }
 
-pub(super) fn capture(panel: &QuickPanel, dir: &Path, file: &str) {
-    let view = &panel.scroll;
-    let bounds = view.bounds();
-    let window = view.window().unwrap();
-    window.setContentSize(bounds.size);
-    view.layoutSubtreeIfNeeded();
-    view.display();
-    let rep = view
-        .bitmapImageRepForCachingDisplayInRect(bounds)
-        .expect("offscreen bitmap");
-    view.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
-    let png = unsafe {
-        rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
-    }
-    .expect("offscreen PNG");
-    let path = dir.join(file);
-    // Do not reuse an evidence filename from an earlier attempt.
-    use std::io::Write;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .unwrap()
-        .write_all(&png.to_vec())
-        .unwrap();
+pub(super) fn capture(panel: &QuickPanel, window: &NSWindow, dir: &Path, file: &str) -> Instant {
+    window.setContentSize(panel.scroll.bounds().size);
+    visual::capture_view(window, &panel.scroll, &dir.join(file))
 }
 
-pub(in crate::app) fn run(mtm: MainThreadMarker, output: &Path) {
-    let _app = NSApplication::sharedApplication(mtm);
+pub(in crate::app) fn run(mtm: MainThreadMarker, output: &Path, cli: Option<&Path>) {
+    let app = NSApplication::sharedApplication(mtm);
+    let target = NSApplicationActivationPolicy::Prohibited;
+    let setter_accepted = app.setActivationPolicy(target);
+    let current = app.activationPolicy();
+    let app_active = app.isActive();
+    eprintln!(
+        "native-ui-activation phase=startup current={} target={} setter_accepted={setter_accepted} app_active={app_active}",
+        current.0, target.0
+    );
+    assert_eq!(
+        current, target,
+        "offscreen fixture activation policy mismatch"
+    );
+    assert!(!app_active && app.keyWindow().is_none() && app.mainWindow().is_none());
+    let first_frame = Instant::now();
     let d = Delegate::new(mtm);
     let panel = d.build_quick_panel();
+    panel.refresh_update(&d, true, first_frame);
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
@@ -80,7 +78,11 @@ pub(in crate::app) fn run(mtm: MainThreadMarker, output: &Path) {
     check_viewport(&panel, &panel.status);
     check_viewport(&panel, &panel.shortcut);
     check_viewport(&panel, &panel.manage);
-    capture(&panel, output, "light-short.png");
+    let rendered_at = capture(&panel, &window, output, "light-short.png");
+    println!(
+        "native-ui-timing: first_offscreen_frame_us {}",
+        rendered_at.duration_since(first_frame).as_micros()
+    );
     println!("light: short name, persistent status and shortcut, add and full window");
 
     let long = "长标题 · A very long synthetic source with a distinct destination · ".repeat(4);
@@ -98,6 +100,10 @@ pub(in crate::app) fn run(mtm: MainThreadMarker, output: &Path) {
         }
         c.catalog.entries.push(entry);
     }
+    let dark = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }).unwrap();
+    window.setAppearance(Some(&dark));
+    assert_eq!(panel.header.effectiveAppearance().name(), dark.name());
+    let busy_update = Instant::now();
     panel.refresh_contents(&d, &c, "正在转写", "⌃⌥空格", false);
     assert!(
         panel
@@ -117,6 +123,11 @@ pub(in crate::app) fn run(mtm: MainThreadMarker, output: &Path) {
     assert!(panel.sources.isHidden());
     assert_eq!(panel.disclosure.title().to_string(), "更多来源（40）");
     let collapsed = panel.scroll.bounds().size.height;
+    let rendered_at = capture(&panel, &window, output, "dark-busy.png");
+    println!(
+        "native-ui-timing: busy_offscreen_refresh_us {}",
+        rendered_at.duration_since(busy_update).as_micros()
+    );
     panel.expanded.set(true);
     panel.refresh_contents(&d, &c, "需要处理 · 打开查看", "⌃⌥空格", true);
     assert!(panel.disclosure.isAccessibilityExpanded());
@@ -158,6 +169,12 @@ pub(in crate::app) fn run(mtm: MainThreadMarker, output: &Path) {
             unsafe { rows[39].button.nextKeyView() }.as_deref(),
             Some(&***panel.open)
         );
+        assert_eq!(
+            unsafe { panel.open.nextKeyView() }.as_deref(),
+            Some(&***panel.update)
+        );
+        assert_eq!(panel.update.action(), Some(sel!(updateVoicePort:)));
+        assert!(panel.update.isEnabled());
         assert!(
             window.makeFirstResponder(Some(&rows[39].button)),
             "last source accepts native keyboard focus"
@@ -184,12 +201,28 @@ pub(in crate::app) fn run(mtm: MainThreadMarker, output: &Path) {
             Some(&****rows[2].button)
         );
     }
-    let dark = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }).unwrap();
-    window.setAppearance(Some(&dark));
-    assert_eq!(panel.header.effectiveAppearance().name(), dark.name());
+    let retained = panel.rows.borrow()[2].button.clone();
+    let visible = panel.scroll.documentVisibleRect();
+    c.catalog.entries[3].title = "合成来源更新".into();
+    c.catalog.entries.remove(4);
+    panel.refresh_contents(&d, &c, "就绪", "⌃⌥空格", true);
+    assert!(std::ptr::eq(&*panel.rows.borrow()[2].button, &*retained));
+    assert!(std::ptr::eq(
+        window.firstResponder().as_deref().unwrap(),
+        &****retained
+    ));
+    assert_eq!(
+        panel.rows.borrow()[2].button.title().to_string(),
+        "合成来源更新"
+    );
+    assert_eq!(c.source_id, template.id);
+    let new_visible = panel.scroll.documentVisibleRect();
+    assert_eq!(visible.origin.y - new_visible.origin.y, ROW_HEIGHT);
+    println!("source delta: retained native control, responder, selection and viewport inset");
+
     panel.scroll_to_top();
     check_viewport(&panel, &panel.status);
-    capture(&panel, output, "dark-long.png");
+    capture(&panel, &window, output, "dark-long.png");
     println!(
         "dark: long duplicate titles, 40 alternatives, stable IDs, disabled reason, key-view links and scroll-to-last focus"
     );
@@ -213,11 +246,10 @@ pub(in crate::app) fn run(mtm: MainThreadMarker, output: &Path) {
     assert_eq!(panel.scroll.bounds().size.height, 236.);
     check_viewport(&panel, &panel.open);
     check_viewport(&panel, &panel.shortcut);
-    check_viewport(&panel, &show);
     assert!(window.makeFirstResponder(Some(&show)));
     check_viewport(&panel, &show);
     panel.scroll_to_top();
-    capture(&panel, output, "dark-small-recovery.png");
+    capture(&panel, &window, output, "dark-small-recovery.png");
     let (recovery, copy) = panel.fixture_recovery(&d, true);
     panel.position(PanelLayout::new(
         0,
@@ -229,6 +261,7 @@ pub(in crate::app) fn run(mtm: MainThreadMarker, output: &Path) {
     panel.relink_key_views();
     assert!(window.makeFirstResponder(Some(&copy)));
     check_viewport(&panel, &copy);
+    capture(&panel, &window, output, "dark-small-revealed.png");
     assert!(window.makeFirstResponder(Some(&panel.manage)));
     check_viewport(&panel, &panel.manage);
     println!(
@@ -249,8 +282,12 @@ pub(in crate::app) fn run(mtm: MainThreadMarker, output: &Path) {
     );
     assert!(panel.manage.isEnabled());
     check_viewport(&panel, &panel.manage);
-    capture(&panel, output, "light-empty.png");
+    capture(&panel, &window, output, "light-empty.png");
     assert!(!window.isVisible() && !window.isKeyWindow());
     window.close();
     println!("empty: add remains available; never showed or made the fixture window key");
+    if let Some(cli) = cli {
+        refresh::run(mtm, cli);
+    }
+    println!("native-ui: owned, non-presented AppKit captures completed without activation");
 }

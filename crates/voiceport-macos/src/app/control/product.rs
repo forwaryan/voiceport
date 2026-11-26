@@ -2,7 +2,7 @@ use super::{Control, Pending, Response, busy, err, missing};
 use crate::{
     app::{
         Delegate, microphone, model_manager, source_manager::destination::Destination,
-        status_overlay,
+        status_overlay, workbench,
     },
     controller::{Controller, VisibleTranscript},
     dictation_dictionary::{Dictionary, format_rules, parse_rules},
@@ -79,7 +79,7 @@ impl Delegate {
                 user_action(page, "choose_and_approve_source_test")
             }
             Page::Microphone => {
-                microphone::show(self);
+                self.show_workbench_page(workbench::Page::Device);
                 shown(page)
             }
             Page::QuickPanel => {

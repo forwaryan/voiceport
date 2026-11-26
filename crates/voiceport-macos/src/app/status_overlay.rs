@@ -1,7 +1,7 @@
 //! Non-interactive AppKit HUD; no text, app name or device metadata crosses into it.
 use crate::{
     delivery::OverlayFocus,
-    status_overlay::{Snapshot, Stage, Visibility},
+    status_overlay::{CaptureStage, Snapshot, Stage, Visibility},
 };
 use objc2::{MainThreadOnly, define_class, msg_send, rc::Retained};
 use objc2_app_kit::*;
@@ -15,7 +15,7 @@ use objc2_foundation::{
 pub(super) mod fixture;
 use std::time::{Duration, Instant};
 
-const WIDTH: f64 = 168.;
+const WIDTH: f64 = 180.;
 const HEIGHT: f64 = 36.;
 const MARGIN: f64 = 14.;
 const GEOMETRY_INTERVAL: Duration = Duration::from_millis(300);
@@ -46,7 +46,26 @@ pub(super) struct Overlay {
 }
 
 impl Overlay {
-    pub(super) fn update(&mut self, mtm: MainThreadMarker, snapshot: Snapshot, enabled: bool) {
+    pub(super) fn update(
+        &mut self,
+        mtm: MainThreadMarker,
+        snapshot: Snapshot,
+        enabled: bool,
+        capture_level: impl FnOnce() -> Option<u8>,
+    ) {
+        self.update_with_motion(mtm, snapshot, enabled, capture_level, || {
+            NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+        });
+    }
+
+    fn update_with_motion(
+        &mut self,
+        mtm: MainThreadMarker,
+        snapshot: Snapshot,
+        enabled: bool,
+        capture_level: impl FnOnce() -> Option<u8>,
+        reduce_motion: impl FnOnce() -> bool,
+    ) {
         if self
             .generation
             .is_some_and(|current| current > snapshot.generation)
@@ -81,13 +100,12 @@ impl Overlay {
             }
             return;
         };
-        let reduce_motion = NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
-        let level = (snapshot.stage == Some(Stage::Recording))
-            .then_some(snapshot.level)
+        let level = (snapshot.stage == Some(stage) && stage.shows_level() && !reduce_motion())
+            .then(capture_level)
             .flatten();
         self.panel
             .get_or_insert_with(|| Panel::new(mtm))
-            .show(frame, stage, level, reduce_motion);
+            .show(frame, stage, level);
     }
 
     fn hide(&mut self) {
@@ -357,7 +375,7 @@ impl Panel {
         icon.setAccessibilityElement(false);
         content.addSubview(&icon);
         let label = NSTextField::labelWithString(ns_string!(""), mtm);
-        label.setFrame(rect(37., 9., 92., 18.));
+        label.setFrame(rect(37., 9., 102., 18.));
         label.setFont(Some(&NSFont::systemFontOfSize(13.)));
         label.setAccessibilityElement(true);
         content.addSubview(&label);
@@ -365,7 +383,7 @@ impl Panel {
             let height = 4. + 3. * i as f64;
             let bar = NSBox::initWithFrame(
                 NSBox::alloc(mtm),
-                rect(130. + 6. * i as f64, (HEIGHT - height) / 2., 3., height),
+                rect(142. + 6. * i as f64, (HEIGHT - height) / 2., 3., height),
             );
             bar.setBoxType(NSBoxType::Custom);
             bar.setBorderWidth(0.);
@@ -385,12 +403,20 @@ impl Panel {
         }
     }
 
-    fn show(&mut self, frame: NSRect, stage: Stage, level: Option<u8>, reduce_motion: bool) {
-        let level = level.filter(|_| stage == Stage::Recording && !reduce_motion);
+    fn show(&mut self, frame: NSRect, stage: Stage, level: Option<u8>) {
         if self.last.is_none_or(|(last, _)| last != stage) {
             let (text, icon) = match stage {
                 Stage::Preparing => ("正在准备听写", "mic"),
-                Stage::Recording => ("正在录音", "record.circle.fill"),
+                Stage::Capture(capture) => (
+                    capture.title(),
+                    match capture {
+                        CaptureStage::Opening => "mic",
+                        CaptureStage::Recording | CaptureStage::Resumed => "record.circle.fill",
+                        CaptureStage::Recovering => "arrow.clockwise",
+                        CaptureStage::Disconnected => "mic.slash",
+                        CaptureStage::Finalizing => "stop.circle",
+                    },
+                ),
                 Stage::Transcribing => ("正在转写", "waveform"),
                 Stage::Delivering => ("正在输入文字", "text.cursor"),
             };
@@ -405,7 +431,7 @@ impl Panel {
                 icon.setTemplate(true);
             }
             self.icon.setImage(icon.as_deref());
-            let tint = if stage == Stage::Recording {
+            let tint = if stage.shows_level() {
                 NSColor::systemRedColor()
             } else {
                 NSColor::labelColor()

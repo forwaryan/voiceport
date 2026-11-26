@@ -35,7 +35,7 @@ pub(super) fn parse(words: &[&str]) -> Result<Action, Response> {
                 "dictionary" => Page::Dictionary,
                 "scenes" => Page::Scenes,
                 "quick-panel" => Page::QuickPanel,
-                "file" => Page::File,
+                "file" | "files" => Page::File,
                 _ => return Err(invalid()),
             },
         },

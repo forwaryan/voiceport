@@ -101,6 +101,7 @@ pub(super) fn verify(fixture: &Fixture<'_>, folder: &Path) {
     let failed = wait_for(fixture, "failed");
     assert_eq!(failed["reason"], QUERY_FAILURE);
     assert_eq!(failed["latest_version"], Value::Null);
+    fixture.owner.verify_update_release_link(true);
     read_only();
 
     let newer = "9000.1.0";
@@ -130,6 +131,7 @@ pub(super) fn verify(fixture: &Fixture<'_>, folder: &Path) {
     assert_eq!(current["latest_version"], version);
     assert_eq!(current["latest_version_stale"], false);
     assert_eq!(current["reason"], Value::Null);
+    fixture.owner.verify_update_release_link(false);
 
     begin().send(Ok(release("0.0.1", true))).unwrap();
     assert_eq!(wait_for(fixture, "local_newer")["latest_version"], "0.0.1");
@@ -137,6 +139,10 @@ pub(super) fn verify(fixture: &Fixture<'_>, folder: &Path) {
     let incompatible = wait_for(fixture, "incompatible");
     assert_eq!(incompatible["latest_version"], newer);
     assert_eq!(incompatible["reason"], "此版本缺少 macOS arm64 更新包。");
+    fixture.owner.verify_update_release_link(true);
+    begin().send(Ok(release(newer, true))).unwrap();
+    wait_for(fixture, "update_available");
+    fixture.owner.verify_update_progress_views(newer);
     read_only();
     assert_eq!(fs::read(&marker).unwrap(), b"old fixture bundle");
     assert_eq!(fs::read_dir(&installed).unwrap().count(), 1);
@@ -149,5 +155,4 @@ pub(super) fn verify(fixture: &Fixture<'_>, folder: &Path) {
     println!(
         "PASS production update IPC: versions, explicit lookup, duplicate busy, cached stale after refresh failure, no update, local newer, incompatible release, read-only status and untouched fixture bundle"
     );
-    fixture.owner.verify_update_progress_menu();
 }

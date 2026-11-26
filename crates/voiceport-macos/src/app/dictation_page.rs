@@ -28,9 +28,17 @@ pub(super) struct Activity {
     pub(super) can_retry: bool,
 }
 
-pub(super) struct Snapshot<'a> {
-    pub(super) receipt: Option<&'a GuiDictationReceipt>,
+#[derive(Clone, Copy)]
+pub(super) struct ResultDetails<'a> {
+    pub(super) receipt: &'a GuiDictationReceipt,
     pub(super) diagnostics: Option<&'a GuiDictationDiagnostics>,
+    pub(super) source: Option<&'a str>,
+    pub(super) target: Option<&'a str>,
+}
+
+pub(super) struct Snapshot<'a> {
+    pub(super) attempt: Option<ResultDetails<'a>>,
+    pub(super) retained: Option<ResultDetails<'a>>,
     pub(super) origin: Option<TranscriptOrigin>,
     pub(super) original: &'a str,
     pub(super) raw_available: bool,
@@ -47,23 +55,54 @@ fn receipt_text(receipt: &GuiDictationReceipt) -> &'static str {
         Empty => "本轮没有识别到文字",
         Failed => "本轮转写失败",
         Cancelled => "本轮已取消",
-        Completed => match receipt.delivery.state {
-            DeliveryState::NotSent if matches!(receipt.block_reason, Some(Reason::PanelOnly)) => {
-                "转写完成 · 仅在面板显示"
-            }
-            DeliveryState::NotSent
-                if matches!(receipt.block_reason, Some(Reason::RetryPanelOnly)) =>
-            {
-                "重试完成 · 未自动输入"
-            }
-            DeliveryState::NotSent => "转写完成 · 未投递",
-            DeliveryState::Waiting => "转写完成 · 等待投递",
-            DeliveryState::AwaitingConfirmation => "转写完成 · 等待目标确认",
-            DeliveryState::PartiallySent => "转写完成 · 已执行部分写入",
-            DeliveryState::Confirmed => "转写完成 · 原输入框已确认",
-            DeliveryState::Submitted => "转写完成 · 已提交，接收未验证",
-            DeliveryState::Uncertain => "转写完成 · 投递结果不明",
-        },
+        Completed if receipt.block_reason == Some(Reason::RetryPanelOnly) => {
+            "重试完成 · 正文保留在工作台"
+        }
+        Completed => delivery_text(receipt),
+    }
+}
+
+fn delivery_text(receipt: &GuiDictationReceipt) -> &'static str {
+    match receipt.delivery.state {
+        DeliveryState::NotSent if receipt.block_reason == Some(Reason::PanelOnly) => {
+            "仅在工作台显示"
+        }
+        DeliveryState::NotSent => "未提交写入",
+        DeliveryState::Waiting => "等待写入",
+        DeliveryState::AwaitingConfirmation => "等待原输入框读回",
+        DeliveryState::PartiallySent => "已执行部分写入",
+        DeliveryState::Confirmed if confirmed_in_place(receipt) => "原输入框已确认",
+        DeliveryState::Confirmed => "保留原输入框的读回记录",
+        DeliveryState::Submitted => "已提交，接收未验证",
+        DeliveryState::Uncertain => "投递结果不明",
+    }
+}
+
+fn confirmed_in_place(receipt: &GuiDictationReceipt) -> bool {
+    let delivery = receipt.delivery;
+    delivery.state == DeliveryState::Confirmed
+        && delivery.submitted_operations > 0
+        && delivery.confirmed_operations == delivery.submitted_operations
+        && !delivery.stopped
+        && receipt.failure_stage.is_none()
+}
+
+fn needs_inspection(receipt: &GuiDictationReceipt) -> bool {
+    let delivery = receipt.delivery;
+    matches!(
+        delivery.state,
+        DeliveryState::Uncertain | DeliveryState::Submitted | DeliveryState::PartiallySent
+    ) || (delivery.state == DeliveryState::Confirmed && !confirmed_in_place(receipt))
+        || (delivery.stopped && delivery.submitted_operations > 0)
+}
+
+impl<'a> Snapshot<'a> {
+    fn text_details(&self) -> Option<ResultDetails<'a>> {
+        let origin = self.origin?;
+        self.attempt
+            .into_iter()
+            .chain(self.retained)
+            .find(|details| details.receipt.generation == origin.generation)
     }
 }
 
@@ -77,7 +116,7 @@ fn reason_text(reason: Reason) -> &'static str {
         Reason::MicrophoneDenied => "未获得麦克风权限；请在系统设置中检查。",
         Reason::CaptureFailed => "录音未能完成；请检查所选输入设备。",
         Reason::TranscriptionFailed => "转写未完成；仅在录音可复用时提供重试。",
-        Reason::EmptyTranscript => "未生成最终文字；展开诊断可查看采集状况。",
+        Reason::EmptyTranscript => "展开投递详情可查看本轮采集状况。",
         Reason::Cancelled => "已停止本轮操作；不会撤回已提交的文字。",
     }
 }
@@ -86,12 +125,19 @@ fn next_step(receipt: Option<&GuiDictationReceipt>) -> &'static str {
     let Some(receipt) = receipt else {
         return "用快捷键或本页按钮开始听写。";
     };
-    if matches!(
-        receipt.delivery.state,
-        DeliveryState::Uncertain | DeliveryState::Submitted
-    ) || (receipt.delivery.stopped && receipt.delivery.submitted_operations > 0)
-    {
-        return "先检查目标是否已有文字，再决定是否手动粘贴。不会自动重投。";
+    if !receipt.delivery.stopped && receipt.failure_stage.is_none() {
+        match receipt.delivery.state {
+            DeliveryState::Waiting | DeliveryState::AwaitingConfirmation => {
+                return "请等待本轮投递结算后再检查原输入框。";
+            }
+            DeliveryState::PartiallySent => {
+                return "已有部分写入，请等待本轮投递结算后再检查原输入框。";
+            }
+            _ => {}
+        }
+    }
+    if needs_inspection(receipt) {
+        return "先检查原输入框已有的内容，再决定是否复制正文并手动补写。";
     }
     if let Some(reason) = receipt.block_reason {
         return reason_text(reason);
@@ -99,36 +145,59 @@ fn next_step(receipt: Option<&GuiDictationReceipt>) -> &'static str {
     if receipt.transcription == TranscriptionState::Completed
         && receipt.delivery.state == DeliveryState::NotSent
     {
-        return "可复制结果后手动粘贴；不会自动重投。";
+        return if receipt.failure_stage.as_deref() == Some("focus") {
+            "原输入焦点不可用或已改变。完整文字可手动复制。"
+        } else {
+            "完整文字可手动复制。"
+        };
     }
-    "可展开诊断查看本轮采集、转写与投递回执。"
+    ""
 }
 
-fn details(
-    receipt: Option<&GuiDictationReceipt>,
-    diagnostics: Option<&GuiDictationDiagnostics>,
-) -> String {
-    let Some(r) = receipt else {
-        return "还没有 GUI 听写回执。".into();
+fn details(shown: ResultDetails<'_>, newer: Option<ResultDetails<'_>>) -> String {
+    let r = shown.receipt;
+    let automatic = if r.automatic { "是" } else { "否" };
+    let stopped = if r.delivery.stopped { "是" } else { "否" };
+    let target = shown.target.unwrap_or(if r.automatic {
+        "未取得原应用信息"
+    } else {
+        "仅工作台"
+    });
+    let confirmation = if confirmed_in_place(r) {
+        "已读回原输入框并确认全部写入"
+    } else if r.delivery.confirmed_operations > 0 {
+        "已有操作通过读回；整轮未确认"
+    } else {
+        "未取得原输入框的读回确认"
+    };
+    let is_retry = r.session != r.generation;
+    let delivery_label = if is_retry {
+        "原尝试的投递回执"
+    } else {
+        "投递回执"
     };
     let count = |n: Option<u64>| n.map_or_else(|| "—".into(), |n| n.to_string());
     let ms = |n: Option<u64>| n.map_or_else(|| "—".into(), |n| format!("{n} ms"));
     let mut text = format!(
-        "会话 {} · 尝试 {}\n{}\n自动输入请求：{}\n路径：{}\n失败阶段：{}\n写入操作：提交 {} / 读回确认 {}\n已停止：{}",
+        "原目标应用：{target}\n{delivery_label}：{}\n原位确认：{confirmation}\n来源设置：{}\n\n会话 {} · 尝试 {}\n自动输入请求：{automatic}\n路径：{}\n失败阶段：{}\n写入操作：提交 {} / 读回确认 {}\n已停止：{stopped}",
+        delivery_text(r),
+        shown.source.unwrap_or("无本轮来源记录"),
         r.session,
         r.generation,
-        receipt_text(r),
-        if r.automatic { "是" } else { "否" },
         r.method.as_deref().unwrap_or("—"),
         r.failure_stage.as_deref().unwrap_or("—"),
         r.delivery.submitted_operations,
         r.delivery.confirmed_operations,
-        if r.delivery.stopped { "是" } else { "否" }
     );
+    if is_retry {
+        text.push_str("\n上方写入与读回记录属于原尝试。重试转写仅在工作台保留正文。");
+    }
     if let Some(reason) = r.block_reason {
         text.push_str(&format!("\n原因：{}", reason_text(reason)));
     }
-    if let Some(d) = diagnostics.filter(|d| (d.session, d.generation) == (r.session, r.generation))
+    if let Some(d) = shown
+        .diagnostics
+        .filter(|d| (d.session, d.generation) == (r.session, r.generation))
     {
         if let Some(c) = d.capture {
             let signal = match c.signal {
@@ -158,6 +227,15 @@ fn details(
         ));
     } else {
         text.push_str("\n无匹配的本轮采集或耗时记录。");
+    }
+    if let Some(newer) = newer {
+        text.push_str(&format!(
+            "\n\n最近一次尝试：{}",
+            receipt_text(newer.receipt)
+        ));
+        if let Some(reason) = newer.receipt.block_reason {
+            text.push_str(&format!("\n{}", reason_text(reason)));
+        }
     }
     text
 }
@@ -190,6 +268,7 @@ pub(super) struct Page {
     headline: Retained<NSTextField>,
     guidance: Retained<NSTextField>,
     result_label: Retained<NSTextField>,
+    empty: Retained<NSTextField>,
     shortcut: Retained<NSTextField>,
     feedback: Retained<NSTextField>,
     pub(super) result: Retained<NSTextView>,
@@ -309,72 +388,90 @@ fn set_title(button: &NSButton, text: &str) {
 
 impl Page {
     pub(super) fn build(mtm: MainThreadMarker, target: &AnyObject, area: &NSView) -> Self {
+        let NSSize { width, height } = area.bounds().size;
+        let top = |y| height - 408. + y;
+        let trailing = |x| width - 572. + x;
         let make = |title, action, id, x, y, w| {
             button(mtm, target, area, title, action, id, rect(x, y, w, 32.))
         };
-        let heading = label(mtm, area, "听写结果", rect(0., 376., 246., 30.), 21.);
+        let heading = label(mtm, area, "听写结果", rect(0., top(376.), 180., 30.), 21.);
         heading.setFont(Some(&NSFont::boldSystemFontOfSize(21.)));
         let open_file = make(
             "转写音频文件…",
             sel!(chooseFileTranscription:),
             "voiceport.dictation.open-file",
-            250.,
-            375.,
-            155.,
+            trailing(270.),
+            top(375.),
+            145.,
         );
         let disclosure = make(
-            "展开本轮诊断",
+            "展开投递详情",
             sel!(toggleDictationDiagnostics:),
             "voiceport.dictation.diagnostics-toggle",
-            415.,
-            375.,
-            157.,
+            trailing(422.),
+            top(375.),
+            150.,
         );
         disclosure.setAccessibilityExpanded(false);
-        let headline = label(mtm, area, "就绪", rect(2., 344., 568., 25.), 16.);
-        let guidance = label(mtm, area, "", rect(2., 305., 568., 35.), 12.);
-        let result_label = label(mtm, area, "转写正文", rect(2., 276., 153., 24.), 13.);
+        let headline = label(mtm, area, "就绪", rect(2., top(344.), width - 4., 25.), 16.);
+        let guidance = label(mtm, area, "", rect(2., top(305.), width - 4., 35.), 12.);
+        let result_label = label(
+            mtm,
+            area,
+            "转写正文",
+            rect(2., top(276.), trailing(175.), 24.),
+            13.,
+        );
+        let empty = label(
+            mtm,
+            area,
+            "完成听写后，正文会显示在这里。",
+            rect(2., top(233.), width - 4., 28.),
+            13.,
+        );
+        empty.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        empty.setHidden(true);
         let raw_original = make(
             "查看词典处理前文字",
             sel!(showOriginalTranscript:),
             "voiceport.dictation.raw-original",
-            157.,
-            272.,
-            139.,
+            trailing(178.),
+            top(272.),
+            146.,
         );
         raw_original.setHidden(true);
         let edit = make(
             "编辑副本",
             sel!(editDictationCopy:),
             "voiceport.dictation.edit-copy",
-            306.,
-            272.,
-            128.,
+            trailing(331.),
+            top(272.),
+            116.,
         );
         let copy = make(
             "复制原文",
             sel!(copyDictationResult:),
             "voiceport.dictation.copy",
-            444.,
-            272.,
-            128.,
+            trailing(454.),
+            top(272.),
+            118.,
         );
         let (result_scroll, result) = text_area(
             mtm,
             area,
-            rect(0., 104., 572., 162.),
+            rect(0., 104., width, top(162.)),
             "voiceport.transcript",
             "转写正文（只读）",
         );
         let (diagnostic_scroll, diagnostic) = text_area(
             mtm,
             area,
-            rect(302., 104., 270., 162.),
+            rect(width / 2. + 7., 104., width / 2. - 7., top(162.)),
             "voiceport.dictation.diagnostics",
-            "本轮诊断详情（只读）",
+            "投递详情（只读）",
         );
         diagnostic_scroll.setHidden(true);
-        let feedback = label(mtm, area, "", rect(2., 69., 568., 31.), 12.);
+        let feedback = label(mtm, area, "", rect(2., 69., width - 4., 31.), 12.);
         let toggle = make(
             "开始听写",
             sel!(toggle:),
@@ -387,7 +484,7 @@ impl Page {
             "取消听写",
             sel!(cancel:),
             "voiceport.dictation.cancel",
-            348.,
+            trailing(348.),
             27.,
             104.,
         );
@@ -395,23 +492,17 @@ impl Page {
             "重试转写",
             sel!(retry:),
             "voiceport.dictation.retry-recording",
-            460.,
+            trailing(460.),
             27.,
             112.,
         );
         let shortcut = label(mtm, area, "", rect(152., 30., 187., 25.), 12.);
-        label(
-            mtm,
-            area,
-            "复制和编辑不会发送文字；重试转写不会自动输入。",
-            rect(2., 0., 566., 22.),
-            12.,
-        );
         Self {
             area: area.retain(),
             headline,
             guidance,
             result_label,
+            empty,
             shortcut,
             feedback,
             result,
@@ -432,9 +523,13 @@ impl Page {
         }
     }
 
+    pub(super) fn view(&self) -> &NSView {
+        &self.area
+    }
+
     // Link document views themselves, not the NSScrollView wrappers. Native
     // AppKit still decides which disabled/hidden views are valid key targets.
-    fn key_views(&self) -> [&NSView; 10] {
+    pub(super) fn key_views(&self) -> [&NSView; 10] {
         [
             &self.disclosure,
             &self.open_file,
@@ -449,42 +544,57 @@ impl Page {
         ]
     }
 
-    pub(super) fn link_key_views(&self, first: &NSView) {
-        let views = self.key_views();
-        for (previous, next) in std::iter::once(first)
-            .chain(views)
-            .zip(views.into_iter().chain(std::iter::once(first)))
-        {
-            unsafe {
-                previous.setNextKeyView(Some(next));
-            }
-        }
-    }
-
     pub(super) fn refresh(&self, s: Snapshot<'_>) {
+        let attempt = s.attempt.map(|details| details.receipt);
+        let text_details = s.text_details();
+        let text_receipt = text_details.map(|details| details.receipt);
         let title = s
             .activity
             .title
-            .or_else(|| s.receipt.map(receipt_text))
+            .or_else(|| attempt.map(receipt_text))
             .unwrap_or("就绪");
         set_label(&self.headline, title);
-        set_label(&self.guidance, next_step(s.receipt));
+
+        let current_round = s
+            .origin
+            .zip(attempt)
+            .is_some_and(|(origin, receipt)| origin.generation == receipt.generation);
+        let has_text = !s.original.trim().is_empty();
+        let is_final = s.origin.is_some_and(|origin| origin.final_text) && has_text;
+        let displayed_receipt = if has_text { text_receipt } else { attempt };
+        let guidance = if has_text && !current_round {
+            if text_receipt.is_some_and(needs_inspection) {
+                "下方是保留正文。先检查它的原输入框，再决定是否复制并补写。"
+            } else {
+                "下方是保留正文。最新尝试的状态显示在上方。"
+            }
+        } else {
+            next_step(displayed_receipt)
+        };
+        set_label(&self.guidance, guidance);
+
+        let can_edit = is_final
+            && text_receipt.is_none_or(|receipt| {
+                !needs_inspection(receipt)
+                    && !matches!(
+                        receipt.delivery.state,
+                        DeliveryState::Waiting | DeliveryState::AwaitingConfirmation
+                    )
+            });
         let origin_changed = self.origin.replace(s.origin) != s.origin;
-        if origin_changed || self.original.borrow().as_str() != s.original {
+        if origin_changed
+            || self.original.borrow().as_str() != s.original
+            || (self.editing.get() && !can_edit)
+        {
             *self.original.borrow_mut() = s.original.into();
             self.editing.set(false);
             self.result.setEditable(false);
             self.result.setString(&NSString::from_str(s.original));
             set_label(&self.feedback, "");
         }
-        let is_final = s.origin.is_some_and(|o| o.final_text) && !s.original.trim().is_empty();
-        let current_round = s
-            .origin
-            .zip(s.receipt)
-            .is_some_and(|(o, r)| o.generation == r.generation);
         let name = if self.editing.get() {
             "编辑副本"
-        } else if s.original.trim().is_empty() {
+        } else if !has_text {
             "暂无正文"
         } else if !is_final && s.activity.recording {
             "实时预览（非最终文字）"
@@ -507,22 +617,30 @@ impl Page {
         if self.result.accessibilityLabel().as_deref() != Some(&*ax_name) {
             self.result.setAccessibilityLabel(Some(&ax_name));
         }
-        self.edit.setEnabled(is_final);
+        self.edit.setEnabled(can_edit);
         self.copy.setEnabled(is_final);
         let raw_visible = is_final && current_round && s.raw_available;
         self.raw_original.setHidden(!raw_visible);
         self.raw_original.setEnabled(raw_visible && s.can_open_raw);
-        if s.original.trim().is_empty() && !self.result_scroll.isHidden() {
-            if let Some(w) = self.area.window()
-                && w.firstResponder()
-                    .as_deref()
-                    .is_some_and(|r| std::ptr::eq(r, &****self.result))
-            {
-                w.makeFirstResponder(Some(&self.disclosure));
-            }
-            self.result_scroll.setHidden(true);
-        } else if !s.original.trim().is_empty() {
-            self.result_scroll.setHidden(false);
+        self.disclosure
+            .setEnabled(s.attempt.is_some() || text_details.is_some());
+        if !has_text
+            && !self.result_scroll.isHidden()
+            && let Some(w) = self.area.window()
+            && w.firstResponder()
+                .as_deref()
+                .is_some_and(|r| std::ptr::eq(r, &****self.result))
+        {
+            let fallback = if self.disclosure.isEnabled() {
+                &self.disclosure
+            } else {
+                &self.open_file
+            };
+            w.makeFirstResponder(Some(fallback));
+        }
+        if self.result_scroll.isHidden() == has_text {
+            self.result_scroll.setHidden(!has_text);
+            self.empty.setHidden(has_text);
         }
         set_title(
             &self.edit,
@@ -552,10 +670,30 @@ impl Page {
         );
         self.toggle.setEnabled(s.activity.can_toggle);
         self.cancel.setEnabled(s.activity.can_cancel);
-        self.retry.setEnabled(s.activity.can_retry);
+        self.retry
+            .setEnabled(s.activity.can_retry && !attempt.is_some_and(needs_inspection));
         set_label(&self.shortcut, s.shortcut);
         if !self.diagnostic_scroll.isHidden() {
-            let detail = NSString::from_str(&details(s.receipt, s.diagnostics));
+            if !self.disclosure.isEnabled() {
+                self.toggle_details();
+                return;
+            }
+            let detail = if let Some(shown) = text_details {
+                let newer = s
+                    .attempt
+                    .filter(|attempt| attempt.receipt.generation != shown.receipt.generation);
+                details(shown, newer)
+            } else if let Some(attempt) = s.attempt {
+                let description = details(attempt, None);
+                if has_text {
+                    format!("当前正文没有对应的 GUI 回执。\n\n最近一次 GUI 尝试\n{description}")
+                } else {
+                    description
+                }
+            } else {
+                String::new()
+            };
+            let detail = NSString::from_str(&detail);
             if *self.diagnostic.string() != *detail {
                 self.diagnostic.setString(&detail);
             }
@@ -564,18 +702,39 @@ impl Page {
 
     pub(super) fn toggle_details(&self) {
         let open = self.diagnostic_scroll.isHidden();
-        if !open && let Some(w) = self.area.window() {
-            w.makeFirstResponder(Some(&self.disclosure));
+        if open && !self.disclosure.isEnabled() {
+            return;
+        }
+        if !open
+            && let Some(w) = self.area.window()
+            && w.firstResponder()
+                .as_deref()
+                .is_some_and(|r| std::ptr::eq(r, &****self.diagnostic))
+        {
+            let fallback = if self.disclosure.isEnabled() {
+                &self.disclosure
+            } else {
+                &self.open_file
+            };
+            w.makeFirstResponder(Some(fallback));
         }
         self.diagnostic_scroll.setHidden(!open);
-        self.result_scroll
-            .setFrame(rect(0., 104., if open { 288. } else { 572. }, 162.));
+        if !open {
+            self.diagnostic.setString(&NSString::from_str(""));
+        }
+        let NSSize { width, height } = self.area.bounds().size;
+        self.result_scroll.setFrame(rect(
+            0.,
+            104.,
+            if open { width / 2. - 7. } else { width },
+            height - 246.,
+        ));
         set_title(
             &self.disclosure,
             if open {
-                "收起本轮诊断"
+                "收起投递详情"
             } else {
-                "展开本轮诊断"
+                "展开投递详情"
             },
         );
         self.disclosure.setAccessibilityExpanded(open);
