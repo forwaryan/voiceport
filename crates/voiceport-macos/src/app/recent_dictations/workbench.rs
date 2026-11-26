@@ -316,12 +316,12 @@ impl HistoryPage {
             }
             *entries = summaries;
         }
-        let has_entries = !entries.is_empty();
-        if !has_entries && self.has_focus(&controls.clear) {
+        let can_clear = c.can_clear_recent_dictations();
+        if !can_clear && self.has_focus(&controls.clear) {
             self.focus(&controls.keep);
         }
-        controls.clear.setEnabled(has_entries);
-        controls.empty.setHidden(has_entries);
+        controls.clear.setEnabled(can_clear);
+        controls.empty.setHidden(!entries.is_empty());
         let empty_text = if enabled {
             ns_string!("本次运行暂无听写记录")
         } else {

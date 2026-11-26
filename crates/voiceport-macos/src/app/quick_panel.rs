@@ -384,6 +384,13 @@ impl Delegate {
             self.show_quick_panel();
         }
     }
+    pub(super) fn hide_workbench_for_quick_panel(&self) {
+        // Ordering out the window does not send a close or minimize notification.
+        if let Some(window) = self.ivars().window.get() {
+            self.clear_workbench_history();
+            window.orderOut(None);
+        }
+    }
     pub(super) fn show_quick_panel(&self) {
         if self.ivars().quitting.get() {
             return;
@@ -397,9 +404,7 @@ impl Delegate {
             .get_or_init(|| self.build_quick_panel());
         // Activating an accessory app can bring its existing windows forward.
         // The status icon presents only the quick panel, even after a full-window visit.
-        if let Some(window) = self.ivars().window.get() {
-            window.orderOut(None);
-        }
+        self.hide_workbench_for_quick_panel();
         if let Some(screen) = button.window().and_then(|window| window.screen()) {
             panel.screen_height.set(screen.visibleFrame().size.height);
         }
@@ -464,7 +469,10 @@ impl Delegate {
                 .is_some_and(|c| c.source_id == id)
             {
                 panel.expanded.set(false);
-                if let Some(window) = sender.window() {
+                // The source refresh may already have removed the selected row.
+                if panel.popover.isShown()
+                    && let Some(window) = panel.disclosure.window()
+                {
                     window.makeFirstResponder(Some(&panel.disclosure));
                 }
             }

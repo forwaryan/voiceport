@@ -50,6 +50,10 @@ impl UpdateViewPhase {
     pub fn can_install(self) -> bool {
         self == Self::Ready
     }
+
+    pub fn can_view_release(self) -> bool {
+        matches!(self, Self::CheckFailed | Self::Incompatible)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -24,6 +24,51 @@ fn click(button: &NSButton) {
     unsafe { button.performClick(None) };
 }
 
+fn check_quick_panel_hide(mtm: MainThreadMarker) {
+    let owner = Delegate::new(mtm);
+    let mut source = SyntheticDictations::new();
+    source.controller.set_recent_dictations_enabled(true);
+    let (generation, _) = source.begin(true, false);
+    let body = "快捷面板隐藏前展开的合成听写🙂";
+    source.finish(generation, body);
+    let id = source.controller.list_recent_dictations(1).remove(0).id;
+    *owner.ivars().controller.borrow_mut() = Some(source.controller);
+
+    let window = owner.prepare_workbench(Some(crate::app::workbench::Page::History));
+    let page = owner.ivars().history_page.get().unwrap();
+    let controls = page.controls();
+    page.refresh_from_owner();
+    assert!(!controls.rows[0].isHidden());
+    click(&controls.rows[0]);
+    let storage = unsafe { controls.text.textStorage() }.unwrap();
+    assert_eq!(storage.string().to_string(), body);
+    assert_eq!(
+        page.ivars().selection.borrow().as_deref(),
+        Some(id.as_str())
+    );
+
+    owner.hide_workbench_for_quick_panel();
+    assert_eq!(storage.length(), 0);
+    assert!(page.ivars().selection.borrow().is_none());
+    assert!(controls.detail.isHidden() && controls.copy.isHidden());
+
+    assert!(std::ptr::eq(window, owner.prepare_workbench(None)));
+    // The presentation path refreshes this page after ordering the window front.
+    page.refresh_from_owner();
+    assert_eq!(page.ivars().entries.borrow()[0].id, id);
+    assert!(!controls.rows[0].isHidden() && !controls.rows[0].isAccessibilityExpanded());
+    assert!(page.ivars().selection.borrow().is_none());
+    assert!(storage.length() == 0 && controls.detail.isHidden());
+    click(&controls.rows[0]);
+    assert_eq!(storage.string().to_string(), body);
+    assert!(!controls.detail.isHidden());
+    assert!(!window.isVisible() && !window.isKeyWindow());
+    window.close();
+    println!(
+        "workbench recent dictations: quick panel hide cleared the body and selection before reopen"
+    );
+}
+
 pub(in crate::app) fn run(mtm: MainThreadMarker) {
     let owner = Delegate::new(mtm);
     let domain = NSString::from_str(&format!(
@@ -83,6 +128,40 @@ pub(in crate::app) fn run(mtm: MainThreadMarker) {
     );
     assert!(!controls.empty.isHidden() && !controls.clear.isEnabled());
     assert!(page.ivars().entries.borrow().is_empty());
+
+    source.set_focus_safe(false);
+    let (unsafe_focus, _) = source.begin(true, false);
+    page.refresh(&source.controller);
+    assert!(!controls.clear.isEnabled());
+    source.finish(unsafe_focus, "不符合保留条件");
+    source.set_focus_safe(true);
+
+    let (pending, target) = source.begin(true, true);
+    page.refresh(&source.controller);
+    assert!(!controls.empty.isHidden());
+    assert!(controls.rows.iter().all(|row| row.isHidden()));
+    assert!(
+        controls.clear.isEnabled(),
+        "clear must reach the first pending entry"
+    );
+    assert!(window.makeFirstResponder(Some(&controls.clear)));
+    with_controller(&owner, &mut source, || click(&controls.clear));
+    assert!(page.has_focus(&controls.keep));
+    assert!(!controls.clear.isEnabled() && preference(&defaults));
+    source.finish(pending, "首轮清空后完成");
+    page.refresh(&source.controller);
+    assert_eq!(target.borrow().snapshot.text, "A首轮清空后完成B");
+    assert_eq!(target.borrow().writes, 1);
+    assert!(!controls.empty.isHidden() && !controls.clear.isEnabled());
+    assert!(
+        source
+            .controller
+            .list_recent_dictations(MAX_ENTRIES)
+            .is_empty()
+    );
+    println!(
+        "workbench recent dictations: cleared first retention candidate without cancelling dictation or delivery"
+    );
 
     let (first, target) = source.begin(true, true);
     target.borrow_mut().confirm = false;
@@ -186,6 +265,29 @@ pub(in crate::app) fn run(mtm: MainThreadMarker) {
             .is_empty()
     );
 
+    let (confirming, receiver) = source.begin(true, true);
+    receiver.borrow_mut().confirm = false;
+    source.finish(confirming, "清空前等待确认");
+    page.refresh(&source.controller);
+    assert!(controls.rows[0].title().to_string().contains("等待确认"));
+    with_controller(&owner, &mut source, || click(&controls.clear));
+    receiver.borrow_mut().confirm = true;
+    source.poll();
+    page.refresh(&source.controller);
+    assert_eq!(
+        source
+            .controller
+            .gui_dictation_receipt()
+            .unwrap()
+            .delivery
+            .state,
+        voiceport_control::DeliveryState::Confirmed
+    );
+    assert_eq!(receiver.borrow().writes, 1);
+    assert!(!controls.clear.isEnabled() && controls.rows.iter().all(|row| row.isHidden()));
+    assert!(page.ivars().entries.borrow().is_empty());
+    println!("workbench recent dictations: late confirmation did not restore cleared history");
+
     let (generation, _) = source.begin(true, false);
     source.finish(generation, "关闭前完成");
     page.refresh(&source.controller);
@@ -230,6 +332,7 @@ pub(in crate::app) fn run(mtm: MainThreadMarker) {
     assert!(controls.rows.iter().all(|row| row.isHidden()));
     assert!(!window.isVisible() && !window.isKeyWindow());
     window.close();
+    check_quick_panel_hide(mtm);
     println!(
         "workbench recent dictations: opt-in, empty state, five rows, receipt update, in-memory copy, clear, disable, quit and local keyboard focus"
     );

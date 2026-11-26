@@ -11,6 +11,7 @@ pub(super) struct Page {
     pub(super) check: Retained<NSButton>,
     pub(super) download: Retained<NSButton>,
     pub(super) install: Retained<NSButton>,
+    pub(super) release: Retained<NSButton>,
     _actions: Retained<PageActions>,
     rendered: RefCell<Option<UpdateViewSnapshot>>,
 }
@@ -40,6 +41,15 @@ define_class!(
         fn install(&self, _sender: &NSButton) {
             if let Some(owner) = self.ivars().load() {
                 owner.install_staged_update();
+            }
+        }
+
+        #[unsafe(method(openReleasePage:))]
+        fn open_release_page(&self, _sender: &NSButton) {
+            if let Some(owner) = self.ivars().load()
+                && owner.update_view_snapshot().phase.can_view_release()
+            {
+                release_page();
             }
         }
     }
@@ -121,6 +131,13 @@ impl Page {
             236.,
             108.,
         );
+        let release = button(
+            "voiceport.update.release",
+            "查看发布页",
+            sel!(openReleasePage:),
+            350.,
+            108.,
+        );
         Self {
             root,
             versions,
@@ -131,6 +148,7 @@ impl Page {
             check,
             download,
             install,
+            release,
             _actions: actions,
             rendered: RefCell::new(None),
         }
@@ -226,6 +244,9 @@ impl Page {
         });
         self.download.setEnabled(phase.can_download());
         self.install.setEnabled(phase.can_install());
+        let can_view_release = phase.can_view_release();
+        self.release.setHidden(!can_view_release);
+        self.release.setEnabled(can_view_release);
         *rendered = Some(snapshot.clone());
     }
 }
@@ -235,13 +256,13 @@ impl Delegate {
     pub(in crate::app) fn build_update_page(
         &self,
         frame: NSRect,
-    ) -> (Retained<NSView>, [Retained<NSView>; 3]) {
+    ) -> (Retained<NSView>, [Retained<NSView>; 4]) {
         let snapshot = self.update_view_snapshot();
         let mut update = self.ivars().update.borrow_mut();
         let page = update.page.get_or_insert_with(|| Page::new(self, frame));
         page.root.setFrame(frame);
         page.render(&snapshot);
-        let key_views = [&page.check, &page.download, &page.install]
+        let key_views = [&page.check, &page.download, &page.install, &page.release]
             .map(|button| button.clone().into_super().into_super());
         (page.root.clone(), key_views)
     }

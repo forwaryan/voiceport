@@ -1,6 +1,20 @@
 use super::*;
 
 impl Delegate {
+    pub(in crate::app) fn verify_update_release_link(&self, visible: bool) {
+        let (_, key_views) = self.build_update_page(rect(0., 0., 480., 360.));
+        let update = self.ivars().update.borrow();
+        let page = update.page.as_ref().unwrap();
+        assert_eq!(page.release.isHidden(), !visible);
+        assert_eq!(page.release.isEnabled(), visible);
+        assert_eq!(page.release.title().to_string(), "查看发布页");
+        assert_eq!(page.release.action(), Some(sel!(openReleasePage:)));
+        let release: &NSView = &page.release;
+        assert!(std::ptr::eq(&*key_views[3], release));
+        assert!(page.check.isEnabled());
+        assert!(!page.install.isEnabled());
+    }
+
     pub(in crate::app) fn verify_update_progress_views(&self, version: &str) {
         let mtm = self.mtm();
         let menu = NSMenu::new(mtm);
@@ -21,7 +35,9 @@ impl Delegate {
             assert!(page.versions.stringValue().to_string().contains(version));
             assert!(page.download.isEnabled());
             assert!(!page.install.isEnabled());
-            let expected: [&NSView; 3] = [&page.check, &page.download, &page.install];
+            assert!(page.release.isHidden());
+            let expected: [&NSView; 4] =
+                [&page.check, &page.download, &page.install, &page.release];
             assert!(
                 key_views
                     .iter()

@@ -40,7 +40,6 @@ impl Delegate {
             return;
         }
         iv.workflow_dialog.set(true);
-        self.close_quick_panel();
         if let Err(error) = action() {
             self.workflow_alert("无法完成操作", &error, &["好"])
                 .runModal();
@@ -392,6 +391,8 @@ impl Delegate {
         detail: &str,
         buttons: &[&str],
     ) -> Retained<NSAlert> {
+        // A choice saved without an alert keeps the quick panel and its focus path.
+        self.close_quick_panel();
         let alert = NSAlert::new(self.mtm());
         alert.setMessageText(&NSString::from_str(title));
         alert.setInformativeText(&NSString::from_str(detail));
