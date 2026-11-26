@@ -230,6 +230,17 @@ watch 没有 `--attempt` 参数，结束后必须用 run view/API 重新核对�
 
 ### 8.4 完成门槛与 Git 接续
 
+#### PR 范围与规模
+
+- 一个 PR 对应一个可独立说明和验收的目标，可以包含随附的回归测试、所需文档和直接支撑该目标的端到端接线。无关修复、测试或重构各自交付。每个提交也只对应一个目标，在提交正文保存实际执行的验证与结果，规模较大的提交尤其需要留存这份记录。
+- 按实际 `base...head` 统计规模。在 PR 正文记录完整 base/head SHA，以及 `git diff --numstat <base>...<head>` 的新增行数、删除行数、两者之和及变更文件数。生成文件、锁文件和批量迁移的规模在总数下另列，二进制文件单独标记。
+- 新增与删除合计超过 400 行时，先检查能否拆成可独立验收并安全合入的 PR。原子迁移或必须一起交付的端到端路径可以保留。保留时在 PR 正文注明规模、保留理由、评审顺序、实际验证结果和未测项。
+- 有前置 PR 时写明依赖及合入顺序。相互独立且资源允许的目标按[分派与依赖规则](#31-一个逻辑问题多个独立归属的工作任务)并行。head 或 base 变化后重新核对规模和依赖，按影响复核差异与验证，并执行下述精确版本门槛。
+
+Magpie 的评审和提交规范分别要求单 PR 单目标、无关测试或重构另开，以及单提交单目标、正文记录实测。其历史复盘记载，当时超过 400 行的提交都附有实际运行记录。VoicePort/LoopAnyThing 将 400 行用作人工拆分参考线，按上述条件判断 PR 交付边界。[Magpie PR 评审](https://github.com/yetone/magpie/blob/da02781fa7586dac9c6e31a44edcb26a9cf65961/docs/code-standards.md#reviewing-a-pr) · [Magpie 提交规范](https://github.com/yetone/magpie/blob/da02781fa7586dac9c6e31a44edcb26a9cf65961/docs/code-standards.md#commits) · [Magpie 历史复盘](https://github.com/yetone/magpie/blob/da02781fa7586dac9c6e31a44edcb26a9cf65961/LESSONS.md#L25-L31)
+
+#### 精确版本验收与合并
+
 协调者逐项核对同一最终版本：完整本地检查与实际 scope、独立指定 verifier 的当前冻结结论、全部必需远端 run/job/check 及 attempt 的已执行通过、PR 当前 head/base、reviewDecision、无未解决阻断、非 draft、正常保护规则及 merge queue。失败/取消/missing/pending/skip 不作成功；“另一个 HEAD/run 绿”“本地绿”“问题已登记”“worker_done 成功”都不完成远端修复。queued/enabled auto-merge 只是等待状态，不当作已合并；队列合成版本按其真实 head/base 关系与检查继续跟踪。
 
 在 PR 说明/既有报告中记录已评审完整 SHA、独立证据、真实检查/未测与全部失败历史；发送外部评论仍按实际授权。合并用已安装 `gh pr merge --match-head-commit <已评审完整SHA>` 保护，不 force/admin。review 期间 push/rebase 后重新核对/复核新版本，不把旧批准当新实现验收。合并结果未知只读核对 PR/merge SHA，不重复外部副作用。
