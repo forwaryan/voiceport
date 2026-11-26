@@ -50,7 +50,7 @@ objc2 = "0.6.4"
 objc2-foundation = "0.3.2"
 objc2-app-kit = "0.3.2"
 objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = ["AudioComponent", "AUComponent", "AudioUnitProperties"] }
-objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware"] }
+objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware", "block2", "dispatch2", "objc2"] }
 objc2-av-foundation = "0.3.2"
 objc2-avf-audio = "0.3.2"
 objc2-speech = "0.3.2"

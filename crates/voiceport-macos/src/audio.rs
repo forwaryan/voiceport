@@ -1,10 +1,12 @@
-//! Main-thread-owned native capture with a single synchronous audio tap.
+//! Thread-confined native capture with a single synchronous audio tap.
 //! Native callbacks send only generation-tagged values; none assumes a UI thread.
 use crate::storage::{self, Recording};
 use block2::RcBlock;
+use objc2::AllocAnyThread;
+#[cfg(test)]
+use objc2::MainThreadMarker;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, Bool};
-use objc2::{AllocAnyThread, MainThreadMarker};
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
 use objc2_avf_audio::{
     AVAudioBuffer, AVAudioCommonFormat, AVAudioConverter, AVAudioConverterInputStatus,
@@ -36,6 +38,8 @@ use devices::{OpenInput, Route};
 pub(crate) mod level;
 #[path = "audio_recovery_pcm.rs"]
 mod recovery_pcm;
+#[path = "audio_worker.rs"]
+pub(crate) mod worker;
 
 pub const MAXIMUM_SECONDS: u64 = 180;
 const OUTPUT_RATE: f64 = 24_000.0;
@@ -54,13 +58,18 @@ pub enum AudioEvent {
     Partial(String),
     Status(String),
     Failed(String),
-    /// The tap has stopped accepting samples. The UI must call stop() on its
-    /// main thread to stop hardware and finalize the AAC file before accepting.
+    /// The tap has stopped accepting samples. Finalize AAC before accepting it.
     LimitReached,
 }
 
+struct PreparedCapture {
+    route: Route,
+    input: OpenInput,
+    started: StageTimer,
+}
+
 /// Construction is inert: no files, permission queries, engine or Speech object.
-/// This type is deliberately !Send/!Sync. start/stop/cancel/finish belong to UI.
+/// This type is deliberately !Send/!Sync. The audio worker owns its native lifetime.
 pub struct Recorder {
     input: Option<OpenInput>,
     route: Option<Route>,
@@ -69,10 +78,11 @@ pub struct Recorder {
     speech: Option<Speech>,
     recording: Option<Arc<Recording>>,
     events: Option<Arc<Events>>,
+    activity: Option<worker::Activity>,
     capture_diagnostics: Option<CaptureDiagnostics>,
     finalized: bool,
     failure: Option<String>,
-    _main_thread: PhantomData<Rc<()>>,
+    _owner_thread: PhantomData<Rc<()>>,
 }
 
 impl Default for Recorder {
@@ -91,10 +101,11 @@ impl Recorder {
             speech: None,
             recording: None,
             events: None,
+            activity: None,
             capture_diagnostics: None,
             finalized: false,
             failure: None,
-            _main_thread: PhantomData,
+            _owner_thread: PhantomData,
         }
     }
 
@@ -169,61 +180,78 @@ impl Recorder {
         }
     }
 
-    pub fn start(
-        &mut self,
-        speech_authorized: bool,
-        language: &str,
-        generation: u64,
-        sender: EventSender,
-        local: Option<crate::local_audio::Input>,
-    ) -> Result<bool, String> {
-        self.start_with_input(speech_authorized, language, generation, sender, local, None)
-    }
-
-    pub(crate) fn start_with_input(
-        &mut self,
-        speech_authorized: bool,
-        language: &str,
-        generation: u64,
-        sender: EventSender,
-        local: Option<crate::local_audio::Input>,
-        preferred_uid: Option<&str>,
-    ) -> Result<bool, String> {
-        main_thread()
-            .inspect_err(|_| self.capture_diagnostics = Some(CaptureDiagnostics::default()))?;
-        self.cancel();
-        self.capture_diagnostics = Some(CaptureDiagnostics::default());
-        let capture_started = StageTimer::start(Instant::now);
+    fn check_microphone() -> Result<(), String> {
+        #[cfg(debug_assertions)]
+        if let Some(fixture) = devices::fixture::current() {
+            return if fixture.authorized() {
+                Ok(())
+            } else {
+                Err("麦克风权限未获允许，无法录音。".into())
+            };
+        }
         let media_type = unsafe { AVMediaTypeAudio }.ok_or("系统音频接口不可用。")?;
         if unsafe { AVCaptureDevice::authorizationStatusForMediaType(media_type) }
             != AVAuthorizationStatus::Authorized
         {
             return Err("麦克风权限未获允许，无法录音。".into());
         }
+        Ok(())
+    }
+
+    fn prepare_input(
+        preferred_uid: Option<&str>,
+        check: &impl Fn() -> Result<(), String>,
+    ) -> Result<(Route, OpenInput), String> {
+        Self::check_microphone()?;
+        OpenInput::select(preferred_uid, check, |format| {
+            validate_format(format).map_err(str::to_owned)
+        })
+    }
+
+    fn start_prepared(
+        &mut self,
+        prepared: PreparedCapture,
+        start: worker::Start,
+        activity: worker::Activity,
+        check: &impl Fn() -> Result<(), String>,
+        commit: impl FnOnce() -> Result<(), String>,
+        create_recording: impl FnOnce() -> Result<Arc<Recording>, String>,
+    ) -> Result<bool, String> {
+        let PreparedCapture {
+            route,
+            mut input,
+            started: capture_started,
+        } = prepared;
+        let worker::Start {
+            generation,
+            events: sender,
+            speech,
+            language,
+            local,
+            ..
+        } = start;
+        self.capture_diagnostics = Some(CaptureDiagnostics::default());
+        check()?;
+        Self::check_microphone()?;
         let events = Arc::new(Events {
             generation,
             sender,
             active: AtomicBool::new(true),
         });
         self.events = Some(events.clone());
+        self.activity = Some(activity.clone());
         let result = (|| {
-            let (route, input) = OpenInput::select(preferred_uid, |format| {
-                validate_format(format).map_err(str::to_owned)
-            })?;
             let format = input.format.clone();
-            let recording = Arc::new(
-                storage::default_storage()
-                    .and_then(|s| s.create_recording())
-                    .map_err(|e| e.to_string())?,
-            );
+            let recording = create_recording()?;
             self.recording = Some(recording.clone());
+            check()?;
             let writer = AacWriter::new(recording.path(), &format)?;
             recording.secure_audio_file().map_err(|e| e.to_string())?;
             let local_mode = local.is_some();
             let speech = if local_mode {
                 None
-            } else if speech_authorized {
-                match Speech::prepare(language) {
+            } else if speech && speech_authorized() {
+                match Speech::prepare(&language) {
                     Ok(speech) => Some(speech),
                     Err(error) => {
                         events.send(AudioEvent::Status(format!(
@@ -258,12 +286,24 @@ impl Recorder {
                 events: events.clone(),
                 speech_active: speech_active.clone(),
             });
+            commit()?;
+            input.verify_start(&route, check)?;
+            Self::check_microphone()?;
+            check()?;
             self.sink = Some(sink.clone());
             self.speech = speech;
             if let Some(speech) = self.speech.as_mut() {
                 speech.start(events.clone(), speech_active);
             }
-            input.attach(move |buffer| sink.consume(buffer));
+            input.attach(
+                &|| {
+                    check()?;
+                    Self::check_microphone()?;
+                    check()
+                },
+                move || activity.accepting(),
+                move |buffer| sink.consume(buffer),
+            )?;
             self.input = Some(input);
             self.route = Some(route);
             self.recovered_input = false;
@@ -285,13 +325,21 @@ impl Recorder {
     /// Replace only the engine and tap. Never restart a transcription job, reset
     /// the recording clock, or open a second writer. Normalize a replacement
     /// tap before it reaches audio consumers that require a fixed format.
-    pub(crate) fn recover_input(&mut self, preferred_uid: Option<&str>) -> Result<(), String> {
+    fn recover_input(
+        &mut self,
+        preferred_uid: Option<&str>,
+        check: &impl Fn() -> Result<(), String>,
+        on_disconnect: impl FnOnce() -> Result<(), String>,
+    ) -> Result<bool, String> {
         let (Some(input), Some(route)) = (self.input.as_mut(), self.route.as_ref()) else {
-            return Ok(());
+            return Ok(false);
         };
-        if input.healthy(route, false) {
-            return Ok(());
+        let healthy = input.healthy(route, false);
+        if healthy {
+            return Ok(false);
         }
+        check()?;
+        on_disconnect()?;
         self.route = None;
         self.input.take(); // Drain and revoke old tap access before opening another one.
         if std::mem::replace(&mut self.recovered_input, true) {
@@ -306,31 +354,49 @@ impl Recorder {
             .map_err(|_| "录音写入锁失效。")?
             .format
             .clone();
-        let (route, (input, bridge)) =
-            OpenInput::open_prepared(preferred_uid, true, |new_format| {
+        let verify_recovery = || {
+            check()?;
+            Self::check_microphone()?;
+            check()
+        };
+        let (route, (mut input, bridge)) =
+            OpenInput::open_prepared(preferred_uid, true, &verify_recovery, |new_format| {
                 recovery_pcm::FormatBridge::new(new_format, &format)
             })
             .map_err(|error| format!("麦克风已断开，无法继续本轮录音：{error} 请重新开始。"))?;
+        input.verify_start(&route, &verify_recovery)?;
+        let activity = self
+            .activity
+            .clone()
+            .expect("recording owns its tap admission");
         if let Some(bridge) = bridge {
             let bridge = Mutex::new(bridge);
-            input.attach(move |buffer| {
-                let result = bridge
-                    .lock()
-                    .map_err(|_| "备用麦克风转换锁失效。".to_owned())
-                    .and_then(|mut bridge| {
-                        sink.observe_replacement(buffer);
-                        bridge.convert(buffer, |output| sink.consume_pcm(output, false))
-                    });
-                if let Err(error) = result {
-                    sink.fail_route_conversion(error);
-                }
-            });
+            input.attach(
+                &verify_recovery,
+                move || activity.accepting(),
+                move |buffer| {
+                    let result = bridge
+                        .lock()
+                        .map_err(|_| "备用麦克风转换锁失效。".to_owned())
+                        .and_then(|mut bridge| {
+                            sink.observe_replacement(buffer);
+                            bridge.convert(buffer, |output| sink.consume_pcm(output, false))
+                        });
+                    if let Err(error) = result {
+                        sink.fail_route_conversion(error);
+                    }
+                },
+            )?;
         } else {
-            input.attach(move |buffer| sink.consume(buffer));
+            input.attach(
+                &verify_recovery,
+                move || activity.accepting(),
+                move |buffer| sink.consume(buffer),
+            )?;
         }
         self.input = Some(input);
         self.route = Some(route);
-        Ok(())
+        Ok(true)
     }
 
     /// The settled capture snapshot survives stop, cancellation, and release
@@ -362,8 +428,12 @@ impl Recorder {
         self.recording.clone()
     }
 
+    #[cfg(test)]
     pub fn stop(&mut self) -> Result<Arc<Recording>, String> {
-        main_thread()?;
+        self.stop_native_capture()
+    }
+
+    fn stop_native_capture(&mut self) -> Result<Arc<Recording>, String> {
         let interrupted = self
             .input
             .as_mut()
@@ -407,12 +477,6 @@ impl Recorder {
         self.failure = None;
     }
 
-    /// Call after successful network completion. For a retryable network failure,
-    /// retain the Recorder and call stop() again to obtain the same finalized Arc.
-    pub fn finish(&mut self) {
-        self.cancel();
-    }
-
     fn stop_native(&mut self) {
         if let Some(events) = self.events.take() {
             events.active.store(false, Ordering::Release);
@@ -437,6 +501,23 @@ impl Drop for Recorder {
     }
 }
 
+#[cfg(debug_assertions)]
+pub(crate) fn inline_open_fixture(fixture: devices::fixture::Backend) {
+    devices::fixture::set_current(Some(fixture));
+    let result = Recorder::prepare_input(None, &|| Ok(()));
+    devices::fixture::set_current(None);
+    result.unwrap();
+}
+
+pub(super) fn capture_storage() -> std::io::Result<storage::Storage> {
+    #[cfg(debug_assertions)]
+    if let Some(fixture) = devices::fixture::current() {
+        return Ok(fixture.storage().clone());
+    }
+    storage::default_storage()
+}
+
+#[cfg(test)]
 fn main_thread() -> Result<(), String> {
     MainThreadMarker::new()
         .map(|_| ())

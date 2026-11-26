@@ -2,7 +2,8 @@
 use crate::{
     audio::{
         AudioEvent, Recorder,
-        diagnostics::{InputSignal, StageTimer, StageTimings},
+        diagnostics::{CaptureDiagnostics, InputSignal, StageTimer, StageTimings},
+        worker::{self as audio, Capture, Reply as CaptureReply},
     },
     delivery::Delivery,
     dictation_dictionary::Dictionary,
@@ -257,11 +258,21 @@ pub struct Controller {
     discovery: Option<Receiver<Catalog>>,
     recorded_source: SessionSource,
     partial: PartialSlot,
+    #[cfg(test)]
     recorder: Recorder,
+    audio_lane: audio::Lane,
+    capture: Option<Capture>,
+    capture_incoming: Option<Incoming>,
+    capture_route: Option<String>,
+    capture_preview_status: Option<String>,
+    capture_stop: Option<Instant>,
+    input_check: Option<(u64, Instant)>,
+    deferred_completion: Option<Completion>,
     pub(crate) microphone_uid: Option<String>,
     recorded_microphone_uid: Option<String>,
-    microphone_test: Option<crate::audio::level::LevelTest>,
+    microphone_test: Option<crate::audio::level::Job>,
     microphone_test_status: String,
+    last_microphone_test: Option<String>,
     delivery: Delivery,
     events_tx: Sender<(u64, AudioEvent)>,
     events: Receiver<(u64, AudioEvent)>,
@@ -281,6 +292,42 @@ pub struct Controller {
     stop_failure: Option<String>,
     testing: bool,
 }
+#[cfg(debug_assertions)]
+pub(crate) struct AudioFixtureAsr {
+    jobs: Receiver<Job>,
+    results: Sender<Completion>,
+}
+
+#[cfg(debug_assertions)]
+impl AudioFixtureAsr {
+    pub fn assert_no_job(&self) {
+        assert!(matches!(self.jobs.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    pub fn complete(&self, generation: u64) -> bool {
+        let job = match self.jobs.try_recv() {
+            Ok(job) => job,
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => panic!("fixture ASR worker disconnected"),
+        };
+        assert_eq!(job.generation, generation);
+        assert!(!job.sample && job.incoming.is_none());
+        job.recording
+            .as_ref()
+            .unwrap()
+            .validate_finalized()
+            .unwrap();
+        self.results
+            .send(Completion {
+                generation,
+                elapsed: None,
+                result: Ok("Synthetic capture result".into()),
+            })
+            .unwrap();
+        true
+    }
+}
+
 impl Default for Controller {
     fn default() -> Self {
         Self::new()
@@ -308,11 +355,21 @@ impl Controller {
             discovery: None,
             recorded_source: SessionSource::ChatGpt,
             partial: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
             recorder: Recorder::new(),
+            audio_lane: audio::Lane::default(),
+            capture: None,
+            capture_incoming: None,
+            capture_route: None,
+            capture_preview_status: None,
+            capture_stop: None,
+            input_check: None,
+            deferred_completion: None,
             microphone_uid: None,
             recorded_microphone_uid: None,
             microphone_test: None,
             microphone_test_status: String::new(),
+            last_microphone_test: None,
             delivery: Delivery::new(),
             events_tx,
             events,
@@ -426,6 +483,17 @@ impl Controller {
             .map(|app| app.processIdentifier())
     }
 
+    pub(crate) fn capture_level(&self) -> Option<u8> {
+        if let Some(capture) = &self.capture {
+            return capture.level();
+        }
+        #[cfg(test)]
+        if let Some(level) = self.recorder.live_level() {
+            return Some(level);
+        }
+        None
+    }
+
     pub(crate) fn overlay_snapshot(&self, enabled: bool) -> crate::status_overlay::Snapshot {
         let attempt = self
             .gui_receipt
@@ -437,7 +505,7 @@ impl Controller {
             self.gui_owns_delivery && self.delivery.has_pending(),
             self.overlay_origin_pid,
             (enabled && self.state.phase == Phase::Recording)
-                .then(|| self.recorder.live_level())
+                .then(|| self.capture_level())
                 .flatten(),
         )
     }
@@ -457,9 +525,9 @@ impl Controller {
             .as_ref()
             .map(|receipt| self.gui_diagnostics.projection(receipt))
     }
-    fn seal_gui_capture(&mut self) {
+    fn seal_gui_capture(&mut self, capture: Option<CaptureDiagnostics>) {
         if let Some(generation) = self.gui_diagnostics.capture_pending
-            && let Some(capture) = self.recorder.capture_diagnostics()
+            && let Some(capture) = capture
         {
             self.gui_diagnostics.capture_pending = None;
             self.gui_diagnostics.timings.capture_first_frame = capture.timings.capture_first_frame;
@@ -479,13 +547,52 @@ impl Controller {
         }
     }
     fn cancel_capture(&mut self) {
-        self.recorder.cancel();
-        self.seal_gui_capture();
+        if self.capture.take().is_some() {
+            self.seal_gui_capture(Some(CaptureDiagnostics::default()));
+        }
+        self.capture_incoming = None;
+        self.capture_route = None;
+        self.capture_preview_status = None;
+        self.capture_stop = None;
+        self.input_check = None;
+        // Keep a deferred ASR completion until its active job is settled.
+        #[cfg(test)]
+        {
+            self.recorder.cancel();
+            self.seal_gui_capture(self.recorder.capture_diagnostics());
+        }
     }
-    fn stop_capture(&mut self) -> Result<Arc<Recording>, String> {
+    #[cfg(test)]
+    fn stop_fixture_capture(&mut self) -> Result<Arc<Recording>, String> {
         let result = self.recorder.stop();
-        self.seal_gui_capture();
+        self.seal_gui_capture(self.recorder.capture_diagnostics());
         result
+    }
+    #[cfg(debug_assertions)]
+    pub(crate) fn install_audio_fixture(
+        &mut self,
+        fixture: crate::audio::devices::fixture::Backend,
+    ) -> AudioFixtureAsr {
+        self.audio_lane.fixture = Some(fixture);
+        let (sender, jobs) = mpsc::sync_channel(1);
+        let (results, receiver) = mpsc::channel();
+        self.worker = Some(Worker {
+            jobs: sender,
+            results: receiver,
+        });
+        AudioFixtureAsr { jobs, results }
+    }
+    pub(crate) fn opening_microphone(&self) -> bool {
+        self.state.phase == Phase::Permissions && self.capture.is_some()
+    }
+    pub(crate) fn finalizing_capture(&self) -> bool {
+        self.capture_stop.is_some()
+    }
+    pub(crate) fn audio_input_busy(&self) -> bool {
+        self.audio_lane.busy()
+    }
+    pub(crate) fn read_microphones(&self) -> Result<audio::Inventory, String> {
+        self.audio_lane.inventory()
     }
     fn detach_gui_delivery(&mut self) {
         if self.gui_owns_delivery {
@@ -551,7 +658,7 @@ impl Controller {
             .flatten()
     }
     pub fn toggle(&mut self) {
-        if self.state.phase == Phase::Recording {
+        if self.state.phase == Phase::Recording || self.opening_microphone() {
             self.stop();
         } else if self.state.can_start() {
             self.start();
@@ -573,6 +680,10 @@ impl Controller {
         if self.busy() {
             return;
         }
+        if self.audio_input_busy() {
+            self.message = audio::AUDIO_BUSY.into();
+            return;
+        }
         let source = match self
             .catalog
             .snapshot(&self.source_id)
@@ -584,9 +695,16 @@ impl Controller {
                 return;
             }
         };
-        let origin = target
-            .map(|target| target.pid)
-            .or_else(Self::foreground_pid);
+        let origin = target.map(|target| target.pid);
+        #[cfg(debug_assertions)]
+        let fixture = self.audio_lane.fixture.is_some();
+        #[cfg(not(debug_assertions))]
+        let fixture = false;
+        let origin = if fixture {
+            origin
+        } else {
+            origin.or_else(Self::foreground_pid)
+        };
         if let Some((generation, use_speech)) = self.prepare_start_in_application(
             source,
             self.language.clone(),
@@ -595,6 +713,17 @@ impl Controller {
             true,
         ) {
             self.overlay_origin_pid = origin;
+            #[cfg(debug_assertions)]
+            if self.audio_lane.fixture.is_some() {
+                let _ = self.events_tx.send((
+                    generation,
+                    AudioEvent::Permissions {
+                        microphone: self.capture_permission_status().0 == "authorized",
+                        speech: false,
+                    },
+                ));
+                return;
+            }
             Recorder::request_permissions_for_source(
                 generation,
                 self.events_tx.clone(),
@@ -610,8 +739,24 @@ impl Controller {
         language: String,
         automatic: bool,
     ) -> Option<u64> {
-        self.start_pinned_with_permissions(source, language, automatic, Recorder::permission_status)
+        let permissions = self.capture_permission_status();
+        self.start_pinned_with_permissions(source, language, automatic, || permissions)
     }
+    pub(crate) fn capture_permission_status(&self) -> (&'static str, &'static str) {
+        #[cfg(debug_assertions)]
+        if let Some(fixture) = &self.audio_lane.fixture {
+            return (
+                if fixture.authorized() {
+                    "authorized"
+                } else {
+                    "denied"
+                },
+                "denied",
+            );
+        }
+        Recorder::permission_status()
+    }
+
     pub(crate) fn start_pinned_with_permissions(
         &mut self,
         source: SessionSource,
@@ -663,6 +808,10 @@ impl Controller {
         if self.busy() {
             return None;
         }
+        if self.audio_input_busy() {
+            self.message = audio::AUDIO_BUSY.into();
+            return None;
+        }
         if !voiceport_core::language::supported(&language)
             || matches!(&source, SessionSource::Local(model) if !model.kind.supports_language(&language))
         {
@@ -711,9 +860,6 @@ impl Controller {
         }
         self.cancel_capture();
         self.recording = None;
-        self.transcript.clear();
-        self.visible_transcript = None;
-        self.raw_transcript = None;
         self.recorded_dictionary = if gui {
             self.workflows.dictionary_for_session()
         } else {
@@ -779,7 +925,11 @@ impl Controller {
         Some(generation)
     }
     pub fn stop(&mut self) {
-        if self.state.phase != Phase::Recording {
+        if self.opening_microphone() {
+            self.cancel();
+            return;
+        }
+        if self.state.phase != Phase::Recording || self.capture_stop.is_some() {
             return;
         }
         self.started = None;
@@ -788,7 +938,25 @@ impl Controller {
         } else if self.allow_delivery && self.delivery.failure_stage().is_none() {
             self.delivery_status = "应用个人词典后，再输入最终文字。".into();
         }
-        match self.stop_capture() {
+        if let Some(capture) = &self.capture {
+            match capture.stop() {
+                Ok(()) => {
+                    self.capture_stop = Some(Instant::now() + audio::WAIT);
+                    self.state.transcribe();
+                    self.message = "正在停止麦克风并完成录音…".into();
+                }
+                Err(error) => self.fail_capture(error),
+            }
+            return;
+        }
+        #[cfg(test)]
+        let recording = self.stop_fixture_capture();
+        #[cfg(not(test))]
+        let recording = Err("当前没有录音。".into());
+        self.finish_capture(recording);
+    }
+    fn finish_capture(&mut self, recording: Result<Arc<Recording>, String>) {
+        match recording {
             Ok(recording) => {
                 self.recording = Some(recording);
                 self.state.transcribe();
@@ -821,16 +989,16 @@ impl Controller {
         self.wait_for_delivery();
     }
     pub(crate) fn microphone_route(&self) -> Option<String> {
-        self.recorder
-            .route()
-            .map(crate::audio::devices::Route::summary)
+        self.capture_route.clone()
     }
     pub(crate) fn start_microphone_test(&mut self) {
         if self.busy() {
             return;
         }
-        match crate::audio::level::LevelTest::start(self.microphone_uid.as_deref()) {
+        match crate::audio::level::Job::start(&self.audio_lane, self.microphone_uid.clone()) {
             Ok(test) => {
+                self.microphone_test_status = "正在打开麦克风…".into();
+                self.last_microphone_test = Some(test.id.clone());
                 self.microphone_test = Some(test);
                 self.poll_microphone_test();
             }
@@ -840,11 +1008,21 @@ impl Controller {
     pub(crate) fn microphone_test_running(&self) -> bool {
         self.microphone_test.is_some()
     }
+    pub(crate) fn microphone_test_measuring(&self) -> bool {
+        self.microphone_test
+            .as_ref()
+            .is_some_and(crate::audio::level::Job::measuring)
+    }
     pub(crate) fn microphone_test_id(&self) -> Option<&str> {
         self.microphone_test.as_ref().map(|test| test.id.as_str())
     }
     pub(crate) fn microphone_test_status(&self) -> &str {
         &self.microphone_test_status
+    }
+    pub(crate) fn microphone_test_detail(&self, operation: Option<&str>) -> Option<&str> {
+        operation
+            .filter(|id| Some(*id) == self.last_microphone_test.as_deref())
+            .map(|_| self.microphone_test_status.as_str())
     }
     pub(crate) fn stop_microphone_test(&mut self) {
         if self.microphone_test.take().is_some() {
@@ -854,10 +1032,11 @@ impl Controller {
     fn poll_microphone_test(&mut self) {
         if let Some(test) = self.microphone_test.as_mut() {
             match test.status(Instant::now()) {
-                Ok(status) => self.microphone_test_status = status,
+                Ok(Some(status)) => self.microphone_test_status = status,
+                Ok(None) => {}
                 Err(message) => {
                     self.stop_microphone_test();
-                    self.microphone_test_status = message.into();
+                    self.microphone_test_status = message;
                 }
             }
         }
@@ -969,7 +1148,10 @@ impl Controller {
                 .into()
             }
             Err(message) => {
-                self.stop_capture().ok();
+                if self.state.phase == Phase::Recording {
+                    self.fail_capture(message);
+                    return;
+                }
                 self.state.phase = Phase::Failed;
                 self.state.retry_available = self.recording.is_some();
                 self.message = message;
@@ -1143,7 +1325,6 @@ impl Controller {
             active.cancel.cancel();
             self.message = "正在取消并释放录音…".into();
         } else {
-            self.cancel_capture();
             self.recording = None;
             self.message = "听写已取消。".into();
         }
@@ -1180,21 +1361,25 @@ impl Controller {
     }
 
     pub(crate) fn poll_with_start_gate(&mut self, start_allowed: impl FnMut(u64) -> bool) {
-        self.poll_with_capture(start_allowed, |c, speech, generation, local| {
-            c.recorder.start_with_input(
-                speech && c.recorded_source.uses_system_speech(),
-                &c.recorded_language,
-                generation,
-                c.events_tx.clone(),
-                local,
-                c.recorded_microphone_uid.as_deref(),
-            )
+        self.poll_inner(start_allowed, |c, speech, generation, local| {
+            c.capture = Some(Capture::begin(
+                &c.audio_lane,
+                audio::Start {
+                    generation,
+                    events: c.events_tx.clone(),
+                    speech: speech && c.recorded_source.uses_system_speech(),
+                    language: c.recorded_language.clone(),
+                    preferred_uid: c.recorded_microphone_uid.clone(),
+                    local,
+                },
+            )?);
+            Ok(None)
         });
     }
 
     pub(crate) fn poll_with_capture(
         &mut self,
-        mut start_allowed: impl FnMut(u64) -> bool,
+        start_allowed: impl FnMut(u64) -> bool,
         mut start_capture: impl FnMut(
             &mut Self,
             bool,
@@ -1202,156 +1387,165 @@ impl Controller {
             Option<crate::local_audio::Input>,
         ) -> Result<bool, String>,
     ) {
-        self.file_jobs.poll();
-        self.poll_microphone_test();
-        let was_testing = self.source_tests.busy();
-        self.source_tests.poll();
-        if was_testing {
-            self.message = self.source_tests.summary();
+        self.poll_inner(start_allowed, |c, speech, generation, local| {
+            start_capture(c, speech, generation, local).map(Some)
+        });
+    }
+
+    fn fail_start(&mut self, message: String) {
+        self.state.phase = Phase::Failed;
+        self.message = message;
+        self.report_gui_transcription(
+            TranscriptionState::NotStarted,
+            Some(BlockReason::CaptureFailed),
+        );
+        self.seal_gui_capture(Some(CaptureDiagnostics::default()));
+        self.cancel_capture();
+        self.gui_diagnostics.abandon_stages();
+        self.delivery.clear();
+        self.wait_for_delivery();
+    }
+
+    fn capture_started(
+        &mut self,
+        generation: u64,
+        preview: bool,
+        lease: Option<Arc<Recording>>,
+        incoming: Option<Incoming>,
+    ) {
+        if !self.state.permissions(generation, true) {
+            return;
         }
-        self.poll_cleanup_observation();
-        if let Some(discovery) = &self.discovery {
-            match discovery.try_recv() {
-                Ok(catalog) => {
-                    self.source_tests.retain_catalog(&catalog.entries);
-                    self.catalog = catalog;
-                    self.discovery = None;
-                }
-                Err(TryRecvError::Disconnected) => {
-                    self.discovery = None;
-                    self.message = "本地模型发现线程已退出，请刷新模型。".into();
-                }
-                Err(TryRecvError::Empty) => {}
+        self.transcript.clear();
+        self.visible_transcript = None;
+        self.raw_transcript = None;
+        self.started = Some(Instant::now());
+        if let Some(incoming) = incoming {
+            self.recording = lease;
+            self.submit_input(Some(incoming));
+        }
+        if self.state.phase == Phase::Recording {
+            self.message = if self.delivery.uses_clipboard() {
+                "兼容听写中；停止后会复制最终文字并粘贴到原输入位置。"
+            } else {
+                "正在录音；结束后转写。"
             }
+            .into();
         }
-        if self.state.phase == Phase::Recording
-            && let Err(error) = self
-                .recorder
-                .recover_input(self.recorded_microphone_uid.as_deref())
-        {
-            self.fail_capture(error);
+        self.preview_status = if self.recorded_source.streaming() {
+            "Paraformer 本地流式识别（模型在后台载入）"
+        } else if self.recorded_source.is_local() {
+            "Whisper Tiny 本地离线识别；停止后出字"
+        } else if preview {
+            "设备端语音预览已启用"
+        } else {
+            "本机预览不可用，停止后批量转写"
         }
-        let partial = self.partial.lock().ok().and_then(|mut slot| slot.take());
-        if let Some((generation, text)) = partial
-            && self.state.accepts(generation)
-            && self.state.phase == Phase::Recording
-        {
-            self.update_dictation_partial(generation, text);
+        .into();
+    }
+
+    fn poll_capture(&mut self, start_allowed: &mut impl FnMut(u64) -> bool) {
+        let Some(capture) = &self.capture else {
+            return;
+        };
+        let generation = capture.generation;
+        if !self.state.accepts(generation) {
+            self.cancel_capture();
+            return;
         }
-        while let Ok((generation, event)) = self.events.try_recv() {
-            if !self.state.accepts(generation) {
-                continue;
+        let opening = self.opening_microphone();
+        let now = Instant::now();
+        if opening {
+            if !start_allowed(generation) {
+                self.cancel_released_shortcut();
+                return;
             }
-            match event {
-                AudioEvent::Permissions { microphone, speech } => {
-                    // Duplicate callbacks must not cancel an already-started
-                    // session or change its delivery target.
-                    if self.state.phase != Phase::Permissions {
-                        continue;
-                    }
-                    // A synchronous permission reply can arrive during the same tick
-                    // that began preparations, while Carbon key-up is still pending.
-                    if !start_allowed(generation) {
-                        self.cancel_released_shortcut();
-                        continue;
-                    }
-                    if !self.state.permissions(generation, microphone) {
-                        if !microphone {
-                            self.message = "请在系统设置中允许 VoicePort 使用麦克风。".into();
-                            self.report_gui_transcription(
-                                TranscriptionState::NotStarted,
-                                Some(BlockReason::MicrophoneDenied),
-                            );
-                            self.gui_diagnostics.abandon_stages();
-                            self.delivery.clear();
-                        }
-                        continue;
-                    }
-                    let (local, incoming) = if self.recorded_source.is_local() {
-                        let (input, incoming) = crate::local_audio::channel();
-                        (Some(input), Some(incoming))
-                    } else {
-                        (None, None)
-                    };
-                    if self.current_gui_receipt().is_some() {
-                        self.gui_diagnostics.capture_pending = Some(generation);
-                    }
-                    match start_capture(self, speech, generation, local) {
-                        Ok(preview) => {
-                            self.started = Some(Instant::now());
-                            if let Some(incoming) = incoming {
-                                self.recording = self.recorder.lease();
-                                self.submit_input(Some(incoming));
-                            }
-                            if self.state.phase == Phase::Recording {
-                                self.message = if self.delivery.uses_clipboard() {
-                                    "兼容听写中；停止后会复制最终文字并粘贴到原输入位置。"
-                                } else {
-                                    "正在录音；结束后转写。"
-                                }
-                                .into();
-                            }
-                            self.preview_status = if self.recorded_source.streaming() {
-                                "Paraformer 本地流式识别（模型在后台载入）"
-                            } else if self.recorded_source.is_local() {
-                                "Whisper Tiny 本地离线识别；停止后出字"
-                            } else if preview {
-                                "设备端语音预览已启用"
-                            } else {
-                                "本机预览不可用，停止后批量转写"
-                            }
-                            .into();
-                        }
-                        Err(message) => {
-                            self.state.phase = Phase::Failed;
-                            self.message = message;
-                            self.report_gui_transcription(
-                                TranscriptionState::NotStarted,
-                                Some(BlockReason::CaptureFailed),
-                            );
-                            self.cancel_capture();
-                            self.gui_diagnostics.abandon_stages();
-                            self.delivery.clear();
-                        }
-                    }
-                }
-                AudioEvent::Partial(text) if self.state.phase == Phase::Recording => {
-                    self.update_dictation_partial(generation, text);
-                }
-                AudioEvent::Status(text) => self.preview_status = text,
-                AudioEvent::Failed(message)
-                    if self.state.phase == Phase::Recording && self.recorded_source.is_local() =>
-                {
-                    self.stop();
-                    self.message = message;
-                }
-                AudioEvent::Failed(message) if self.state.phase == Phase::Recording => {
-                    self.message = message;
-                    self.state.phase = Phase::Failed;
-                    self.started = None;
-                    self.cancel_capture();
-                    self.report_gui_transcription(
-                        TranscriptionState::Failed,
-                        Some(BlockReason::CaptureFailed),
-                    );
-                    self.gui_diagnostics.abandon_stages();
-                    self.delivery.retain_preview();
-                    self.wait_for_delivery();
-                }
-                AudioEvent::LimitReached if self.state.phase == Phase::Recording => self.stop(),
-                _ => {}
+            if self.recorded_microphone_uid != self.microphone_uid {
+                self.fail_start("准备期间麦克风偏好已变化，请重新开始。".into());
+                return;
             }
+            if now >= capture.deadline {
+                self.fail_start(audio::START_TIMEOUT.into());
+                return;
+            }
+        } else if let Some(deadline) = self.capture_stop {
+            if now >= deadline {
+                self.fail_capture(audio::STOP_TIMEOUT.into());
+                return;
+            }
+        } else if let Some(check) = capture.checking() {
+            match self.input_check {
+                Some((current, deadline)) if current == check => {
+                    if now >= deadline {
+                        self.fail_capture(audio::RECOVERY_TIMEOUT.into());
+                        return;
+                    }
+                }
+                _ => self.input_check = Some((check, now + audio::WAIT)),
+            }
+        } else {
+            self.input_check = None;
         }
-        if self.state.phase == Phase::Recording && self.seconds() >= 180 {
-            self.stop();
+        let reply = match capture.replies.try_recv() {
+            Ok(reply) => reply,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                CaptureReply::Failed("音频线程已退出，请重新开始。".into())
+            }
+        };
+        match reply {
+            CaptureReply::Prepared if opening => {
+                if let Err(message) = capture.commit() {
+                    self.fail_start(message);
+                }
+            }
+            CaptureReply::Started {
+                preview,
+                lease,
+                route,
+            } if opening => {
+                self.capture_route = Some(route);
+                let incoming = self.capture_incoming.take();
+                self.capture_started(generation, preview, Some(lease), incoming);
+                if let Some(status) = self.capture_preview_status.take() {
+                    self.preview_status = status;
+                }
+            }
+            CaptureReply::Recovering if self.state.phase == Phase::Recording => {
+                self.capture_route = None;
+                self.message = "输入设备已断开，正在尝试恢复麦克风…".into();
+            }
+            CaptureReply::Route(route) if self.state.phase == Phase::Recording => {
+                self.capture_route = Some(route);
+                self.message = "麦克风已恢复，正在继续录音。".into();
+            }
+            CaptureReply::Stopped {
+                result,
+                diagnostics,
+            } if self.capture_stop.take().is_some() => {
+                let recording = result.and_then(|()| capture.take_finalized());
+                self.capture = None;
+                self.input_check = None;
+                self.seal_gui_capture(diagnostics);
+                self.finish_capture(recording);
+            }
+            CaptureReply::Failed(message) if opening => self.fail_start(message),
+            CaptureReply::Failed(message) => self.fail_capture(message),
+            _ => {}
         }
-        let completion = match self.worker.as_ref().map(|worker| worker.results.try_recv()) {
+    }
+
+    fn poll_transcription_worker(&mut self) -> Option<Completion> {
+        match self.worker.as_ref().map(|worker| worker.results.try_recv()) {
             Some(Ok(completion)) => Some(completion),
             Some(Err(TryRecvError::Disconnected)) => {
-                self.worker = None;
                 if self.state.phase == Phase::Recording {
                     self.stop();
+                    if self.capture_stop.is_some() {
+                        return None;
+                    }
                 }
+                self.worker = None;
                 if self.cleanup.is_some()
                     || self
                         .active
@@ -1392,6 +1586,143 @@ impl Controller {
                 None
             }
             Some(Err(TryRecvError::Empty)) | None => None,
+        }
+    }
+
+    fn poll_inner(
+        &mut self,
+        mut start_allowed: impl FnMut(u64) -> bool,
+        mut start_capture: impl FnMut(
+            &mut Self,
+            bool,
+            u64,
+            Option<crate::local_audio::Input>,
+        ) -> Result<Option<bool>, String>,
+    ) {
+        self.file_jobs.poll();
+        self.poll_microphone_test();
+        let was_testing = self.source_tests.busy();
+        self.source_tests.poll();
+        if was_testing {
+            self.message = self.source_tests.summary();
+        }
+        self.poll_cleanup_observation();
+        if let Some(discovery) = &self.discovery {
+            match discovery.try_recv() {
+                Ok(catalog) => {
+                    self.source_tests.retain_catalog(&catalog.entries);
+                    self.catalog = catalog;
+                    self.discovery = None;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.discovery = None;
+                    self.message = "本地模型发现线程已退出，请刷新模型。".into();
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        self.poll_capture(&mut start_allowed);
+        let partial = self.partial.lock().ok().and_then(|mut slot| slot.take());
+        if let Some((generation, text)) = partial
+            && self.state.accepts(generation)
+            && self.state.phase == Phase::Recording
+        {
+            self.update_dictation_partial(generation, text);
+        }
+        while let Ok((generation, event)) = self.events.try_recv() {
+            if !self.state.accepts(generation) {
+                continue;
+            }
+            match event {
+                AudioEvent::Permissions { microphone, speech } => {
+                    // Duplicate callbacks must not cancel an already-started
+                    // session or change its delivery target.
+                    if self.state.phase != Phase::Permissions || self.capture.is_some() {
+                        continue;
+                    }
+                    // A synchronous permission reply can arrive during the same tick
+                    // that began preparations, while Carbon key-up is still pending.
+                    if !start_allowed(generation) {
+                        self.cancel_released_shortcut();
+                        continue;
+                    }
+                    if !microphone {
+                        self.state.permissions(generation, false);
+                        self.message = "请在系统设置中允许 VoicePort 使用麦克风。".into();
+                        self.report_gui_transcription(
+                            TranscriptionState::NotStarted,
+                            Some(BlockReason::MicrophoneDenied),
+                        );
+                        self.gui_diagnostics.abandon_stages();
+                        self.delivery.clear();
+                        continue;
+                    }
+                    let (local, incoming) = if self.recorded_source.is_local() {
+                        let (input, incoming) = crate::local_audio::channel();
+                        (Some(input), Some(incoming))
+                    } else {
+                        (None, None)
+                    };
+                    if self.current_gui_receipt().is_some() {
+                        self.gui_diagnostics.capture_pending = Some(generation);
+                    }
+                    match start_capture(self, speech, generation, local) {
+                        Ok(None) => {
+                            self.capture_incoming = incoming;
+                            self.message = "正在打开麦克风…".into();
+                        }
+                        // The synchronous fixtures own isolated synthetic recording leases.
+                        Ok(Some(preview)) => {
+                            #[cfg(test)]
+                            let lease = self.recorder.lease();
+                            #[cfg(not(test))]
+                            let lease = None;
+                            self.capture_started(generation, preview, lease, incoming);
+                        }
+                        Err(message) => self.fail_start(message),
+                    }
+                }
+                AudioEvent::Partial(text) if self.state.phase == Phase::Recording => {
+                    self.update_dictation_partial(generation, text);
+                }
+                AudioEvent::Status(text) if self.opening_microphone() => {
+                    self.capture_preview_status = Some(text);
+                }
+                AudioEvent::Status(text) if self.state.phase == Phase::Recording => {
+                    self.preview_status = text
+                }
+                AudioEvent::Failed(message)
+                    if self.state.phase == Phase::Recording && self.recorded_source.is_local() =>
+                {
+                    self.stop();
+                    self.message = message;
+                }
+                AudioEvent::Failed(message) if self.state.phase == Phase::Recording => {
+                    self.message = message;
+                    self.state.phase = Phase::Failed;
+                    self.started = None;
+                    self.cancel_capture();
+                    self.report_gui_transcription(
+                        TranscriptionState::Failed,
+                        Some(BlockReason::CaptureFailed),
+                    );
+                    self.gui_diagnostics.abandon_stages();
+                    self.delivery.retain_preview();
+                    self.wait_for_delivery();
+                }
+                AudioEvent::LimitReached if self.state.phase == Phase::Recording => self.stop(),
+                _ => {}
+            }
+        }
+        if self.state.phase == Phase::Recording && self.seconds() >= 180 {
+            self.stop();
+        }
+        let completion = if self.capture_stop.is_some() {
+            None
+        } else if self.deferred_completion.is_some() {
+            self.deferred_completion.take()
+        } else {
+            self.poll_transcription_worker()
         };
         if let Some(completion) = completion {
             // A stale completion cannot release a newer job's cancellation
@@ -1407,6 +1738,10 @@ impl Controller {
                 // A local worker can fail while loading or consuming live audio.
                 // Finalize the valid AAC lease before offering the same-source retry.
                 self.stop();
+                if self.capture_stop.is_some() {
+                    self.deferred_completion = Some(completion);
+                    return;
+                }
             }
             if self.state.phase == Phase::Transcribing && self.current_gui_receipt().is_some() {
                 self.gui_diagnostics.timings.transcription = completion.elapsed;
@@ -1484,8 +1819,7 @@ impl Controller {
                         if self.allow_delivery && has_text && self.delivery.uses_clipboard() {
                             self.message = self.delivery_status.clone();
                         }
-                        self.recorder.finish();
-                        self.seal_gui_capture();
+                        self.cancel_capture();
                         self.recording = None;
                     }
                     Err(error) => {
@@ -2063,7 +2397,7 @@ pub(crate) mod stop_failure_regression {
                 )
                 .unwrap();
             assert_eq!(c.overlay_snapshot(true).stage, Some(Stage::Preparing));
-            assert!(c.state.permissions(generation, true));
+            c.capture_started(generation, false, None, None);
             assert_eq!(c.overlay_snapshot(true).stage, Some(Stage::Recording));
             assert!(c.state.transcribe());
             assert_eq!(c.overlay_snapshot(true).stage, Some(Stage::Transcribing));

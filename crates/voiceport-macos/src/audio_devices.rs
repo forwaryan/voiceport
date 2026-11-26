@@ -17,12 +17,15 @@ use objc2_avf_audio::{
     AVAudioPCMBuffer, AVAudioTime,
 };
 use objc2_core_audio::*;
+#[cfg(debug_assertions)]
+#[path = "audio_device_fixture.rs"]
+pub(crate) mod fixture;
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol};
 use std::{
     ptr::{self, NonNull},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -57,6 +60,7 @@ pub(crate) struct Route {
     device: Device,
     fallback: Option<Fallback>,
     recovered: bool,
+    follows_default: bool,
 }
 
 impl Route {
@@ -89,12 +93,16 @@ fn open_route<T>(
     inventory: &impl Inventory,
     preferred_uid: Option<&str>,
     recovered: bool,
+    check: &impl Fn() -> Result<(), String>,
     mut open: impl FnMut(&Device) -> Result<T, String>,
 ) -> Result<(Route, T), String> {
+    check()?;
     let mut rejected = None;
     let mut fallback = None;
     if let Some(uid) = preferred_uid {
-        match inventory.inputs() {
+        let devices = inventory.inputs();
+        check()?;
+        match devices {
             Ok(devices) => match devices.into_iter().find(|d| d.uid == uid) {
                 Some(device) => match open(&device) {
                     Ok(input) => {
@@ -103,6 +111,7 @@ fn open_route<T>(
                                 device,
                                 fallback,
                                 recovered,
+                                follows_default: false,
                             },
                             input,
                         ));
@@ -117,7 +126,9 @@ fn open_route<T>(
             Err(_) => fallback = Some(Fallback::InventoryFailed),
         }
     }
+    check()?;
     let device = inventory.system_input()?;
+    check()?;
     if let Some((id, uid, error)) = rejected
         && device.id == id
         && device.uid == uid
@@ -133,6 +144,7 @@ fn open_route<T>(
             device,
             fallback,
             recovered,
+            follows_default: true,
         },
         input,
     ))
@@ -275,12 +287,22 @@ impl Inventory for Hal {
     }
 
     fn system_input(&self) -> Result<Device, String> {
-        let id = read_property(SYSTEM, kAudioHardwarePropertyDefaultInputDevice, 0_u32)?;
-        input_device(id)?.ok_or_else(|| "macOS 当前没有可用的系统输入。".into())
+        input_device(Hal::default_input_id()?)?
+            .ok_or_else(|| "macOS 当前没有可用的系统输入。".into())
+    }
+}
+
+impl Hal {
+    fn default_input_id() -> Result<u32, String> {
+        read_property(SYSTEM, kAudioHardwarePropertyDefaultInputDevice, 0_u32)
     }
 }
 
 pub(crate) fn inputs() -> Result<Vec<Device>, String> {
+    #[cfg(debug_assertions)]
+    if let Some(fixture) = fixture::current() {
+        return fixture.inputs();
+    }
     Hal.inputs()
 }
 
@@ -333,44 +355,154 @@ impl TapGate {
     }
 }
 
-pub(super) struct OpenInput {
+// The HAL notification and the tap admission race on this one-shot state.
+// A later notification does not revoke an already working, pinned input.
+#[derive(Default)]
+struct DefaultAdmission(AtomicU8);
+
+impl DefaultAdmission {
+    const PENDING: u8 = 0;
+    const INVALIDATED: u8 = 1;
+    const ADMITTED: u8 = 2;
+
+    fn pending(&self) -> bool {
+        self.0.load(Ordering::Acquire) == Self::PENDING
+    }
+
+    fn invalidate(&self) {
+        let _ = self.0.compare_exchange(
+            Self::PENDING,
+            Self::INVALIDATED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    fn admit(&self) -> bool {
+        self.0
+            .compare_exchange(
+                Self::PENDING,
+                Self::ADMITTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+}
+
+struct DefaultListener(block2::RcBlock<dyn Fn(u32, NonNull<AudioObjectPropertyAddress>)>);
+
+impl DefaultListener {
+    fn new(admission: &Arc<DefaultAdmission>) -> Result<Self, String> {
+        let observed = Arc::downgrade(admission);
+        // CoreAudio copies the block and calls it on delivery with a null queue.
+        // Only touch the admission state here, even if delivery is reentrant.
+        let listener =
+            block2::RcBlock::new(move |_: u32, _: NonNull<AudioObjectPropertyAddress>| {
+                if let Some(admission) = observed.upgrade() {
+                    admission.invalidate();
+                }
+            });
+        let mut property = address(kAudioHardwarePropertyDefaultInputDevice, GLOBAL);
+        status(unsafe {
+            AudioObjectAddPropertyListenerBlock(
+                SYSTEM,
+                NonNull::from(&mut property),
+                None,
+                block2::RcBlock::as_ptr(&listener),
+            )
+        })?;
+        Ok(Self(listener))
+    }
+}
+
+impl Drop for DefaultListener {
+    fn drop(&mut self) {
+        let mut property = address(kAudioHardwarePropertyDefaultInputDevice, GLOBAL);
+        if let Err(error) = status(unsafe {
+            AudioObjectRemovePropertyListenerBlock(
+                SYSTEM,
+                NonNull::from(&mut property),
+                None,
+                block2::RcBlock::as_ptr(&self.0),
+            )
+        }) {
+            eprintln!("无法移除系统输入监听：{error}");
+        }
+    }
+}
+
+const INPUT_CHANGED: &str = "准备期间麦克风已变化，请重新开始。";
+
+struct DefaultWatch {
+    id: u32,
+    admission: Arc<DefaultAdmission>,
+    _listener: Option<DefaultListener>,
+}
+
+struct NativeInput {
     engine: Retained<AVAudioEngine>,
     node: Retained<AVAudioInputNode>,
+    observer: Retained<ProtocolObject<dyn NSObjectProtocol>>,
+}
+
+pub(super) struct OpenInput {
+    native: InputEngine,
     pub format: Retained<AVAudioFormat>,
     gate: Arc<TapGate>,
-    observer: Retained<ProtocolObject<dyn NSObjectProtocol>>,
+    default_watch: Option<DefaultWatch>,
     next_check: Instant,
+}
+
+enum InputEngine {
+    Native(NativeInput),
+    #[cfg(debug_assertions)]
+    Synthetic(fixture::Input),
 }
 
 impl OpenInput {
     pub fn select(
         preferred: Option<&str>,
+        check: &impl Fn() -> Result<(), String>,
         validate: impl Fn(&AVAudioFormat) -> Result<(), String>,
     ) -> Result<(Route, Self), String> {
-        Self::open_prepared(preferred, false, validate).map(|(route, (input, ()))| (route, input))
+        Self::open_prepared(preferred, false, check, validate)
+            .map(|(route, (input, ()))| (route, input))
     }
 
     pub fn open_prepared<T>(
         preferred: Option<&str>,
         recovered: bool,
+        check: &impl Fn() -> Result<(), String>,
         prepare: impl Fn(&AVAudioFormat) -> Result<T, String>,
     ) -> Result<(Route, (Self, T)), String> {
-        open_route(&Hal, preferred, recovered, |device| {
-            Self::open(device, &prepare)
+        #[cfg(debug_assertions)]
+        if let Some(fixture) = fixture::current() {
+            return open_route(&fixture, preferred, recovered, check, |device| {
+                fixture.open(device, check, &prepare)
+            });
+        }
+        open_route(&Hal, preferred, recovered, check, |device| {
+            Self::open(device, check, &prepare)
         })
     }
 
     fn open<T>(
         device: &Device,
+        check: &impl Fn() -> Result<(), String>,
         prepare: &impl Fn(&AVAudioFormat) -> Result<T, String>,
     ) -> Result<(Self, T), String> {
+        check()?;
         let engine = unsafe { AVAudioEngine::new() };
+        check()?;
         let node = unsafe { engine.inputNode() };
+        check()?;
         let unit = unsafe { node.audioUnit() };
         if unit.is_null() {
             return Err("麦克风音频单元不可用。".into());
         }
         if unit_device(&node).ok() != Some(device.id) {
+            check()?;
             status(unsafe {
                 AudioUnitSetProperty(
                     unit,
@@ -382,11 +514,14 @@ impl OpenInput {
                 )
             })?;
         }
+        check()?;
         if unit_device(&node)? != device.id {
             return Err("系统没有采用所选麦克风。".into());
         }
+        check()?;
         let format = unsafe { node.outputFormatForBus(0) };
         let prepared = prepare(&format)?;
+        check()?;
         let gate = Arc::new(TapGate::default());
         let sink = gate.clone();
         let tap = block2::RcBlock::new(
@@ -413,42 +548,162 @@ impl OpenInput {
                 &notification,
             )
         };
-        let input = Self {
+        let native = NativeInput {
             engine,
             node,
+            observer,
+        };
+        // Construct the owner before prepare/start so failures also close the tap.
+        let input = Self {
+            native: InputEngine::Native(native),
             format,
             gate,
-            observer,
+            default_watch: None,
             next_check: Instant::now(),
         };
-        unsafe {
-            input.engine.prepare();
-            input
-                .engine
-                .startAndReturnError()
-                .map_err(super::native_error)?;
+        {
+            let native = match &input.native {
+                InputEngine::Native(native) => native,
+                #[cfg(debug_assertions)]
+                InputEngine::Synthetic(_) => unreachable!(),
+            };
+            check()?;
+            unsafe { native.engine.prepare() };
+            check()?;
+            unsafe {
+                native
+                    .engine
+                    .startAndReturnError()
+                    .map_err(super::native_error)?;
+            }
         }
-        if input.gate.1.load(Ordering::Acquire) || !input.matches(device) {
+        check()?;
+        if !input.matches(device) || input.gate.1.load(Ordering::Acquire) {
             return Err("无法确认所选麦克风已使用预期格式打开。".into());
         }
+        check()?;
         Ok((input, prepared))
     }
 
-    pub fn attach(&self, consume: impl Fn(&AVAudioPCMBuffer) + Send + Sync + 'static) {
-        *self.gate.0.lock().expect("newly opened tap gate") = Some(Box::new(consume));
+    pub fn verify_start(
+        &mut self,
+        route: &Route,
+        check: &impl Fn() -> Result<(), String>,
+    ) -> Result<(), String> {
+        check()?;
+        if route.follows_default {
+            let admission = Arc::new(DefaultAdmission::default());
+            let listener = match &self.native {
+                InputEngine::Native(_) => Some(DefaultListener::new(&admission)?),
+                #[cfg(debug_assertions)]
+                InputEngine::Synthetic(input) => {
+                    input.backend.watch_default(&admission);
+                    None
+                }
+            };
+            self.default_watch = Some(DefaultWatch {
+                id: route.device.id,
+                admission,
+                _listener: listener,
+            });
+            check()?;
+        }
+        let same_input = self.matches(&route.device);
+        check()?;
+        let same_default = !route.follows_default || self.default_still_matches(&route.device);
+        check()?;
+        if !same_input
+            || !same_default
+            || self.gate.1.load(Ordering::Acquire)
+            || self
+                .default_watch
+                .as_ref()
+                .is_some_and(|watch| !watch.admission.pending())
+        {
+            return Err(INPUT_CHANGED.into());
+        }
+        Ok(())
+    }
+
+    pub fn attach(
+        &self,
+        check: &impl Fn() -> Result<(), String>,
+        accepting: impl Fn() -> bool + Send + Sync + 'static,
+        consume: impl Fn(&AVAudioPCMBuffer) + Send + Sync + 'static,
+    ) -> Result<(), String> {
+        check()?;
+        if let Some(watch) = &self.default_watch {
+            // Details/UID and Speech setup can block. Read only the default ID
+            // here, outside the tap lock, with no further route lookup.
+            let current_id = match &self.native {
+                InputEngine::Native(_) => Hal::default_input_id(),
+                #[cfg(debug_assertions)]
+                InputEngine::Synthetic(input) => Ok(input.backend.final_default_input_id()),
+            };
+            check()?;
+            if current_id != Ok(watch.id) {
+                return Err(INPUT_CHANGED.into());
+            }
+        }
+        let mut slot = self.gate.0.lock().expect("newly opened tap gate");
+        if self.gate.1.load(Ordering::Acquire) || !accepting() {
+            return Err("麦克风配置已变化或音频操作已取消。".into());
+        }
+        *slot = Some(Box::new(move |buffer| {
+            if accepting() {
+                consume(buffer);
+            }
+        }));
+        // The staged consumer is invisible to callbacks until this lock opens.
+        // An observed default change can still win up to the admission CAS.
+        if self
+            .default_watch
+            .as_ref()
+            .is_some_and(|watch| !watch.admission.admit())
+            || self.gate.1.load(Ordering::Acquire)
+        {
+            slot.take();
+            return Err(INPUT_CHANGED.into());
+        }
+        #[cfg(debug_assertions)]
+        if let InputEngine::Synthetic(input) = &self.native {
+            input.attached();
+        }
+        Ok(())
+    }
+
+    fn default_still_matches(&self, device: &Device) -> bool {
+        let selected = match &self.native {
+            InputEngine::Native(_) => Hal.system_input(),
+            #[cfg(debug_assertions)]
+            InputEngine::Synthetic(input) => input.backend.system_input(),
+        };
+        selected.is_ok_and(|selected| selected.id == device.id && selected.uid == device.uid)
     }
 
     fn matches(&self, device: &Device) -> bool {
-        (unsafe { self.engine.isRunning() })
-            && unit_device(&self.node).is_ok_and(|id| {
-                id == device.id && alive(id) == Ok(true) && identity(id).as_ref() == Ok(&device.uid)
-            })
-            && unsafe { self.node.outputFormatForBus(0) } == self.format
+        match &self.native {
+            InputEngine::Native(input) => {
+                (unsafe { input.engine.isRunning() })
+                    && unit_device(&input.node).is_ok_and(|id| {
+                        id == device.id
+                            && alive(id) == Ok(true)
+                            && identity(id).as_ref() == Ok(&device.uid)
+                    })
+                    && unsafe { input.node.outputFormatForBus(0) } == self.format
+            }
+            #[cfg(debug_assertions)]
+            InputEngine::Synthetic(input) => input.healthy(),
+        }
     }
 
     pub fn healthy(&mut self, route: &Route, force: bool) -> bool {
         if self.gate.1.load(Ordering::Acquire) {
             return false;
+        }
+        #[cfg(debug_assertions)]
+        if let InputEngine::Synthetic(input) = &self.native {
+            input.pulse(&self.gate);
         }
         let now = Instant::now();
         if !force && now < self.next_check {
@@ -462,10 +717,14 @@ impl OpenInput {
 impl Drop for OpenInput {
     fn drop(&mut self) {
         self.gate.close();
-        unsafe {
-            NSNotificationCenter::defaultCenter().removeObserver(self.observer.as_ref());
-            self.engine.stop();
-            self.node.removeTapOnBus(0);
+        match &self.native {
+            InputEngine::Native(input) => unsafe {
+                NSNotificationCenter::defaultCenter().removeObserver(input.observer.as_ref());
+                input.engine.stop();
+                input.node.removeTapOnBus(0);
+            },
+            #[cfg(debug_assertions)]
+            InputEngine::Synthetic(_) => {}
         }
     }
 }
@@ -529,12 +788,13 @@ mod tests {
             devices: Ok(vec![device(1, "other"), device(2, "saved")]),
             default: Ok(device(1, "other")),
         };
-        let (route, id) = open_route(&mock, Some("saved"), false, |d| Ok(d.id)).unwrap();
+        let (route, id) =
+            open_route(&mock, Some("saved"), false, &|| Ok(()), |d| Ok(d.id)).unwrap();
         assert_eq!(id, 2);
         assert_eq!(route.fallback, None);
         mock.devices = Ok(vec![device(2, "other"), device(7, "saved")]);
         mock.default = Ok(device(2, "other"));
-        let (route, id) = open_route(&mock, Some("saved"), true, |d| Ok(d.id)).unwrap();
+        let (route, id) = open_route(&mock, Some("saved"), true, &|| Ok(()), |d| Ok(d.id)).unwrap();
         assert_eq!(id, 7);
         assert!(route.recovered);
     }
@@ -546,12 +806,13 @@ mod tests {
             default: Ok(device(3, "external")),
         };
         assert!(
-            open_route(&mock, Some("built-in"), true, |_| Err::<(), _>(
+            open_route(&mock, Some("built-in"), true, &|| Ok(()), |_| Err::<(), _>(
                 "default would not open".into()
             ))
             .is_err()
         );
-        let (route, ()) = open_route(&mock, Some("built-in"), true, |_| Ok(())).unwrap();
+        let (route, ()) =
+            open_route(&mock, Some("built-in"), true, &|| Ok(()), |_| Ok(())).unwrap();
         assert_eq!(route.device.uid, "external");
         assert_eq!(route.fallback, Some(Fallback::Missing));
         assert!(route.summary().contains("已恢复录音"));
@@ -563,13 +824,14 @@ mod tests {
             devices: Err("enumeration failed".into()),
             default: Ok(device(6, "external")),
         };
-        let (route, opened) = open_route(&mock, Some("built-in"), false, |d| Ok(d.id)).unwrap();
+        let (route, opened) =
+            open_route(&mock, Some("built-in"), false, &|| Ok(()), |d| Ok(d.id)).unwrap();
         assert_eq!(opened, 6);
         assert_eq!(route.fallback, Some(Fallback::InventoryFailed));
-        let (route, _) = open_route(&mock, None, false, |d| Ok(d.id)).unwrap();
+        let (route, _) = open_route(&mock, None, false, &|| Ok(()), |d| Ok(d.id)).unwrap();
         assert_eq!(route.fallback, None);
         mock.default = Err("none".into());
-        assert!(open_route(&mock, Some("built-in"), false, |_| Ok(())).is_err());
+        assert!(open_route(&mock, Some("built-in"), false, &|| Ok(()), |_| Ok(())).is_err());
     }
 
     #[test]
@@ -579,7 +841,7 @@ mod tests {
             default: Ok(device(2, "default")),
         };
         let mut attempted = Vec::new();
-        let (route, ()) = open_route(&mock, Some("saved"), true, |d| {
+        let (route, ()) = open_route(&mock, Some("saved"), true, &|| Ok(()), |d| {
             attempted.push(d.id);
             if d.id == 1 {
                 Err("gone".into())
@@ -593,7 +855,7 @@ mod tests {
         mock.default = Ok(device(1, "saved"));
         let mut calls = 0;
         assert!(
-            open_route(&mock, Some("saved"), false, |_| {
+            open_route(&mock, Some("saved"), false, &|| Ok(()), |_| {
                 calls += 1;
                 Err::<(), _>("gone".into())
             })

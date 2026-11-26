@@ -20,7 +20,7 @@ mod files;
 #[cfg(debug_assertions)]
 mod fixture;
 #[cfg(debug_assertions)]
-pub use fixture::isolated_control_regression;
+pub use fixture::{isolated_audio_start_regression, isolated_control_regression};
 mod history;
 mod models;
 mod product;
@@ -30,6 +30,7 @@ pub(super) struct Control {
     pub server: Option<Server>,
     window: Option<(product::Window, Pending)>,
     microphone_operation: Option<String>,
+    microphone_inventory: Option<product::MicrophoneInventory>,
     models: models::ModelControl,
     files: files::FileControl,
     background: Option<Receiver<Completed>>,
@@ -281,6 +282,7 @@ impl Delegate {
                         let mut reply = busy();
                         self.with_controller(|c| {
                             if c.busy()
+                                || (!sample && c.audio_input_busy())
                                 || self.ivars().quitting.get()
                                 || self.ivars().pending_hotkey.borrow().is_some()
                             {
@@ -294,6 +296,7 @@ impl Delegate {
             };
             completed.pending.respond(response);
         }
+        self.poll_microphone_inventory(&mut control);
         // Process at most four bounded requests per UI tick.
         for _ in 0..4 {
             let Some(pending) = control.server.as_ref().and_then(Server::next) else {
@@ -341,12 +344,14 @@ impl Delegate {
         let unavailable = locked || c.discovering();
         let response = match action {
             Action::Status => {
-                let (microphone, speech) = crate::audio::Recorder::permission_status();
+                let (microphone, speech) = c.capture_permission_status();
                 let hotkey = self.hotkey_registration();
                 Response::ok(json!({
                     "state": phase(c.state.phase),
                     "busy": c.busy() || locked,
                     "pending": c.state.phase == Phase::Stopping,
+                    "audio_input_busy": c.audio_input_busy(),
+                    "opening_microphone": c.opening_microphone(),
                     "warning": (c.state.phase == Phase::Stopping).then_some("cancellation_pending"),
                     "discovering": c.discovering(),
                     "source": c.source_id,
@@ -499,6 +504,22 @@ impl Delegate {
             Action::Scenes {
                 request: request @ ScenesRequest::List,
             } => self.control_scenes(c, request),
+            Action::Microphone {
+                request: voiceport_control::MicrophoneRequest::List,
+            } => {
+                self.begin_microphone_inventory(control, c, pending, None);
+                return;
+            }
+            Action::Microphone {
+                request: voiceport_control::MicrophoneRequest::Select { uid: Some(uid) },
+            } => {
+                if unavailable || c.busy() {
+                    busy()
+                } else {
+                    self.begin_microphone_inventory(control, c, pending, Some(uid));
+                    return;
+                }
+            }
             Action::Microphone { request } => {
                 self.control_microphone(control, c, request, unavailable)
             }
@@ -621,7 +642,7 @@ impl Delegate {
             Action::DictationStart { source, language } => {
                 if !voiceport_core::language::supported(&language) {
                     err("invalid_request", "Unsupported language.")
-                } else if crate::audio::Recorder::permission_status().0 != "authorized" {
+                } else if c.capture_permission_status().0 != "authorized" {
                     err(
                         "permission_denied",
                         "Microphone permission must already be granted in the App before CLI recording; no permission prompt was requested.",
@@ -667,13 +688,13 @@ impl Delegate {
                 missing()
             } else if op.result.is_some() || op.generation != c.state.generation() {
                 err("invalid_state", "Operation is no longer active.")
-            } else if stop && c.state.phase != Phase::Recording {
+            } else if stop && c.state.phase != Phase::Recording && !c.opening_microphone() {
                 err(
                     "invalid_state",
                     "Only a recording can be stopped; inspect status or cancel.",
                 )
             } else {
-                if stop {
+                if stop && !c.opening_microphone() {
                     c.stop();
                 } else {
                     op.cancelled = true;

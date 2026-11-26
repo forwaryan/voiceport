@@ -14,8 +14,11 @@ fn dictation_workflow_frozen_gui_profile_preserves_original_and_keeps_cli_litera
                 panic!("panel-only session cannot capture an input target")
             })
             .unwrap();
+        if !gui {
+            assert_eq!(c.raw_transcript.as_deref(), Some("北经的vp🙂"));
+        }
+        c.capture_started(generation, false, None, None);
         assert!(c.raw_transcript.is_none());
-        assert!(c.state.permissions(generation, true));
         assert!(c.state.transcribe());
         c.workflows.rules = parse_rules("北经 → 南京\nvp → later").unwrap();
         c.source_id = "later-source".into();

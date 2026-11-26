@@ -19,7 +19,7 @@ pub(crate) enum InputSignal {
 /// have a duration, and stages lacking either boundary are absent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct StageTimings {
-    /// From Recorder::start setup to observation of the first valid input frame.
+    /// From native capture preparation to observation of the first valid input frame.
     pub(crate) capture_first_frame: Option<Duration>,
     /// Input or model preparation, when its boundaries are observable.
     pub(crate) preparation: Option<Duration>,

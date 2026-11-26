@@ -1,5 +1,7 @@
 //! Real CLI and production socket/Delegate routing in a fixture-owned AppKit process.
+mod audio_start;
 mod update;
+pub use audio_start::isolated_audio_start_regression;
 
 use super::*;
 use crate::{
@@ -67,8 +69,12 @@ impl Fixture<'_> {
         let mut child = self.spawn(words);
         let deadline = Instant::now() + LIMIT;
         while child.try_wait().unwrap().is_none() {
-            self.owner.with_controller(|c| c.file_jobs.poll());
-            self.owner.poll_control();
+            if self.owner.ivars().timer.get().is_some() {
+                audio_start::pump();
+            } else {
+                self.owner.with_controller(|c| c.file_jobs.poll());
+                self.owner.poll_control();
+            }
             if Instant::now() >= deadline {
                 let _ = child.kill();
                 let _ = child.wait();

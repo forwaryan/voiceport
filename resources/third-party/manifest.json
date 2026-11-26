@@ -258,16 +258,16 @@
   "lock_only_policy": "Not in this native target metadata graph; not labelled shipped or linked. Cargo.lock records public source/checksum. These excluded-platform packages are not included as runtime license material.",
   "build_inputs": {
     "Cargo.toml": "7ed7c346e22f5d7b591f07ad81d1ae37fa9b68a0ab1a026e31375c2cc4c75cd2",
-    "Cargo.lock": "85489d821043ed6f9fd4754a6686a4f361598ca128c39e380022d0ab830202e0",
+    "Cargo.lock": "c52d2ff64ebd478fc79128cd32dbd6eeab36daf2f3d200f50968d05035a15e35",
     "crates/voiceport-cli/Cargo.toml": "e8c786edb99eb1dcddd7f33cf04878dea4f57792dea66c8e62dca8cc9758d541",
     "crates/voiceport-control/Cargo.toml": "a00a503f6d28be7bd668815b0633777e368bfe273a8b88d0545f6fbf12069942",
     "crates/voiceport-core/Cargo.toml": "1c57e8973ff392e21970f70fcc63cd100132f16e4f4aa428c6102ffba15e9eaf",
-    "crates/voiceport-macos/Cargo.toml": "c5d4bb23cf0d76b013eb115b7fcd5a520c906961c61467d7d8ddb61ce8451c9f",
+    "crates/voiceport-macos/Cargo.toml": "90eecba18c5d36b16882e0f248f2dee7288bcfb8dd8b68a3e6364607e76ece6a",
     "crates/voiceport-windows/Cargo.toml": "65492ef3b0a058b1091695626dd63ebe82167fb48bb2dddd66f0ca007a52d50d"
   },
   "schema": 1,
   "target": "aarch64-apple-darwin",
-  "cargo_lock_sha256": "85489d821043ed6f9fd4754a6686a4f361598ca128c39e380022d0ab830202e0",
+  "cargo_lock_sha256": "c52d2ff64ebd478fc79128cd32dbd6eeab36daf2f3d200f50968d05035a15e35",
   "policy": "Overinclusive source materials. runtime means reachable normal target dependency, NOT proof every object is linked; build includes proc macros/build tools; dev and other-platform/lock-only are separately labelled. Complete notice-bearing source files are supplementary attribution material, not build inputs.",
   "packages": [
     {
@@ -4148,6 +4148,8 @@
         "AudioHardware",
         "AudioHardwareDeprecated",
         "alloc",
+        "block2",
+        "dispatch2",
         "objc2",
         "std"
       ],

@@ -14,7 +14,7 @@ use objc2_foundation::{
 use std::cell::{Cell, OnceCell, RefCell};
 mod control;
 #[cfg(debug_assertions)]
-pub use control::isolated_control_regression;
+pub use control::{isolated_audio_start_regression, isolated_control_regression};
 mod control_probes;
 mod dictation_page;
 mod dictation_workflows;
@@ -230,6 +230,8 @@ struct Ivars {
     hotkey_rx: RefCell<Option<std::sync::mpsc::Receiver<crate::hotkey::HotKeyEvent>>>,
     pending_hotkey: RefCell<Option<crate::hotkey::KeyPress>>,
     hold_session: Cell<Option<hotkey_start::HoldSession>>,
+    #[cfg(debug_assertions)]
+    audio_fixture_stroke: Cell<Option<Option<crate::hotkey::Stroke>>>,
     shortcut_mode: Cell<crate::shortcut::ShortcutMode>,
     last_start_trace: RefCell<Option<serde_json::Value>>,
     permission_rx: RefCell<Option<std::sync::mpsc::Receiver<(u64, crate::audio::AudioEvent)>>>,
@@ -517,6 +519,8 @@ define_class!(
                 let (microphone, speech) = crate::audio::Recorder::permission_status();
                 self.with_controller(|c| c.message = format!("权限检查：麦克风{}；{}；辅助功能{}。未开始录音。", if microphone == "authorized" { "已允许" } else { "未允许" }, if !c.uses_system_speech() { "此来源无需系统语音识别权限" } else if speech == "authorized" { "系统语音识别已允许" } else { "系统语音识别未允许（无设备端预览）" }, if Delivery::trusted() { "已允许" } else { "未允许" }));
             }
+            let opening_at_entry = self.ivars().controller.borrow().as_ref().is_some_and(Controller::opening_microphone);
+            if opening_at_entry { self.poll_toggle_shortcut(); }
             self.with_controller(|c| {
                 if self.ivars().quitting.get() && !self.ivars().shutdown_started.get() {
                     c.set_recent_dictations_enabled(false);
@@ -525,7 +529,7 @@ define_class!(
                 }
                 self.poll_dictation(c);
             });
-            self.poll_toggle_shortcut();
+            if !opening_at_entry { self.poll_toggle_shortcut(); }
             if self.ivars().show_models_on_launch.get()
                 && self.ivars().controller.borrow().as_ref().is_some_and(|c| !c.busy() && !c.discovering()) {
                 self.ivars().show_models_on_launch.set(false);
@@ -788,6 +792,9 @@ impl Delegate {
             *self.ivars().hotkey_error.borrow_mut() = Some(message.clone());
             self.with_controller(|c| c.message = message);
         }
+        self.install_timer();
+    }
+    fn install_timer(&self) {
         let timer = unsafe {
             NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
                 0.1,
@@ -1006,6 +1013,8 @@ impl Delegate {
             return;
         };
         let overlay_enabled = status_overlay::enabled();
+        #[cfg(debug_assertions)]
+        let overlay_enabled = self.ivars().audio_fixture_stroke.get().is_none() && overlay_enabled;
         if let Ok(mut overlay) = self.ivars().overlay.try_borrow_mut() {
             if self.ivars().quitting.get() {
                 overlay.close();
@@ -1040,6 +1049,7 @@ impl Delegate {
             }
         }
         let recording = c.state.phase == Phase::Recording;
+        let opening = c.opening_microphone();
         let trusted = Delivery::trusted();
         self.refresh_first_run(c, trusted);
         let shortcut_label = self.ivars().shortcut_binding.get().label();
@@ -1054,7 +1064,11 @@ impl Delegate {
         );
         let (appearance, state_text) = match c.state.phase {
             Phase::Recording => (StatusAppearance::Recording, "正在听写"),
+            Phase::Permissions if opening => (StatusAppearance::Working, "正在打开麦克风"),
             Phase::Permissions => (StatusAppearance::Working, "正在准备权限"),
+            Phase::Transcribing if c.finalizing_capture() => {
+                (StatusAppearance::Working, "正在停止麦克风")
+            }
             Phase::Transcribing => (StatusAppearance::Working, "正在转写"),
             Phase::Delivering => (StatusAppearance::Working, "正在输入文字"),
             Phase::Stopping => (StatusAppearance::Working, "正在停止"),
@@ -1090,7 +1104,9 @@ impl Delegate {
         if let Some(item) = self.ivars().menu_copy.get() {
             item.setEnabled(!c.transcript.is_empty());
         }
-        let title = if recording {
+        let title = if opening {
+            "取消麦克风准备"
+        } else if recording {
             "停止并转写"
         } else {
             "开始听写"
@@ -1101,7 +1117,7 @@ impl Delegate {
                 !preparing_permissions
                     && !returning_to_input
                     && !self.settings_locked()
-                    && (recording || !c.busy()),
+                    && (opening || recording || !c.busy()),
             );
         }
         let idle =
