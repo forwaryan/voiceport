@@ -69,6 +69,120 @@ fn check_quick_panel_hide(mtm: MainThreadMarker) {
     );
 }
 
+pub(in crate::app) fn prove_visible_quick_panel_hide(
+    owner: &Delegate,
+    app: &NSApplication,
+    reopen: impl FnOnce(),
+) {
+    use objc2_app_kit::NSTextInputClient;
+    use objc2_foundation::NSRange;
+
+    let mut rig = SyntheticDictations::new();
+    rig.controller.set_recent_dictations_enabled(true);
+    let bodies = ["较早的合成听写", "快捷面板隐藏前展开的合成听写🙂"];
+    let mut ids = Vec::new();
+    for body in bodies {
+        let (generation, _) = rig.begin(true, false);
+        rig.finish(generation, body);
+        ids.push(rig.controller.list_recent_dictations(1).remove(0).id);
+    }
+    assert_ne!(ids[0], ids[1]);
+    let previous = owner.ivars().controller.replace(Some(rig.controller));
+    owner.show_workbench_page(crate::app::workbench::Page::History);
+    let window = owner.ivars().window.get().unwrap();
+    let is_key = || {
+        app.isActive()
+            && window.isVisible()
+            && window.isKeyWindow()
+            && app.keyWindow().as_deref() == Some(&**window)
+    };
+    assert!(is_key());
+    let page = owner.ivars().history_page.get().unwrap();
+    let controls = page.controls();
+    assert_eq!(page.ivars().entries.borrow()[0].id, ids[1]);
+    assert_eq!(page.ivars().entries.borrow()[1].id, ids[0]);
+    assert!(!controls.rows[0].isHidden() && !controls.rows[1].isHidden());
+    click(&controls.rows[0]);
+    let storage = unsafe { controls.text.textStorage() }.unwrap();
+    assert_eq!(storage.string().to_string(), bodies[1]);
+    let selection = NSRange::new(0, 2);
+    controls.text.setSelectedRange(selection);
+    assert_eq!(NSTextInputClient::selectedRange(&*controls.text), selection);
+    assert_eq!(
+        page.ivars().selection.borrow().as_deref(),
+        Some(ids[1].as_str())
+    );
+    assert!(controls.rows[0].isAccessibilityExpanded());
+    let mut simulated_copies = 0;
+    page.copy_with(
+        owner.ivars().controller.borrow().as_ref().unwrap(),
+        &controls.copy,
+        |body| {
+            assert_eq!(body, bodies[1]);
+            simulated_copies += 1;
+            true
+        },
+    );
+    assert_eq!(simulated_copies, 1);
+    assert!(!controls.feedback.stringValue().is_empty());
+
+    // This calls the production opener, which orders out the visible Workbench.
+    owner.build_menu();
+    owner.show_quick_panel();
+    assert!(owner.ivars().quick_panel.get().unwrap().is_shown());
+    assert!(!window.isVisible() && !window.isMiniaturized() && !window.isKeyWindow());
+    let cleared = || {
+        storage.length() == 0
+            && NSTextInputClient::selectedRange(&*controls.text).length == 0
+            && page.ivars().selection.borrow().is_none()
+            && controls.detail.isHidden()
+            && controls.copy.isHidden()
+            && controls.feedback.stringValue().is_empty()
+    };
+    assert!(cleared(), "ordering out History left detail state behind");
+
+    reopen();
+    assert!(is_key() && !owner.ivars().quick_panel.get().unwrap().is_shown());
+    assert!(std::ptr::eq(
+        &**window,
+        &**owner.ivars().window.get().unwrap()
+    ));
+    assert!(
+        cleared(),
+        "reopening the same History window restored its detail"
+    );
+    assert_eq!(page.ivars().entries.borrow()[0].id, ids[1]);
+    assert_eq!(page.ivars().entries.borrow()[1].id, ids[0]);
+    assert!(
+        controls.rows[..2]
+            .iter()
+            .all(|row| !row.isHidden() && !row.isAccessibilityExpanded())
+    );
+    let slot = owner.ivars().controller.borrow();
+    let controller = slot.as_ref().unwrap();
+    for (id, body) in ids.iter().zip(bodies) {
+        assert_eq!(controller.read_recent_dictation(id), Some(body));
+    }
+    drop(slot);
+    click(&controls.rows[0]);
+    assert_eq!(storage.string().to_string(), bodies[1]);
+    assert_eq!(
+        page.ivars().selection.borrow().as_deref(),
+        Some(ids[1].as_str())
+    );
+    page.clear_display();
+    owner.ivars().controller.replace(previous);
+    println!(
+        "shell_gui_history_order_out {}",
+        serde_json::json!({
+            "opener": "native-programmatic", "reopen": "cli-app-show", "key_baseline": true,
+            "popover_shown": true, "hidden_without_minimize": true, "same_key_window": true,
+            "body_selection_feedback_cleared_while_hidden_and_reopened": true,
+            "original_ids_and_bodies": 2, "same_id_expandable": true, "clipboard_writes": 0
+        })
+    );
+}
+
 pub(in crate::app) fn run(mtm: MainThreadMarker) {
     let owner = Delegate::new(mtm);
     let domain = NSString::from_str(&format!(

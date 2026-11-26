@@ -4,7 +4,7 @@ use crate::controller::recent_dictations::MAX_ENTRIES;
 use objc2::{Message, rc::Weak};
 
 #[cfg(debug_assertions)]
-mod fixture;
+pub(in crate::app) mod fixture;
 #[cfg(debug_assertions)]
 pub(in crate::app) use fixture::run as run_fixture;
 

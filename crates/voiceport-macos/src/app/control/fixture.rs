@@ -272,8 +272,15 @@ fn synthetic_audio(folder: &Path) -> [PathBuf; 3] {
 
 pub fn isolated_control_regression(mtm: MainThreadMarker, cli: &Path) {
     let app = NSApplication::sharedApplication(mtm);
-    let folder = tempfile::tempdir_in("/tmp").unwrap();
-    let folder = folder.path().canonicalize().unwrap();
+    let native_folder = std::env::var_os("VOICEPORT_HOSTED_FILES_DIR").filter(|_| {
+        objc2_foundation::NSBundle::mainBundle().bundleIdentifier().as_deref()
+            == Some(objc2_foundation::ns_string!("org.voiceport.files-acceptance-fixture"))
+    });
+    let temporary = native_folder.is_none().then(|| tempfile::tempdir_in("/tmp").unwrap());
+    let folder = match &native_folder {
+        Some(path) => Path::new(path),
+        None => temporary.as_ref().unwrap().path(),
+    }.canonicalize().unwrap();
     let socket = folder.join("ipc/control.sock");
     let owner = Delegate::new(mtm);
     let defaults = Defaults::new();
@@ -295,6 +302,35 @@ pub fn isolated_control_regression(mtm: MainThreadMarker, cli: &Path) {
     owner.ivars().control.borrow_mut().server = Some(Server::bind(&socket).unwrap());
     let fixture = Fixture { cli, socket, owner };
     let call = |words: &[&str], exit| fixture.call(words, exit);
+    if native_folder.is_some() {
+        let _ = app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        let code = if app.activationPolicy() == NSApplicationActivationPolicy::Accessory {
+            let socket = fixture.socket.clone();
+            let cli = cli.to_owned();
+            super::super::run_hosted_window(&fixture.owner, &app, move |owner, _| {
+                let driver = Fixture { cli: &cli, socket, owner: objc2::Message::retain(owner) };
+                let open = || assert_eq!(driver.call(&["app", "open", "files"], 0)["data"], json!({
+                    "page": "file", "state": "user_action_required", "next": "choose_audio_file"
+                }));
+                if super::super::file_transcription::isolated_file_entry_routes(owner, open, &folder) {
+                    0
+                } else {
+                    78
+                }
+            })
+        } else {
+            eprintln!("files_gui_unavailable accessory_policy");
+            fixture.owner.ivars().control.borrow_mut().server.take();
+            78
+        };
+        assert!(!fixture.socket.exists());
+        drop(defaults);
+        println!("files_gui_cleanup window_closed=true socket_removed=true");
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return;
+    }
     assert_eq!(
         call(&["history", "list"], 0)["data"],
         json!({"enabled":false,"entries":[]})
