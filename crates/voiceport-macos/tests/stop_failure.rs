@@ -74,24 +74,28 @@ fn main() {
         .expect("stop_failure must execute on the actual OS main thread");
     println!("stop_failure: os_main_thread=true");
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args
+    let fixture_binary = std::env::current_exe().ok().is_some_and(|path| {
+        path.file_name()
+            .is_some_and(|name| name == "status-overlay-focus-fixture")
+    });
+    let focus_flag = args
         .first()
-        .is_some_and(|flag| flag == "--status-overlay-focus")
-    {
-        let [_, consent, boot_id, session_id] = args.as_slice() else {
+        .is_some_and(|flag| flag == "--status-overlay-focus");
+    if fixture_binary || focus_flag {
+        let [flag, consent, boot_id, session_id, launch @ ..] = args.as_slice() else {
             eprintln!(
                 "status-overlay-focus: refused before AppKit (isolated VM authorization required)"
             );
             std::process::exit(78);
         };
-        if consent != "--authorized-isolated-vm" {
+        if flag != "--status-overlay-focus" || consent != "--authorized-isolated-vm" {
             eprintln!(
                 "status-overlay-focus: refused before AppKit (isolated VM authorization required)"
             );
             std::process::exit(78);
         }
         objc2::rc::autoreleasepool(|_| {
-            status_overlay_panel::fixture::run(main_thread, boot_id, session_id)
+            status_overlay_panel::fixture::run(main_thread, boot_id, session_id, launch)
         });
     }
     let cases: Vec<&str> = match args.as_slice() {
