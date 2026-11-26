@@ -332,6 +332,7 @@ impl Delegate {
             && let Some(menu) = self.ivars().context_menu.get()
         {
             self.close_quick_panel();
+            self.update_menu();
             NSMenu::popUpContextMenu_withEvent_forView(menu, &event, &button);
             return;
         }

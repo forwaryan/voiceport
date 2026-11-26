@@ -1,14 +1,18 @@
 //! Native menu states for checking, downloading and restarting, without modal background checks.
 use super::*;
-use crate::app_update::{self, Check, Staged, Update};
+use crate::app_update::{self, Check, DownloadProgress, Staged, Update};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 use voiceport_control::Response;
 
+#[cfg(debug_assertions)]
+mod fixture;
+
 const AUTO_UPDATE_PREF: &str = "automaticallyCheckForUpdates";
 const FIRST_CHECK: Duration = Duration::from_secs(15);
 const CHECK_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
+const DOWNLOAD_REFRESH: Duration = Duration::from_millis(250);
 
 #[derive(Default)]
 pub(super) struct UpdateUi {
@@ -88,7 +92,12 @@ enum State {
         previous: Option<Cached>,
     },
     Offered(Update, Option<&'static str>),
-    Downloading(Receiver<app_update::Result<Staged>>, Option<&'static str>),
+    Downloading {
+        receiver: Receiver<app_update::Result<Staged>>,
+        failure: Option<&'static str>,
+        progress: DownloadProgress,
+        next_refresh: Instant,
+    },
     Ready(Staged, Option<&'static str>),
     Installing,
     Notice(Notice),
@@ -199,7 +208,7 @@ impl State {
     fn busy(&self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::Checking { .. } => Some(("checking", "An update check is already running.")),
-            Self::Downloading(..) => Some((
+            Self::Downloading { .. } => Some((
                 "downloading",
                 "The App is downloading and verifying an update.",
             )),
@@ -262,7 +271,7 @@ impl State {
                     cached_versions(current, &candidate.version)
                 ),
             },
-            Self::Downloading(..) => "正在下载并校验更新…".into(),
+            Self::Downloading { progress, .. } => download_title(progress),
             Self::Installing => "正在处理更新安装…".into(),
             Self::Ready(candidate, failure) => match failure {
                 None => format!("安装 v{} 并重启…", candidate.version),
@@ -277,6 +286,41 @@ impl State {
                 versions(current, notice.latest.as_deref())
             ),
         }
+    }
+}
+
+fn download_title(progress: &DownloadProgress) -> String {
+    let snapshot = progress.snapshot();
+    if snapshot.verifying {
+        return match snapshot.percent() {
+            Some(percent) => format!("下载完成 {percent}% · 正在校验并暂存…"),
+            None => "下载完成 · 正在校验并暂存…".into(),
+        };
+    }
+    let mut title = match snapshot.percent() {
+        Some(percent) => format!("下载中 {percent}%"),
+        None if snapshot.received == 0 => "正在连接下载…".into(),
+        None => format!(
+            "下载中 · {} · 百分比不可用",
+            download_bytes(snapshot.received)
+        ),
+    };
+    if let Some(rate) = snapshot.rate(Instant::now()) {
+        let speed = if rate < 1.0 {
+            "<1 B".into()
+        } else {
+            download_bytes(rate as u64)
+        };
+        title.push_str(&format!(" · {speed}/s"));
+    }
+    title
+}
+
+fn download_bytes(bytes: u64) -> String {
+    match bytes {
+        0..1_000 => format!("{bytes} B"),
+        1_000..1_000_000 => format!("{:.1} KB", bytes as f64 / 1_000.0),
+        _ => format!("{:.1} MB", bytes as f64 / 1_000_000.0),
     }
 }
 
@@ -341,7 +385,10 @@ impl Delegate {
         let update = self.ivars().update.borrow();
         if let Some(item) = self.ivars().update_item.get() {
             let current = current_version();
-            item.setTitle(&NSString::from_str(&update.state.menu_title(&current)));
+            let title = NSString::from_str(&update.state.menu_title(&current));
+            if !item.title().isEqualToString(&title) {
+                item.setTitle(&title);
+            }
             let detail = match &update.state {
                 State::Notice(notice) => Some(NSString::from_str(&notice.detail(&current))),
                 _ => None,
@@ -537,7 +584,7 @@ impl Delegate {
             self.mtm(),
             title,
             &format!(
-                "{detail}\n\n下载并校验时可以继续使用 VoicePort。下载完成后，应用会等你确认安装并重启。"
+                "{detail}\n\n下载和校验时可以继续使用 VoicePort。可从右键菜单查看进度。校验完成后，应用会等你确认安装并重启。"
             ),
             &["下载并校验", "查看发布页", "稍后"],
         ) {
@@ -562,14 +609,26 @@ impl Delegate {
             }
         };
         let (sender, receiver) = mpsc::channel();
+        let progress = DownloadProgress::default();
+        let worker_progress = progress.clone();
         let started = std::thread::Builder::new()
             .name("voiceport-update-download".into())
             .spawn(move || {
-                let _ = sender.send(app_update::stage(&home, &installed, candidate));
+                let _ = sender.send(app_update::stage(
+                    &home,
+                    &installed,
+                    candidate,
+                    &worker_progress,
+                ));
             })
             .is_ok();
         update.state = if started {
-            State::Downloading(receiver, failure)
+            State::Downloading {
+                receiver,
+                failure,
+                progress,
+                next_refresh: Instant::now() + DOWNLOAD_REFRESH,
+            }
         } else {
             State::Notice(Notice::failure(
                 "无法下载更新",
@@ -760,7 +819,10 @@ impl Delegate {
             self.update_menu();
             return;
         }
-        let finished = match &update.state {
+        let automatic_due =
+            update.automatic && update.next.is_some_and(|next| next <= Instant::now());
+        let mut refresh_download = false;
+        let finished = match &mut update.state {
             State::Checking {
                 manual, receiver, ..
             } => match receiver.try_recv() {
@@ -770,16 +832,26 @@ impl Delegate {
                 }
                 Err(TryRecvError::Empty) => None,
             },
-            State::Downloading(receiver, failure) => match receiver.try_recv() {
+            State::Downloading {
+                receiver,
+                failure,
+                next_refresh,
+                ..
+            } => match receiver.try_recv() {
                 Ok(result) => Some(Completion::Stage(result, *failure)),
                 Err(TryRecvError::Disconnected) => {
                     Some(Completion::Stage(Err("下载更新已中断。"), *failure))
                 }
-                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Empty) => {
+                    let now = Instant::now();
+                    if now >= *next_refresh {
+                        *next_refresh = now + DOWNLOAD_REFRESH;
+                        refresh_download = true;
+                    }
+                    None
+                }
             },
-            State::Idle | State::Offered(..) | State::Notice(..)
-                if update.automatic && update.next.is_some_and(|next| next <= Instant::now()) =>
-            {
+            State::Idle | State::Offered(..) | State::Notice(..) if automatic_due => {
                 drop(update);
                 self.start_update_check(false);
                 return;
@@ -787,6 +859,10 @@ impl Delegate {
             _ => None,
         };
         let Some(finished) = finished else {
+            drop(update);
+            if refresh_download {
+                self.update_menu();
+            }
             return;
         };
         let previous = match std::mem::take(&mut update.state) {
@@ -863,8 +939,13 @@ mod tests {
 
     #[test]
     fn ready_download_remains_refreshable_but_is_not_latest_after_failure() {
-        let ready = Staged::fixture("0.3.14");
-        assert!(State::Ready(Staged::fixture("0.3.14"), None).can_refresh());
+        let ready = State::Ready(Staged::fixture("0.3.14"), None);
+        assert!(ready.can_refresh());
+        assert_eq!(ready.busy(), None);
+        assert_eq!(ready.menu_title("0.3.13"), "安装 v0.3.14 并重启…");
+        let State::Ready(ready, _) = ready else {
+            unreachable!()
+        };
         let state = State::checked(
             true,
             Err("无法连接 GitHub。"),

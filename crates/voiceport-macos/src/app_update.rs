@@ -1,4 +1,5 @@
 //! GitHub release selection and verified update staging.
+mod download_progress;
 mod github;
 mod install;
 
@@ -11,6 +12,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+pub(super) use download_progress::DownloadProgress;
 pub(super) use install::{
     MANUAL_ONLY, QUIT_ACK, Staged, apply, can_install_in_app, checkable_installation,
 };
@@ -181,6 +183,15 @@ impl std::fmt::Display for CommandFailed {
 impl std::error::Error for CommandFailed {}
 
 fn bounded_output(command: &mut Command, limit: u64, timeout: Duration) -> io::Result<Vec<u8>> {
+    bounded_output_with_progress(command, limit, timeout, None)
+}
+
+fn bounded_output_with_progress(
+    command: &mut Command,
+    limit: u64,
+    timeout: Duration,
+    progress: Option<DownloadProgress>,
+) -> io::Result<Vec<u8>> {
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -189,8 +200,26 @@ fn bounded_output(command: &mut Command, limit: u64, timeout: Duration) -> io::R
     let mut output = child.stdout.take().expect("piped stdout").take(limit + 1);
     let (tx, rx) = mpsc::sync_channel(1);
     let read_thread = thread::Builder::new().spawn(move || {
-        let mut buffer = Vec::new();
-        let result = output.read_to_end(&mut buffer).map(|_| buffer);
+        let result = if let Some(progress) = progress {
+            let mut bytes = Vec::new();
+            let mut chunk = [0; 8192];
+            loop {
+                match output.read(&mut chunk) {
+                    Ok(0) => break Ok(bytes),
+                    Ok(n) => {
+                        bytes.extend_from_slice(&chunk[..n]);
+                        if bytes.len() as u64 <= limit {
+                            progress.received(bytes.len() as u64);
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => break Err(error),
+                }
+            }
+        } else {
+            let mut bytes = Vec::new();
+            output.read_to_end(&mut bytes).map(|_| bytes)
+        };
         let _ = tx.send(result);
     });
     let deadline = Instant::now() + timeout;
@@ -238,9 +267,15 @@ fn verify_download(bytes: &[u8], update: &Update) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn stage(home: &Path, destination: &Path, update: Update) -> Result<Staged> {
+pub(super) fn stage(
+    home: &Path,
+    destination: &Path,
+    update: Update,
+    progress: &DownloadProgress,
+) -> Result<Staged> {
     let target = install::PersonalInstall::current(destination)?;
-    let bytes = github::download(home, &update)?;
+    let bytes = github::download(home, &update, progress)?;
+    progress.verifying();
     verify_download(&bytes, &update)?;
     install::stage(&target, &update.version, &bytes)
 }
