@@ -775,3 +775,5 @@ mod fixture;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub use fixture::isolated_file_transcription_regression;
+#[cfg(debug_assertions)]
+pub(in crate::app) use fixture::isolated_file_entry_routes;
