@@ -63,6 +63,8 @@ voiceport --json sources probe-cancel OPERATION
 
 GUI 的来源 App 负责识别，目标 App 接收文字。QQ 或微信目标输入失败时，先按[投递排查流程](../skills/voiceport/references/workflows.md#recognized-text-not-delivered)检查原目标；不要自动探测来源、重传音频、重试识别或重新录音。微信当前与旧版路径、选路字段和接收证据的区别，见[投递状态契约](INPUT_DELIVERY.md#cli-状态字段与投递回执)。
 
+使用显式 `dictation copy-last` 将最近合格 GUI 结果复制到剪贴板。`dictation paste-last --target-pid PID --target-bundle ID` 要求指定正在前台的目标应用，保持所需控件和选区。动作回执见 `status.data.input.repaste`。遇到 `possible_duplicate` 或投递结果不明时，检查目标后再决定是否手动粘贴。[CLI 参数和回执](../skills/voiceport/references/cli.md#dictation-and-test-operations)
+
 ## QQ 安装诊断
 
 `voiceport --json qq doctor` 自动检查 `/Applications/QQ.app` 和 `~/Applications/QQ.app`；多份安装时使用 `qq doctor --qq /绝对路径/QQ.app` 指定。诊断器随 CLI 编译分发，无需源码目录、运行中的 VoicePort 或桥接 socket，依赖可用的 `/usr/bin/python3`。它只读安装元数据并用系统 codesign 验证官方签名、腾讯团队、沙盒及入口资源封存，不启动或修改 QQ，不登录、不读聊天/账户/Keychain、不上传音频。完整命令与错误码见 [CLI 指南](../skills/voiceport/references/cli.md#qq-installation-diagnostics-macos)。

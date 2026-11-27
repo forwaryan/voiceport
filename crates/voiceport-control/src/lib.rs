@@ -125,6 +125,11 @@ pub enum Action {
         generation: u64,
         original: bool,
     },
+    CopyLastDictation,
+    PasteLastDictation {
+        target_pid: i32,
+        target_bundle: String,
+    },
     History {
         request: HistoryRequest,
     },

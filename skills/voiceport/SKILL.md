@@ -18,6 +18,7 @@ Choose the command for the question:
 | Inspect App updates | `app update status`, `app update check` | Read the current snapshot first. Request a release lookup only when asked. The user confirms downloads and installations in the workbench’s Software Updates page. |
 | Inspect hardware and settings | `microphone list/status`, `models list`, `preferences get` | Selected and available devices/models, language, shortcut registration and delivery preferences |
 | Configure dictionary or scenes | `dictionary show/set/preview`, `scenes list/add/remove/apply` | Saved local rules and named settings, with native destination confirmation to apply a scene |
+| Copy or repaste an existing GUI result | `dictation copy-last`, `dictation paste-last --target-pid PID --target-bundle ID` | Explicit clipboard or focused-field action with content-free receipts |
 | Examine recent GUI dictation | `history list`, then explicitly requested `history show ID` | Bounded, process-local metadata and separately requested text |
 | Transcribe and export a chosen audio file | `app open files`, `file sources/plan/start/status/result/export` | Reviewable source/destination, operation ID, explicit text and new export file |
 | Check a QQ installation | `qq doctor [--qq ABSOLUTE_APP_PATH]` | Read-only installation report; inspect `data.blockers`, not just exit 0; no bridge or transcription proof |
@@ -63,6 +64,8 @@ For a failed retained recording, inspect result data for `state:"failed"`, curre
 For a selected local audio file, use `file sources` and `file plan` to identify the actual source and destination. Submit `file start OPERATION --confirm` only for the reviewed file, language and destination. If the reply is lost, `file status` accepts the known proposal ID. Retrieve text or export it only when requested. Use `history list` for metadata and `history show ID` only when the user asks to read the retained text. Clearing history and disabling collection both require explicit confirmation.
 
 For native permissions or a physical shortcut, open `app open first-run` or `app open shortcut` and let the user complete the indicated `next` action. Model changes use a proposal and `models start OPERATION --confirm`; follow with `models status` and verify the installation through `models details`. `models open` presents the native manager. A local microphone level test requires an existing grant and explicit acceptance with `microphone test-start --confirm`.
+
+Use `dictation copy-last` only when the user requests a clipboard write. For direct `dictation paste-last`, the user must explicitly request insertion, identify the exact target PID and bundle ID, and keep the intended field focused. The user can also focus the field and press `⌃⌥⇧V` themselves. Report pending readback as pending. For a rejected or ambiguous delivery, inspect the receipt and have the user check the actual field before deciding whether to copy and paste manually. `possible_duplicate` calls for inspection and manual recovery. Never automate resubmission. [CLI syntax and receipts](references/cli.md#dictation-and-test-operations)
 
 ## Step 6: Diagnose recognized text not reaching a target
 

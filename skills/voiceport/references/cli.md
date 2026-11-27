@@ -74,6 +74,11 @@ These commands never deliver text to an input target or clipboard. Stop/result/c
 
 `dictation gui-result GENERATION [--original]` is an explicit read of the retained final GUI result for the current generation. Get `generation` from `status` at the verified App PID. `--original` selects the pre-dictionary result when present. The reply has `generation`, `original`, `empty`, `text`, and `receipt`. Stale generations return `not_found`. The native result page can display transcripts beyond the CLI's frame budget.
 
+- `dictation copy-last` explicitly copies the latest eligible GUI result to the macOS clipboard. The reply contains `generation`, `copied`, and `possible_duplicate`, with no transcript. Without an available result it returns `not_found`.
+- `dictation paste-last --target-pid PID --target-bundle ID` explicitly submits that result from the running App to the named frontmost process. Both flags are required. Keep the intended field and selection focused from the time you request the action until it settles. The reply contains `generation`, `delivery`, `method`, and `failure_stage`. A successful response can still be waiting for readback. Check `status.data.input.repaste` on the same App and socket for the settled receipt. An unreadable or changed target returns `paste_blocked`. An earlier uncertain, partial, or unconfirmed submission, or a prior repaste that may have written this result, returns `possible_duplicate`. Check the field before using `copy-last` for manual paste. After a lost reply, inspect the receipt and the target before any further user-requested action.
+
+These actions use the eligible result still visible in the App, with a fallback to an eligible entry only when history is enabled and its text is available. `app capabilities` advertises both verbs in `data.dictation_output`. The [delivery policy](../../../docs/INPUT_DELIVERY.md#显式重贴最近听写) describes target and duplicate protection.
+
 ## Preferences
 
 - `preferences get` reads `source`, `language`, `languages`, `automatic_input`, `status_overlay`, `recording_mode`, and `shortcut` (`label`, `registration`).

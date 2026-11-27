@@ -75,6 +75,35 @@ pub(super) fn parse(words: &[&str]) -> Result<Action, Response> {
                 original: !rest.is_empty(),
             }
         }
+        ["dictation", "copy-last"] => Action::CopyLastDictation,
+        [
+            "dictation",
+            "paste-last",
+            "--target-pid",
+            pid,
+            "--target-bundle",
+            bundle,
+        ]
+        | [
+            "dictation",
+            "paste-last",
+            "--target-bundle",
+            bundle,
+            "--target-pid",
+            pid,
+        ] if positional(bundle)
+            && bundle.len() <= 255
+            && !bundle.chars().any(char::is_whitespace) =>
+        {
+            Action::PasteLastDictation {
+                target_pid: pid
+                    .parse()
+                    .ok()
+                    .filter(|pid| *pid > 0)
+                    .ok_or_else(invalid)?,
+                target_bundle: (*bundle).into(),
+            }
+        }
         ["history", rest @ ..] => Action::History {
             request: history(rest)?,
         },

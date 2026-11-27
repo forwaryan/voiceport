@@ -487,7 +487,7 @@ impl Preparation for FocusPreparation {
         };
         self.check()?;
         let monitor = self.monitor.take().ok_or(Failure::Monitor)?;
-        captured_target(self.pid, self.bundle.clone(), element, monitor).map(Some)
+        captured_target(self.pid, self.bundle.clone(), element, monitor, false).map(Some)
     }
 }
 
@@ -606,7 +606,28 @@ pub(super) fn capture(
         }
         Err(failure) => return Err(failure),
     };
-    captured_target(pid, bundle, element, monitor)
+    captured_target(pid, bundle, element, monitor, false)
+}
+
+/// An explicit paste must prove the field and selection during the action.
+/// The dictation compatibility routes cannot all provide that proof.
+pub(super) fn capture_repaste(expected: &model::ApplicationTarget) -> Result<Captured, Failure> {
+    if !main_thread() {
+        return Err(Failure::MainThread);
+    }
+    if !trusted() {
+        return Err(Failure::Accessibility);
+    }
+    if secure_input() {
+        return Err(Failure::SecureInput);
+    }
+    let (pid, bundle) = frontmost()?;
+    if expected.pid != pid || expected.bundle != bundle || bundle.is_empty() {
+        return Err(Failure::FocusApplicationChanged);
+    }
+    let monitor = UserMonitor::start(None)?;
+    let element = focused(pid)?;
+    captured_target(pid, bundle, element, monitor, true)
 }
 
 fn captured_target(
@@ -614,6 +635,7 @@ fn captured_target(
     bundle: String,
     element: OwnedCf,
     monitor: UserMonitor,
+    repaste: bool,
 ) -> Result<Captured, Failure> {
     // An unreadable Orca description cannot safely distinguish an editor from
     // its hidden terminal transport, so never fall back to document writes.
@@ -628,9 +650,13 @@ fn captured_target(
         None
     };
     let terminal = description.as_deref() == Some("Terminal input");
+    if repaste && terminal {
+        return Err(Failure::Selection);
+    }
     // Fix the generic route before mutation, but never replace Orca's dedicated
     // keyboard/terminal validation with a less specific clipboard target.
-    if generic_clipboard_fallback(&bundle) && clipboard::needs_compatibility(&element)? {
+    if !repaste && generic_clipboard_fallback(&bundle) && clipboard::needs_compatibility(&element)?
+    {
         return clipboard::ClipboardTarget::capture(pid, bundle, Some(element), monitor)
             .map(|target| Captured::ClipboardPaste(Box::new(target)));
     }
@@ -645,7 +671,11 @@ fn captured_target(
         pending: None,
         _main_only: std::marker::PhantomData,
     };
-    target.read()?;
+    // The explicit action takes its initial selection snapshot in the owned
+    // span or keyboard session. Do not read a second, replaceable baseline here.
+    if !repaste {
+        target.read()?;
+    }
     if terminal {
         target.current()?;
         Ok(Captured::Terminal(Box::new(target)))
@@ -877,6 +907,9 @@ impl NativeTarget {
             .ok()
             .and_then(|v| v.string(100))
             .ok_or(Failure::Role)?;
+        if role == "AXSecureTextField" {
+            return Err(Failure::Sensitive);
+        }
         if !matches!(role.as_str(), "AXTextField" | "AXTextArea" | "AXComboBox") {
             return Err(Failure::Role);
         }

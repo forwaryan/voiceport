@@ -374,6 +374,7 @@ pub(super) fn capabilities() -> Response {
         "control_schema":voiceport_control::VERSION, "version":env!("CARGO_PKG_VERSION"),
         "user_scope":"effective_user", "platform":"macos",
         "app_update":["check","status"],
+        "dictation_output":["copy-last","paste-last"],
         "groups":["app","status","sources","plugins","dictation","preferences","microphone","models","dictionary","scenes","history","file"],
     }))
 }

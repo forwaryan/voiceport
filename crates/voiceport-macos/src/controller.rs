@@ -20,8 +20,11 @@ use dictation_result::{GuiResultContext, RetainedGuiResult};
 #[cfg(test)]
 #[path = "controller/dictation_workflow_tests.rs"]
 mod dictation_workflow_tests;
+#[path = "controller/latest_output.rs"]
+mod latest_output;
 #[path = "controller/recent_dictations.rs"]
 pub(crate) mod recent_dictations;
+use latest_output::LatestOutput;
 
 use std::sync::Mutex;
 use std::{
@@ -292,6 +295,7 @@ pub struct Controller {
     gui_result_context: GuiResultContext,
     retained_gui_result: Option<RetainedGuiResult>,
     recent_dictations: recent_dictations::RecentDictations,
+    latest_output: LatestOutput,
     gui_owns_delivery: bool,
     overlay_origin_pid: Option<i32>,
     gui_diagnostics: GuiDiagnostics,
@@ -392,6 +396,7 @@ impl Controller {
             gui_result_context: GuiResultContext::default(),
             retained_gui_result: None,
             recent_dictations: recent_dictations::RecentDictations::default(),
+            latest_output: LatestOutput::default(),
             gui_owns_delivery: false,
             overlay_origin_pid: None,
             gui_diagnostics: GuiDiagnostics::default(),
@@ -447,6 +452,7 @@ impl Controller {
         self.file_jobs.busy()
             || !self.state.can_start()
             || self.delivery.has_pending()
+            || self.latest_output.has_pending()
             || self.source_tests.busy()
             || self.microphone_test.is_some()
     }
@@ -982,6 +988,7 @@ impl Controller {
         self.gui_diagnostics.abandon_stages();
         self.delivery.clear();
         self.recording = None;
+        self.latest_output.clear_notice();
         self.transcript.clear();
         self.visible_transcript = None;
         self.retained_gui_result = None;
@@ -1359,6 +1366,9 @@ impl Controller {
         }
     }
     pub fn cancel(&mut self) {
+        if self.cancel_repaste() {
+            return;
+        }
         if self.file_jobs.busy() {
             return;
         }
@@ -1495,6 +1505,7 @@ impl Controller {
         if !self.state.permissions(generation, true) {
             return;
         }
+        self.latest_output.clear_notice();
         self.transcript.clear();
         self.visible_transcript = None;
         self.retained_gui_result = None;
@@ -1933,6 +1944,7 @@ impl Controller {
             self.state.phase = self.delivery_settle.take().unwrap_or(Phase::Ready);
         }
         self.observe_recent_dictation();
+        self.poll_repaste();
     }
 }
 

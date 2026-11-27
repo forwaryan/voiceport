@@ -3,7 +3,7 @@
 use super::{BlockReason, Controller, TranscriptionState, VisibleTranscript};
 use serde::Serialize;
 use std::{collections::VecDeque, time::SystemTime};
-use voiceport_control::DeliveryReceipt;
+use voiceport_control::{DeliveryReceipt, DeliveryState};
 
 #[cfg(debug_assertions)]
 #[path = "recent_dictations/fixture.rs"]
@@ -28,12 +28,17 @@ struct Entry {
     generation: u64,
     metadata: RecentDictationMetadata,
     text: Option<String>,
+    possible_duplicate: bool,
+    repasted: bool,
 }
 
 #[derive(Default)]
 pub(super) struct RecentDictations {
     enabled: bool,
     candidate: Option<u64>,
+    latest_candidate: Option<u64>,
+    latest_visible: Option<u64>,
+    repasted_visible: Option<u64>,
     entries: VecDeque<Entry>,
     #[cfg(any(test, debug_assertions))]
     fixture_focus_safe: Option<bool>,
@@ -48,10 +53,17 @@ impl RecentDictations {
     }
 
     fn begin(&mut self, generation: u64, focus_safe: bool) {
-        self.candidate = (self.enabled && focus_safe).then_some(generation);
+        self.latest_candidate = focus_safe.then_some(generation);
+        self.candidate = self.latest_candidate.filter(|_| self.enabled);
     }
 
-    fn record(&mut self, generation: u64, text: &str, receipt: &super::GuiDictationReceipt) {
+    fn record(
+        &mut self,
+        generation: u64,
+        text: &str,
+        receipt: &super::GuiDictationReceipt,
+        possible_duplicate: bool,
+    ) {
         if self.candidate != Some(generation) {
             return;
         }
@@ -76,6 +88,8 @@ impl RecentDictations {
                 failure_stage: receipt.failure_stage.clone(),
             },
             text,
+            possible_duplicate,
+            repasted: false,
         });
         let mut bytes = 0;
         let keep = self
@@ -154,34 +168,36 @@ impl Controller {
     }
 
     pub(super) fn begin_recent_dictation(&mut self, generation: u64) {
-        let safe = self.recent_dictations.enabled && self.history_focus_safe();
+        let safe = self.history_focus_safe();
         self.recent_dictations.begin(generation, safe);
     }
 
     pub(super) fn retry_recent_dictation(&mut self, previous: u64, generation: u64) {
-        if self.recent_dictations.candidate == Some(previous) {
+        if self.recent_dictations.latest_candidate == Some(previous) {
+            let history_candidate = self.recent_dictations.candidate == Some(previous);
             self.begin_recent_dictation(generation);
+            if !history_candidate {
+                self.recent_dictations.candidate = None;
+            }
         }
     }
 
     pub(super) fn discard_recent_dictation_candidate(&mut self) {
         self.recent_dictations.candidate = None;
+        self.recent_dictations.latest_candidate = None;
     }
 
     pub(super) fn observe_recent_dictation(&mut self) {
-        if !self.recent_dictations.enabled {
-            return;
-        }
         let Some(generation) = self.gui_receipt.as_ref().map(|receipt| receipt.generation) else {
             return;
         };
-        if self.recent_dictations.candidate == Some(generation)
+        if self.recent_dictations.latest_candidate == Some(generation)
             && self.history_secure_input_active()
         {
             self.discard_recent_dictation_candidate();
         }
-        let candidate =
-            self.recent_dictations.candidate == Some(generation) && self.state.accepts(generation);
+        let candidate = self.recent_dictations.latest_candidate == Some(generation)
+            && self.state.accepts(generation);
         let existing = self
             .recent_dictations
             .entries
@@ -206,6 +222,7 @@ impl Controller {
             }
             return;
         }
+        let possible_duplicate = original_may_be_partial(receipt.delivery);
         if receipt.block_reason == Some(BlockReason::RetryPanelOnly) {
             // The recovery card carries the original attempt's delivery evidence.
             // History associates the receipt with the generation that produced its text.
@@ -214,7 +231,9 @@ impl Controller {
             receipt.failure_stage = None;
         }
         if let Some(index) = existing {
-            let metadata = &mut self.recent_dictations.entries[index].metadata;
+            let entry = &mut self.recent_dictations.entries[index];
+            entry.possible_duplicate = possible_duplicate;
+            let metadata = &mut entry.metadata;
             metadata.delivery = receipt.delivery;
             metadata.method = receipt.method;
             metadata.failure_stage = receipt.failure_stage;
@@ -227,10 +246,84 @@ impl Controller {
             return;
         }
         if self.history_focus_safe() {
-            self.recent_dictations
-                .record(generation, &self.transcript, &receipt);
+            let history = &mut self.recent_dictations;
+            history.latest_candidate = None;
+            history.latest_visible = Some(generation);
+            history.record(generation, &self.transcript, &receipt, possible_duplicate);
         } else {
             self.discard_recent_dictation_candidate();
+        }
+    }
+}
+
+/// Metadata paired with a borrowed, already retained result.
+pub(super) struct LatestResult<'a> {
+    pub generation: u64,
+    pub text: &'a str,
+    pub possible_duplicate: bool,
+}
+
+pub(super) fn original_may_be_partial(receipt: DeliveryReceipt) -> bool {
+    match receipt.state {
+        DeliveryState::Confirmed | DeliveryState::NotSent => false,
+        _ => {
+            receipt.submitted_operations > 0
+                || matches!(
+                    receipt.state,
+                    DeliveryState::AwaitingConfirmation
+                        | DeliveryState::Uncertain
+                        | DeliveryState::PartiallySent
+                        | DeliveryState::Submitted
+                )
+        }
+    }
+}
+
+impl Controller {
+    pub(super) fn latest_result(&self) -> Option<LatestResult<'_>> {
+        let history = &self.recent_dictations;
+        if let Some(generation) = history.latest_visible
+            && matches!(self.visible_transcript, Some(VisibleTranscript::Final(g)) if g == generation)
+            && !self.transcript.trim().is_empty()
+            && let Some(receipt) = self
+                .gui_dictation_receipt()
+                .filter(|receipt| receipt.generation == generation)
+                .or_else(|| {
+                    self.retained_gui_result()
+                        .map(|result| result.receipt.clone())
+                })
+            && !matches!(
+                receipt.failure_stage.as_deref(),
+                Some("secureInput" | "sensitive")
+            )
+        {
+            return Some(LatestResult {
+                generation,
+                text: &self.transcript,
+                possible_duplicate: history.repasted_visible == Some(generation)
+                    || original_may_be_partial(receipt.delivery),
+            });
+        }
+        history.entries.iter().find_map(|entry| {
+            Some(LatestResult {
+                generation: entry.generation,
+                text: entry.text.as_deref()?,
+                possible_duplicate: entry.possible_duplicate || entry.repasted,
+            })
+        })
+    }
+
+    pub(super) fn mark_repasted(&mut self, generation: u64) {
+        let history = &mut self.recent_dictations;
+        if history.latest_visible == Some(generation) {
+            history.repasted_visible = Some(generation);
+        }
+        if let Some(entry) = history
+            .entries
+            .iter_mut()
+            .find(|entry| entry.generation == generation)
+        {
+            entry.repasted = true;
         }
     }
 }
