@@ -26,6 +26,11 @@ fn constant(p: CFStringRef) -> CFString {
     unsafe { CFString::wrap_under_get_rule(p) }
 }
 fn query(reference: &str) -> Vec<(CFString, CFType)> {
+    let service = if voiceport_core::test_build::active() {
+        "VoicePortTest.TranscriptionSources.v1"
+    } else {
+        "VoicePort.TranscriptionSources.v1"
+    };
     unsafe {
         vec![
             (
@@ -34,7 +39,7 @@ fn query(reference: &str) -> Vec<(CFString, CFType)> {
             ),
             (
                 constant(kSecAttrService),
-                CFString::new("VoicePort.TranscriptionSources.v1").as_CFType(),
+                CFString::new(service).as_CFType(),
             ),
             (
                 constant(kSecAttrAccount),

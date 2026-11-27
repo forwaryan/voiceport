@@ -19,6 +19,7 @@ pub(super) use install::{
 
 pub(super) const RELEASES_PAGE: &str = "https://github.com/forwaryan/voiceport/releases";
 const MAX_ZIP: u64 = 64 * 1024 * 1024;
+pub(super) const TEST_BUILD_UPDATES_DISABLED: &str = "VoicePort Test 已停用软件更新。";
 pub(super) type Result<T> = std::result::Result<T, &'static str>;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

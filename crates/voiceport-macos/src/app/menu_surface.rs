@@ -123,11 +123,12 @@ impl Delegate {
 
     fn publish_menu_snapshot(&self, previous: Option<&Snapshot>, next: &Snapshot) {
         let iv = self.ivars();
+        let name = voiceport_core::test_build::application_name();
         if let Some(button) = iv.status.get().and_then(|status| status.button(self.mtm())) {
             self.update_status_icon(&button, next.appearance);
             if previous.is_none_or(|old| old.state != next.state || old.source != next.source) {
                 button.setAccessibilityLabel(Some(&NSString::from_str(&format!(
-                    "VoicePort · {} · {}",
+                    "{name} · {} · {}",
                     next.source, next.state
                 ))));
             }
@@ -138,7 +139,7 @@ impl Delegate {
                     || old.shortcut_instruction != next.shortcut_instruction
             }) {
                 button.setToolTip(Some(&NSString::from_str(&format!(
-                    "VoicePort · {}\n当前转写：{}\n{} {}\n点击快速切换 · 右键更多操作",
+                    "{name} · {}\n当前转写：{}\n{} {}\n点击快速切换 · 右键更多操作",
                     next.state, next.source, next.shortcut, next.shortcut_instruction
                 ))));
             }
@@ -151,7 +152,8 @@ impl Delegate {
     pub(super) fn apply_context_menu(&self, snapshot: &Snapshot) {
         let iv = self.ivars();
         if let Some(item) = iv.menu_state.get() {
-            set_menu_title(item, &format!("VoicePort · {}", snapshot.state));
+            let name = voiceport_core::test_build::application_name();
+            set_menu_title(item, &format!("{name} · {}", snapshot.state));
         }
         if let Some(item) = iv.menu_shortcut.get() {
             let help = if snapshot.hotkey_failed {

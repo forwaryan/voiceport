@@ -88,7 +88,9 @@ The App timer drains bounded requests on its main thread, and all Controller tra
 
 ## Test instances
 
-Keep normal HOME; use an independent bundle ID and ad-hoc signature, synthetic CODEX_HOME, a unique 0700 socket parent and explicit `VOICEPORT_SOURCES_PATH` on the test App child. Always pass its `--socket` to the CLI and compare status bundle_path/PID before mutations. These overrides do not isolate system Keychain or TCC automatically. Never use production audio, keys, App paths or targets in automated validation. Source tests use synthetic silence and controlled services; recording tests use inert controller/recorder fixtures and never request permissions. See the [workflow guide](../skills/voiceport/references/workflows.md) and [custom-source isolation notes](CUSTOM_SOURCES.md).
+For packaged **VoicePort Test**, use its `Contents/MacOS/voiceport-test`. It selects the dedicated test socket and rejects other `--socket` values. `--json --version` includes `data.build_profile:"test"`, and `app update status` reports `state:"disabled"`. See the [test ZIP commands and data locations](PACKAGING.md#isolated-macos-test-zip).
+
+For a manually isolated development App, keep normal HOME and use an independent bundle ID and ad-hoc signature, synthetic CODEX_HOME, a unique 0700 socket parent and explicit `VOICEPORT_SOURCES_PATH` on the test App child. Always pass its `--socket` to the CLI and compare status bundle_path/PID before mutations. These overrides do not isolate system Keychain or TCC automatically. Never use production audio, keys, App paths or targets in automated validation. Source tests use synthetic silence and controlled services; recording tests use inert controller/recorder fixtures and never request permissions. See the [workflow guide](../skills/voiceport/references/workflows.md) and [custom-source isolation notes](CUSTOM_SOURCES.md).
 
 ## Skill layout and installation
 

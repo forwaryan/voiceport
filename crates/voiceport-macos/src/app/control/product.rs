@@ -470,10 +470,15 @@ fn dictation_output_empty_result_does_not_expose_original_via_cli() {
 }
 
 pub(super) fn capabilities() -> Response {
+    let updates: &[&str] = if voiceport_core::test_build::active() {
+        &["status"]
+    } else {
+        &["check", "status"]
+    };
     Response::ok(json!({
         "control_schema":voiceport_control::VERSION, "version":env!("CARGO_PKG_VERSION"),
         "user_scope":"effective_user", "platform":"macos",
-        "app_update":["check","status"],
+        "app_update":updates,
         "dictionary_output":["show","set","preview"],
         "groups":["app","status","sources","plugins","dictation","preferences","microphone","models","dictionary","scenes","history","file"],
     }))

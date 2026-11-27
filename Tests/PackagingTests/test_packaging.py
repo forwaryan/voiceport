@@ -8,12 +8,14 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from product_inventory import inventory, FILES, FOLDERS
 from license_materials import check
 from check_bundle import validate
+from macos_artifacts import MANIFEST, TEST_ARCHIVE, build_test, extract_zip
 
 
 def cargo_target():
@@ -149,6 +151,12 @@ class PackagingTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn(b'Usage:', result.stderr)
                 self.assertFalse(log.exists(), 'argument rejection must precede all Cargo invocations')
+            for args, diagnostic in [(['--test', '--distribution'], b'mutually exclusive'),
+                                     (['--test', '--skip-build'], b'Test bundle must be named VoicePort Test.app')]:
+                result = subprocess.run(command + args, cwd=scope, env=env, capture_output=True)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertFalse(log.exists(), 'test mode must reject unsafe arguments before Cargo')
             result = subprocess.run(command + ['--skip-build'], cwd=scope, env=env, capture_output=True)
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn(b'Rust release product is required', result.stderr)
@@ -210,6 +218,82 @@ class RealBundleTests(unittest.TestCase):
                                     capture_output=True, text=True)
             if result.returncode:
                 raise AssertionError(f'package fixture failed (exit {result.returncode}):\n{result.stdout}\n{result.stderr}')
+
+    def test_actual_rust_test_package_routes_offline_cli_and_blocks_apply(self):
+        # The owning verification entry point already holds the shared lock.
+        run = subprocess.run
+
+        def add_archive_metadata(args, **kwargs):
+            if args[0] == '/usr/bin/ditto':
+                resource = pathlib.Path(args[-2]) / 'Contents/Resources/AppIcon.icns'
+                run(['/usr/bin/xattr', '-w', 'io.voiceport.synthetic', 'fixture', resource], check=True)
+            return run(args, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix='voiceport-test-package-') as temp:
+            root = pathlib.Path(temp)
+            output = root / 'artifacts'
+            with patch.dict(os.environ, {'VOICEPORT_CODESIGN_IDENTITY': 'unused-test-fixture'}), \
+                    patch('macos_artifacts.subprocess.run', side_effect=add_archive_metadata):
+                report = build_test(output, skip_build=True)
+            self.assertEqual({p.name for p in output.iterdir()}, {TEST_ARCHIVE, MANIFEST})
+            self.assertEqual(report['signature'], 'test')
+            command = [sys.executable, '-I', str(ROOT / 'scripts/macos_artifacts.py'), 'verify', str(output),
+                       '--manifest-sha256', report['manifest_sha256'], '--version', report['version'],
+                       '--build', report['build'], '--signature', 'test']
+            verified = json.loads(subprocess.check_output(command, timeout=30))
+            self.assertEqual(verified['status'], 'verified')
+            self.assertEqual(verified['files'], report['files'])
+            with zipfile.ZipFile(output / TEST_ARCHIVE) as archive:
+                self.assertIn('__MACOSX/VoicePort Test.app/Contents/Resources/._AppIcon.icns', archive.namelist())
+
+            extracted = root / 'extracted'
+            extracted.mkdir()
+            app = extract_zip((output / TEST_ARCHIVE).read_bytes(), extracted, 'VoicePort Test.app')
+            app = app.rename(extracted / 'Renamed test copy.app')
+            cli = app / 'Contents/MacOS/voiceport-test'
+            main = app / 'Contents/MacOS/voiceport-test-app'
+            version = json.loads(subprocess.check_output([cli, '--json', '--version'], timeout=15))
+            self.assertEqual(version['data']['build_profile'], 'test')
+            self.assertEqual(version['data']['version'], report['version'])
+            home, codex = root / 'home', root / 'default-codex'
+            codex.mkdir()
+            (codex / 'auth.json').write_text('{}')
+            (home / 'Library/Application Support/VoicePort Test/codex/auth.json').mkdir(parents=True)
+            doctor = subprocess.check_output([cli, 'doctor'], text=True, timeout=15,
+                                             env=dict(os.environ, HOME=str(home), CODEX_HOME=str(codex)))
+            self.assertIn('不是普通文件', doctor)  # The test path is a directory, the override is a file.
+            refusal = subprocess.run([cli, '--json', '--socket', str(root / 'other.sock'), 'app', 'status'],
+                                     capture_output=True, text=True, timeout=15)
+            self.assertEqual(refusal.returncode, 2, refusal.stdout + refusal.stderr)
+            self.assertIn('dedicated control socket', refusal.stdout)
+            apply = subprocess.run([main, '--apply-staged-update', '2', str(root / 'absent.app'),
+                                    str(root / 'absent-staging'), report['version'], '0', '0'],
+                                   capture_output=True, text=True, timeout=15)
+            self.assertEqual(apply.returncode, 1, apply.stderr)
+            self.assertIn('VoicePort Test 已停用软件更新', apply.stderr)
+            self.assertFalse((root / 'absent.app').exists())
+            with self.assertRaisesRegex(ValueError, 'already exists'):
+                build_test(output, skip_build=True)
+
+    def test_test_packager_rejects_a_product_without_test_profile(self):
+        with tempfile.TemporaryDirectory(prefix='voiceport-stale-product-') as temp:
+            root = pathlib.Path(temp)
+            target = root / 'target'
+            release = target / 'release'
+            release.mkdir(parents=True)
+            # A harmless arm64 product with the previous App help and no test profile.
+            subprocess.run(['/usr/bin/clang', '-arch', 'arm64', '-x', 'c', '-', '-o', release / 'voiceport-macos'],
+                           input=b'#include <stdio.h>\nint main(void) { return puts("VoicePort Rust macOS") < 0; }',
+                           check=True, capture_output=True)
+            shutil.copyfile(self.release / 'voiceport', release / 'voiceport')
+            (release / 'voiceport').chmod(0o755)
+            app = root / 'VoicePort Test.app'
+            env = dict(os.environ, CARGO_TARGET_DIR=str(target), VOICEPORT_APP_DIRECTORY=str(app))
+            result = subprocess.run(['/bin/bash', ROOT / 'scripts/package_app.sh', '--test', '--skip-build'],
+                                    env=env, capture_output=True, text=True, timeout=40)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn('main lacks the test build profile', result.stderr)
+            self.assertFalse(app.exists())
 
     def test_bundle_correspondence_normalizes_distribution_signature_metadata(self):
         # Real codesign exercises runtime/entitlements/CLI identifier differences,

@@ -33,6 +33,8 @@ The portable `doctor` only checks ChatGPT auth-file metadata. `transcribe AUDIO`
 
 Start with `voiceport --version`, `voiceport --help`, and `voiceport skills get cli`. If the CLI is not on PATH, use the chosen App's exact `Contents/MacOS/voiceport` path. Do not install a global binary or edit shell startup files just to locate it. `voiceport-rs` is a compatible entry.
 
+For **VoicePort Test**, use that bundle's `Contents/MacOS/voiceport-test`. This CLI uses the dedicated test socket and reports `data.build_profile:"test"` from `--json --version`. See [building and verifying the test ZIP](references/workflows.md#build-or-verify-a-test-zip).
+
 For App commands, use `voiceport --json --socket ABSOLUTE_SOCKET status --expect-bundle ABSOLUTE_APP` and `app capabilities`. Verify `data.readiness.instance:"matched"`, the returned socket, bundle path and PID. Reuse that socket and PID and check them before mutations. Inspect `state`, `busy`, `discovering` and `permissions` for readiness. Start the intended App only when authorized. An older App may return `invalid_request` on a newer command. The [workflow guide](references/workflows.md#connect-to-the-intended-app) shows the instance check and JSON parsing.
 
 ## Step 2: Inspect and configure only the requested source

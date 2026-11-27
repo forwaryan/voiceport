@@ -15,6 +15,7 @@ pub(in crate::app) struct UpdateViewSnapshot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::app) enum UpdateViewPhase {
     Idle,
+    Disabled,
     Checking,
     Available,
     Current,
@@ -34,7 +35,8 @@ impl UpdateViewPhase {
     pub fn can_check(self) -> bool {
         !matches!(
             self,
-            Self::Checking
+            Self::Disabled
+                | Self::Checking
                 | Self::Connecting
                 | Self::Downloading
                 | Self::Verifying
@@ -95,6 +97,8 @@ impl UpdateUi {
         };
         snapshot.phase = if quitting {
             Quitting
+        } else if test_build::active() {
+            Disabled
         } else {
             match &self.state {
                 State::Checking { .. } => Checking,

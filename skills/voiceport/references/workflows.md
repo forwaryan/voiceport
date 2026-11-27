@@ -312,6 +312,12 @@ Check `data.exported:true`. The App preserves existing paths. If an export reply
 
 `history list` retrieves metadata for the current App process. Use `history show ID` only on request to disclose the selected text. `history clear --confirm` clears retained results while leaving collection enabled or disabled as before. `history settings off --confirm` disables and clears. Deleted and evicted IDs cannot be recovered from this command family.
 
+## Build or verify a test ZIP
+
+From a macOS source checkout, run `python3 -I scripts/macos_artifacts.py test-build NEW_OUTPUT` to produce the ad-hoc ZIP and manifest in a new directory. Use the digest and version/build in the trusted build receipt with `python3 -I scripts/macos_artifacts.py verify OUTPUT --manifest-sha256 DIGEST --version VERSION --build BUILD --signature test`.
+
+If launch is authorized, use the extracted **VoicePort Test.app** and its bundled `Contents/MacOS/voiceport-test`. The CLI selects the dedicated test socket. Use the same-instance check above with the test bundle and socket before any mutation. Use synthetic data and treat updates as disabled in this build.
+
 ## Isolated App validation
 
 From a checkout on macOS, build the CLI with `cargo build --offline --locked -j 2 -p voiceport-cli --bins`. Run `cargo test --offline --locked -j 2 -p voiceport-cli -p voiceport-control --tests` to exercise both actual entry points against the production socket transport and a mock handler. Run `cargo run --offline --locked -j 2 -p voiceport-macos --example control_product_fixture -- ABSOLUTE_CLI` to exercise recent dictation and file commands against the production Delegate and Controller in an isolated fixture. Pass the built `voiceport` or `voiceport-rs` path, normally under `target/debug`. The fixture uses synthetic audio and a loopback HTTP server, with no account, audio device, real clipboard or user desktop input.

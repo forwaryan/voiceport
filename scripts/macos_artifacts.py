@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify a final VoicePort macOS ZIP and its declared attachments."""
 import argparse
+import ctypes
 import hashlib
 import io
 import json
@@ -252,9 +253,46 @@ def verify(directory, digest, *, version, build, signature, certificate=None, te
             'version': version, 'build': build, 'signature': signature}
 
 
+def publish_new_directory(staged, output):
+    """Publish a complete directory, even when another process creates the destination first."""
+    rename = ctypes.CDLL(None, use_errno=True).renamex_np
+    rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    rename_exclusive = 0x00000004  # RENAME_EXCL from the macOS SDK.
+    if rename(os.fsencode(staged), os.fsencode(output), rename_exclusive) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), output)
+
+
+def build_test(output, *, skip_build):
+    require(sys.platform == 'darwin', 'test-build requires macOS')
+    require(not os.path.lexists(output), 'test build output already exists')
+    with tempfile.TemporaryDirectory(prefix='.voiceport-test-build-', dir=output.parent) as temp:
+        stage = Path(temp)
+        app = stage / (bundle.TEST_NAME + '.app')
+        artifacts = stage / 'artifacts'
+        artifacts.mkdir(mode=0o700)
+        env = dict(os.environ, CARGO_NET_OFFLINE='true', VOICEPORT_APP_DIRECTORY=str(app))
+        command = ['/bin/bash', ROOT / 'scripts/package_app.sh', '--test']
+        if skip_build:
+            command.append('--skip-build')
+        subprocess.run(command, cwd=ROOT, env=env, check=True, stdout=sys.stderr)
+        subprocess.run(['/usr/bin/ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', app,
+                        artifacts / TEST_ARCHIVE], check=True, stdout=sys.stderr)
+        digest = write_manifest(artifacts, TEST_ARCHIVE, [])
+        info = plistlib.loads(bundle.expected_info(test=True))
+        report = verify(artifacts, digest, version=info['CFBundleShortVersionString'],
+                        build=info['CFBundleVersion'], signature='test')
+        publish_new_directory(artifacts, output)
+    return dict(report, output=str(output))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
+    package = commands.add_parser('test-build', help='build and check a new offline ad-hoc test ZIP')
+    package.add_argument('output', type=Path)
+    package.add_argument('--skip-build', action='store_true')
     manifest = commands.add_parser('manifest', help='record an explicit attachment set in a clean directory')
     manifest.add_argument('directory', type=Path)
     manifest.add_argument('--archive', required=True)
@@ -269,7 +307,11 @@ def main():
     verification.add_argument('--team-id')
     args = parser.parse_args()
     try:
-        if args.command == 'manifest':
+        if args.command == 'test-build':
+            from verification_run import full_suite_lock
+            with full_suite_lock(ROOT):
+                report = build_test(args.output.absolute(), skip_build=args.skip_build)
+        elif args.command == 'manifest':
             digest = write_manifest(args.directory, args.archive, args.attachment)
             report = {'status': 'recorded', 'manifest_sha256': digest}
         else:

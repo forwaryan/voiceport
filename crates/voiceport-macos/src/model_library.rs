@@ -85,6 +85,13 @@ pub struct Paths {
 }
 impl Paths {
     pub fn system() -> Result<Self, String> {
+        if voiceport_core::test_build::active() {
+            let support =
+                voiceport_core::test_build::support_directory().ok_or("无法定位测试模型目录。")?;
+            return Ok(Self {
+                root: support.join("speech-models"),
+            });
+        }
         if let Some(value) = std::env::var_os("VOICEPORT_MODELS_PATH") {
             let root = PathBuf::from(value);
             if !root.is_absolute() {
@@ -152,7 +159,9 @@ impl Paths {
     }
     pub fn runtime_or_orca(&self) -> PathBuf {
         let own = self.runtime();
-        if crate::local_models::validate_runtime(&own, std::env::consts::ARCH).is_ok() {
+        if voiceport_core::test_build::active()
+            || crate::local_models::validate_runtime(&own, std::env::consts::ARCH).is_ok()
+        {
             own
         } else {
             let legacy = self.root.join(format!(

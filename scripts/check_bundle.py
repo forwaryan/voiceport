@@ -25,6 +25,16 @@ TEST_MAIN = 'voiceport-test-app'
 TEST_CLI = 'voiceport-test'
 
 
+def expected_info(test):
+    source = (ROOT / 'resources/Info.plist').read_bytes()
+    if not test:
+        return source
+    info = plistlib.loads(source)
+    info.update(CFBundleName=TEST_NAME, CFBundleDisplayName=TEST_NAME,
+                CFBundleIdentifier=TEST_ID, CFBundleExecutable=TEST_MAIN)
+    return plistlib.dumps(info)
+
+
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -67,9 +77,9 @@ def assert_arm64(binary):
                                    timeout=30).strip() == 'arm64', 'unexpected architecture'
 
 
-def validate(app, target):
+def validate(app, target, *, test=False):
     app, target = pathlib.Path(app), pathlib.Path(target)
-    main, cli = validate_layout(app)
+    main, cli = validate_layout(app, test=test)
     contents = app / 'Contents'
     installed_skills = contents / 'Resources/skills'
     expected_skills = ROOT / 'skills'
@@ -77,24 +87,26 @@ def validate(app, target):
     for source in expected_skills.rglob('*'):
         if source.is_file():
             assert (installed_skills / source.relative_to(expected_skills)).read_bytes() == source.read_bytes(), 'Skill differs from repository source'
-    cli_target = target.parent / 'voiceport'
+    cli_target = target.parent / CLI
     assert stat.S_ISREG(cli_target.lstat().st_mode), 'expected current CLI release product'
     assert (contents / 'Resources/AppIcon.icns').read_bytes() == (ROOT / 'resources/AppIcon.icns').read_bytes(), 'unexpected app icon'
     assert stat.S_ISREG(target.lstat().st_mode) and target.stat().st_mode & 0o111, 'expected executable Rust macOS product'
-    assert (contents / 'Info.plist').read_bytes() == (ROOT / 'resources/Info.plist').read_bytes(), 'unexpected bundle Info'
-    assert plistlib.loads((contents / 'Info.plist').read_bytes())['CFBundleExecutable'] == 'voiceport-app'
+    info = (contents / 'Info.plist').read_bytes()
+    assert info == expected_info(test), 'unexpected bundle Info'
+    assert plistlib.loads(info)['CFBundleExecutable'] == main.name
     for binary in (target, cli_target):
         assert_arm64(binary)
     assert (contents / 'Resources/THIRD_PARTY_NOTICES.md').read_bytes() == (ROOT / 'THIRD_PARTY_NOTICES.md').read_bytes(), 'unexpected third-party notices'
     materials = check(contents / 'Resources/third-party')
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
+    main_relative, cli_relative = main.relative_to(app), cli.relative_to(app)
     with tempfile.TemporaryDirectory(prefix='voiceport-main-proof-') as temp:
         twin = pathlib.Path(temp) / app.name
         shutil.copytree(app, twin)
-        shutil.copyfile(target, twin / 'Contents/MacOS/voiceport-app')
-        (twin / 'Contents/MacOS/voiceport-app').chmod(0o755)
-        shutil.copyfile(cli_target, twin / 'Contents/MacOS/voiceport')
-        (twin / 'Contents/MacOS/voiceport').chmod(0o755)
+        shutil.copyfile(target, twin / main_relative)
+        (twin / main_relative).chmod(0o755)
+        shutil.copyfile(cli_target, twin / cli_relative)
+        (twin / cli_relative).chmod(0o755)
         # Certificate signatures contain timestamps/identity data. Normalize both
         # copies to ad-hoc signatures before comparing their exact signed bytes;
         # the original bundle's actual signature was verified above.
@@ -106,19 +118,27 @@ def validate(app, target):
         for candidate in [twin, normalized]:
             # Clear inherited signature metadata (including linker-signed versus
             # certificate/ad-hoc allocation) in these disposable copies first.
-            subprocess.run(['codesign', '--remove-signature', str(candidate / 'Contents/MacOS/voiceport')],
+            subprocess.run(['codesign', '--remove-signature', str(candidate / cli_relative)],
                            check=True, capture_output=True)
             subprocess.run(['codesign', '--remove-signature', str(candidate)], check=True, capture_output=True)
             # Normalize distribution runtime flags, entitlements and CLI identity
             # as well as the certificate, so only executable correspondence remains.
             options = ['codesign', '--force', '--sign', '-', '--options', '0',
                        '--timestamp=none', '--entitlements', str(empty_entitlements)]
-            subprocess.run(options + ['--identifier', 'voiceport', str(candidate / 'Contents/MacOS/voiceport')],
+            subprocess.run(options + ['--identifier', CLI, str(candidate / cli_relative)],
                            check=True, capture_output=True)
-            subprocess.run(options + ['--identifier', 'io.github.forwaryan.voiceport', str(candidate)],
+            subprocess.run(options + ['--identifier', APP_ID, str(candidate)],
                            check=True, capture_output=True)
-        assert sha(twin / 'Contents/MacOS/voiceport') == sha(normalized / 'Contents/MacOS/voiceport'), 'CLI does not match current Rust build plus signature'
-        assert sha(twin / 'Contents/MacOS/voiceport-app') == sha(normalized / 'Contents/MacOS/voiceport-app'), 'main does not match this Rust voiceport-macos build plus bundle signature'
+        assert sha(twin / cli_relative) == sha(normalized / cli_relative), 'CLI does not match current Rust build plus signature'
+        assert sha(twin / main_relative) == sha(normalized / main_relative), 'main does not match this Rust voiceport-macos build plus bundle signature'
+    if test:
+        # Reject old products that copy and sign correctly but lack runtime isolation.
+        help_text = subprocess.check_output([str(main), '--help'], text=True, timeout=15)
+        assert help_text.startswith(f'{TEST_NAME} Rust macOS\n'), 'main lacks the test build profile'
+        profile = json.loads(subprocess.check_output([str(cli), '--json', '--version'], timeout=15))
+        version = plistlib.loads(info)['CFBundleShortVersionString']
+        data = profile.get('data', {})
+        assert data.get('build_profile') == 'test' and data.get('version') == version, 'CLI lacks the current test build profile'
     return {
         'main_sha256': sha(main),
         'cargo_product_sha256': sha(target),
@@ -133,7 +153,17 @@ def validate(app, target):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('app', type=pathlib.Path)
-    parser.add_argument('target', type=pathlib.Path, help='current Cargo release/voiceport-macos product')
+    parser.add_argument('app', type=pathlib.Path, nargs='?')
+    parser.add_argument('target', type=pathlib.Path, nargs='?', help='current Cargo release/voiceport-macos product')
+    parser.add_argument('--test', action='store_true', help='check a VoicePort Test bundle')
+    parser.add_argument('--write-test-info', type=pathlib.Path, help='write a new test Info.plist')
     args = parser.parse_args()
-    print(json.dumps(validate(args.app, args.target)))
+    if args.write_test_info is not None:
+        if args.app or args.target or args.test:
+            parser.error('--write-test-info is a standalone operation')
+        with args.write_test_info.open('xb') as output:
+            output.write(expected_info(test=True))
+    elif args.app is None or args.target is None:
+        parser.error('app and target are required')
+    else:
+        print(json.dumps(validate(args.app, args.target, test=args.test)))
