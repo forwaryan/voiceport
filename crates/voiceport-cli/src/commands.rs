@@ -53,7 +53,8 @@ dictation start/stop/retry/cancel/result/gui-result
 preferences get/set
 microphone list/status/select/test-start/test-stop/open
 models list/details/refresh/open/download/update/import/remove/install-engine/start/status/cancel
-dictionary show/set/preview | scenes list/add/remove/apply
+dictionary show/set/preview/import/import-preview/import-apply/import-cancel/export (post-transcription replacements)
+scenes list/add/remove/apply
 history list/show/clear/settings
 file open/sources/plan/start/status/result/cancel/export
 qq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)
@@ -364,7 +365,16 @@ fn contextual_help(args: &[String]) -> Option<String> {
         ),
         "dictionary" => (
             "dictionary",
-            &["show", "set", "preview"],
+            &[
+                "show",
+                "set",
+                "preview",
+                "import",
+                "import-preview",
+                "import-apply",
+                "import-cancel",
+                "export",
+            ],
             "Dictionary and scenes",
         ),
         "scenes" => (

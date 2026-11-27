@@ -278,6 +278,7 @@ impl Delegate {
 
     pub(super) fn control_dictionary(
         &self,
+        control: &mut Control,
         c: &mut Controller,
         request: DictionaryRequest,
     ) -> Response {
@@ -319,10 +320,13 @@ impl Delegate {
                 }
                 return Response::ok(json!({"text":result, "changed":result != text}));
             }
+            request => return self.control_dictionary_exchange(control, c, request),
         }
-        Response::ok(
-            json!({"enabled":c.workflows.dictionary_enabled,"rules":format_rules(&c.workflows.rules)}),
-        )
+        Response::ok(json!({
+            "enabled":c.workflows.dictionary_enabled,
+            "rules":format_rules(&c.workflows.rules),
+            "stage":"post_transcription",
+        }))
     }
 
     pub(super) fn control_scenes(&self, c: &mut Controller, request: ScenesRequest) -> Response {
@@ -374,6 +378,7 @@ pub(super) fn capabilities() -> Response {
         "control_schema":voiceport_control::VERSION, "version":env!("CARGO_PKG_VERSION"),
         "user_scope":"effective_user", "platform":"macos",
         "app_update":["check","status"],
+        "dictionary_exchange":["import","import-preview","import-apply","import-cancel","export"],
         "groups":["app","status","sources","plugins","dictation","preferences","microphone","models","dictionary","scenes","history","file"],
     }))
 }

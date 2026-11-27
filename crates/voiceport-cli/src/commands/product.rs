@@ -4,8 +4,9 @@ use std::{
     path::PathBuf,
 };
 use voiceport_control::{
-    Action, DictionaryRequest, FileFormat, FileRequest, HistoryRequest, MicrophoneRequest,
-    ModelMutation, ModelsRequest, Page, PreferencesRequest, Response, ScenesRequest,
+    Action, DictionaryImportMode, DictionaryRequest, FileFormat, FileRequest, HistoryRequest,
+    MicrophoneRequest, ModelMutation, ModelsRequest, Page, PreferencesRequest, Response,
+    ScenesRequest,
 };
 
 pub(super) const GROUPS: &[&str] = &[
@@ -206,6 +207,28 @@ fn dictionary(words: &[&str]) -> Result<DictionaryRequest, Response> {
         },
         ["preview", "--stdin"] => Preview {
             text: stdin_text()?,
+        },
+        ["import", path, options @ ..] => Import {
+            path: absolute_path(path)?,
+            mode: match options {
+                [] | ["--merge"] => DictionaryImportMode::Merge,
+                ["--replace"] => DictionaryImportMode::Replace,
+                _ => return Err(invalid()),
+            },
+        },
+        ["import-preview", operation, offset] if positional(operation) => ImportPreview {
+            operation: (*operation).into(),
+            offset: offset.parse().map_err(|_| invalid())?,
+        },
+        ["import-apply", operation, "--confirm"] if positional(operation) => ImportApply {
+            operation: (*operation).into(),
+            confirm: true,
+        },
+        ["import-cancel", operation] if positional(operation) => ImportCancel {
+            operation: (*operation).into(),
+        },
+        ["export", "--output", path] => Export {
+            path: absolute_path(path)?,
         },
         _ => return Err(invalid()),
     })

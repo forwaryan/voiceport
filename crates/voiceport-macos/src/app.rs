@@ -15,7 +15,8 @@ use std::cell::{Cell, OnceCell, RefCell};
 mod control;
 #[cfg(debug_assertions)]
 pub use control::{
-    isolated_audio_start_regression, isolated_control_regression, isolated_performance_baseline,
+    isolated_audio_start_regression, isolated_control_regression,
+    isolated_dictionary_exchange_regression, isolated_performance_baseline,
 };
 mod control_probes;
 mod dictation_page;
@@ -210,6 +211,8 @@ struct Ivars {
     dictionary_settings: OnceCell<Retained<NSButton>>,
     preset_settings: OnceCell<Retained<NSButton>>,
     workflow_dialog: Cell<bool>,
+    #[cfg(debug_assertions)]
+    dictionary_fixture_defaults: OnceCell<Retained<NSUserDefaults>>,
     automatic: OnceCell<Retained<NSSwitch>>,
     recent_dictations_switch: OnceCell<Retained<NSSwitch>>,
     #[cfg(debug_assertions)]

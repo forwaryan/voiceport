@@ -67,12 +67,42 @@ pub enum ModelsRequest {
     Cancel { operation: String },
 }
 
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DictionaryImportMode {
+    Merge,
+    Replace,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DictionaryRequest {
     Show,
-    Set { rules: String, enabled: bool },
-    Preview { text: String },
+    Set {
+        rules: String,
+        enabled: bool,
+    },
+    Preview {
+        text: String,
+    },
+    Import {
+        path: PathBuf,
+        mode: DictionaryImportMode,
+    },
+    ImportPreview {
+        operation: String,
+        offset: usize,
+    },
+    ImportApply {
+        operation: String,
+        confirm: bool,
+    },
+    ImportCancel {
+        operation: String,
+    },
+    Export {
+        path: PathBuf,
+    },
 }
 
 #[derive(Deserialize, Serialize)]

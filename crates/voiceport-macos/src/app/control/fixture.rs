@@ -1,7 +1,9 @@
 //! Real CLI and production socket/Delegate routing in a fixture-owned AppKit process.
 mod audio_start;
+mod dictionary;
 mod update;
 pub use audio_start::{isolated_audio_start_regression, isolated_performance_baseline};
+pub use dictionary::isolated_dictionary_exchange_regression;
 
 use super::*;
 use crate::{
