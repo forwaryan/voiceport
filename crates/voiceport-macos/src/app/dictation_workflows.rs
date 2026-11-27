@@ -161,7 +161,11 @@ impl Delegate {
                     self.label(&preview, label, rect(0., y + 58., 410., 20.), 13.);
                     self.workflow_text(&preview, text, label, y, 56., false);
                 }
-                let result = self.workflow_alert("输出预览", "", &["返回编辑"]);
+                let result = self.workflow_alert(
+                    "输出预览",
+                    "最终输出是面板保留的正文。自动输入会将换行和控制字符转为空格，不会发送回车。",
+                    &["返回编辑"],
+                );
                 result.setAccessoryView(Some(&preview));
                 result.runModal();
                 continue;

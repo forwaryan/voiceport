@@ -418,19 +418,20 @@ fn dictation_output_preview_respects_toggle_and_preserves_legacy_shape() {
         },
         ..Workflows::default()
     };
-    let sample = " vp\r\n🙂 ";
+    let sample = "\r\n vp\r\n\r\n🙂 \r\n";
+    let replaced = "\r\n VoicePort\r\n\r\n🙂 \r\n";
     assert_eq!(
         output_preview(&workflows, sample, false).data,
-        json!({"text":" VoicePort\r\n🙂 ", "changed":true})
+        json!({"text":replaced, "changed":true})
     );
     assert_eq!(
         output_preview(&workflows, sample, true).data,
-        json!({"original":sample, "after_dictionary":sample, "text":"vp\n🙂", "changed":true})
+        json!({"original":sample, "after_dictionary":sample, "text":"vp\n\n🙂", "changed":true})
     );
     workflows.dictionary_enabled = true;
     assert_eq!(
         output_preview(&workflows, sample, true).data,
-        json!({"original":sample, "after_dictionary":" VoicePort\r\n🙂 ", "text":"VoicePort\n🙂", "changed":true})
+        json!({"original":sample, "after_dictionary":replaced, "text":"VoicePort\n\n🙂", "changed":true})
     );
     let oversized_input = "a".repeat(24_001);
     assert_eq!(
@@ -449,6 +450,23 @@ fn dictation_output_preview_respects_toggle_and_preserves_legacy_shape() {
             .code,
         "output_too_large"
     );
+}
+
+#[cfg(all(test, debug_assertions))]
+#[test]
+fn dictation_output_empty_result_does_not_expose_original_via_cli() {
+    use crate::controller::recent_dictations::fixture::SyntheticDictations;
+
+    let mut rig = SyntheticDictations::new();
+    rig.controller.workflows.output_rules.trim_edges = true;
+    let (generation, _) = rig.begin(true, false);
+    rig.finish(generation, " \r\n\u{3000}");
+    for original in [false, true] {
+        let reply = gui_result(&rig.controller, generation, original);
+        assert!(reply.error.is_none());
+        assert_eq!(reply.data["empty"], true);
+        assert_eq!(reply.data["text"], "");
+    }
 }
 
 pub(super) fn capabilities() -> Response {

@@ -2689,25 +2689,27 @@ pub(crate) mod stop_failure_regression {
         c.workflows.dictionary_enabled = true;
         c.workflows.rules = crate::dictation_dictionary::parse_rules("北经 → 北京").unwrap();
         c.workflows.output_rules.trim_edges = true;
+        c.workflows.output_rules.normalize_newlines = true;
         let (generation, corrected_receiver) = start(&mut c);
         assert!(c.retained_gui_result().is_none());
         c.update_dictation_partial(c.state.generation(), "北经".into());
         assert_eq!(c.transcript, "北经");
         assert_eq!(corrected_receiver.borrow().writes, 0);
-        finish(&mut c, &outgoing, generation, "  北经🙂 ");
+        let original = "\r\n  北经🙂\r\n\r\n第二行 \r\n";
+        finish(&mut c, &outgoing, generation, original);
         finish(&mut c, &outgoing, generation, "重复结果");
-        assert_eq!(c.transcript, "北京🙂");
-        assert_eq!(c.raw_transcript.as_deref(), Some("  北经🙂 "));
+        assert_eq!(c.transcript, "北京🙂\n\n第二行");
+        assert_eq!(c.raw_transcript.as_deref(), Some(original));
         let corrected = corrected_receiver.borrow();
-        assert_eq!(corrected.snapshot.text, "A北京🙂B");
-        assert_eq!(corrected.snapshot.selection.location, 5);
+        assert_eq!(corrected.snapshot.text, "A北京🙂  第二行B");
+        assert_eq!(corrected.snapshot.selection.location, 10);
         assert_eq!(corrected.writes, 1);
         assert_eq!(
             c.gui_dictation_receipt().unwrap().delivery.state,
             DeliveryState::Confirmed
         );
         println!(
-            "gui-delivery: dictionary and output preview writes=0, processed final writes=1, original retained"
+            "gui-delivery: dictionary and output preview writes=0, processed final writes=1, original retained; panel keeps LF, target receives spaces"
         );
 
         c.workflows.dictionary_enabled = false;
@@ -2717,6 +2719,7 @@ pub(crate) mod stop_failure_regression {
         assert_eq!(empty_receiver.borrow().writes, 0);
         finish(&mut c, &outgoing, generation, " \t\n");
         assert!(c.transcript.is_empty());
+        assert!(c.visible_transcript.is_none());
         assert_eq!(
             c.gui_dictation_receipt().unwrap().transcription,
             TranscriptionState::Empty
