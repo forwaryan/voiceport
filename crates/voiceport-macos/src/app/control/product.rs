@@ -490,6 +490,7 @@ pub(super) fn capabilities() -> Response {
         "app_update":["check","status"],
         "dictionary_exchange":["import","import-preview","import-apply","import-cancel","export"],
         "dictionary_output":["show","set","preview"],
+        "dictation_output":["copy-last","paste-last"],
         "groups":["app","status","sources","plugins","dictation","preferences","microphone","models","dictionary","scenes","history","file"],
     }))
 }

@@ -26,6 +26,7 @@ mod file_transcription;
 pub use file_transcription::isolated_file_transcription_regression;
 mod first_run;
 mod hotkey_start;
+mod latest_output;
 mod menu_surface;
 #[doc(hidden)]
 pub use first_run::first_run_field_fixture;
@@ -54,16 +55,10 @@ pub fn isolated_shortcut_regression(mtm: MainThreadMarker) {
     }
 }
 
+#[cfg(test)]
 const COPY_SUCCESS: &str = "文字已复制。";
+#[cfg(test)]
 const COPY_FAILURE: &str = "复制失败，请选中文字手动复制。";
-
-fn copy_feedback(text: &str, copy: impl FnOnce(&str) -> bool) -> &'static str {
-    if copy(text) {
-        COPY_SUCCESS
-    } else {
-        COPY_FAILURE
-    }
-}
 
 /// Only a completed, nonempty transcription can have a delivery warning.
 /// The stage comes from the session policy, never from diagnostic text.
@@ -192,6 +187,8 @@ struct Ivars {
     menu_shortcut: OnceCell<Retained<NSMenuItem>>,
     menu_cancel: OnceCell<Retained<NSMenuItem>>,
     menu_copy: OnceCell<Retained<NSMenuItem>>,
+    menu_repaste: OnceCell<Retained<NSMenuItem>>,
+    menu_output_notice: OnceCell<Retained<NSMenuItem>>,
     overlay: RefCell<status_overlay::Overlay>,
     overlay_menu: OnceCell<Retained<NSMenuItem>>,
     update: RefCell<update_ui::UpdateUi>,
@@ -243,6 +240,9 @@ struct Ivars {
     shortcut_binding: Cell<crate::shortcut::Shortcut>,
     editing_shortcut: Cell<bool>,
     hotkey: RefCell<Option<crate::hotkey::GlobalHotKey>>,
+    repaste_hotkey: RefCell<Option<crate::hotkey::GlobalHotKey>>,
+    #[cfg(debug_assertions)]
+    latest_output_fixture: OnceCell<latest_output::Fixture>,
     hotkey_rx: RefCell<Option<std::sync::mpsc::Receiver<crate::hotkey::HotKeyEvent>>>,
     pending_hotkey: RefCell<Option<crate::hotkey::KeyPress>>,
     hold_session: Cell<Option<hotkey_start::HoldSession>>,
@@ -390,7 +390,9 @@ define_class!(
         }
         #[unsafe(method(copyText:))]
         fn copy_action(&self, _sender: Option<&AnyObject>) {
-            self.with_controller(|c| { c.message = copy_feedback(&c.transcript, Delivery::copy).into(); }); self.refresh();
+            if self.ivars().quitting.get() { return; }
+            self.with_controller(|c| { if !c.busy() { self.copy_latest_dictation(c); } });
+            self.refresh();
         }
         #[unsafe(method(showQuickPanel:))]
         fn quick_panel_action(&self, _sender: Option<&AnyObject>) { self.toggle_quick_panel(); }
@@ -558,6 +560,9 @@ define_class!(
                 self.manage_models_action(sel!(manageModels:), None);
             }
             self.poll_control();
+            if let Some(hotkey) = self.ivars().repaste_hotkey.borrow().as_ref() {
+                hotkey.active_stroke(crate::shortcut::Shortcut::REPASTE);
+            }
             self.update_tick();
             self.poll_menu_device();
             if self.ivars().cli_quit_at.get().is_some_and(|at| std::time::Instant::now() >= at) {
@@ -697,7 +702,7 @@ impl Delegate {
             ("语音模型…", sel!(manageModels:), "internaldrive"),
             ("麦克风设置…", sel!(microphoneSettings:), "mic"),
             ("开始听写", sel!(toggle:), "mic"),
-            ("复制最近文字", sel!(copyText:), "doc.on.doc"),
+            ("复制最近听写", sel!(copyText:), "doc.on.doc"),
             ("取消听写", sel!(cancel:), "xmark.circle"),
         ] {
             let item = self.menu_item(title, action, "");
@@ -712,6 +717,15 @@ impl Delegate {
             }
         }
         menu.addItem(&NSMenuItem::separatorItem(mtm));
+        let repaste = self.menu_item("重贴最近听写", sel!(showWindow:), "");
+        repaste.setEnabled(false);
+        menu.addItem(&repaste);
+        let _ = self.ivars().menu_repaste.set(repaste);
+        let output_notice = self.menu_item("", sel!(showWindow:), "");
+        output_notice.setEnabled(false);
+        output_notice.setHidden(true);
+        menu.addItem(&output_notice);
+        let _ = self.ivars().menu_output_notice.set(output_notice);
         let overlay = self.menu_item("显示听写提示", sel!(toggleDictationOverlay:), "");
         overlay.setState(status_overlay::checked(status_overlay::enabled()));
         menu.addItem(&overlay);
@@ -824,6 +838,7 @@ impl Delegate {
             *self.ivars().hotkey_error.borrow_mut() = Some(message.clone());
             self.with_controller(|c| c.message = message);
         }
+        self.install_repaste_shortcut();
         self.install_timer();
     }
     fn install_timer(&self) {

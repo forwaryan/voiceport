@@ -17,7 +17,7 @@ impl Target for Receiver {
         _: model::TextRange,
         _: &str,
         _: &model::Snapshot,
-    ) -> Result<(), Failure> {
+    ) -> Result<(), model::ReplacementFailure> {
         self.0.set(self.0.get() + 1);
         Ok(())
     }

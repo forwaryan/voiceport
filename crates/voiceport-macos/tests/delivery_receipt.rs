@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 use voiceport_macos::delivery::model::{
     ChunkedInput, DeliveryState as S, Failure, KeyboardPacing, MenuPaste, OwnedSpan, PasteTarget,
-    Snapshot, Target, Terminal, TerminalTarget, TextRange, byte_range,
+    ReplacementFailure, Snapshot, Target, Terminal, TerminalTarget, TextRange, byte_range,
 };
 
 struct State {
@@ -10,6 +10,7 @@ struct State {
     ready: bool,
     confirm: bool,
     failure: Option<Failure>,
+    reject_replacement: bool,
     ambiguous: bool,
 }
 fn state() -> Rc<RefCell<State>> {
@@ -25,6 +26,7 @@ fn state() -> Rc<RefCell<State>> {
         ready: false,
         confirm: false,
         failure: None,
+        reject_replacement: false,
         ambiguous: false,
     }))
 }
@@ -42,9 +44,12 @@ impl Target for Field {
         range: TextRange,
         text: &str,
         expected: &Snapshot,
-    ) -> Result<(), Failure> {
+    ) -> Result<(), ReplacementFailure> {
         let mut s = self.0.borrow_mut();
         assert_eq!(&s.snapshot, expected);
+        if s.reject_replacement {
+            return Err(ReplacementFailure::BeforeWrite(Failure::Ownership));
+        }
         let bytes = byte_range(&s.snapshot.text, range).unwrap();
         s.snapshot.text.replace_range(bytes, text);
         s.snapshot.selection = TextRange {
@@ -53,7 +58,7 @@ impl Target for Field {
         };
         s.writes += 1;
         if s.ambiguous {
-            Err(Failure::Write)
+            Err(ReplacementFailure::Uncertain(Failure::Write))
         } else {
             Ok(())
         }
@@ -144,6 +149,39 @@ fn unicode_wait_partial_failure_and_late_release_never_replay() {
     assert_eq!(input.poll(), Err(Failure::UserInput));
     assert_eq!(input.submit("duplicate"), Err(Failure::UserInput));
     assert_eq!(shared.borrow().writes, 1);
+}
+
+#[test]
+fn unicode_final_guard_preserves_previous_write_counts() {
+    for first_chunk_sent in [false, true] {
+        let shared = state();
+        shared.borrow_mut().ready = first_chunk_sent;
+        let mut input =
+            ChunkedInput::capture_with_pacing(Field(shared.clone()), KeyboardPacing::Scalar)
+                .unwrap();
+        input.submit("中🙂尾").unwrap();
+        {
+            let mut s = shared.borrow_mut();
+            s.ready = true;
+            s.confirm = true;
+            s.reject_replacement = true;
+        }
+        assert_eq!(input.poll(), Err(Failure::Ownership));
+        let (expected_state, operations) = if first_chunk_sent {
+            (S::PartiallySent, 1)
+        } else {
+            (S::NotSent, 0)
+        };
+        let receipt = input.receipt();
+        assert_eq!(receipt.state, expected_state);
+        assert_eq!(receipt.submitted_operations, operations);
+        assert_eq!(receipt.confirmed_operations, operations);
+        assert!(receipt.stopped);
+        assert!(!input.has_pending());
+        shared.borrow_mut().reject_replacement = false;
+        assert_eq!(input.poll(), Err(Failure::Ownership));
+        assert_eq!(shared.borrow().writes, usize::from(first_chunk_sent));
+    }
 }
 
 #[test]

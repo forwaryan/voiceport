@@ -18,6 +18,8 @@ pub(super) struct Snapshot {
     pub can_toggle: bool,
     pub can_cancel: bool,
     can_copy: bool,
+    repaste_registered: bool,
+    output_notice: Option<&'static str>,
     pub idle: bool,
 }
 
@@ -87,7 +89,9 @@ impl Snapshot {
             can_toggle: !controls_locked
                 && (opening || recording || (!busy && release_notice.is_none())),
             can_cancel: !iv.quitting.get() && ((busy && !c.file_jobs.busy()) || returning),
-            can_copy: !iv.quitting.get() && !c.transcript.is_empty(),
+            can_copy: !controls_locked && !busy && c.has_latest_result(),
+            repaste_registered: iv.repaste_hotkey.borrow().is_some(),
+            output_notice: c.latest_output_notice(),
             idle: !controls_locked && !busy,
         }
     }
@@ -170,6 +174,21 @@ impl Delegate {
         }
         if let Some(item) = iv.menu_copy.get() {
             set_menu_enabled(item, snapshot.can_copy);
+        }
+        if let Some(item) = iv.menu_repaste.get() {
+            let title = if snapshot.repaste_registered {
+                format!(
+                    "{} · 重贴最近听写",
+                    crate::shortcut::Shortcut::REPASTE.label()
+                )
+            } else {
+                "重贴快捷键不可用 · 可复制最近听写".into()
+            };
+            set_menu_title(item, &title);
+        }
+        if let Some(item) = iv.menu_output_notice.get() {
+            set_menu_title(item, snapshot.output_notice.unwrap_or_default());
+            item.setHidden(snapshot.output_notice.is_none());
         }
     }
 
