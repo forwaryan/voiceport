@@ -181,6 +181,7 @@ impl Page {
         };
         let status = match phase {
             Idle => "尚未检查更新",
+            Disabled => app_update::TEST_BUILD_UPDATES_DISABLED,
             Checking => "正在检查更新…",
             Available => "发现新版本",
             Current => "已是最新版本",

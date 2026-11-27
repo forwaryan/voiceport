@@ -36,6 +36,14 @@ fn failure(code: &str) -> Response {
     )
 }
 pub fn default_path() -> PathBuf {
+    instance_path("voiceport-control")
+}
+
+pub fn test_path() -> PathBuf {
+    instance_path("voiceport-test-control")
+}
+
+fn instance_path(namespace: &str) -> PathBuf {
     // /tmp is a symlink on macOS. Use the real system directory.
     let root = if cfg!(target_os = "macos") {
         "/private/tmp"
@@ -43,7 +51,7 @@ pub fn default_path() -> PathBuf {
         "/tmp"
     };
     Path::new(root)
-        .join(format!("voiceport-control-{}", unsafe { libc::geteuid() }))
+        .join(format!("{namespace}-{}", unsafe { libc::geteuid() }))
         .join("control.sock")
 }
 pub fn path_from_env() -> Result<PathBuf, Response> {

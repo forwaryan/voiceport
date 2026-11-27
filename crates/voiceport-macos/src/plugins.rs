@@ -448,6 +448,11 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 pub fn default_path() -> Result<PathBuf> {
+    if voiceport_core::test_build::active() {
+        return voiceport_core::test_build::support_directory()
+            .map(|path| path.join("transcription-sources-v1.json"))
+            .ok_or_else(|| "无法定位测试来源配置目录。".into());
+    }
     sources_path(std::env::var_os("VOICEPORT_SOURCES_PATH"), || {
         std::env::var_os("HOME")
     })

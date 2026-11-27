@@ -51,7 +51,8 @@ impl Panel {
         unsafe {
             window.setReleasedWhenClosed(false);
         }
-        window.setTitle(ns_string!("VoicePort · 首次使用与自检"));
+        let name = voiceport_core::test_build::application_name();
+        window.setTitle(&NSString::from_str(&format!("{name} · 首次使用与自检")));
         let view = window.contentView().expect("first-run content view");
         let heading = delegate.label(&view, "听写就绪检查", rect(24., 416., 510., 28.), 21.);
         heading.setFont(Some(&NSFont::systemFontOfSize_weight(21., unsafe {

@@ -37,6 +37,11 @@ pub fn default_path_from(codex_home: Option<&OsStr>, home: &Path) -> PathBuf {
 }
 
 pub fn default_path() -> Result<PathBuf> {
+    if crate::test_build::active() {
+        return crate::test_build::support_directory()
+            .map(|path| path.join("codex/auth.json"))
+            .ok_or(Error::SignInRequired);
+    }
     let codex_home = std::env::var_os("CODEX_HOME");
     if let Some(value) = codex_home.as_deref().filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(value).join("auth.json"));

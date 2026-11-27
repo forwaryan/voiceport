@@ -140,6 +140,9 @@ pub(super) struct PersonalInstall {
 
 impl PersonalInstall {
     pub(super) fn current(app: &Path) -> Result<Self> {
+        if voiceport_core::test_build::active() {
+            return Err(super::TEST_BUILD_UPDATES_DISABLED);
+        }
         let uid = unsafe { libc::geteuid() };
         if uid == 0 || uid != unsafe { libc::getuid() } {
             return Err(MANUAL_ONLY);

@@ -205,9 +205,11 @@ impl Workbench {
             )
         };
         unsafe { window.setReleasedWhenClosed(false) };
-        window.setTitle(&NSString::from_str(
-            language.text("VoicePort 工作台", "VoicePort Workbench"),
-        ));
+        window.setTitle(&NSString::from_str(&format!(
+            "{} {}",
+            voiceport_core::test_build::application_name(),
+            language.text("工作台", "Workbench"),
+        )));
         window.setBackgroundColor(Some(&NSColor::windowBackgroundColor()));
         window.setAutorecalculatesKeyViewLoop(false);
         let root = window.contentView().expect("native workbench content view");

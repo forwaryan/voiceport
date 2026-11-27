@@ -6,6 +6,9 @@ use voiceport_control::Response;
 
 impl Delegate {
     pub(super) fn install_repaste_shortcut(&self) {
+        if test_build::active() {
+            return;
+        }
         let slot = &self.ivars().repaste_hotkey;
         if slot.borrow().is_some() || self.ivars().shortcut_binding.get() == Shortcut::REPASTE {
             return;

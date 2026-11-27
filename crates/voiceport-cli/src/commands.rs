@@ -157,9 +157,11 @@ fn execute(mut args: Vec<String>) -> Result<Response, Response> {
         }
     }
     if args.as_slice() == ["--version"] {
-        return Ok(Response::ok(
-            json!({"version":env!("CARGO_PKG_VERSION"),"control_schema":1}),
-        ));
+        let mut version = json!({"version":env!("CARGO_PKG_VERSION"),"control_schema":1});
+        if voiceport_core::test_build::active() {
+            version["build_profile"] = "test".into();
+        }
+        return Ok(Response::ok(version));
     }
     if args.is_empty()
         || matches!(args.as_slice(), [s] if matches!(s.as_str(), "help" | "--help" | "-h"))
@@ -206,9 +208,20 @@ fn execute(mut args: Vec<String>) -> Result<Response, Response> {
     };
     #[cfg(target_os = "macos")]
     {
-        let response = socket
-            .map_or_else(voiceport_control::transport::path_from_env, Ok)
-            .and_then(|path| voiceport_control::transport::call(&path, action));
+        use voiceport_control::transport;
+        let path = if voiceport_core::test_build::active() {
+            let test_path = transport::test_path();
+            if socket.is_some_and(|path| path != test_path) {
+                return Err(Response::error(
+                    "invalid_arguments",
+                    "VoicePort Test only connects to its dedicated control socket.",
+                ));
+            }
+            Ok(test_path)
+        } else {
+            socket.map_or_else(transport::path_from_env, Ok)
+        };
+        let response = path.and_then(|path| transport::call(&path, action));
         if let Some((bundle, pid)) = expectation {
             let attach = |mut response: Response| {
                 let readiness = voiceport_control::readiness::assess(&bundle, pid, &response);
