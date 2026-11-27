@@ -17,7 +17,9 @@ pub(crate) struct ReceiverState {
     pub(crate) failure: Option<InputFailure>,
 }
 
-pub(in crate::controller) struct SyntheticTarget(pub(in crate::controller) Rc<RefCell<ReceiverState>>);
+pub(in crate::controller) struct SyntheticTarget(
+    pub(in crate::controller) Rc<RefCell<ReceiverState>>,
+);
 
 impl Target for SyntheticTarget {
     fn read(&mut self) -> Result<Snapshot, InputFailure> {

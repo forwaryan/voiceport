@@ -4,9 +4,9 @@ use std::{
     path::PathBuf,
 };
 use voiceport_control::{
-    Action, AppRulesRequest, DictionaryRequest, FileFormat, FileRequest, HistoryDelivery,
-    HistoryRequest, MicrophoneRequest, ModelMutation, ModelPreview, ModelsRequest, OutputRule,
-    Page, PreferencesRequest, Response, ScenesRequest,
+    Action, AppRulesRequest, DictionaryImportMode, DictionaryRequest, FileFormat, FileRequest,
+    HistoryDelivery, HistoryRequest, MicrophoneRequest, ModelMutation, ModelPreview, ModelsRequest,
+    OutputRule, Page, PreferencesRequest, Response, ScenesRequest,
 };
 
 pub(super) const GROUPS: &[&str] = &[
@@ -263,12 +263,42 @@ fn dictionary(words: &[&str]) -> Result<DictionaryRequest, Response> {
     use DictionaryRequest::*;
     Ok(match words {
         ["show"] => Show,
+        ["show", "--offset", offset, options @ ..] => ShowPage {
+            offset: offset.parse().map_err(|_| invalid())?,
+            revision: match options {
+                [] => None,
+                ["--revision", revision] if positional(revision) => Some((*revision).into()),
+                _ => return Err(invalid()),
+            },
+        },
         ["set", enabled, "--stdin"] => Set {
             enabled: boolean(enabled)?,
             rules: stdin_text()?,
         },
         ["preview", "--stdin"] => Preview {
             text: stdin_text()?,
+        },
+        ["import", path, options @ ..] => Import {
+            path: absolute_path(path)?,
+            mode: match options {
+                [] | ["--merge"] => DictionaryImportMode::Merge,
+                ["--replace"] => DictionaryImportMode::Replace,
+                _ => return Err(invalid()),
+            },
+        },
+        ["import-preview", operation, offset] if positional(operation) => ImportPreview {
+            operation: (*operation).into(),
+            offset: offset.parse().map_err(|_| invalid())?,
+        },
+        ["import-apply", operation, "--confirm"] if positional(operation) => ImportApply {
+            operation: (*operation).into(),
+            confirm: true,
+        },
+        ["import-cancel", operation] if positional(operation) => ImportCancel {
+            operation: (*operation).into(),
+        },
+        ["export", "--output", path] => Export {
+            path: absolute_path(path)?,
         },
         ["output", "show"] => OutputShow,
         ["output", "set", rule, enabled] => OutputSet {

@@ -352,6 +352,18 @@ fn real_binaries_and_transport_carry_product_requests_and_mock_receipts() {
             "dictionary",
             json!({"action":"show"}),
         ),
+        example(
+            &[
+                "dictionary",
+                "show",
+                "--offset",
+                "16",
+                "--revision",
+                "fixture",
+            ],
+            "dictionary",
+            json!({"action":"show_page", "offset":16, "revision":"fixture"}),
+        ),
         Example {
             stdin: Some("原 → 合成\n"),
             ..example(

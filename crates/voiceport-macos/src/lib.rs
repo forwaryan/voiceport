@@ -16,6 +16,8 @@ mod dictation_output;
 #[cfg(target_os = "macos")]
 mod dictation_workflows;
 #[cfg(target_os = "macos")]
+mod dictionary_exchange;
+#[cfg(target_os = "macos")]
 mod file_transcription;
 #[cfg(target_os = "macos")]
 mod hotkey;
@@ -64,7 +66,8 @@ pub use app::run;
 #[doc(hidden)]
 pub use app::{
     isolated_audio_start_regression, isolated_control_regression,
-    isolated_file_transcription_regression, isolated_performance_baseline,
+    isolated_dictionary_exchange_regression, isolated_file_transcription_regression,
+    isolated_performance_baseline,
 };
 #[cfg(target_os = "macos")]
 pub mod audio;

@@ -281,6 +281,7 @@ impl Delegate {
 
     pub(super) fn control_dictionary(
         &self,
+        control: &mut Control,
         c: &mut Controller,
         request: DictionaryRequest,
     ) -> Response {
@@ -323,10 +324,23 @@ impl Delegate {
                 }
                 return Response::ok(json!(c.workflows.output_rules));
             }
+            request => return self.control_dictionary_exchange(control, c, request),
         }
-        Response::ok(
-            json!({"enabled":c.workflows.dictionary_enabled,"rules":format_rules(&c.workflows.rules)}),
-        )
+        let response = Response::ok(json!({
+            "enabled":c.workflows.dictionary_enabled,
+            "rules":format_rules(&c.workflows.rules),
+            "stage":"post_transcription",
+        }));
+        if serde_json::to_vec(&response)
+            .is_ok_and(|data| data.len() <= voiceport_control::MAX_FRAME)
+        {
+            response
+        } else {
+            err(
+                "frame_too_large",
+                "Read the saved rules with dictionary show --offset 0, then follow next_offset and revision.",
+            )
+        }
     }
 
     pub(super) fn control_app_rules(
@@ -338,7 +352,9 @@ impl Delegate {
             AppRulesRequest::List => return Response::ok(json!(c.workflows.app_rules)),
             AppRulesRequest::Match { bundle_id } => {
                 let rules = &c.workflows.app_rules;
-                let (selection, scene) = match rules.selection(bundle_id.as_deref(), &c.workflows.presets) {
+                let (selection, scene) = match rules
+                    .selection(bundle_id.as_deref(), &c.workflows.presets)
+                {
                     AppRuleSelection::Global => ("global", None),
                     AppRuleSelection::Application(preset) => ("scene", Some(preset.name.as_str())),
                     AppRuleSelection::Manual(name) => ("manual", Some(name)),
@@ -519,6 +535,7 @@ pub(super) fn capabilities() -> Response {
         "control_schema":voiceport_control::VERSION, "version":env!("CARGO_PKG_VERSION"),
         "user_scope":"effective_user", "platform":"macos",
         "app_update":["check","status"],
+        "dictionary_exchange":["import","import-preview","import-apply","import-cancel","export"],
         "dictionary_output":["show","set","preview"],
         "dictation_output":["copy-last","paste-last"],
         "groups":["app","status","sources","plugins","dictation","preferences","microphone","models","dictionary","scenes","app-rules","history","file"],

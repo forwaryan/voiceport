@@ -981,16 +981,24 @@ impl Controller {
                 .filter(|target| target.pid > 0 && target.pid as u32 != std::process::id())
                 .map(|target| target.bundle.as_str());
             let rules = &self.workflows.app_rules;
-            let (dictionary, output) = (self.workflows.dictionary_enabled, self.workflows.output_rules);
-            let (dictionary, output, label) = match rules.selection(bundle_id, &self.workflows.presets) {
-                AppRuleSelection::Global => (dictionary, output, rules.enabled.then(|| "全局规则".into())),
-                AppRuleSelection::Manual(name) => (dictionary, output, Some(format!("手动场景「{name}」"))),
-                AppRuleSelection::Application(preset) => (
-                    preset.dictionary_enabled,
-                    preset.output_rules,
-                    Some(format!("场景「{}」", preset.name)),
-                ),
-            };
+            let (dictionary, output) = (
+                self.workflows.dictionary_enabled,
+                self.workflows.output_rules,
+            );
+            let (dictionary, output, label) =
+                match rules.selection(bundle_id, &self.workflows.presets) {
+                    AppRuleSelection::Global => {
+                        (dictionary, output, rules.enabled.then(|| "全局规则".into()))
+                    }
+                    AppRuleSelection::Manual(name) => {
+                        (dictionary, output, Some(format!("手动场景「{name}」")))
+                    }
+                    AppRuleSelection::Application(preset) => (
+                        preset.dictionary_enabled,
+                        preset.output_rules,
+                        Some(format!("场景「{}」", preset.name)),
+                    ),
+                };
             self.gui_result_context.app_rule = label;
             self.workflows.output_for_session(dictionary, output)
         } else {
@@ -2258,7 +2266,10 @@ pub(crate) mod stop_failure_regression {
             .0
         });
         let original = fixture.controller.state.generation();
-        assert_eq!(fixture.controller.active_app_rule(), Some("手动场景「手选」"));
+        assert_eq!(
+            fixture.controller.active_app_rule(),
+            Some("手动场景「手选」")
+        );
         fixture.controller.gui_diagnostics.capture_pending = Some(original);
         let control = controlled_worker(&mut fixture.controller, 2);
         fixture.controller.stop();
@@ -2296,7 +2307,10 @@ pub(crate) mod stop_failure_regression {
         assert!(failed.timings.transcription_ms.is_some());
         fixture.controller.workflows.app_rules.set_enabled(true);
         fixture.controller.retry();
-        assert_eq!(fixture.controller.active_app_rule(), Some("手动场景「手选」"));
+        assert_eq!(
+            fixture.controller.active_app_rule(),
+            Some("手动场景「手选」")
+        );
         let current = control
             .started
             .recv_timeout(Duration::from_secs(5))

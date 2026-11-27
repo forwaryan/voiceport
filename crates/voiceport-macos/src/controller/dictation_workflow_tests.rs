@@ -150,7 +150,8 @@ fn app_rules_gui_start_freezes_scene_or_global_output_only() {
 fn app_rules_manual_scene_preserves_processed_history_and_repaste() {
     use crate::{
         controller::recent_dictations::fixture::{SyntheticDictations, SyntheticTarget},
-        dictation_dictionary::parse_rules, dictation_output::OutputRules,
+        dictation_dictionary::parse_rules,
+        dictation_output::OutputRules,
         dictation_workflows::Preset,
     };
     use voiceport_control::HistoryDelivery;
@@ -204,7 +205,10 @@ fn app_rules_manual_scene_preserves_processed_history_and_repaste() {
     assert_eq!(entries.len(), 1);
     assert_eq!(c.read_recent_dictation(&entries[0].id), Some(FINAL));
     assert!(c.search_recent_dictations(5, "vp", None).is_empty());
-    assert!(c.search_recent_dictations(5, "voiceport", Some(HistoryDelivery::Confirmed)).is_empty());
+    assert!(
+        c.search_recent_dictations(5, "voiceport", Some(HistoryDelivery::Confirmed))
+            .is_empty()
+    );
 
     let original_receipt = c.gui_dictation_receipt().unwrap();
     let repaste = c.repaste_latest_with(|delivery| {
@@ -215,7 +219,10 @@ fn app_rules_manual_scene_preserves_processed_history_and_repaste() {
     assert_eq!(receiver.borrow().snapshot.text, format!("A{FINAL}B"));
     assert_eq!(receiver.borrow().writes, 1);
     assert_eq!(c.gui_dictation_receipt().unwrap(), original_receipt);
-    assert_eq!(c.search_recent_dictations(5, "voiceport", Some(HistoryDelivery::NotSent))[0].id, entries[0].id);
+    assert_eq!(
+        c.search_recent_dictations(5, "voiceport", Some(HistoryDelivery::NotSent))[0].id,
+        entries[0].id
+    );
     let duplicate = c.repaste_latest_with(|_| panic!("duplicate must not capture a target"));
     assert_eq!(duplicate.error.unwrap().code, "possible_duplicate");
 
