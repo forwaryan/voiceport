@@ -97,7 +97,7 @@ For older, explicitly selected compatibility workflows, `sources test ID --accep
 
 ## Verify the audio destination
 
-Set `SOURCE` to the chosen source ID and define the read-only helper below. `sources destination` reports the kind, HTTP origin and language hints. The HTTP origin omits the full endpoint path and query. A loopback service or an external program may forward audio. For configured sources, the helper also reads the source configuration and the matching plugin descriptor, including the full endpoint or executable and arguments. Review these values privately; do not save them in routine logs.
+Set `SOURCE` to the chosen source ID and define the read-only helper below. `sources destination` reads the running App's catalog, but its HTTP origin omits the path and query. `sources show` and `plugins show` read saved configuration, which may already differ from the loaded catalog even if repeated reads match. A single-source `sources probe` **without** `--accept-upload` returns exit 5 with the exact endpoint from the loaded catalog. It does not execute the adapter, record or send audio. The helper uses that preview to verify the built-in HTTP endpoint and checks it against the saved endpoint. Review the active endpoint privately; do not put it in routine logs.
 
 ```sh
 vp_source_snapshot() (
@@ -107,27 +107,36 @@ vp_source_snapshot() (
     select(.status == "ok" and .data.source == $source) | .data.destination.kind | strings') || exit 1
   case "$kind" in
     on_device|chatgpt)
-      printf '%s\n' "$destination" | jq -cSe '{destination: .data, source: null, plugin: null}'
+      printf '%s\n' "$destination" | jq -cSe '{destination: .data, endpoint: null}'
       ;;
-    remote_http|loopback_http|external_program)
-      source=$(vp sources show "$SOURCE") || exit 1
-      plugin_id=$(printf '%s\n' "$source" | jq -er --arg source "$SOURCE" '
-        select(.status == "ok" and .data.id == $source and .data.enabled == true) | .data.plugin_id | strings') || exit 1
-      plugin=$(vp plugins show "$plugin_id") || exit 1
-      printf '%s\n%s\n%s\n' "$destination" "$source" "$plugin" | jq -scSe '
-        select(length == 3 and all(.[]; .status == "ok"))
-        | {destination: .[0].data, source: .[1].data, plugin: .[2].data}
-        | select(.source.plugin_id == .plugin.id and .source.plugin_version == .plugin.version)
-        | select(if .destination.destination.kind == "external_program"
-                 then .plugin.adapter == "jsonl" and (.plugin.program.executable | strings | length > 0)
-                 else .plugin.adapter == "http" and (.source.config.endpoint | strings | length > 0) end)'
+    remote_http|loopback_http)
+      if preview=$(vp sources probe --source "$SOURCE" --language zh); then
+        exit 1
+      else
+        [ "$?" -eq 5 ] || exit 1
+      fi
+      saved=$(vp sources show "$SOURCE") || exit 1
+      printf '%s\n%s\n%s\n' "$destination" "$preview" "$saved" | jq -scSe --arg source "$SOURCE" '
+        .[1].data.sources[0] as $live | .[2].data as $saved
+        | select(length == 3 and .[1].status == "error" and
+                 .[1].error.code == "confirmation_required" and .[1].data.batch == false and
+                 (.[1].data.sources | length) == 1 and
+                 $live.source == $source and $live.available == true and $live.kind == "plugin" and
+                 $live.plugin == "voiceport.http-transcription" and $live.program == null and
+                 .[2].status == "ok" and $saved.id == $source and $saved.enabled == true and
+                 $saved.plugin_id == $live.plugin and $saved.plugin_version == $live.plugin_version and
+                 ($live.endpoint | type == "string" and length > 0) and
+                 $live.endpoint == $saved.config.endpoint)
+        | {destination: .[0].data, endpoint: $live.endpoint, plugin_version: $live.plugin_version}'
       ;;
     *) exit 1 ;;
   esac
 )
 ```
 
-These reads are separate requests. They do not atomically bind the checked destination to an audio operation, even on the same PID. Use a session where the source configuration and adapter are controlled and are not being edited concurrently. The comparisons below can detect a visible change, not prove there was no intervening change. If there is a change, a read fails, or you cannot establish that the configuration was stable across review and submission, stop. Discard the old approval and start from a fresh review. If stability cannot be established, do not send audio through this workflow.
+The HTTP check proves the endpoint reported by the active catalog at preview time. It does not prove the loaded model, credentials, or where a service forwards audio. The external-program preview can show the executable and arguments, but cannot verify the full active configuration or its forwarding destination. These examples stop before submission for external programs and any unverified route. They also stop if the HTTP preview is missing, or if the saved and active endpoints differ, even on the same origin.
+
+These reads are separate requests and cannot atomically bind the destination to an audio operation. Use a controlled instance without concurrent source edits. If configuration changes, a read fails, or you cannot establish stability across review and submission, stop. Discard the old approval and start from a fresh review. Matching reads cannot rule out a change that was reverted between requests.
 
 ## Explicit recording
 
@@ -135,8 +144,7 @@ Choose an available source ID from `vp sources list` and set `SOURCE` to it. Rea
 
 ```sh
 vp status --expect-bundle "$APP" --expect-pid "$PID"
-DICTATION_REVIEW=$(vp_source_snapshot) && printf '%s\n' "$DICTATION_REVIEW" | jq '
-  {destination, endpoint: .source.config.endpoint, program: .plugin.program, origin: .plugin.origin}'
+DICTATION_REVIEW=$(vp_source_snapshot) && printf '%s\n' "$DICTATION_REVIEW" | jq .
 ```
 
 After the user authorizes both the recording and that destination, recheck the configuration and start once. The App pins the source at start, and the preflight reads are not part of that request. If the destination changed or you cannot establish that it stayed stable, do not start. Keep the returned `data.operation` as `DICTATION` and check `data.delivery:"none"`.
@@ -150,10 +158,12 @@ if [ -n "$DICTATION_REVIEW" ] && current=$(vp_source_snapshot) &&
   else
     rc=$?
     printf 'Start exit %s\n%s\n' "$rc" "$reply" >&2
+    (exit "$rc")
   fi
 else
   DICTATION_REVIEW=
   printf '%s\n' 'Source or instance could not be verified. No recording started; review again.' >&2
+  false
 fi
 ```
 
@@ -213,7 +223,7 @@ vp file sources --language zh
 vp sources destination "$SOURCE"
 ```
 
-Use the [destination helper](#verify-the-audio-destination) to read configuration before planning and again after the proposal returns. A plan opens the selected file read-only and snapshots the source. The proposal shows the source ID, language and destination type/origin. Review the full configured endpoint or program **after** planning, before asking for consent. A change even within the same HTTP origin invalidates the review.
+Use the [destination helper](#verify-the-audio-destination) to verify the active route before planning and again after the proposal returns. A plan opens the selected file read-only and snapshots the source. The proposal shows the source ID, language and destination type/origin. For built-in HTTP, review the full active endpoint **after** planning, before asking for consent. A change even within the same HTTP origin invalidates the review. If the active route cannot be verified, do not submit.
 
 ```sh
 PROPOSAL=
@@ -231,12 +241,10 @@ if before=$(vp_source_snapshot) && vp_same; then
              ($plan.loopback == ($current.kind == "loopback_http")) and
              ($plan.origin == $current.origin)
            elif $plan.kind == "chat_gpt" then $current.kind == "chatgpt"
-           else ($plan.kind == "on_device" or $plan.kind == "external_program") and
-                ($plan.kind == $current.kind) end' >/dev/null; then
+           else $plan.kind == "on_device" and $current.kind == "on_device" end' >/dev/null; then
       FILE_REVIEW=$after
       printf '%s\n' "$plan" | jq '.data.target'
-      printf '%s\n' "$FILE_REVIEW" | jq '
-        {endpoint: .source.config.endpoint, program: .plugin.program, origin: .plugin.origin}'
+      printf '%s\n' "$FILE_REVIEW" | jq .
     else
       printf '%s\n' 'Source changed or could not be verified. Discard this proposal and start a new review.' >&2
     fi
@@ -258,6 +266,7 @@ if [ -n "$PROPOSAL" ] && [ -n "$FILE_REVIEW" ] && current=$(vp_source_snapshot) 
 else
   FILE_REVIEW=
   printf '%s\n' 'Source or instance could not be verified. Nothing submitted; discard the proposal and review again.' >&2
+  false
 fi
 ```
 
