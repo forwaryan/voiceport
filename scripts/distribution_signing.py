@@ -36,18 +36,23 @@ def verify_requirement(binary, requirement):
                    check=True, capture_output=True, text=True, timeout=30)
 
 
-def validate(app, team_id):
+def validate(app, team_id, *, legacy_cli=False):
     validate_team_id(team_id)
     app = Path(app)
     real_tree(app)
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     if info.get('CFBundleIdentifier') != BUNDLE_ID or info.get('CFBundleExecutable') != 'voiceport-app':
         raise ValueError('unexpected distribution bundle identity')
+    if legacy_cli:
+        # The last published bundle before the CLI entitlement shipped was build 24.
+        build = info.get('CFBundleVersion')
+        if not isinstance(build, str) or not re.fullmatch(r'[1-9][0-9]?', build) or int(build) > 24:
+            raise ValueError('legacy distribution CLI is limited to build 24 and earlier')
     requirement = ('anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists '
                    f'and certificate leaf[subject.OU] = "{team_id}"')
     for binary, identifier, expected in [
         (app, BUNDLE_ID, APP_ENTITLEMENTS),
-        (app / 'Contents/MacOS/voiceport', BUNDLE_ID + '.cli', CLI_ENTITLEMENTS),
+        (app / 'Contents/MacOS/voiceport', BUNDLE_ID + '.cli', {} if legacy_cli else CLI_ENTITLEMENTS),
     ]:
         verify_requirement(binary, requirement)
         result = subprocess.run(['/usr/bin/codesign', '--display', '--verbose=4', str(binary)],

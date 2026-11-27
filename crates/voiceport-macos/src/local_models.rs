@@ -478,7 +478,7 @@ fn description(id: &str) -> &'static str {
         _ => "保存的转写来源不可用。",
     }
 }
-fn model_file(path: &Path) -> std::io::Result<File> {
+pub(crate) fn model_file(path: &Path) -> std::io::Result<File> {
     #[cfg(target_os = "macos")]
     let file = {
         use std::os::unix::fs::OpenOptionsExt;

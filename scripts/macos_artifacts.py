@@ -194,7 +194,8 @@ def codesign(*args):
                           text=True, timeout=30).stderr.splitlines()
 
 
-def verify_app(app, *, version, build, signature, certificate=None, team_id=None):
+def verify_app(app, *, version, build, signature, certificate=None, team_id=None, legacy_cli=False):
+    require(not legacy_cli or signature == 'distribution', 'legacy CLI profile requires distribution signing')
     test = signature == 'test'
     _, cli = bundle.validate_layout(app, test=test, stapled=signature == 'distribution')
     info = plistlib.loads(read_file(app / 'Contents/Info.plist', 65536))
@@ -207,7 +208,7 @@ def verify_app(app, *, version, build, signature, certificate=None, team_id=None
                           'CFBundleShortVersionString': version, 'CFBundleVersion': build}.items():
         require(info.get(key) == expected, f'bundle {key} mismatch')
     if signature == 'distribution':
-        verify_developer_id(app, team_id)
+        verify_developer_id(app, team_id, legacy_cli=legacy_cli)
     else:
         codesign('--verify', '--deep', '--strict', app)
         cli_id = bundle.TEST_ID + '.cli' if test else bundle.CLI
@@ -232,7 +233,7 @@ def validate_identity_options(version, build, signature, certificate, team_id):
         require(re.fullmatch(r'[0-9A-Fa-f]{40}', certificate), 'expected a 40-digit certificate SHA-1 fingerprint')
 
 
-def verify(directory, digest, *, version, build, signature, certificate=None, team_id=None):
+def verify(directory, digest, *, version, build, signature, certificate=None, team_id=None, legacy_cli=False):
     validate_identity_options(version, build, signature, certificate, team_id)
     archive, files = read_manifest(directory, digest)
     allowed = {TEST_ARCHIVE} if signature == 'test' else {
@@ -248,7 +249,8 @@ def verify(directory, digest, *, version, build, signature, certificate=None, te
     root = (bundle.TEST_NAME if signature == 'test' else bundle.APP_NAME) + '.app'
     with tempfile.TemporaryDirectory(prefix='voiceport-artifact-check-') as temp:
         app = extract_zip(data, Path(temp), root)
-        verify_app(app, version=version, build=build, signature=signature, certificate=certificate, team_id=team_id)
+        verify_app(app, version=version, build=build, signature=signature, certificate=certificate,
+                   team_id=team_id, legacy_cli=legacy_cli)
     return {'status': 'verified', 'manifest_sha256': digest, 'archive': archive, 'files': files,
             'version': version, 'build': build, 'signature': signature}
 
@@ -305,6 +307,8 @@ def main():
     verification.add_argument('--signature', choices=['test', 'preview', 'distribution'], required=True)
     verification.add_argument('--certificate-sha1')
     verification.add_argument('--team-id')
+    verification.add_argument('--legacy-distribution-cli', action='store_true',
+                              help='expect an empty CLI entitlement set for a known historical distribution')
     args = parser.parse_args()
     try:
         if args.command == 'test-build':
@@ -316,7 +320,8 @@ def main():
             report = {'status': 'recorded', 'manifest_sha256': digest}
         else:
             report = verify(args.directory, args.manifest_sha256, version=args.version, build=args.build,
-                            signature=args.signature, certificate=args.certificate_sha1, team_id=args.team_id)
+                            signature=args.signature, certificate=args.certificate_sha1, team_id=args.team_id,
+                            legacy_cli=args.legacy_distribution_cli)
         print(json.dumps(report, sort_keys=True))
     except (OSError, ValueError, AssertionError, zipfile.BadZipFile, subprocess.SubprocessError) as error:
         if isinstance(error, subprocess.CalledProcessError) and error.stderr:

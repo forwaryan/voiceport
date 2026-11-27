@@ -21,7 +21,7 @@
 
 本地识别支持 **Apple Silicon / arm64 macOS**。音频留在本机，不读取云端登录；下载需要联网，识别无需联网。下载、导入和更新不会自动更改转写来源，点击「使用」后才切换。模型缺失或识别失败会报告错误，不会自动上传云端。
 
-安装后可关闭 App，用 `voiceport transcribe-local AUDIO --model ID` 转写已有文件。命令复用下文的模型/引擎发现和文件校验，不读取当前来源选择，不触发安装或下载。默认语言为 `auto`；需要显式语言时传 `--language CODE`。缺少模型或引擎时，先在「语音模型」安装或修复，再运行文件命令。支持范围与回执见 [独立本地文件转写](../skills/voiceport/references/cli.md#standalone-local-file-transcription)。
+安装后可关闭 App，用 `voiceport transcribe-local AUDIO --model ID` 转写已有文件。命令复用下文的模型/引擎发现和文件校验，不读取当前来源选择，不触发安装或下载。默认语言为 `auto`；需要显式语言时传 `--language CODE`。命令在加载前按固定发行物校验两份引擎库的字节数和 SHA-256，再从本次运行的私有副本加载。兼容 2.0.1 和 1.12.37 的原始发行库。缺少模型或引擎时，先在「语音模型」安装，再运行文件命令。若库与发行物不符，可先移出该引擎目录再安装，保留已有模型。支持范围与回执见 [独立本地文件转写](../skills/voiceport/references/cli.md#standalone-local-file-transcription)。
 
 ## 下载、导入、更新与删除
 

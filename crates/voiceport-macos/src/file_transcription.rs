@@ -117,6 +117,7 @@ const STAGING: Error = Error::new("file_read_error", "无法读取或准备所�
 const CANCELLED: Error = Error::new("cancelled", "文件转写已取消。");
 const TRANSCRIPTION: Error =
     Error::new("transcription_error", "所选来源转写失败，请检查来源配置。");
+const EMPTY_TRANSCRIPT: Error = Error::new("empty_transcript", "未识别到文字。");
 const CLEANUP: Error = Error::new("cleanup_pending", "外部程序尚未确认退出，请检查退出状态。");
 const EXPORT: Error = Error::new(
     "export_error",
@@ -411,7 +412,7 @@ fn validate_audio(path: &Path, cancel: &CancellationToken) -> Result<(), Error> 
 fn finish_text(text: &str) -> Result<String, Error> {
     let text = text.trim();
     if text.is_empty() {
-        return Err(Error::new("empty_transcript", "未识别到文字。"));
+        return Err(EMPTY_TRANSCRIPT);
     }
     if text.len() > MAX_TEXT_BYTES {
         return Err(Error::new("transcript_too_large", "转写结果超过大小限制。"));
@@ -458,8 +459,24 @@ pub fn transcribe_local_file(
             ));
         };
         transcribe_local_input(path, cancel, |audio| {
-            crate::local_runtime::transcribe_file(&model, language, audio, cancel, |_| {})
-                .map_err(|_| TRANSCRIPTION)
+            use crate::local_runtime::{
+                FileError, stage_verified_runtime, transcribe_file_classified,
+            };
+            let runtime = stage_verified_runtime(&model.runtime).map_err(|_| {
+                Error::new(
+                    "source_unavailable",
+                    "无法验证或暂存识别引擎。请检查临时目录，并确认已安装原始发行版引擎文件。",
+                )
+            })?;
+            check_cancel(cancel)?;
+            let mut model = model;
+            model.runtime = runtime.path().to_path_buf();
+            transcribe_file_classified(&model, language, audio, cancel, |_| {}).map_err(|error| {
+                match error {
+                    FileError::NoSpeech | FileError::NoText => EMPTY_TRANSCRIPT,
+                    FileError::Failed(_) => TRANSCRIPTION,
+                }
+            })
         })
     };
     let result = run();
@@ -535,9 +552,7 @@ fn run_source(
                     )
                     .await
                     .map_err(|error| match error {
-                        voiceport_core::Error::EmptyTranscript => {
-                            Error::new("empty_transcript", "未识别到文字。")
-                        }
+                        voiceport_core::Error::EmptyTranscript => EMPTY_TRANSCRIPT,
                         _ => TRANSCRIPTION,
                     })
             })

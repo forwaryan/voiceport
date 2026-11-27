@@ -127,6 +127,8 @@ python3 -I scripts/macos_artifacts.py verify /absolute/attachments \
 
 逐项核对清单与实际附件名称、大小和 SHA-256，拒绝多余或缺失条目。随后在临时目录检查最终 ZIP 的唯一 App 根、成员路径和类型、包结构、版本和构建号、arm64 GUI/CLI、代码签名及预期身份。两个可执行文件在 ZIP 中记录的 Unix 权限都须为 `0755`。App 树中记录了 Unix 权限的目录须允许所有者列出内容和遍历。解包在写完子项后应用目录权限，再检查包结构和签名。只接受对应到 App 成员的 `ditto` AppleDouble 条目，解包时跳过这些元数据。退出 0 时以 JSON 输出已核对的附件、版本、构建号和签名类型。独立校验阶段不创建签名、不启动或安装 App。公证票据、Gatekeeper、公开发布资产读回和隐私扫描继续按正式流程检查。
 
+已知使用旧签名策略的正式包（build 24 及更早）在核对可信清单摘要、预期版本和构建号时，可加 `--legacy-distribution-cli`，要求 CLI 权利集为空。当前策略默认要求 CLI 仅有 `disable-library-validation`，不会因版本或验证失败自动切换。`prepare` 生成新版候选凭据，`submit` 和 `resume` 按原凭据 schema 区分旧候选（1）和新候选（2），并核对原归档和可执行文件摘要。
+
 开发预览改用 `--signature preview --certificate-sha1 "$EXPECTED_CERTIFICATE_SHA1"`，同时核对 App 和 CLI 的固定签名证书。校验隔离测试包或合成夹具时使用 `--signature test`，核对测试专用 App/CLI 身份与 ad-hoc 签名。构建及使用方式见[隔离测试 ZIP](PACKAGING.md#isolated-macos-test-zip)。
 
 ## 检查与安装更新

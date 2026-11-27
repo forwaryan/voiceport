@@ -6,10 +6,12 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
 import distribution_signing as signing
+import macos_artifacts as artifacts
 import release_macos as release
 import signing_identity
 
@@ -70,6 +72,99 @@ class DistributionSigningTests(unittest.TestCase):
                     release.prepare(output, TEAM, True)
                 self.assertFalse(output.exists())
                 run.assert_not_called()
+
+
+class DistributionProfileTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.folder = pathlib.Path(temp.name).resolve() / 'release'
+        self.app = self.folder / 'VoicePort.app'
+        self.info = plistlib.loads((ROOT / 'resources/Info.plist').read_bytes())
+        self.info.update(CFBundleShortVersionString='0.3.18', CFBundleVersion='24')
+        self.cli = self.app / 'Contents/MacOS/voiceport'
+        for path in (self.cli.parent, self.app / 'Contents/Resources/skills',
+                     self.app / 'Contents/Resources/third-party', self.app / 'Contents/_CodeSignature'):
+            path.mkdir(parents=True)
+        for name in ('AppIcon.icns', 'THIRD_PARTY_NOTICES.md'):
+            (self.app / 'Contents/Resources' / name).write_text('synthetic')
+        for executable in (self.cli, self.cli.with_name('voiceport-app')):
+            executable.write_text('synthetic')
+            executable.chmod(0o755)
+        self.write_info()
+        self.cli_entitlements = {}
+        codesign = patch.object(signing.subprocess, 'run', side_effect=self.codesign)
+        codesign.start()
+        self.addCleanup(codesign.stop)
+
+    def write_info(self):
+        (self.app / 'Contents/Info.plist').write_bytes(plistlib.dumps(self.info))
+
+    def codesign(self, argv, **kwargs):
+        self.assertEqual(argv[0], '/usr/bin/codesign')
+        is_cli = pathlib.Path(argv[-1]).name == self.cli.name
+        identifier = signing.BUNDLE_ID + ('.cli' if is_cli else '')
+        if argv[1:3] == ['--display', '--entitlements']:
+            entitlements = self.cli_entitlements if is_cli else signing.APP_ENTITLEMENTS
+            return subprocess.CompletedProcess(argv, 0, plistlib.dumps(entitlements) if entitlements else b'')
+        if argv[1:3] == ['--display', '--verbose=4']:
+            metadata = (f'Identifier={identifier}\nTeamIdentifier={TEAM}\n'
+                        f'Authority=Developer ID Application: Fixture ({TEAM})\n'
+                        'CodeDirectory v=20500 flags=0x10000(runtime)\nTimestamp=Nov 27, 2026\n')
+            return subprocess.CompletedProcess(argv, 0, '', metadata)
+        self.assertEqual(argv[1], '--verify')
+        self.assertIn('--strict', argv)
+        return subprocess.CompletedProcess(argv, 0, '', '')
+
+    def verify_archive(self, *, legacy_cli=False, team_id=TEAM):
+        with tempfile.TemporaryDirectory(dir=self.folder) as temp:
+            directory = pathlib.Path(temp)
+            name = 'VoicePort-macos-arm64.zip'
+            with zipfile.ZipFile(directory / name, 'w') as archive:
+                for item in self.app.rglob('*'):
+                    archive.write(item, item.relative_to(self.folder))
+            digest = artifacts.write_manifest(directory, name, [])
+            with patch.object(artifacts.bundle, 'assert_arm64'):
+                return artifacts.verify(directory, digest, version=self.info['CFBundleShortVersionString'],
+                                        build=self.info['CFBundleVersion'], signature='distribution',
+                                        team_id=team_id, legacy_cli=legacy_cli)
+
+    def test_archived_build_selects_exact_profile_without_same_version_fallback(self):
+        self.verify_archive(legacy_cli=True)
+        with self.assertRaisesRegex(ValueError, 'unexpected distribution entitlements: voiceport'):
+            self.verify_archive()
+        self.cli_entitlements = signing.CLI_ENTITLEMENTS
+        self.verify_archive()
+        with self.assertRaisesRegex(ValueError, 'unexpected distribution entitlements: voiceport'):
+            self.verify_archive(legacy_cli=True)
+        self.cli_entitlements = dict(signing.CLI_ENTITLEMENTS, **{'com.apple.security.device.audio-input': True})
+        with self.assertRaisesRegex(ValueError, 'unexpected distribution entitlements: voiceport'):
+            self.verify_archive()
+        with self.assertRaisesRegex(ValueError, 'unexpected Team ID'):
+            self.verify_archive(team_id='OTHER12345', legacy_cli=True)
+        self.cli_entitlements = {}
+        self.info['CFBundleVersion'] = '25'
+        self.write_info()
+        with self.assertRaisesRegex(ValueError, 'limited to build 24'):
+            self.verify_archive(legacy_cli=True)
+
+    def test_prepared_candidate_uses_original_receipt_schema(self):
+        archive = self.folder / 'notarization-upload.zip'
+        archive.write_bytes(b'synthetic original signed archive')
+        prepared = {'schema_version': 1, 'team_id': TEAM, 'archive_sha256': release.sha(archive),
+                    'main_sha256': release.sha(self.cli.with_name('voiceport-app')), 'cli_sha256': release.sha(self.cli)}
+        receipt = self.folder / 'prepared.json'
+        receipt.write_text(json.dumps(prepared))
+        self.assertEqual(release.check_prepared(self.folder), prepared)
+        prepared['schema_version'] = 2
+        receipt.write_text(json.dumps(prepared))
+        with self.assertRaisesRegex(ValueError, 'unexpected distribution entitlements: voiceport'):
+            release.check_prepared(self.folder)
+        self.cli_entitlements = signing.CLI_ENTITLEMENTS
+        self.assertEqual(release.check_prepared(self.folder), prepared)
+        self.cli.write_bytes(b'changed after preparation')
+        with self.assertRaisesRegex(ValueError, 'signed executables changed'):
+            release.check_prepared(self.folder)
 
 
 class NotarizationTests(unittest.TestCase):

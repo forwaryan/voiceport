@@ -12,6 +12,12 @@ use std::{
 };
 use voiceport_core::CancellationToken;
 
+#[cfg(target_arch = "aarch64")]
+#[path = "local_runtime/verified.rs"]
+mod verified;
+#[cfg(target_arch = "aarch64")]
+pub(crate) use verified::stage_verified_runtime;
+
 #[cfg(debug_assertions)]
 #[path = "local_runtime/performance.rs"]
 mod performance;
@@ -153,6 +159,29 @@ fn check_cancel(cancel: &CancellationToken) -> Result<(), String> {
         Ok(())
     }
 }
+#[derive(Debug)]
+pub(crate) enum FileError {
+    NoSpeech,
+    NoText,
+    Failed(String),
+}
+
+impl From<String> for FileError {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+
+impl FileError {
+    fn into_message(self) -> String {
+        match self {
+            Self::NoSpeech => "未检测到可转写的声音，请重新录音。".into(),
+            Self::NoText => "本地模型未识别出文字，可重试或重新录音。".into(),
+            Self::Failed(error) => error,
+        }
+    }
+}
+
 struct Session {
     native: Native,
     kind: ModelKind,
@@ -230,11 +259,11 @@ impl Session {
         mut self,
         cancel: &CancellationToken,
         partial: &mut impl FnMut(String),
-    ) -> Result<String, String> {
+    ) -> Result<String, FileError> {
         let tail = self.resampler.finish()?;
         self.accept(&tail, cancel, partial)?;
         if !self.heard_audio {
-            return Err("未检测到可转写的声音，请重新录音。".into());
+            return Err(FileError::NoSpeech);
         }
         match self.kind {
             ModelKind::Paraformer | ModelKind::ParakeetUnified | ModelKind::Nemotron => {
@@ -274,7 +303,7 @@ impl Session {
         check_cancel(cancel)?;
         let result = self.transcript.current("");
         if result.trim().is_empty() {
-            Err("本地模型未识别出文字，可重试或重新录音。".into())
+            Err(FileError::NoText)
         } else {
             Ok(result)
         }
@@ -301,15 +330,28 @@ pub fn transcribe_live(
             }
         }
     }
-    session.finish(cancel, &mut partial)
+    session
+        .finish(cancel, &mut partial)
+        .map_err(FileError::into_message)
 }
 pub fn transcribe_file(
     model: &Model,
     language: &str,
     path: &Path,
     cancel: &CancellationToken,
-    mut partial: impl FnMut(String),
+    partial: impl FnMut(String),
 ) -> Result<String, String> {
+    transcribe_file_classified(model, language, path, cancel, partial)
+        .map_err(FileError::into_message)
+}
+
+pub(crate) fn transcribe_file_classified(
+    model: &Model,
+    language: &str,
+    path: &Path,
+    cancel: &CancellationToken,
+    mut partial: impl FnMut(String),
+) -> Result<String, FileError> {
     let mut session = Session::new(model, language, cancel)?;
     crate::audio::read_pcm(path, |packet| session.push(packet, cancel, &mut partial))?;
     session.finish(cancel, &mut partial)
