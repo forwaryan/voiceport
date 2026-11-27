@@ -1,4 +1,5 @@
 import io
+from itertools import product
 import json
 from pathlib import Path
 import plistlib
@@ -13,6 +14,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
+from distribution_signing import verify_requirement
 import macos_artifacts as artifacts
 
 
@@ -26,8 +28,8 @@ class ArtifactTests(unittest.TestCase):
         self.attachments = self.root / 'attachments'
         self.attachments.mkdir()
 
-    def test_real_ad_hoc_signature_and_late_archive_tampering(self):
-        app = self.root / self.app_name
+    def signed_app(self, *, test):
+        app = self.root / (self.app_name if test else 'VoicePort.app')
         contents = app / 'Contents'
         executables = contents / 'MacOS'
         executables.mkdir(parents=True)
@@ -39,16 +41,27 @@ class ArtifactTests(unittest.TestCase):
             (resources / name).mkdir()
             (resources / name / 'fixture').write_text('synthetic')
         info = plistlib.loads((ROOT / 'resources/Info.plist').read_bytes())
-        info.update(CFBundleName=artifacts.bundle.TEST_NAME, CFBundleDisplayName=artifacts.bundle.TEST_NAME,
-                    CFBundleIdentifier=artifacts.bundle.TEST_ID, CFBundleExecutable=artifacts.bundle.TEST_MAIN)
+        cli_name = artifacts.bundle.CLI
+        cli_id = cli_name
+        if test:
+            info.update(CFBundleName=artifacts.bundle.TEST_NAME, CFBundleDisplayName=artifacts.bundle.TEST_NAME,
+                        CFBundleIdentifier=artifacts.bundle.TEST_ID, CFBundleExecutable=artifacts.bundle.TEST_MAIN)
+            cli_name = artifacts.bundle.TEST_CLI
+            cli_id = artifacts.bundle.TEST_ID + '.cli'
         (contents / 'Info.plist').write_bytes(plistlib.dumps(info))
-        main, cli = (executables / name for name in (artifacts.bundle.TEST_MAIN, artifacts.bundle.TEST_CLI))
+        main = executables / info['CFBundleExecutable']
+        cli = executables / cli_name
         subprocess.run(['/usr/bin/clang', '-arch', 'arm64', '-x', 'c', '-', '-o', main],
                        input=b'int main(void) { return 0; }', check=True, capture_output=True)
         cli.write_bytes(main.read_bytes())
         cli.chmod(0o755)
-        artifacts.codesign('--force', '--sign', '-', '--identifier', artifacts.bundle.TEST_ID + '.cli', cli)
+        artifacts.codesign('--force', '--sign', '-', '--identifier', cli_id, cli)
         artifacts.codesign('--force', '--sign', '-', app)
+        return app, info, main, cli
+
+    def test_real_ad_hoc_signature_and_late_archive_tampering(self):
+        app, info, main, cli = self.signed_app(test=True)
+        resources = app / 'Contents/Resources'
         subprocess.run(['/usr/bin/xattr', '-w', 'io.voiceport.synthetic', 'fixture',
                         resources / 'AppIcon.icns'], check=True)
         archive = self.attachments / artifacts.TEST_ARCHIVE
@@ -119,6 +132,47 @@ class ArtifactTests(unittest.TestCase):
         digest = package()
         with self.assertRaises(subprocess.CalledProcessError):
             artifacts.verify(self.attachments, digest, **params)
+
+    def test_zip_checks_recorded_directory_modes_in_either_order(self):
+        name = f'{self.app_name}/Contents/'
+        child = name + 'Info.plist'
+        for system, mode, directory_first in product((3, 19), (0o655, 0o355, 0o550), (True, False)):
+            with self.subTest(system=system, mode=oct(mode), directory_first=directory_first):
+                entry = zipfile.ZipInfo(name)
+                entry.create_system = system
+                entry.external_attr = (stat.S_IFDIR | mode) << 16 | 0x10
+                members = [(entry, b''), (child, b'fixture')]
+                if not directory_first:
+                    members.reverse()
+                data = io.BytesIO()
+                with zipfile.ZipFile(data, 'w') as archive:
+                    for member, content in members:
+                        archive.writestr(member, content)
+                with tempfile.TemporaryDirectory(dir=self.root) as extraction:
+                    if mode == 0o550:
+                        app = artifacts.extract_zip(data.getvalue(), Path(extraction), self.app_name)
+                        directory = app / 'Contents'
+                        self.assertEqual(stat.S_IMODE(directory.stat().st_mode), mode)
+                        self.assertEqual((directory / 'Info.plist').read_bytes(), b'fixture')
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'directory must be readable and searchable'):
+                            artifacts.extract_zip(data.getvalue(), Path(extraction), self.app_name)
+
+    def test_real_codesign_evaluates_inline_requirements(self):
+        app, info, _, _ = self.signed_app(test=False)
+        verify_requirement(app, f'identifier "{info["CFBundleIdentifier"]}"')
+        with self.assertRaises(subprocess.CalledProcessError) as mismatch:
+            verify_requirement(app, 'identifier "io.voiceport.synthetic.other"')
+        self.assertIn('failed to satisfy specified code requirement', mismatch.exception.stderr)
+
+        version = info['CFBundleShortVersionString']
+        build = info['CFBundleVersion']
+        for signature, identity in [('preview', {'certificate': 'A' * 40}),
+                                    ('distribution', {'team_id': 'ABCD123456'})]:
+            with self.subTest(signature=signature):
+                with self.assertRaises(subprocess.CalledProcessError) as mismatch:
+                    artifacts.verify_app(app, version=version, build=build, signature=signature, **identity)
+                self.assertIn('failed to satisfy specified code requirement', mismatch.exception.stderr)
 
     def test_zip_rejects_foreign_roots_aliases_and_unsafe_entries(self):
         expected = self.app_name + '/Contents/Info.plist'

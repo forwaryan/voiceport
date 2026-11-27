@@ -129,3 +129,11 @@
 - **证据：** [PR #76 首轮 CI](https://github.com/forwaryan/voiceport/actions/runs/45933729140/attempts/1) 中，真实 Rust 测试包和合成 ZIP 用例通过，两个既有 bundle 用例因诊断文本不匹配失败，随后 Rust 和 CI runner sibling 被取消。拆分后的 verifier 恢复原诊断，保留既有断言。
 
 独立观察：1 次（2026-11-27）。
+
+## 归档目录权限与签名要求都要经过实际工具（2026-11-27）
+
+- **规则：** 检查 ZIP 权限时覆盖目录记录在子项前后的两种顺序。修改内联签名要求时，用实际 `codesign` 验证匹配和不匹配，区分要求解析错误和签名身份被拒。
+- **原因：** 临时目录的默认权限掩盖了 ZIP 中不可遍历的目录。原 ad-hoc 正例绕过了 preview 和 distribution 的内联要求，两条路径以文件参数形式传入了表达式。
+- **证据：** [PR #80](https://github.com/forwaryan/voiceport/pull/80) 的独评在 `0a9a938a7b945d02525618b1d1da93d68bdde61f` 观察到不可遍历的 ZIP 目录仍通过，以及真实 `codesign` 无法解析两条验证路径的内联参数。回归分别覆盖原始目录权限与无凭据的实际签名要求判断。
+
+独立观察：1 次（2026-11-27）。

@@ -18,7 +18,7 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_bundle as bundle
-from distribution_signing import validate as verify_developer_id
+from distribution_signing import validate as verify_developer_id, verify_requirement
 
 MANIFEST = 'artifact-manifest.json'
 TEST_ARCHIVE = 'VoicePort-Test-macos-arm64.zip'
@@ -120,6 +120,7 @@ def extract_zip(data, directory, root):
         seen = {}
         members = {}
         metadata = []
+        directory_modes = []
         for entry in entries:
             name = entry.orig_filename
             parts = name.removesuffix('/').split('/')
@@ -155,17 +156,22 @@ def extract_zip(data, directory, root):
                             pass
                     continue
                 target = directory.joinpath(*parts)
+                # ZIP creator systems 3 and 19 encode Unix and macOS modes.
+                has_unix_mode = entry.create_system in (3, 19)
+                permissions = stat.S_IMODE(mode)
                 if is_directory:
                     source.read(1)  # Verify the local header and CRC as for files.
+                    if has_unix_mode:
+                        require(permissions & 0o500 == 0o500,
+                                f'ZIP directory must be readable and searchable by its owner: {name!r}')
+                        directory_modes.append((target, permissions))
                     target.mkdir(parents=True, exist_ok=True)
                 else:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with target.open('xb') as output:
                         shutil.copyfileobj(source, output, length=65536)
                     require(target.stat().st_size == entry.file_size, f'ZIP member size mismatch: {name!r}')
-                    # ZIP creator systems 3 and 19 encode Unix and macOS modes.
-                    # Keep exact file permissions for the bundle layout check.
-                    target.chmod(stat.S_IMODE(mode) if entry.create_system in (3, 19) else 0o644)
+                    target.chmod(permissions if has_unix_mode else 0o644)
         app = directory / root
         require(app.is_dir(), 'ZIP lacks the expected application root')
         for parts, is_directory in metadata:
@@ -176,6 +182,9 @@ def extract_zip(data, directory, root):
                 require(bool(parts) and parts[-1].startswith('._'), 'unexpected AppleDouble file')
                 actual = [*parts[:-1], parts[-1][2:]]
                 require(actual[0] == root and directory.joinpath(*actual).exists(), 'orphan AppleDouble file')
+        # Apply modes after extracting all children, including read-only directories.
+        for target, permissions in directory_modes:
+            target.chmod(permissions)
     return app
 
 
@@ -208,7 +217,7 @@ def verify_app(app, *, version, build, signature, certificate=None, team_id=None
             if test:
                 require('Signature=adhoc' in fields, f'expected ad-hoc test signature: {binary.name}')
             else:
-                codesign('--verify', '--strict', '-R', f'certificate leaf = H"{certificate}"', binary)
+                verify_requirement(binary, f'certificate leaf = H"{certificate}"')
 
 
 def validate_identity_options(version, build, signature, certificate, team_id):
