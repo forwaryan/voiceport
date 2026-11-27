@@ -170,6 +170,13 @@ pub(crate) struct KeyPress {
     pub target: Option<ApplicationTarget>,
 }
 
+pub(crate) fn application_target(app: &NSRunningApplication) -> Option<ApplicationTarget> {
+    Some(ApplicationTarget {
+        pid: app.processIdentifier(),
+        bundle: app.bundleIdentifier()?.to_string(),
+    })
+}
+
 impl KeyPress {
     fn capture(stroke: Stroke, native_at: f64) -> Self {
         let now = Instant::now();
@@ -179,12 +186,7 @@ impl KeyPress {
         let application = (unsafe { libc::pthread_main_np() } == 1)
             .then(|| NSWorkspace::sharedWorkspace().frontmostApplication())
             .flatten();
-        let target = application.as_ref().and_then(|app| {
-            Some(ApplicationTarget {
-                pid: app.processIdentifier(),
-                bundle: app.bundleIdentifier()?.to_string(),
-            })
-        });
+        let target = application.as_deref().and_then(application_target);
         Self {
             stroke,
             at,
