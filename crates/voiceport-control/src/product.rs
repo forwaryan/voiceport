@@ -78,6 +78,10 @@ pub enum DictionaryImportMode {
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DictionaryRequest {
     Show,
+    ShowPage {
+        offset: usize,
+        revision: Option<String>,
+    },
     Set {
         rules: String,
         enabled: bool,

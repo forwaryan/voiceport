@@ -1,13 +1,17 @@
 //! Local exchange for the post-transcription dictionary.
-use crate::dictation_dictionary::{
-    Dictionary, RULE_LIMIT, Rule, canonical, format_rules, parse_rules,
+use crate::{
+    app_update::has_no_acl_grants,
+    dictation_dictionary::{Dictionary, RULE_LIMIT, Rule, canonical, format_rules, parse_rules},
 };
 use std::{
     collections::HashSet,
     fs::{OpenOptions, Permissions},
     io::{Read, Write},
     iter::Peekable,
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    },
     path::Path,
     str::Chars,
 };
@@ -18,6 +22,7 @@ const HEADER: &str = "input,output";
 const MAX_BYTES: usize = 1024 * 1024;
 const FILE_ERROR: &str = "请选择可读取的 UTF-8 CSV 或 TXT 普通文件。";
 const SAVE_ERROR: &str = "无法导出词典。请选择一个新的 .csv 文件名。";
+const PRIVATE_SAVE_ERROR: &str = "无法确认导出文件仅当前用户可读写。请选择没有额外访问授权的目录。";
 
 pub(crate) struct ImportPlan {
     pub(crate) rules: Vec<Rule>,
@@ -131,12 +136,36 @@ pub(crate) fn write(path: &Path, rules: &[Rule]) -> Result<(), String> {
     temporary
         .as_file()
         .set_permissions(Permissions::from_mode(0o600))
-        .map_err(|_| SAVE_ERROR)?;
+        .map_err(|_| PRIVATE_SAVE_ERROR)?;
+    // Creation can inherit an ACL that grants access despite mode 0600.
+    // Refuse before placing any rules in such a file.
+    verify_private_export(&temporary)?;
     temporary
         .write_all(format_csv(rules).as_bytes())
         .and_then(|_| temporary.as_file().sync_all())
         .map_err(|_| SAVE_ERROR)?;
+    verify_private_export(&temporary)?;
+    // Publication only renames or links this inode in the same directory.
     temporary.persist_noclobber(path).map_err(|_| SAVE_ERROR)?;
+    Ok(())
+}
+
+fn verify_private_export(temporary: &tempfile::NamedTempFile) -> Result<(), &'static str> {
+    let file = temporary.as_file();
+    let open = file.metadata().map_err(|_| PRIVATE_SAVE_ERROR)?;
+    let named = temporary
+        .path()
+        .symlink_metadata()
+        .map_err(|_| PRIVATE_SAVE_ERROR)?;
+    if !named.is_file()
+        || (open.dev(), open.ino()) != (named.dev(), named.ino())
+        || open.nlink() != 1
+        || open.uid() != unsafe { libc::geteuid() }
+        || open.mode() & 0o7777 != 0o600
+        || !matches!(has_no_acl_grants(file.as_raw_fd()), Ok(true))
+    {
+        return Err(PRIVATE_SAVE_ERROR);
+    }
     Ok(())
 }
 

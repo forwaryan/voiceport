@@ -201,6 +201,14 @@ fn dictionary(words: &[&str]) -> Result<DictionaryRequest, Response> {
     use DictionaryRequest::*;
     Ok(match words {
         ["show"] => Show,
+        ["show", "--offset", offset, options @ ..] => ShowPage {
+            offset: offset.parse().map_err(|_| invalid())?,
+            revision: match options {
+                [] => None,
+                ["--revision", revision] if positional(revision) => Some((*revision).into()),
+                _ => return Err(invalid()),
+            },
+        },
         ["set", enabled, "--stdin"] => Set {
             enabled: boolean(enabled)?,
             rules: stdin_text()?,

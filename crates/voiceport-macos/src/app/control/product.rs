@@ -322,11 +322,21 @@ impl Delegate {
             }
             request => return self.control_dictionary_exchange(control, c, request),
         }
-        Response::ok(json!({
+        let response = Response::ok(json!({
             "enabled":c.workflows.dictionary_enabled,
             "rules":format_rules(&c.workflows.rules),
             "stage":"post_transcription",
-        }))
+        }));
+        if serde_json::to_vec(&response)
+            .is_ok_and(|data| data.len() <= voiceport_control::MAX_FRAME)
+        {
+            response
+        } else {
+            err(
+                "frame_too_large",
+                "Read the saved rules with dictionary show --offset 0, then follow next_offset and revision.",
+            )
+        }
     }
 
     pub(super) fn control_scenes(&self, c: &mut Controller, request: ScenesRequest) -> Response {

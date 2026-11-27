@@ -13,6 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub(super) use download_progress::{DownloadProgress, DownloadSnapshot};
+pub(crate) use install::has_no_acl_grants;
 pub(super) use install::{
     MANUAL_ONLY, QUIT_ACK, Staged, apply, can_install_in_app, checkable_installation,
 };

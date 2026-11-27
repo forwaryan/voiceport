@@ -14,6 +14,7 @@ use tempfile::{Builder, TempDir};
 use voiceport_control::{Action, transport};
 
 mod acl;
+pub(crate) use acl::has_no_acl_grants;
 
 const APP: &str = "VoicePort.app";
 const ID: &str = "io.github.forwaryan.voiceport";

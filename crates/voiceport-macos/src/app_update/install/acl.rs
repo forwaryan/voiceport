@@ -66,7 +66,7 @@ impl Acl {
     }
 }
 
-pub(super) fn has_no_acl_grants(fd: RawFd) -> io::Result<bool> {
+pub(crate) fn has_no_acl_grants(fd: RawFd) -> io::Result<bool> {
     match NonNull::new(unsafe { acl_get_fd_np(fd, ACL_TYPE_EXTENDED) }) {
         Some(acl) => Acl(acl).has_only_denials(),
         None => {

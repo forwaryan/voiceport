@@ -95,6 +95,8 @@ fn file_exchange_is_bounded_private_and_never_clobbers() {
         fs::metadata(&csv).unwrap().permissions().mode() & 0o777,
         0o600
     );
+    let exported = fs::File::open(&csv).unwrap();
+    assert!(has_no_acl_grants(exported.as_raw_fd()).unwrap());
     assert!(write(&csv, &[]).is_err());
     assert_eq!(read(&csv).unwrap(), rules);
     let alias = dir.path().join("alias.csv");
@@ -110,4 +112,34 @@ fn file_exchange_is_bounded_private_and_never_clobbers() {
         .set_len(MAX_BYTES as u64 + 1)
         .unwrap();
     assert!(read(&txt).is_err());
+}
+
+#[test]
+fn export_rejects_inherited_acl_grants_before_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    let chmod = std::process::Command::new("/bin/chmod")
+        .args(["+a", "group:everyone allow read,file_inherit"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        chmod.status.success(),
+        "ACL fixture failed: {:?}",
+        chmod.stderr
+    );
+    {
+        let control = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        let file = control.as_file();
+        file.set_permissions(Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(file.metadata().unwrap().mode() & 0o7777, 0o600);
+        assert!(
+            !has_no_acl_grants(file.as_raw_fd()).unwrap(),
+            "expected a real inherited grant"
+        );
+    }
+    let target = dir.path().join("private.csv");
+    let rules = parse_rules("synthetic → only owner").unwrap();
+    assert_eq!(write(&target, &rules).unwrap_err(), PRIVATE_SAVE_ERROR);
+    assert!(!target.exists());
+    assert!(fs::read_dir(dir.path()).unwrap().next().is_none());
 }

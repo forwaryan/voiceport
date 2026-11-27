@@ -1,5 +1,9 @@
 use super::*;
-use crate::{dictation_dictionary::parse_rules, dictation_workflows::Workflows};
+use crate::{
+    dictation_dictionary::{RULE_LIMIT, Rule, parse_rules},
+    dictation_workflows::Workflows,
+    dictionary_exchange::format_csv,
+};
 
 pub fn isolated_dictionary_exchange_regression(mtm: MainThreadMarker, cli: &Path) {
     let _app = NSApplication::sharedApplication(mtm);
@@ -129,7 +133,89 @@ pub fn isolated_dictionary_exchange_regression(mtm: MainThreadMarker, cli: &Path
     );
     assert_eq!(persisted().unwrap(), changed);
     assert_eq!(shown()["rules"], "changed → another edit");
+    verify_large_readback(&fixture, &folder);
     println!(
-        "PASS dictionary CLI -> owned socket -> Delegate -> isolated defaults: preview pages, merge, cancel, validation, snapshot, stale plan, private CSV round trip"
+        "PASS dictionary CLI -> owned socket -> Delegate -> isolated defaults: preview pages, merge, cancel, validation, snapshot, stale plan, private CSV round trip, maximum dictionary readback"
+    );
+}
+
+fn verify_large_readback(fixture: &Fixture<'_>, folder: &Path) {
+    let rules: Vec<_> = (0..RULE_LIMIT)
+        .map(|index| Rule {
+            input: format!("词{index:03}{}", "🦀".repeat(124)),
+            output: "🦀".repeat(512),
+        })
+        .collect();
+    let csv = folder.join("maximum.csv");
+    fs::write(&csv, format_csv(&rules)).unwrap();
+    let call = |words: &[&str], exit| fixture.call(words, exit);
+    let import = call(
+        &["dictionary", "import", csv.to_str().unwrap(), "--replace"],
+        0,
+    );
+    let id = import["data"]["operation"].as_str().unwrap();
+    assert_eq!(
+        call(&["dictionary", "import-apply", id, "--confirm"], 0)["data"]["rule_count"],
+        RULE_LIMIT
+    );
+    let legacy = call(&["dictionary", "show"], 1);
+    assert_eq!(legacy["error"]["code"], "frame_too_large");
+    assert!(
+        legacy["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("--offset 0")
+    );
+
+    let first = call(&["dictionary", "show", "--offset", "0"], 0);
+    let revision = first["data"]["revision"].as_str().unwrap();
+    let mut readback = first["data"]["rules"].as_array().unwrap().clone();
+    let mut next = first["data"]["next_offset"].as_u64();
+    while let Some(offset) = next {
+        assert_eq!(offset as usize, readback.len());
+        let page = call(
+            &[
+                "dictionary",
+                "show",
+                "--offset",
+                &offset.to_string(),
+                "--revision",
+                revision,
+            ],
+            0,
+        );
+        let page = &page["data"];
+        assert_eq!(page["enabled"], true);
+        assert_eq!(page["rule_count"], RULE_LIMIT);
+        assert_eq!(page["revision"], revision);
+        readback.extend_from_slice(page["rules"].as_array().unwrap());
+        next = page["next_offset"].as_u64();
+    }
+    assert_eq!(
+        serde_json::from_value::<Vec<Rule>>(Value::Array(readback)).unwrap(),
+        rules
+    );
+    assert_eq!(
+        call(&["dictionary", "show", "--offset", "16"], 2)["error"]["code"],
+        "invalid_arguments"
+    );
+    fixture.owner.with_controller(|c| {
+        let mut next = c.workflows.clone();
+        next.dictionary_enabled = false;
+        fixture.owner.commit_workflows(c, next).unwrap();
+    });
+    assert_eq!(
+        call(
+            &[
+                "dictionary",
+                "show",
+                "--offset",
+                "16",
+                "--revision",
+                revision
+            ],
+            1
+        )["error"]["code"],
+        "invalid_state"
     );
 }
