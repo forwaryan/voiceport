@@ -19,6 +19,7 @@ fn offline_help_and_invalid_arguments_never_connect() {
             ("dictionary", "dictionary set"),
             ("scenes", "scenes apply"),
             ("app-rules", "app-rules match"),
+            ("history", "history list [--query TEXT]"),
             ("history", "history clear"),
             ("dictation", "dictation paste-last"),
             ("file", "file export"),
@@ -80,6 +81,9 @@ fn offline_help_and_invalid_arguments_never_connect() {
             vec!["app", "open", "arbitrary-url"],
             vec!["file", "plan", "relative.wav", "--source", "chatgpt"],
             vec!["history", "list", "--limit", "0"],
+            vec!["history", "list", "--query"],
+            vec!["history", "list", "--delivery", "submitted"],
+            vec!["history", "list", "--query", "one", "--query", "two"],
             vec!["dictation", "copy-last", "--confirm"],
             vec!["dictation", "paste-last"],
             vec![
@@ -444,9 +448,28 @@ fn real_binaries_and_transport_carry_product_requests_and_mock_receipts() {
             json!({"action":"apply", "name":"lab"}),
         ),
         example(
+            &["history", "list"],
+            "history",
+            json!({"action":"list", "limit":20}),
+        ),
+        example(
             &["history", "list", "--limit", "2"],
             "history",
             json!({"action":"list", "limit":2}),
+        ),
+        example(
+            &[
+                "history",
+                "list",
+                "--query",
+                "--socket",
+                "--delivery",
+                "not-sent",
+                "--limit",
+                "2",
+            ],
+            "history",
+            json!({"action":"list", "limit":2, "query":"--socket", "delivery":"not-sent"}),
         ),
         example(
             &["history", "show", "fixture-entry"],

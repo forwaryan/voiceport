@@ -2,6 +2,16 @@
 use super::*;
 use crate::controller::recent_dictations::MAX_ENTRIES;
 use objc2::{Message, rc::Weak};
+use voiceport_control::HistoryDelivery;
+
+const DELIVERY_FILTERS: [(Option<HistoryDelivery>, &str); 6] = [
+    (None, "所有投递状态"),
+    (Some(HistoryDelivery::Confirmed), "已确认"),
+    (Some(HistoryDelivery::Failed), "明确失败"),
+    (Some(HistoryDelivery::Uncertain), "未验证、未知或部分投递"),
+    (Some(HistoryDelivery::NotSent), "未投递"),
+    (Some(HistoryDelivery::Pending), "等待投递或确认"),
+];
 
 #[cfg(debug_assertions)]
 mod fixture;
@@ -11,6 +21,8 @@ pub(in crate::app) use fixture::run as run_fixture;
 struct Controls {
     keep: Retained<NSButton>,
     clear: Retained<NSButton>,
+    search: Retained<NSSearchField>,
+    delivery: Retained<NSPopUpButton>,
     empty: Retained<NSTextField>,
     rows: [Retained<NSButton>; MAX_ENTRIES],
     detail: Retained<NSScrollView>,
@@ -65,6 +77,21 @@ define_class!(
             if std::ptr::eq(&*self.controls().clear, sender) && sender.isEnabled() {
                 owner.with_controller(|c| { c.clear_recent_dictations(); });
                 self.refresh_from_owner();
+            }
+        }
+
+        #[unsafe(method(filterWorkbenchDictations:))]
+        fn filter(&self, sender: &NSControl) {
+            let Some(owner) = self.action_owner() else { return; };
+            let controls = self.controls();
+            let search: &NSControl = &controls.search;
+            let delivery: &NSControl = &controls.delivery;
+            if sender.isEnabled()
+                && (std::ptr::eq(search, sender) || std::ptr::eq(delivery, sender))
+                && let Ok(slot) = owner.ivars().controller.try_borrow()
+                && let Some(c) = slot.as_ref()
+            {
+                self.refresh(c);
             }
         }
 
@@ -144,7 +171,37 @@ impl HistoryPage {
         );
         clear.setAutoresizingMask(top | NSAutoresizingMaskOptions::ViewMinXMargin);
         clear.setAccessibilityLabel(Some(ns_string!("清空最近听写")));
-        let empty = owner.label(&page, "", rect(16., height - 128., width - 32., 24.), 13.);
+        let search = NSSearchField::initWithFrame(
+            NSSearchField::alloc(mtm),
+            rect(16., height - 123., width - 218., 26.),
+        );
+        search.setAutoresizingMask(top | wide);
+        search.setPlaceholderString(Some(ns_string!("搜索听写正文")));
+        search.setAccessibilityLabel(Some(ns_string!("搜索听写正文")));
+        search.setAccessibilityIdentifier(Some(ns_string!("voiceport.workbench.history.search")));
+        search.setSendsWholeSearchString(false);
+        search.setSendsSearchStringImmediately(true);
+        let delivery = NSPopUpButton::initWithFrame_pullsDown(
+            NSPopUpButton::alloc(mtm),
+            rect(width - 194., height - 124., 178., 28.),
+            false,
+        );
+        delivery.setAutoresizingMask(top | NSAutoresizingMaskOptions::ViewMinXMargin);
+        delivery.setAccessibilityLabel(Some(ns_string!("筛选投递状态")));
+        delivery
+            .setAccessibilityIdentifier(Some(ns_string!("voiceport.workbench.history.delivery")));
+        for (_, label) in DELIVERY_FILTERS {
+            delivery.addItemWithTitle(&NSString::from_str(label));
+        }
+        unsafe {
+            search.setTarget(Some(&*page));
+            search.setAction(Some(sel!(filterWorkbenchDictations:)));
+            delivery.setTarget(Some(&*page));
+            delivery.setAction(Some(sel!(filterWorkbenchDictations:)));
+        }
+        page.addSubview(&search);
+        page.addSubview(&delivery);
+        let empty = owner.label(&page, "", rect(16., height - 162., width - 32., 24.), 13.);
         empty.setTextColor(Some(&NSColor::secondaryLabelColor()));
         empty.setAutoresizingMask(top | wide);
         let rows = std::array::from_fn(|index| {
@@ -152,7 +209,7 @@ impl HistoryPage {
                 "",
                 sel!(selectWorkbenchDictation:),
                 &format!("row-{index}"),
-                rect(16., height - 128. - 29. * index as f64, width - 32., 28.),
+                rect(16., height - 162. - 29. * index as f64, width - 32., 28.),
             );
             row.setAutoresizingMask(top | wide);
             row.setButtonType(NSButtonType::PushOnPushOff);
@@ -161,7 +218,7 @@ impl HistoryPage {
             row.setHidden(true);
             row
         });
-        let detail_height = height - 294.;
+        let detail_height = height - 328.;
         let detail = NSScrollView::initWithFrame(
             NSScrollView::alloc(mtm),
             rect(16., 48., width - 32., detail_height),
@@ -202,6 +259,8 @@ impl HistoryPage {
         let _ = page.ivars().controls.set(Controls {
             keep,
             clear,
+            search,
+            delivery,
             empty,
             rows,
             detail,
@@ -215,7 +274,12 @@ impl HistoryPage {
 
     pub(in crate::app) fn key_views(&self) -> Vec<&NSView> {
         let controls = self.controls();
-        let mut views: Vec<&NSView> = vec![&controls.keep, &controls.clear];
+        let mut views: Vec<&NSView> = vec![
+            &controls.keep,
+            &controls.clear,
+            &controls.search,
+            &controls.delivery,
+        ];
         views.extend(controls.rows.iter().map(|row| &****row));
         views.extend([&*controls.text as &NSView, &controls.copy]);
         views
@@ -288,7 +352,20 @@ impl HistoryPage {
             self.clear_display();
             return;
         }
-        let summaries = c.list_recent_dictations(MAX_ENTRIES);
+        let has_history = c.has_recent_dictations();
+        if !has_history {
+            self.reset_filters();
+            if self.has_focus(&controls.delivery) {
+                self.focus(&controls.keep);
+            }
+        }
+        controls.search.setEnabled(has_history);
+        controls.delivery.setEnabled(has_history);
+        let query = controls.search.stringValue().to_string();
+        let delivery = DELIVERY_FILTERS
+            .get(controls.delivery.indexOfSelectedItem() as usize)
+            .and_then(|(filter, _)| *filter);
+        let summaries = c.search_recent_dictations(MAX_ENTRIES, &query, delivery);
         let mut entries = self.ivars().entries.borrow_mut();
         if *entries != summaries {
             let focused_id = entries
@@ -300,6 +377,16 @@ impl HistoryPage {
                 if summary != entries.get(index) {
                     if let Some(summary) = summary {
                         let (date, status) = row_presentation(summary);
+                        let status = match (summary.delivery_filter(), summary.delivery.state) {
+                            (HistoryDelivery::Failed, _) => "明确失败",
+                            (HistoryDelivery::NotSent, DeliveryState::Waiting) => "投递已停止",
+                            (
+                                HistoryDelivery::Uncertain,
+                                DeliveryState::Submitted | DeliveryState::PartiallySent,
+                            ) => status,
+                            (HistoryDelivery::Uncertain, _) => "结果不明",
+                            _ => status,
+                        };
                         row.setTitle(&NSString::from_str(&format!("{date} · {status}")));
                     } else {
                         row.setTitle(ns_string!(""));
@@ -322,7 +409,9 @@ impl HistoryPage {
         }
         controls.clear.setEnabled(can_clear);
         controls.empty.setHidden(!entries.is_empty());
-        let empty_text = if enabled {
+        let empty_text = if has_history {
+            ns_string!("没有符合筛选条件的听写")
+        } else if enabled {
             ns_string!("本次运行暂无听写记录")
         } else {
             ns_string!("最近听写已关闭")
@@ -377,7 +466,22 @@ impl HistoryPage {
         controls.copy.setEnabled(can_copy);
     }
 
+    fn reset_filters(&self) {
+        let controls = self.controls();
+        if controls.search.currentEditor().is_some() {
+            controls.search.abortEditing();
+            self.focus(&controls.keep);
+        }
+        if !controls.search.stringValue().is_empty() {
+            controls.search.setStringValue(ns_string!(""));
+        }
+        if controls.delivery.indexOfSelectedItem() != 0 {
+            controls.delivery.selectItemAtIndex(0);
+        }
+    }
+
     pub(in crate::app) fn clear_display(&self) {
+        self.reset_filters();
         let controls = self.controls();
         self.ivars().entries.borrow_mut().clear();
         for row in &controls.rows {
