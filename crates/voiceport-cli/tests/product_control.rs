@@ -14,7 +14,7 @@ fn offline_help_and_invalid_arguments_never_connect() {
         for (group, usage) in [
             ("app", "app open files"),
             ("preferences", "preferences set language"),
-            ("models", "models refresh"),
+            ("models", "models recommend [--language CODE|auto]"),
             ("microphone", "microphone test-start"),
             ("dictionary", "dictionary set"),
             ("scenes", "scenes apply"),
@@ -79,6 +79,17 @@ fn offline_help_and_invalid_arguments_never_connect() {
             vec!["file", "plan", "relative.wav", "--source", "chatgpt"],
             vec!["history", "list", "--limit", "0"],
             vec!["microphone", "select", "--device", ""],
+            vec!["models", "recommend", "--language", "unknown"],
+            vec!["models", "recommend", "--preview", "fastest"],
+            vec![
+                "models",
+                "recommend",
+                "--preview",
+                "live",
+                "--preview",
+                "any",
+            ],
+            vec!["models", "recommend", "--language"],
             vec![
                 "file",
                 "export",
@@ -169,6 +180,35 @@ fn real_binaries_and_transport_carry_product_requests_and_mock_receipts() {
             wire: json!({"command":"models_refresh"}),
             stdin: None,
         },
+        example(
+            &["models", "recommend"],
+            "models",
+            json!({"action":"recommend","language":null,"preview":"any"}),
+        ),
+        example(
+            &[
+                "models",
+                "recommend",
+                "--preview",
+                "live",
+                "--language",
+                "zh",
+            ],
+            "models",
+            json!({"action":"recommend","language":"zh","preview":"live"}),
+        ),
+        example(
+            &[
+                "models",
+                "recommend",
+                "--language",
+                "auto",
+                "--preview",
+                "after-stop",
+            ],
+            "models",
+            json!({"action":"recommend","language":"","preview":"after_stop"}),
+        ),
         example(
             &["models", "details", "test-model"],
             "models",

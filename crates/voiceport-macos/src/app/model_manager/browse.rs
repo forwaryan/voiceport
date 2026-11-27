@@ -2,26 +2,13 @@
 //! install state, or selected transcription source.
 use super::{Definition, MODELS, ModelView};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Preview {
-    All,
-    Live,
-    AfterStop,
-}
-impl Preview {
-    pub fn from_index(index: isize) -> Self {
-        match index {
-            1 => Self::Live,
-            2 => Self::AfterStop,
-            _ => Self::All,
-        }
-    }
-    fn matches(self, model: &Definition) -> bool {
-        match self {
-            Self::All => true,
-            Self::Live => model.kind.streaming(),
-            Self::AfterStop => !model.kind.streaming(),
-        }
+use voiceport_control::ModelPreview;
+
+pub(super) fn preview_from_index(index: isize) -> ModelPreview {
+    match index {
+        1 => ModelPreview::Live,
+        2 => ModelPreview::AfterStop,
+        _ => ModelPreview::Any,
     }
 }
 
@@ -44,7 +31,7 @@ impl Order {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Browse {
     pub language: &'static str,
-    pub preview: Preview,
+    pub preview: ModelPreview,
     pub order: Order,
     pub installed_only: bool,
 }
@@ -65,7 +52,7 @@ impl Browse {
             .filter(|(index, model)| {
                 (!self.installed_only || installed(*index))
                     && model.kind.supports_language(self.language)
-                    && self.preview.matches(model)
+                    && model.matches_preview(self.preview)
             })
             .collect();
         visible.sort_by_key(|(index, model)| match self.order {
@@ -97,7 +84,7 @@ mod tests {
     fn language_preview_size_and_installation_are_independent_browse_axes() {
         let browse = Browse {
             language: "en",
-            preview: Preview::Live,
+            preview: ModelPreview::Live,
             order: Order::Smallest,
             installed_only: false,
         };
@@ -156,7 +143,7 @@ mod tests {
         let yue = models(
             Browse {
                 language: "yue",
-                preview: Preview::AfterStop,
+                preview: ModelPreview::AfterStop,
                 ..browse
             }
             .project(MODELS, |_| false),

@@ -22,6 +22,15 @@ mod catalog;
 #[cfg(test)]
 mod tests;
 pub use catalog::MODELS;
+use voiceport_control::ModelPreview;
+
+pub(crate) fn recommend(language: &str, preview: ModelPreview) -> Option<&'static Definition> {
+    MODELS
+        .iter()
+        .filter(|model| model.kind.supports_language(language) && model.matches_preview(preview))
+        .min_by_key(|model| (model.bytes(), model.id))
+}
+
 pub fn runtime_bytes() -> u64 {
     catalog::RUNTIME_ARCHIVE.bytes
 }
@@ -47,6 +56,18 @@ pub struct Definition {
 impl Definition {
     pub fn bytes(&self) -> u64 {
         self.assets.iter().map(|f| f.bytes).sum()
+    }
+
+    pub(crate) fn preview(&self) -> ModelPreview {
+        if self.kind.streaming() {
+            ModelPreview::Live
+        } else {
+            ModelPreview::AfterStop
+        }
+    }
+
+    pub(crate) fn matches_preview(&self, preview: ModelPreview) -> bool {
+        preview == ModelPreview::Any || preview == self.preview()
     }
 }
 
