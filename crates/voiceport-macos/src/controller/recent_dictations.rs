@@ -222,7 +222,7 @@ impl Controller {
             }
             return;
         }
-        let possible_duplicate = original_may_be_partial(receipt.delivery);
+        let possible_duplicate = original_may_be_partial(&receipt);
         if receipt.block_reason == Some(BlockReason::RetryPanelOnly) {
             // The recovery card carries the original attempt's delivery evidence.
             // History associates the receipt with the generation that produced its text.
@@ -263,9 +263,16 @@ pub(super) struct LatestResult<'a> {
     pub possible_duplicate: bool,
 }
 
-pub(super) fn original_may_be_partial(receipt: DeliveryReceipt) -> bool {
+fn original_may_be_partial(gui: &super::GuiDictationReceipt) -> bool {
+    let receipt = gui.delivery;
     match receipt.state {
-        DeliveryState::Confirmed | DeliveryState::NotSent => false,
+        // A failed transcription can seal confirmed preview writes. A retry
+        // carries those counts, while its own final text was panel-only.
+        DeliveryState::Confirmed => {
+            gui.block_reason == Some(BlockReason::RetryPanelOnly)
+                && receipt.submitted_operations > 0
+        }
+        DeliveryState::NotSent => false,
         _ => {
             receipt.submitted_operations > 0
                 || matches!(
@@ -301,7 +308,7 @@ impl Controller {
                 generation,
                 text: &self.transcript,
                 possible_duplicate: history.repasted_visible == Some(generation)
-                    || original_may_be_partial(receipt.delivery),
+                    || original_may_be_partial(&receipt),
             });
         }
         history.entries.iter().find_map(|entry| {

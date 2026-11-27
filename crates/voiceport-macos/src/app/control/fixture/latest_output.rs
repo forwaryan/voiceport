@@ -245,6 +245,46 @@ pub(super) fn verify(fixture: &Fixture<'_>, rig: &mut SyntheticDictations) {
     );
     assert_eq!(clipboard.borrow().as_str(), "Possibly written");
     assert_eq!(editor.borrow().writes, 2);
+
+    // Confirmed preview writes from a failed ASR do not confirm the retry's
+    // final text. The original preview still makes another paste ambiguous.
+    assert_eq!(
+        call(&["history", "settings", "on"], 0)["data"]["enabled"],
+        true
+    );
+    editor.borrow_mut().snapshot = Snapshot {
+        text: "left|right".into(),
+        selection: TextRange {
+            location: 4,
+            length: 1,
+        },
+    };
+    editor.borrow_mut().mode = Mode::Ready;
+    fixture.owner.with_controller(|controller| {
+        std::mem::swap(controller, &mut rig.controller);
+        rig.retry_after_confirmed_preview("Final from retry");
+        std::mem::swap(controller, &mut rig.controller);
+    });
+    let retry = &call(&["status"], 0)["data"]["input"]["gui_receipt"];
+    assert_eq!(retry["block_reason"], "retry_panel_only");
+    assert_eq!(retry["delivery"]["state"], "confirmed");
+    assert_eq!(retry["delivery"]["confirmedOperations"], 1);
+    let history = call(&["history", "list"], 0);
+    assert_eq!(
+        history["data"]["entries"][0]["delivery"]["state"],
+        "notSent"
+    );
+    eprintln!("repaste fixture: confirmed preview retry duplicate guard");
+    let captured = captures.get();
+    assert_eq!(call(PASTE, 1)["error"]["code"], "possible_duplicate");
+    assert_eq!(captures.get(), captured);
+    assert_eq!(
+        call(&["dictation", "copy-last"], 0)["data"]["possible_duplicate"],
+        true
+    );
+    assert_eq!(clipboard.borrow().as_str(), "Final from retry");
+    assert_eq!(editor.borrow().writes, 2);
+
     fixture.owner.with_controller(|controller| {
         std::mem::swap(controller, &mut rig.controller);
         rig.set_focus_safe(false);
@@ -253,11 +293,18 @@ pub(super) fn verify(fixture: &Fixture<'_>, rig: &mut SyntheticDictations) {
         rig.set_focus_safe(true);
         std::mem::swap(controller, &mut rig.controller);
     });
+    assert_eq!(call(PASTE, 1)["error"]["code"], "possible_duplicate");
+    assert_eq!(captures.get(), captured);
+    assert_eq!(
+        call(&["dictation", "copy-last"], 0)["data"]["possible_duplicate"],
+        true
+    );
+    assert_eq!(clipboard.borrow().as_str(), "Final from retry");
+    call(&["history", "settings", "off", "--confirm"], 0);
     assert_eq!(
         call(&["dictation", "copy-last"], 6)["error"]["code"],
         "not_found"
     );
-    assert_eq!(clipboard.borrow().as_str(), "Possibly written");
     println!(
         "PASS actual CLI and AppKit action handlers: copy, confirmed repaste, stale target, secure/unknown focus, changed caret, and duplicate/uncertain receipts; synthetic boundaries"
     );
