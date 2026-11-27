@@ -273,10 +273,10 @@ def build_test(output, *, skip_build):
         artifacts = stage / 'artifacts'
         artifacts.mkdir(mode=0o700)
         env = dict(os.environ, CARGO_NET_OFFLINE='true', VOICEPORT_APP_DIRECTORY=str(app))
-        command = ['/bin/bash', ROOT / 'scripts/package_app.sh', '--test']
+        command = ['/bin/bash', bundle.ROOT / 'scripts/package_app.sh', '--test']
         if skip_build:
             command.append('--skip-build')
-        subprocess.run(command, cwd=ROOT, env=env, check=True, stdout=sys.stderr)
+        subprocess.run(command, cwd=bundle.ROOT, env=env, check=True, stdout=sys.stderr)
         subprocess.run(['/usr/bin/ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', app,
                         artifacts / TEST_ARCHIVE], check=True, stdout=sys.stderr)
         digest = write_manifest(artifacts, TEST_ARCHIVE, [])
@@ -309,7 +309,7 @@ def main():
     try:
         if args.command == 'test-build':
             from verification_run import full_suite_lock
-            with full_suite_lock(ROOT):
+            with full_suite_lock(bundle.ROOT):
                 report = build_test(args.output.absolute(), skip_build=args.skip_build)
         elif args.command == 'manifest':
             digest = write_manifest(args.directory, args.archive, args.attachment)
