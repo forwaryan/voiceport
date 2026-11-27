@@ -2940,7 +2940,11 @@ pub(crate) mod stop_failure_regression {
             "cancel" => cancellation_waits_for_recording_release(),
             "local-stop-failure" => local_stop_failure_waits_for_worker(),
             "cli-session" => cli_start_stop_uses_pinned_policy_without_devices(),
-            "gui-delivery" => gui_delivery_without_devices(),
+            "gui-delivery" => {
+                gui_delivery_without_devices();
+                #[cfg(debug_assertions)]
+                super::dictation_workflow_tests::verify_manual_scene_history_and_repaste(true);
+            }
             _ => panic!("unknown stop_failure case: {case}"),
         }
         println!("stop_failure: {case} passed");

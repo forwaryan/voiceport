@@ -147,7 +147,12 @@ fn app_rules_gui_start_freezes_scene_or_global_output_only() {
 
 #[cfg(debug_assertions)]
 #[test]
-fn app_rules_manual_scene_preserves_processed_history_and_repaste() {
+fn app_rules_manual_scene_repaste_guards_the_main_thread() {
+    verify_manual_scene_history_and_repaste(false);
+}
+
+#[cfg(debug_assertions)]
+pub(super) fn verify_manual_scene_history_and_repaste(on_main: bool) {
     use crate::{
         controller::recent_dictations::fixture::{SyntheticDictations, SyntheticTarget},
         dictation_dictionary::parse_rules,
@@ -210,21 +215,37 @@ fn app_rules_manual_scene_preserves_processed_history_and_repaste() {
             .is_empty()
     );
 
+    assert_eq!(objc2::MainThreadMarker::new().is_some(), on_main);
     let original_receipt = c.gui_dictation_receipt().unwrap();
+    assert_eq!(receiver.borrow().writes, 0);
     let repaste = c.repaste_latest_with(|delivery| {
         delivery.begin_fixture(Box::new(SyntheticTarget(receiver.clone())))
     });
-    assert!(repaste.error.is_none());
-    assert_eq!(repaste.data["delivery"]["state"], "confirmed");
-    assert_eq!(receiver.borrow().snapshot.text, format!("A{FINAL}B"));
-    assert_eq!(receiver.borrow().writes, 1);
+    println!(
+        "manual-scene repaste: os_main_thread={on_main}, response={repaste:?}, writes={}",
+        receiver.borrow().writes
+    );
+    if on_main {
+        assert!(repaste.error.is_none(), "{repaste:?}");
+        assert_eq!(repaste.data["delivery"]["state"], "confirmed");
+        assert_eq!(receiver.borrow().snapshot.text, format!("A{FINAL}B"));
+        assert_eq!(receiver.borrow().writes, 1);
+        let duplicate = c.repaste_latest_with(|_| panic!("duplicate must not capture a target"));
+        assert_eq!(duplicate.error.unwrap().code, "possible_duplicate");
+        assert_eq!(receiver.borrow().writes, 1);
+    } else {
+        assert_eq!(repaste.error.unwrap().code, "paste_blocked");
+        assert_eq!(repaste.data["failure_stage"], "mainThread");
+        assert_eq!(receiver.borrow().snapshot.text, "A|B");
+        assert_eq!(receiver.borrow().writes, 0);
+    }
+    assert_eq!(repaste.data["generation"], generation);
+    assert_eq!(c.repaste_receipt().as_ref(), Some(&repaste.data));
     assert_eq!(c.gui_dictation_receipt().unwrap(), original_receipt);
     assert_eq!(
         c.search_recent_dictations(5, "voiceport", Some(HistoryDelivery::NotSent))[0].id,
         entries[0].id
     );
-    let duplicate = c.repaste_latest_with(|_| panic!("duplicate must not capture a target"));
-    assert_eq!(duplicate.error.unwrap().code, "possible_duplicate");
 
     let (next, _) = rig.begin_with_rule_target(true, false, Some(&editor));
     assert_eq!(rig.controller.active_app_rule(), Some("场景「绑定」"));
