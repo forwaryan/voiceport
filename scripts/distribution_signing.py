@@ -33,6 +33,11 @@ def require_metadata(metadata, *, team_id, identifier):
         raise ValueError('distribution signature is missing a secure timestamp')
 
 
+def verify_requirement(binary, requirement):
+    subprocess.run(['/usr/bin/codesign', '--verify', '--strict', f'-R={requirement}', str(binary)],
+                   check=True, capture_output=True, text=True, timeout=30)
+
+
 def validate(app, team_id):
     validate_team_id(team_id)
     app = Path(app)
@@ -46,8 +51,7 @@ def validate(app, team_id):
         (app, BUNDLE_ID, APP_ENTITLEMENTS),
         (app / 'Contents/MacOS/voiceport', BUNDLE_ID + '.cli', {}),
     ]:
-        subprocess.run(['/usr/bin/codesign', '--verify', '--strict', '-R', requirement, str(binary)],
-                       check=True, capture_output=True, text=True, timeout=30)
+        verify_requirement(binary, requirement)
         result = subprocess.run(['/usr/bin/codesign', '--display', '--verbose=4', str(binary)],
                                 check=True, capture_output=True, text=True, timeout=30)
         require_metadata(result.stderr, team_id=team_id, identifier=identifier)
