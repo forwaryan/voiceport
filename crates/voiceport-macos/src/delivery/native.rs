@@ -1,6 +1,7 @@
 //! Native boundary. Nothing here captures a target until `capture` is called.
 use super::model::{
-    self, Failure, KeyboardPacing, PasteTarget, Snapshot, Target, TerminalTarget, TextRange,
+    self, Failure, KeyboardPacing, PasteTarget, ReplacementFailure, Snapshot, Target,
+    TerminalTarget, TextRange,
 };
 mod clipboard;
 mod focus;
@@ -733,28 +734,30 @@ impl Target for KeyboardTarget {
         range: TextRange,
         text: &str,
         expected: &Snapshot,
-    ) -> Result<(), Failure> {
+    ) -> Result<(), ReplacementFailure> {
+        use ReplacementFailure::BeforeWrite;
         if self.pending.is_some() || range != expected.selection {
-            return Err(Failure::Write);
+            return Err(BeforeWrite(Failure::Write));
         }
-        if self.read()? != *expected {
-            return Err(Failure::Ownership);
+        if self.read().map_err(BeforeWrite)? != *expected {
+            return Err(BeforeWrite(Failure::Ownership));
         }
-        let bytes = model::byte_range(&expected.text, range).ok_or(Failure::Selection)?;
+        let bytes =
+            model::byte_range(&expected.text, range).ok_or(BeforeWrite(Failure::Selection))?;
         let mut next = expected.clone();
         next.text.replace_range(bytes, text);
         next.selection = TextRange {
             location: range.location + text.encode_utf16().count(),
             length: 0,
         };
-        let (_source, down, up) = unicode_events(text)?;
+        let (_source, down, up) = unicode_events(text).map_err(BeforeWrite)?;
         // Recheck immediately before the paired key events. No AX text setter,
         // clipboard, Delete or Return is used for this known application.
-        if self.read()? != *expected {
-            return Err(Failure::Ownership);
+        if self.read().map_err(BeforeWrite)? != *expected {
+            return Err(BeforeWrite(Failure::Ownership));
         }
         if modifiers::held(modifiers::physical()) {
-            return Err(Failure::ModifiersHeld);
+            return Err(BeforeWrite(Failure::ModifiersHeld));
         }
         unsafe {
             CGEventPostToPid(self.inner.pid, down.0);
@@ -941,14 +944,12 @@ impl NativeTarget {
         Ok(())
     }
 
-    fn select(&self, range: TextRange) -> Result<(), Failure> {
+    fn selection_value(range: TextRange) -> Result<OwnedCf, Failure> {
         let location = isize::try_from(range.location).map_err(|_| Failure::Selection)?;
         let length = isize::try_from(range.length).map_err(|_| Failure::Selection)?;
         let raw = CFRange { location, length };
-        let value =
-            OwnedCf::new(unsafe { AXValueCreate(AX_CF_RANGE, (&raw as *const CFRange).cast()) })
-                .ok_or(Failure::Selection)?;
-        set(self.element.0, "AXSelectedTextRange", value.0)
+        OwnedCf::new(unsafe { AXValueCreate(AX_CF_RANGE, (&raw as *const CFRange).cast()) })
+            .ok_or(Failure::Selection)
     }
 }
 
@@ -986,14 +987,16 @@ impl Target for NativeTarget {
         range: TextRange,
         text: &str,
         expected: &Snapshot,
-    ) -> Result<(), Failure> {
+    ) -> Result<(), ReplacementFailure> {
+        use ReplacementFailure::{BeforeWrite, Uncertain};
         if self.pending.is_some() {
-            return Err(Failure::Write);
+            return Err(BeforeWrite(Failure::Write));
         }
-        if self.read()? != *expected {
-            return Err(Failure::Ownership);
+        if self.read().map_err(BeforeWrite)? != *expected {
+            return Err(BeforeWrite(Failure::Ownership));
         }
-        let bytes = model::byte_range(&expected.text, range).ok_or(Failure::Selection)?;
+        let bytes =
+            model::byte_range(&expected.text, range).ok_or(BeforeWrite(Failure::Selection))?;
         let mut next_text = expected.text.clone();
         next_text.replace_range(bytes, text);
         let caret = TextRange {
@@ -1005,44 +1008,40 @@ impl Target for NativeTarget {
             selection: caret,
         };
         let deadline = Instant::now() + READBACK_TIMEOUT;
-        if settable(self.element.0, "AXSelectedText")? {
-            if expected.selection != range {
-                self.select(range)?;
-                self.pending = Some(PendingWrite {
-                    step: WriteStep::Selection {
-                        before: expected.clone(),
-                        selected: Snapshot {
-                            text: expected.text.clone(),
-                            selection: range,
-                        },
-                        text: text.to_owned(),
-                    },
-                    next,
-                    deadline,
-                });
-                return Ok(());
-            }
-            if self.read()? != *expected {
-                return Err(Failure::Ownership);
-            }
-            set(
-                self.element.0,
-                "AXSelectedText",
-                CFString::new(text).as_CFTypeRef(),
-            )?;
-        } else {
-            if !settable(self.element.0, "AXValue")? {
-                return Err(Failure::Writable);
-            }
-            if self.read()? != *expected {
-                return Err(Failure::Ownership);
-            }
-            set(
-                self.element.0,
-                "AXValue",
-                CFString::new(&next.text).as_CFTypeRef(),
-            )?;
+        let selected_text = settable(self.element.0, "AXSelectedText").map_err(BeforeWrite)?;
+        if !selected_text && !settable(self.element.0, "AXValue").map_err(BeforeWrite)? {
+            return Err(BeforeWrite(Failure::Writable));
         }
+        if selected_text && expected.selection != range {
+            let selection = Self::selection_value(range).map_err(BeforeWrite)?;
+            if self.read().map_err(BeforeWrite)? != *expected {
+                return Err(BeforeWrite(Failure::Ownership));
+            }
+            set(self.element.0, "AXSelectedTextRange", selection.0).map_err(Uncertain)?;
+            self.pending = Some(PendingWrite {
+                step: WriteStep::Selection {
+                    before: expected.clone(),
+                    selected: Snapshot {
+                        text: expected.text.clone(),
+                        selection: range,
+                    },
+                    text: text.to_owned(),
+                },
+                next,
+                deadline,
+            });
+            return Ok(());
+        }
+        let (attribute, replacement) = if selected_text {
+            ("AXSelectedText", text)
+        } else {
+            ("AXValue", next.text.as_str())
+        };
+        let value = CFString::new(replacement);
+        if self.read().map_err(BeforeWrite)? != *expected {
+            return Err(BeforeWrite(Failure::Ownership));
+        }
+        set(self.element.0, attribute, value.as_CFTypeRef()).map_err(Uncertain)?;
         self.pending = Some(PendingWrite {
             step: WriteStep::Text {
                 before: expected.clone(),
@@ -1085,10 +1084,11 @@ impl Target for NativeTarget {
                 pending.step = WriteStep::Text { before: current };
             }
             ConfirmationAction::SetCaret => {
+                let selection = Self::selection_value(pending.next.selection)?;
                 if self.read()? != current {
                     return Err(Failure::Ownership);
                 }
-                self.select(pending.next.selection)?;
+                set(self.element.0, "AXSelectedTextRange", selection.0)?;
                 pending.step = WriteStep::Caret { before: current };
             }
         }

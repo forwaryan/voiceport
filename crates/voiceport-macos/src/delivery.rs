@@ -796,7 +796,7 @@ mod preparation_tests {
             _: model::TextRange,
             _: &str,
             _: &model::Snapshot,
-        ) -> Result<(), Failure> {
+        ) -> Result<(), model::ReplacementFailure> {
             panic!("preparation must not write text")
         }
     }
@@ -888,7 +888,7 @@ mod preparation_tests {
                 _: model::TextRange,
                 text: &str,
                 _: &model::Snapshot,
-            ) -> Result<(), Failure> {
+            ) -> Result<(), model::ReplacementFailure> {
                 self.0.borrow_mut().push(text.to_owned());
                 Ok(())
             }

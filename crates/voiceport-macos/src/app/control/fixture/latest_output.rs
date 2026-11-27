@@ -1,6 +1,8 @@
 //! Real CLI and AppKit actions with a synthetic receiver and clipboard.
 use super::*;
-use crate::delivery::model::{ApplicationTarget, Failure, Snapshot, Target, TextRange, byte_range};
+use crate::delivery::model::{
+    ApplicationTarget, Failure, ReplacementFailure, Snapshot, Target, TextRange, byte_range,
+};
 use std::{cell::RefCell, rc::Rc};
 
 const TEXT: &str = "Synthetic final 聽寫🙂";
@@ -21,7 +23,9 @@ enum Mode {
     Secure,
     Unknown,
     MovedCaret,
+    MovedCaretAtWrite,
     PendingConfirmation,
+    UncertainWrite,
 }
 
 struct Editor {
@@ -57,8 +61,16 @@ impl Target for Receiver {
         range: TextRange,
         text: &str,
         expected: &Snapshot,
-    ) -> Result<(), Failure> {
-        assert_eq!(&self.read()?, expected);
+    ) -> Result<(), ReplacementFailure> {
+        if self.0.borrow().mode == Mode::MovedCaretAtWrite {
+            self.0.borrow_mut().snapshot.selection = TextRange {
+                location: 0,
+                length: 0,
+            };
+        }
+        if self.read().map_err(ReplacementFailure::BeforeWrite)? != *expected {
+            return Err(ReplacementFailure::BeforeWrite(Failure::Ownership));
+        }
         let mut editor = self.0.borrow_mut();
         let bytes = byte_range(&editor.snapshot.text, range).unwrap();
         editor.snapshot.text.replace_range(bytes, text);
@@ -67,6 +79,9 @@ impl Target for Receiver {
             length: 0,
         };
         editor.writes += 1;
+        if editor.mode == Mode::UncertainWrite {
+            return Err(ReplacementFailure::Uncertain(Failure::Write));
+        }
         Ok(())
     }
 
@@ -175,9 +190,31 @@ pub(super) fn verify(fixture: &Fixture<'_>, rig: &mut SyntheticDictations) {
         assert_eq!(clipboard.borrow().as_str(), TEXT);
     }
     editor.borrow_mut().snapshot = initial.clone();
+    editor.borrow_mut().mode = Mode::MovedCaretAtWrite;
+    let rejected = call(PASTE, 1);
+    assert_eq!(rejected["error"]["code"], "paste_blocked");
+    assert_eq!(rejected["data"]["failure_stage"], "ownership");
+    assert_eq!(
+        rejected["data"]["delivery"]["state"], "notSent",
+        "repaste fixture: final guard rejected before any write"
+    );
+    assert_eq!(rejected["data"]["delivery"]["submittedOperations"], 0);
+    assert_eq!(rejected["data"]["delivery"]["confirmedOperations"], 0);
+    assert_eq!(editor.borrow().snapshot.text, initial.text);
+    assert_eq!(editor.borrow().snapshot.selection.location, 0);
+    assert_eq!(clipboard.borrow().as_str(), TEXT);
+    let captured = captures.get();
+    editor.borrow_mut().snapshot = initial.clone();
     editor.borrow_mut().mode = Mode::Ready;
+    fixture
+        .owner
+        .with_controller(|c| fixture.owner.poll_dictation(c));
+    assert_eq!(captures.get(), captured);
+    assert_eq!(editor.borrow().writes, 0);
 
     let pasted = call(PASTE, 0);
+    assert_eq!(captures.get(), captured + 1);
+    assert_eq!(pasted["data"]["generation"], rejected["data"]["generation"]);
     assert_eq!(pasted["data"]["delivery"]["state"], "confirmed");
     assert_eq!(pasted["data"]["delivery"]["submittedOperations"], 1);
     assert_eq!(editor.borrow().snapshot.text, format!("A{TEXT}B"));
@@ -196,7 +233,7 @@ pub(super) fn verify(fixture: &Fixture<'_>, rig: &mut SyntheticDictations) {
 
     // Use the actual global shortcut handler and do not redirect a later poll.
     assert_eq!(fixture.finish_gui(rig, "Another final"), 1);
-    editor.borrow_mut().snapshot = initial;
+    editor.borrow_mut().snapshot = initial.clone();
     editor.borrow_mut().mode = Mode::PendingConfirmation;
     fixture
         .owner
@@ -305,6 +342,37 @@ pub(super) fn verify(fixture: &Fixture<'_>, rig: &mut SyntheticDictations) {
         call(&["dictation", "copy-last"], 6)["error"]["code"],
         "not_found"
     );
+    // A setter error can leave text even when it reports no successful submission.
+    let uncertain_text = "Final with uncertain write";
+    assert_eq!(fixture.finish_gui(rig, uncertain_text), 1);
+    editor.borrow_mut().snapshot = initial;
+    editor.borrow_mut().mode = Mode::UncertainWrite;
+    let writes = editor.borrow().writes;
+    let uncertain = call(PASTE, 1);
+    assert_eq!(uncertain["error"]["code"], "paste_blocked");
+    assert_eq!(uncertain["data"]["delivery"]["state"], "uncertain");
+    assert_eq!(uncertain["data"]["delivery"]["submittedOperations"], 0);
+    assert_eq!(uncertain["data"]["delivery"]["confirmedOperations"], 0);
+    assert_eq!(editor.borrow().snapshot.text, format!("A{uncertain_text}B"));
+    assert_eq!(clipboard.borrow().as_str(), "Final from retry");
+    let captured = captures.get();
+    editor.borrow_mut().mode = Mode::Ready;
+    fixture
+        .owner
+        .with_controller(|c| fixture.owner.poll_dictation(c));
+    let duplicate = call(PASTE, 1);
+    assert_eq!(duplicate["error"]["code"], "possible_duplicate");
+    assert_eq!(
+        duplicate["data"]["generation"],
+        uncertain["data"]["generation"]
+    );
+    assert_eq!(captures.get(), captured);
+    assert_eq!(editor.borrow().writes, writes + 1);
+    assert_eq!(
+        call(&["dictation", "copy-last"], 0)["data"]["possible_duplicate"],
+        true
+    );
+    assert_eq!(clipboard.borrow().as_str(), uncertain_text);
     println!(
         "PASS actual CLI and AppKit action handlers: copy, confirmed repaste, stale target, secure/unknown focus, changed caret, and duplicate/uncertain receipts; synthetic boundaries"
     );

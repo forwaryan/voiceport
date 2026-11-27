@@ -2423,7 +2423,7 @@ pub(crate) mod stop_failure_regression {
     }
     fn gui_delivery_without_devices() {
         use crate::delivery::model::{
-            Failure as InputFailure, Snapshot, Target, TextRange, byte_range,
+            Failure as InputFailure, ReplacementFailure, Snapshot, Target, TextRange, byte_range,
         };
         use crate::status_overlay::{CaptureStage, Stage};
         use std::{cell::RefCell, rc::Rc};
@@ -2449,8 +2449,11 @@ pub(crate) mod stop_failure_regression {
                 range: TextRange,
                 text: &str,
                 expected: &Snapshot,
-            ) -> Result<(), InputFailure> {
-                assert_eq!(&self.read()?, expected);
+            ) -> Result<(), ReplacementFailure> {
+                assert_eq!(
+                    &self.read().map_err(ReplacementFailure::BeforeWrite)?,
+                    expected
+                );
                 let mut receiver = self.0.borrow_mut();
                 let bytes = byte_range(&receiver.snapshot.text, range).unwrap();
                 receiver.snapshot.text.replace_range(bytes, text);
@@ -2460,7 +2463,7 @@ pub(crate) mod stop_failure_regression {
                 };
                 receiver.writes += 1;
                 if receiver.write_error {
-                    return Err(InputFailure::Write);
+                    return Err(ReplacementFailure::Uncertain(InputFailure::Write));
                 }
                 Ok(())
             }

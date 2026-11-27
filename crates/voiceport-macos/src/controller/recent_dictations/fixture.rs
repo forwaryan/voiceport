@@ -1,6 +1,8 @@
 //! In-memory completion source and owned selection for the offscreen panel fixture.
 use super::super::*;
-use crate::delivery::model::{Failure as InputFailure, Snapshot, Target, TextRange, byte_range};
+use crate::delivery::model::{
+    Failure as InputFailure, ReplacementFailure, Snapshot, Target, TextRange, byte_range,
+};
 use std::{cell::RefCell, rc::Rc};
 
 pub(crate) struct SyntheticDictations {
@@ -31,8 +33,11 @@ impl Target for SyntheticTarget {
         range: TextRange,
         text: &str,
         expected: &Snapshot,
-    ) -> Result<(), InputFailure> {
-        assert_eq!(&self.read()?, expected);
+    ) -> Result<(), ReplacementFailure> {
+        assert_eq!(
+            &self.read().map_err(ReplacementFailure::BeforeWrite)?,
+            expected
+        );
         let mut target = self.0.borrow_mut();
         let bytes = byte_range(&target.snapshot.text, range).unwrap();
         target.snapshot.text.replace_range(bytes, text);
