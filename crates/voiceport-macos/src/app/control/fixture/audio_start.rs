@@ -896,6 +896,7 @@ pub fn isolated_audio_start_regression(
     // audio only if the replacement checks settle within the recovery deadline.
     enum Reopen {
         Stop,
+        OpenFailed,
         Cancel,
         PermissionRevoked,
         DefaultChanged,
@@ -903,6 +904,7 @@ pub fn isolated_audio_start_regression(
     }
     for case in [
         Reopen::Stop,
+        Reopen::OpenFailed,
         Reopen::Cancel,
         Reopen::PermissionRevoked,
         Reopen::DefaultChanged,
@@ -947,13 +949,13 @@ pub fn isolated_audio_start_regression(
                 Some("麦克风已变化")
             }
             Reopen::TimedOut => {
-                until(|| opening.elapsed() >= crate::audio::WAIT);
+                until(|| opening.elapsed() >= crate::audio::worker::WAIT);
                 Some("等待麦克风恢复超时")
             }
-            Reopen::Stop | Reopen::Cancel => None,
+            Reopen::Stop | Reopen::OpenFailed | Reopen::Cancel => None,
         };
         if !matches!(case, Reopen::DefaultChanged) {
-            resume.send(true).unwrap();
+            resume.send(!matches!(case, Reopen::OpenFailed)).unwrap();
         }
         released(&fixture);
         phase(&fixture, if cancel { Phase::Idle } else { Phase::Failed });
@@ -963,7 +965,7 @@ pub fn isolated_audio_start_regression(
         if let Some(reason) = rejection {
             owner.with_controller(|c| assert!(c.message.contains(reason), "{}", c.message));
         }
-        if matches!(case, Reopen::Stop) {
+        if matches!(case, Reopen::Stop | Reopen::OpenFailed) {
             let result = fixture.call(&["dictation", "result", &operation], 1);
             assert_eq!(result["data"]["fragment_available"], true);
             assert_eq!(result["data"]["retry_available"], false);
