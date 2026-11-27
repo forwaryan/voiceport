@@ -107,6 +107,28 @@ python3 -I scripts/release_macos.py resume dist/release-0.3.3 \
 
 失败时另保存公证回执，以及清楚标注不可分发的原始提交候选。不要直接 Re-run jobs：工作流会拒绝同一 run 的重跑，避免对未知提交重复上传。恢复时将原始候选与 receipts 下载到新的独立目录，先以团队预期 Team ID 核验包；用 `ditto -x -k notarization-upload.zip 恢复目录` 还原 `VoicePort.app`、保留原 prepared/journal/receipts，并运行 `resume`。CI 的临时 Keychain 不可恢复，需要在本机配置自己的公证 profile。没有已确认 UUID 时仍按上文核对 Apple 历史，不自动重交。首次运行还需实际验证 GitHub runner 为 arm64、证书链和公证资格；本地模拟测试不能证明真实 Apple/CI 发布成功。
 
+## 核验最终 ZIP 和附件
+
+发布方把最终 ZIP 和明确要交付的附件放入新目录。下面以签名发布工作流的 ZIP 和现有 `release.json` 为例：
+
+```sh
+python3 -I scripts/macos_artifacts.py manifest /absolute/attachments \
+  --archive VoicePort-macos-arm64.zip --attachment release.json
+```
+
+保存输出的 `manifest_sha256` 到可信的构建回执或独立审核记录。校验方从该记录读取摘要、预期版本、构建号和签名身份，对实际下载或拟发布的目录执行：
+
+```sh
+python3 -I scripts/macos_artifacts.py verify /absolute/attachments \
+  --manifest-sha256 "$EXPECTED_MANIFEST_SHA256" \
+  --version "$EXPECTED_VERSION" --build "$EXPECTED_BUILD" \
+  --signature distribution --team-id "$EXPECTED_TEAM_ID"
+```
+
+逐项核对清单与实际附件名称、大小和 SHA-256，拒绝多余或缺失条目。随后在临时目录检查最终 ZIP 的唯一 App 根、成员路径和类型、包结构、版本和构建号、arm64 GUI/CLI、代码签名及预期身份。两个可执行文件在 ZIP 中记录的 Unix 权限都须为 `0755`。App 树中记录了 Unix 权限的目录须允许所有者列出内容和遍历。解包在写完子项后应用目录权限，再检查包结构和签名。只接受对应到 App 成员的 `ditto` AppleDouble 条目，解包时跳过这些元数据。退出 0 时以 JSON 输出已核对的附件、版本、构建号和签名类型。独立校验阶段不创建签名、不启动或安装 App。公证票据、Gatekeeper、公开发布资产读回和隐私扫描继续按正式流程检查。
+
+开发预览改用 `--signature preview --certificate-sha1 "$EXPECTED_CERTIFICATE_SHA1"`，同时核对 App 和 CLI 的固定签名证书。校验隔离测试包或合成夹具时使用 `--signature test`，核对测试专用 App/CLI 身份与 ad-hoc 签名。
+
 ## 检查与安装更新
 
 从 VoicePort 右键菜单的更新状态项或快捷面板的更新按钮，可以打开工作台的「软件更新」。点击页面中的「检查更新」才会查询发行信息。查询成功后显示当前版本与 GitHub 最新发行版本，并区分发现更新、两者相同、本机版本较新和发行包不可用。查询失败时可在页面查看原因。只有已经核对的发行标签才会作为最新版本显示。
