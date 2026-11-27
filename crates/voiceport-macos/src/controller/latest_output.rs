@@ -82,10 +82,15 @@ impl Controller {
                     "Could not copy the incomplete dictation.",
                 );
             }
-            let possible_duplicate = self
-                .gui_dictation_receipt()
-                .filter(|receipt| receipt.generation == generation)
-                .is_some_and(|receipt| may_have_written(receipt.delivery));
+            let delivery = self
+                .retained_gui_result()
+                .map(|result| result.receipt.delivery)
+                .or_else(|| {
+                    self.gui_dictation_receipt()
+                        .filter(|receipt| receipt.generation == generation)
+                        .map(|receipt| receipt.delivery)
+                });
+            let possible_duplicate = delivery.is_some_and(may_have_written);
             self.latest_feedback(
                 "已复制不完整片段",
                 "不完整片段已复制。原输入框可能已有实时文字，请先检查。",

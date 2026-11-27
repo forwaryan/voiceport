@@ -3186,9 +3186,18 @@ pub(crate) mod stop_failure_regression {
             );
             assert_eq!(receipt.delivery.submitted_operations, 1);
             assert!(receipt.delivery.stopped);
+            c.reject_start("合成启动被拒绝。");
+            assert_eq!(c.state.phase, Phase::Failed);
+            assert_ne!(c.gui_dictation_receipt().unwrap().generation, attempt);
+            assert_eq!(c.retained_gui_result().unwrap().receipt, receipt);
+            let copied = c.copy_latest_with(|text| text == "Synthetic capture result");
+            assert_eq!(copied.data["generation"], attempt);
+            assert_eq!(copied.data["incomplete"], true);
+            assert_eq!(copied.data["possible_duplicate"], true);
             assert_eq!(target.borrow().writes, 1);
             assert_eq!(target.borrow().snapshot.text, "A实时B");
             assert!(!fixture.audio.exists() && !fixture.lease_active());
+            println!("gui-delivery: copy after rejected start retains the preview receipt");
             println!(
                 "gui-delivery: interrupted final retains one preview write with no restoration or replay"
             );
