@@ -49,7 +49,7 @@ sources list/show/destination/add/update/remove/select/secret/test
 sources probe ID|--all [--language CODE|auto] [--accept-upload]
 sources probe-result/probe-cancel OPERATION
 plugins list/show/import
-dictation start/stop/retry/cancel/result/gui-result
+dictation start/stop/retry/cancel/result/gui-result/copy-last/paste-last
 preferences get/set
 microphone list/status/select/test-start/test-stop/open
 models recommend [--language CODE|auto] [--preview any|live|after-stop]
@@ -267,6 +267,8 @@ fn option_takes_value(option: &str) -> bool {
         "--socket"
             | "--expect-bundle"
             | "--expect-pid"
+            | "--target-pid"
+            | "--target-bundle"
             | "--qq"
             | "--plugin"
             | "--name"
@@ -333,7 +335,16 @@ fn contextual_help(args: &[String]) -> Option<String> {
         ),
         "dictation" => (
             "dictation",
-            &["start", "stop", "retry", "cancel", "result", "gui-result"],
+            &[
+                "start",
+                "stop",
+                "retry",
+                "cancel",
+                "result",
+                "gui-result",
+                "copy-last",
+                "paste-last",
+            ],
             "Dictation and test operations",
         ),
         "preferences" => ("preferences", &["get", "set"], "Preferences"),

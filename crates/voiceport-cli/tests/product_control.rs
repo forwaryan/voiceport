@@ -19,6 +19,8 @@ fn offline_help_and_invalid_arguments_never_connect() {
             ("dictionary", "dictionary set"),
             ("scenes", "scenes apply"),
             ("history", "history list [--query TEXT]"),
+            ("history", "history clear"),
+            ("dictation", "dictation paste-last"),
             ("file", "file export"),
         ] {
             let output = Command::new(bin)
@@ -81,6 +83,16 @@ fn offline_help_and_invalid_arguments_never_connect() {
             vec!["history", "list", "--query"],
             vec!["history", "list", "--delivery", "submitted"],
             vec!["history", "list", "--query", "one", "--query", "two"],
+            vec!["dictation", "copy-last", "--confirm"],
+            vec!["dictation", "paste-last"],
+            vec![
+                "dictation",
+                "paste-last",
+                "--target-pid",
+                "0",
+                "--target-bundle",
+                "synthetic.editor",
+            ],
             vec!["microphone", "select", "--device", ""],
             vec!["models", "recommend", "--language", "unknown"],
             vec!["models", "recommend", "--preview", "fastest"],
@@ -257,6 +269,23 @@ fn real_binaries_and_transport_carry_product_requests_and_mock_receipts() {
             "models",
             json!({"action":"cancel","operation":"fixture-op"}),
         ),
+        Example {
+            args: &["dictation", "copy-last"],
+            wire: json!({"command":"copy_last_dictation"}),
+            stdin: None,
+        },
+        Example {
+            args: &[
+                "dictation",
+                "paste-last",
+                "--target-bundle",
+                "synthetic.editor",
+                "--target-pid",
+                "123",
+            ],
+            wire: json!({"command":"paste_last_dictation", "target_pid":123, "target_bundle":"synthetic.editor"}),
+            stdin: None,
+        },
         Example {
             args: &["dictation", "gui-result", "8", "--original"],
             wire: json!({"command":"gui_result", "generation":8, "original":true}),

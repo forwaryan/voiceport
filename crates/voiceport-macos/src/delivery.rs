@@ -109,6 +109,13 @@ impl Delivery {
         self.begin_with_capture(|| native::capture(target, shortcut, original_application))
     }
 
+    pub(crate) fn begin_repaste(
+        &mut self,
+        target: &model::ApplicationTarget,
+    ) -> Result<(), String> {
+        self.begin_with_capture(|| native::capture_repaste(target))
+    }
+
     /// Bind an owned fixture directly to the ordinary delivery path. The
     /// caller supplies the whole target boundary, so native capture is skipped.
     pub(crate) fn begin_fixture(&mut self, target: Box<dyn Target>) -> Result<(), String> {
@@ -789,7 +796,7 @@ mod preparation_tests {
             _: model::TextRange,
             _: &str,
             _: &model::Snapshot,
-        ) -> Result<(), Failure> {
+        ) -> Result<(), model::ReplacementFailure> {
             panic!("preparation must not write text")
         }
     }
@@ -881,7 +888,7 @@ mod preparation_tests {
                 _: model::TextRange,
                 text: &str,
                 _: &model::Snapshot,
-            ) -> Result<(), Failure> {
+            ) -> Result<(), model::ReplacementFailure> {
                 self.0.borrow_mut().push(text.to_owned());
                 Ok(())
             }

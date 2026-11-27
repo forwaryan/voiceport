@@ -81,9 +81,13 @@ impl Target for Receiver {
         range: TextRange,
         text: &str,
         expected: &Snapshot,
-    ) -> Result<(), Failure> {
-        if self.read()? != *expected {
-            return Err(Failure::Ownership);
+    ) -> Result<(), model::ReplacementFailure> {
+        if self
+            .read()
+            .map_err(model::ReplacementFailure::BeforeWrite)?
+            != *expected
+        {
+            return Err(model::ReplacementFailure::BeforeWrite(Failure::Ownership));
         }
         self.0.borrow_mut().replace(range, text);
         Ok(())
