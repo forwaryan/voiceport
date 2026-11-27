@@ -331,6 +331,42 @@ pub fn isolated_control_regression(mtm: MainThreadMarker, cli: &Path) {
     assert_eq!(history["data"]["entries"].as_array().unwrap().len(), 5);
     assert!(!history.to_string().contains(HISTORY_TEXT));
     let id = history["data"]["entries"][0]["id"].as_str().unwrap();
+    let filtered = call(
+        &[
+            "history",
+            "list",
+            "--delivery",
+            "confirmed",
+            "--limit",
+            "1",
+            "--query",
+            "  gUi SELECTION 聽寫  ",
+        ],
+        0,
+    );
+    assert_eq!(
+        filtered["data"],
+        json!({"enabled":true,"entries":[history["data"]["entries"][0].clone()]})
+    );
+    assert!(!filtered.to_string().contains(HISTORY_TEXT));
+    for words in [
+        ["history", "list", "--delivery", "failed"],
+        ["history", "list", "--delivery", "not-sent"],
+        ["history", "list", "--query", "xxxx"],
+    ] {
+        assert_eq!(
+            call(&words, 0)["data"],
+            json!({"enabled":true,"entries":[]})
+        );
+    }
+    let older = call(
+        &["history", "list", "--limit", "1", "--query", "bounded"],
+        0,
+    );
+    assert_eq!(
+        older["data"]["entries"],
+        json!([history["data"]["entries"][2].clone()])
+    );
     assert_eq!(
         call(&["history", "show", id], 0)["data"]["text"],
         HISTORY_TEXT

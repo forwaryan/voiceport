@@ -24,6 +24,10 @@ fn click(button: &NSButton) {
     unsafe { button.performClick(None) };
 }
 
+fn apply_filter(control: &NSControl) {
+    assert!(unsafe { control.sendAction_to(control.action(), control.target().as_deref()) });
+}
+
 fn check_quick_panel_hide(mtm: MainThreadMarker) {
     let owner = Delegate::new(mtm);
     let mut source = SyntheticDictations::new();
@@ -206,6 +210,59 @@ pub(in crate::app) fn run(mtm: MainThreadMarker) {
     assert_eq!(clipboard, ["第一条🙂"]);
     assert_eq!(target.borrow().writes, 1);
     assert_eq!(controls.feedback.stringValue().to_string(), "已复制");
+    assert_eq!(
+        unsafe { controls.text.nextKeyView() }.as_deref(),
+        Some(&***controls.copy)
+    );
+
+    with_controller(&owner, &mut source, || {
+        controls.search.setStringValue(ns_string!("没有这段文字"));
+        apply_filter(&controls.search);
+        assert_eq!(
+            controls.empty.stringValue().to_string(),
+            "没有符合筛选条件的听写"
+        );
+        assert!(!controls.empty.isHidden() && controls.clear.isEnabled());
+        assert!(controls.rows[0].isHidden() && controls.copy.isHidden());
+        assert!(controls.text.string().is_empty());
+
+        let cell = controls
+            .search
+            .cell()
+            .unwrap()
+            .downcast::<NSSearchFieldCell>()
+            .unwrap();
+        let cancel = cell.cancelButtonCell().unwrap();
+        unsafe { cancel.performClick(Some(&controls.search)) };
+        assert!(controls.search.stringValue().is_empty());
+        assert_eq!(page.ivars().entries.borrow()[0].id, first_id);
+        assert!(!controls.rows[0].title().to_string().contains("第一条"));
+        assert!(controls.detail.isHidden() && controls.copy.isHidden());
+
+        controls.delivery.selectItemAtIndex(4);
+        apply_filter(&controls.delivery);
+        assert!(controls.rows[0].isHidden());
+        controls.delivery.selectItemAtIndex(1);
+        controls.search.setStringValue(ns_string!("  第一条🙂  "));
+        apply_filter(&controls.search);
+        assert_eq!(page.ivars().entries.borrow()[0].id, first_id);
+        assert!(controls.detail.isHidden());
+        click(&controls.rows[0]);
+        assert_eq!(controls.text.string().to_string(), "第一条🙂");
+        assert!(!controls.copy.isHidden() && controls.copy.isEnabled());
+        if NSApplication::sharedApplication(mtm).isFullKeyboardAccessEnabled() {
+            assert_eq!(
+                unsafe { controls.text.nextValidKeyView() }.as_deref(),
+                Some(&***controls.copy)
+            );
+        }
+        unsafe { cancel.performClick(Some(&controls.search)) };
+        controls.delivery.selectItemAtIndex(0);
+        apply_filter(&controls.delivery);
+    });
+    println!(
+        "workbench recent dictations: search and status filters, native cancellation, explicit selection and copy reachability"
+    );
 
     for (count, text) in ["第二条", "第三条", "第四条", "第五条"]
         .into_iter()
@@ -243,16 +300,38 @@ pub(in crate::app) fn run(mtm: MainThreadMarker) {
     with_controller(&owner, &mut source, || click(&controls.rows[0]));
     assert!(controls.text.string().to_string().contains("超过保留上限"));
     assert!(controls.copy.isHidden());
-    page.setHidden(true);
+    with_controller(&owner, &mut source, || {
+        controls.delivery.selectItemAtIndex(4);
+        apply_filter(&controls.delivery);
+        controls.search.setStringValue(ns_string!("第二条"));
+        apply_filter(&controls.search);
+        click(&controls.rows[0]);
+        assert_eq!(controls.text.string().to_string(), "第二条");
+        page.setHidden(true);
+    });
     assert!(controls.text.string().is_empty() && controls.detail.isHidden());
+    assert!(controls.search.stringValue().is_empty());
+    assert_eq!(controls.delivery.indexOfSelectedItem(), 0);
     with_controller(&owner, &mut source, || page.setHidden(false));
     assert!(!controls.rows[0].isHidden() && controls.detail.isHidden());
 
     let (in_flight, _) = source.begin(true, false);
     assert!(window.makeFirstResponder(Some(&controls.clear)));
-    with_controller(&owner, &mut source, || click(&controls.clear));
+    with_controller(&owner, &mut source, || {
+        controls.search.setStringValue(ns_string!("无匹配"));
+        apply_filter(&controls.search);
+        controls.delivery.selectItemAtIndex(2);
+        apply_filter(&controls.delivery);
+        click(&controls.clear);
+    });
     assert!(page.has_focus(&controls.keep));
-    assert!(!controls.clear.isEnabled());
+    assert!(
+        !controls.clear.isEnabled()
+            && !controls.search.isEnabled()
+            && !controls.delivery.isEnabled()
+    );
+    assert!(controls.search.stringValue().is_empty());
+    assert_eq!(controls.delivery.indexOfSelectedItem(), 0);
     assert_eq!(
         controls.empty.stringValue().to_string(),
         "本次运行暂无听写记录"
@@ -288,10 +367,45 @@ pub(in crate::app) fn run(mtm: MainThreadMarker) {
     assert!(page.ivars().entries.borrow().is_empty());
     println!("workbench recent dictations: late confirmation did not restore cleared history");
 
+    let (failed, target) = source.begin(true, true);
+    target.borrow_mut().snapshot.selection = crate::delivery::model::TextRange {
+        location: 2,
+        length: 0,
+    };
+    source.finish(failed, "写入前失败");
+    assert_eq!(target.borrow().writes, 0);
+    let (unknown, target) = source.begin(true, true);
+    target.borrow_mut().confirm = false;
+    source.finish(unknown, "等待中的写入");
+    page.refresh(&source.controller);
+    with_controller(&owner, &mut source, || {
+        controls.delivery.selectItemAtIndex(5);
+        apply_filter(&controls.delivery);
+        assert!(controls.rows[0].title().to_string().contains("等待确认"));
+        click(&controls.rows[0]);
+        assert_eq!(controls.text.string().to_string(), "等待中的写入");
+    });
+    target.borrow_mut().failure = Some(crate::delivery::model::Failure::FocusElementChanged);
+    target.borrow_mut().confirm = true;
+    source.poll();
+    page.refresh(&source.controller);
+    assert_eq!(target.borrow().writes, 1);
+    assert!(controls.rows[0].isHidden() && controls.detail.isHidden() && controls.copy.isHidden());
+    with_controller(&owner, &mut source, || {
+        for (filter, label) in [(2, "明确失败"), (3, "结果不明")] {
+            controls.delivery.selectItemAtIndex(filter);
+            apply_filter(&controls.delivery);
+            assert!(controls.rows[0].title().to_string().contains(label));
+            assert!(!controls.rows[0].isHidden() && controls.rows[1].isHidden());
+        }
+    });
+
     let (generation, _) = source.begin(true, false);
     source.finish(generation, "关闭前完成");
     page.refresh(&source.controller);
     with_controller(&owner, &mut source, || {
+        controls.delivery.selectItemAtIndex(4);
+        apply_filter(&controls.delivery);
         click(&controls.rows[0]);
         assert_eq!(controls.text.string().to_string(), "关闭前完成");
         click(&controls.keep);

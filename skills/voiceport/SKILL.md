@@ -60,7 +60,7 @@ For a failed retained recording, inspect result data for `state:"failed"`, curre
 
 ## Step 5: Handle existing audio or results
 
-For a selected local audio file, use `file sources` and `file plan` to identify the actual source and destination. Submit `file start OPERATION --confirm` only for the reviewed file, language and destination. If the reply is lost, `file status` accepts the known proposal ID. Retrieve text or export it only when requested. Use `history list` for metadata and `history show ID` only when the user asks to read the retained text. Clearing history and disabling collection both require explicit confirmation.
+For a selected local audio file, use `file sources` and `file plan` to identify the actual source and destination. Submit `file start OPERATION --confirm` only for the reviewed file, language and destination. If the reply is lost, `file status` accepts the known proposal ID. Retrieve text or export it only when requested. Use `history list` with `--query TEXT` and `--delivery STATE` as needed to find metadata. Use `history show ID` only when the user asks to read the selected retained text. Clearing history and disabling collection both require explicit confirmation.
 
 For native permissions or a physical shortcut, open `app open first-run` or `app open shortcut` and let the user complete the indicated `next` action. Model changes use a proposal and `models start OPERATION --confirm`; follow with `models status` and verify the installation through `models details`. `models open` presents the native manager. A local microphone level test requires an existing grant and explicit acceptance with `microphone test-start --confirm`.
 

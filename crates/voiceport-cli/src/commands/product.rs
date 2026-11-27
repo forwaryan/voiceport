@@ -4,8 +4,9 @@ use std::{
     path::PathBuf,
 };
 use voiceport_control::{
-    Action, DictionaryRequest, FileFormat, FileRequest, HistoryRequest, MicrophoneRequest,
-    ModelMutation, ModelsRequest, Page, PreferencesRequest, Response, ScenesRequest,
+    Action, DictionaryRequest, FileFormat, FileRequest, HistoryDelivery, HistoryRequest,
+    MicrophoneRequest, ModelMutation, ModelsRequest, Page, PreferencesRequest, Response,
+    ScenesRequest,
 };
 
 pub(super) const GROUPS: &[&str] = &[
@@ -271,14 +272,39 @@ fn scenes(words: &[&str]) -> Result<ScenesRequest, Response> {
 fn history(words: &[&str]) -> Result<HistoryRequest, Response> {
     use HistoryRequest::*;
     Ok(match words {
-        ["list"] => List { limit: 20 },
-        ["list", "--limit", limit] => List {
-            limit: limit
-                .parse()
-                .ok()
-                .filter(|n| (1..=100).contains(n))
-                .ok_or_else(invalid)?,
-        },
+        ["list", filters @ ..] => {
+            let (mut limit, mut query, mut delivery) = (None, None, None);
+            for pair in filters.chunks(2) {
+                match pair {
+                    ["--limit", value] if limit.is_none() => {
+                        limit = Some(
+                            value
+                                .parse()
+                                .ok()
+                                .filter(|n| (1..=100).contains(n))
+                                .ok_or_else(invalid)?,
+                        );
+                    }
+                    ["--query", value] if query.is_none() => query = Some((*value).into()),
+                    ["--delivery", value] if delivery.is_none() => {
+                        delivery = Some(match *value {
+                            "confirmed" => HistoryDelivery::Confirmed,
+                            "failed" => HistoryDelivery::Failed,
+                            "uncertain" => HistoryDelivery::Uncertain,
+                            "not-sent" => HistoryDelivery::NotSent,
+                            "pending" => HistoryDelivery::Pending,
+                            _ => return Err(invalid()),
+                        });
+                    }
+                    _ => return Err(invalid()),
+                }
+            }
+            List {
+                limit: limit.unwrap_or(20),
+                query,
+                delivery,
+            }
+        }
         ["show", id] if positional(id) => Show { id: (*id).into() },
         ["clear"] => Clear { confirm: false },
         ["clear", "--confirm"] => Clear { confirm: true },

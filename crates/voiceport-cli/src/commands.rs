@@ -277,6 +277,8 @@ fn option_takes_value(option: &str) -> bool {
             | "--dictionary"
             | "--device"
             | "--limit"
+            | "--query"
+            | "--delivery"
             | "--output"
             | "--format"
     )

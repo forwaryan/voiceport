@@ -94,11 +94,25 @@ pub enum ScenesRequest {
     },
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HistoryDelivery {
+    Confirmed,
+    Failed,
+    Uncertain,
+    NotSent,
+    Pending,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HistoryRequest {
     List {
         limit: u16,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delivery: Option<HistoryDelivery>,
     },
     Show {
         id: String,

@@ -3,7 +3,7 @@
 use super::{BlockReason, Controller, TranscriptionState, VisibleTranscript};
 use serde::Serialize;
 use std::{collections::VecDeque, time::SystemTime};
-use voiceport_control::DeliveryReceipt;
+use voiceport_control::{DeliveryReceipt, DeliveryState, HistoryDelivery};
 
 #[cfg(debug_assertions)]
 #[path = "recent_dictations/fixture.rs"]
@@ -22,6 +22,39 @@ pub(crate) struct RecentDictationMetadata {
     pub delivery: DeliveryReceipt,
     pub method: Option<String>,
     pub failure_stage: Option<String>,
+}
+
+impl RecentDictationMetadata {
+    /// An explicit failure requires evidence that the target write never started.
+    pub(crate) fn delivery_filter(&self) -> HistoryDelivery {
+        let receipt = self.delivery;
+        let failed = self.failure_stage.is_some();
+        match receipt.state {
+            DeliveryState::Confirmed
+                if !receipt.stopped
+                    && !failed
+                    && receipt.submitted_operations > 0
+                    && receipt.confirmed_operations == receipt.submitted_operations =>
+            {
+                HistoryDelivery::Confirmed
+            }
+            DeliveryState::Waiting | DeliveryState::AwaitingConfirmation
+                if !receipt.stopped && !failed =>
+            {
+                HistoryDelivery::Pending
+            }
+            DeliveryState::NotSent | DeliveryState::Waiting
+                if receipt.submitted_operations == 0 && receipt.confirmed_operations == 0 =>
+            {
+                if failed {
+                    HistoryDelivery::Failed
+                } else {
+                    HistoryDelivery::NotSent
+                }
+            }
+            _ => HistoryDelivery::Uncertain,
+        }
+    }
 }
 
 struct Entry {
@@ -104,9 +137,33 @@ impl Controller {
     }
 
     pub(crate) fn list_recent_dictations(&self, limit: usize) -> Vec<RecentDictationMetadata> {
+        self.search_recent_dictations(limit, "", None)
+    }
+
+    pub(crate) fn has_recent_dictations(&self) -> bool {
+        !self.recent_dictations.entries.is_empty()
+    }
+
+    pub(crate) fn search_recent_dictations(
+        &self,
+        limit: usize,
+        query: &str,
+        delivery: Option<HistoryDelivery>,
+    ) -> Vec<RecentDictationMetadata> {
+        let query = query.trim().to_lowercase();
         self.recent_dictations
             .entries
             .iter()
+            .filter(|entry| {
+                delivery.is_none_or(|filter| entry.metadata.delivery_filter() == filter)
+            })
+            .filter(|entry| {
+                query.is_empty()
+                    || entry
+                        .text
+                        .as_ref()
+                        .is_some_and(|text| text.to_lowercase().contains(&query))
+            })
             .take(limit)
             .map(|entry| entry.metadata.clone())
             .collect()
