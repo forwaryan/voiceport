@@ -52,6 +52,7 @@ plugins list/show/import
 dictation start/stop/retry/cancel/result/gui-result/copy-last/paste-last
 preferences get/set
 microphone list/status/select/test-start/test-stop/open
+models recommend [--language CODE|auto] [--preview any|live|after-stop]
 models list/details/refresh/open/download/update/import/remove/install-engine/start/status/cancel
 dictionary show/set/preview | scenes list/add/remove/apply
 history list/show/clear/settings
@@ -276,6 +277,7 @@ fn option_takes_value(option: &str) -> bool {
             | "--secret-stdin"
             | "--source"
             | "--language"
+            | "--preview"
             | "--dictionary"
             | "--device"
             | "--limit"
@@ -359,6 +361,7 @@ fn contextual_help(args: &[String]) -> Option<String> {
             "models",
             &[
                 "list",
+                "recommend",
                 "details",
                 "refresh",
                 "open",
