@@ -7,6 +7,10 @@ fn main() {
     let mtm = objc2::MainThreadMarker::new().unwrap();
     match args.next().as_deref() {
         None => voiceport_macos::isolated_control_regression(mtm, &cli),
+        Some(mode) if mode == "--dictionary" => {
+            assert!(args.next().is_none());
+            voiceport_macos::isolated_dictionary_exchange_regression(mtm, &cli);
+        }
         Some(mode) if mode == "--audio-start" => {
             assert!(args.next().is_none());
             voiceport_macos::isolated_audio_start_regression(mtm, &cli, None);

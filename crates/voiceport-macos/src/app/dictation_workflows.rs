@@ -1,10 +1,13 @@
 //! Explicit GUI entry points for dictation output and manual presets.
 use super::*;
 use crate::{
-    dictation_dictionary::{format_rules, parse_rules},
     dictation_output::OutputRules,
     dictation_workflows::{Preset, Workflows},
+    dictionary_exchange as exchange,
 };
+use objc2_foundation::NSArray;
+use std::path::PathBuf;
+use voiceport_control::DictionaryImportMode;
 use voiceport_core::language;
 
 const APPLY: &str = "应用场景";
@@ -15,17 +18,6 @@ pub(super) fn load(controller: &mut Controller, defaults: &NSUserDefaults) {
         Ok(preferences) => controller.workflows = preferences,
         Err(error) => controller.message = error,
     }
-}
-
-fn persist(preferences: &Workflows) -> Result<(), String> {
-    let encoded = serde_json::to_string(preferences).map_err(|_| "无法保存听写设置。")?;
-    unsafe {
-        NSUserDefaults::standardUserDefaults().setObject_forKey(
-            Some(&NSString::from_str(&encoded)),
-            ns_string!("dictationWorkflowsV1"),
-        );
-    }
-    Ok(())
 }
 
 impl Delegate {
@@ -92,14 +84,14 @@ impl Delegate {
         let view = self.workflow_view(324.);
         let enable = self.workflow_checkbox(
             &view,
-            "对最终听写启用个人词典",
+            "启用转写后替换",
             preferences.dictionary_enabled,
             298.,
         );
         self.label(&view, "纠错与常用短语", rect(0., 273., 410., 22.), 13.);
         let rules = self.workflow_text(
             &view,
-            &format_rules(&preferences.rules),
+            &exchange::format_editor(&preferences.rules),
             "词典规则",
             137.,
             130.,
@@ -121,19 +113,26 @@ impl Delegate {
         let sample = self.workflow_text(&view, "", "输出预览输入", 0., 52., true);
         let alert = self.workflow_alert(
             "个人词典与输出",
-            "词典每行一条规则，用 → 分隔。例如 北经 → 北京。可在本机预览现有编辑，不会投递或保存样例。",
-            &["保存", "预览", "取消"],
+            "规则在本机替换最终转写文字，识别模型不会收到词典。每行用 → 分隔，例如 北经 → 北京。词典也支持 UTF-8 CSV。可在本机预览草稿。",
+            &["保存", "预览", "交换文件…", "取消"],
         );
         alert.setAccessoryView(Some(&view));
         loop {
             let response = alert.runModal();
-            if self.ivars().quitting.get() || response == NSAlertThirdButtonReturn {
+            if self.ivars().quitting.get() {
                 return Ok(());
+            }
+            if response == NSAlertThirdButtonReturn {
+                if let Err(error) = self.exchange_dictionary(&rules) {
+                    self.workflow_alert("无法交换词典", &error, &["返回编辑"])
+                        .runModal();
+                }
+                continue;
             }
             if response != NSAlertFirstButtonReturn && response != NSAlertSecondButtonReturn {
                 return Ok(());
             }
-            let candidate = match parse_rules(&rules.string().to_string()) {
+            let candidate = match exchange::parse_editor(&rules.string().to_string()) {
                 Ok(candidate) => candidate,
                 Err(message) => {
                     self.workflow_alert("检查词典规则", &message, &["返回编辑"])
@@ -174,6 +173,100 @@ impl Delegate {
             self.with_controller(|c| c.message = "已保存个人词典与输出规则。".into());
             return Ok(());
         }
+    }
+
+    fn exchange_dictionary(&self, editor: &NSTextView) -> Result<(), String> {
+        let action = self.workflow_alert(
+            "交换个人词典",
+            "导入到当前草稿，或将已保存规则导出为 UTF-8 CSV。",
+            &["导入…", "导出已保存规则…", "取消"],
+        );
+        match action.runModal() {
+            response if response == NSAlertFirstButtonReturn => self.import_dictionary(editor),
+            response if response == NSAlertSecondButtonReturn => {
+                let panel = NSSavePanel::savePanel(self.mtm());
+                panel.setNameFieldStringValue(ns_string!("VoicePort-词典.csv"));
+                panel.setMessage(Some(ns_string!("请使用新的 .csv 文件名。")));
+                if panel.runModal() == NSModalResponseOK && !self.ivars().quitting.get() {
+                    let path = panel
+                        .URL()
+                        .and_then(|url| url.path())
+                        .ok_or("无法读取导出路径。")?;
+                    let saved = self
+                        .ivars()
+                        .controller
+                        .borrow()
+                        .as_ref()
+                        .unwrap()
+                        .workflows
+                        .rules
+                        .clone();
+                    exchange::write(&PathBuf::from(path.to_string()), &saved)?;
+                    self.workflow_alert(
+                        "已导出个人词典",
+                        &format!("已导出 {} 条规则。", saved.len()),
+                        &["好"],
+                    )
+                    .runModal();
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn import_dictionary(&self, editor: &NSTextView) -> Result<(), String> {
+        let panel = NSOpenPanel::openPanel(self.mtm());
+        panel.setCanChooseFiles(true);
+        panel.setCanChooseDirectories(false);
+        panel.setAllowsMultipleSelection(false);
+        panel.setResolvesAliases(false);
+        panel.setTreatsFilePackagesAsDirectories(false);
+        panel.setMessage(Some(ns_string!("请选择 UTF-8 CSV 或 TXT，最多 1 MiB。")));
+        #[allow(deprecated)]
+        panel.setAllowedFileTypes(Some(&NSArray::from_slice(&[
+            ns_string!("csv"),
+            ns_string!("txt"),
+        ])));
+        if panel.runModal() != NSModalResponseOK || self.ivars().quitting.get() {
+            return Ok(());
+        }
+        let path = panel
+            .URL()
+            .and_then(|url| url.path())
+            .ok_or("无法读取导入路径。")?;
+        let incoming = exchange::read(&PathBuf::from(path.to_string()))?;
+        let choice = self.workflow_alert(
+            "选择导入方式",
+            "合并时保留草稿中同名原词的现有规则。替换会从草稿移除文件中没有的规则。",
+            &["合并", "替换全部", "取消"],
+        );
+        let mode = match choice.runModal() {
+            response if response == NSAlertFirstButtonReturn => DictionaryImportMode::Merge,
+            response if response == NSAlertSecondButtonReturn => DictionaryImportMode::Replace,
+            _ => return Ok(()),
+        };
+        let current = match mode {
+            DictionaryImportMode::Merge => exchange::parse_editor(&editor.string().to_string())?,
+            DictionaryImportMode::Replace => Vec::new(),
+        };
+        let plan = exchange::ImportPlan::new(&current, incoming, mode)?;
+        let review = self.workflow_alert(
+            "预览导入规则",
+            &format!(
+                "文件有 {} 条规则，保留 {} 条重复原词的现有规则，草稿将有 {} 条规则。回到编辑页后点「保存」生效。",
+                plan.imported, plan.skipped_duplicates, plan.rules.len()
+            ),
+            &["应用到草稿", "取消"],
+        );
+        let view = self.workflow_view(180.);
+        let proposed = exchange::format_editor(&plan.rules);
+        self.workflow_text(&view, &proposed, "拟导入的完整词典", 0., 180., false);
+        review.setAccessoryView(Some(&view));
+        if review.runModal() == NSAlertFirstButtonReturn && !self.ivars().quitting.get() {
+            editor.setString(&NSString::from_str(&proposed));
+        }
+        Ok(())
     }
 
     fn edit_presets(&self) -> Result<(), String> {
@@ -411,7 +504,22 @@ impl Delegate {
         c: &mut Controller,
         preferences: Workflows,
     ) -> Result<(), String> {
-        persist(&preferences)?;
+        let encoded = serde_json::to_string(&preferences).map_err(|_| "无法保存听写设置。")?;
+        #[cfg(not(debug_assertions))]
+        let defaults = NSUserDefaults::standardUserDefaults();
+        #[cfg(debug_assertions)]
+        let defaults = self
+            .ivars()
+            .dictionary_fixture_defaults
+            .get()
+            .cloned()
+            .unwrap_or_else(NSUserDefaults::standardUserDefaults);
+        unsafe {
+            defaults.setObject_forKey(
+                Some(&NSString::from_str(&encoded)),
+                ns_string!("dictationWorkflowsV1"),
+            );
+        }
         c.workflows = preferences;
         Ok(())
     }

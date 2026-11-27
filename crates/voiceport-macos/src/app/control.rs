@@ -16,12 +16,14 @@ use voiceport_control::{
     transport::{Pending, Server},
 };
 
+mod dictionary;
 mod files;
 #[cfg(debug_assertions)]
 mod fixture;
 #[cfg(debug_assertions)]
 pub use fixture::{
-    isolated_audio_start_regression, isolated_control_regression, isolated_performance_baseline,
+    isolated_audio_start_regression, isolated_control_regression,
+    isolated_dictionary_exchange_regression, isolated_performance_baseline,
 };
 mod history;
 mod models;
@@ -35,6 +37,7 @@ pub(super) struct Control {
     microphone_inventory: Option<product::MicrophoneInventory>,
     models: models::ModelControl,
     files: files::FileControl,
+    dictionary_import: Option<dictionary::ProposedImport>,
     background: Option<Receiver<Completed>>,
     operation: Option<Operation>,
     probe: Option<super::control_probes::ProbeOperation>,
@@ -522,10 +525,11 @@ impl Delegate {
             Action::Dictionary {
                 request:
                     request @ (DictionaryRequest::Show
+                    | DictionaryRequest::ShowPage { .. }
                     | DictionaryRequest::Preview { .. }
                     | DictionaryRequest::OutputShow
                     | DictionaryRequest::OutputPreview { .. }),
-            } => self.control_dictionary(c, request),
+            } => self.control_dictionary(control, c, request),
             Action::Scenes {
                 request: request @ ScenesRequest::List,
             } => self.control_scenes(c, request),
@@ -577,7 +581,7 @@ impl Delegate {
                 c.refresh_catalog();
                 product::models(c)
             }
-            Action::Dictionary { request } => self.control_dictionary(c, request),
+            Action::Dictionary { request } => self.control_dictionary(control, c, request),
             Action::Scenes {
                 request: ScenesRequest::Apply { name },
             } => {

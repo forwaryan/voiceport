@@ -1,8 +1,10 @@
 //! Real CLI and production socket/Delegate routing in a fixture-owned AppKit process.
 mod audio_start;
+mod dictionary;
 mod latest_output;
 mod update;
 pub use audio_start::{isolated_audio_start_regression, isolated_performance_baseline};
+pub use dictionary::isolated_dictionary_exchange_regression;
 
 use super::*;
 use crate::{
@@ -68,6 +70,19 @@ impl Fixture<'_> {
 
     fn call(&self, words: &[&str], expected: i32) -> Value {
         let mut child = self.spawn(words);
+        // A bounded control response can still exceed a child pipe's capacity.
+        let mut stdout = child.stdout.take().unwrap();
+        let mut stderr = child.stderr.take().unwrap();
+        let stdout_reader = thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stdout.read_to_end(&mut bytes).unwrap();
+            bytes
+        });
+        let stderr_reader = thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stderr.read_to_end(&mut bytes).unwrap();
+            bytes
+        });
         let deadline = Instant::now() + LIMIT;
         while child.try_wait().unwrap().is_none() {
             if self.owner.ivars().timer.get().is_some() {
@@ -83,15 +98,17 @@ impl Fixture<'_> {
             }
             thread::sleep(Duration::from_millis(2));
         }
-        let output = child.wait_with_output().unwrap();
+        let status = child.wait().unwrap();
+        let stdout = stdout_reader.join().unwrap();
+        let stderr = stderr_reader.join().unwrap();
         assert_eq!(
-            output.status.code(),
+            status.code(),
             Some(expected),
             "{words:?}: {}",
-            String::from_utf8_lossy(&output.stdout)
+            String::from_utf8_lossy(&stdout)
         );
-        assert!(output.stderr.is_empty(), "{words:?}: {:?}", output.stderr);
-        serde_json::from_slice(&output.stdout).unwrap()
+        assert!(stderr.is_empty(), "{words:?}: {stderr:?}");
+        serde_json::from_slice(&stdout).unwrap()
     }
 
     fn finish_gui(&self, rig: &mut SyntheticDictations, text: &str) -> usize {
