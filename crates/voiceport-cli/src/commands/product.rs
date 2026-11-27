@@ -4,9 +4,9 @@ use std::{
     path::PathBuf,
 };
 use voiceport_control::{
-    Action, AppRulesRequest, DictionaryRequest, FileFormat, FileRequest, HistoryRequest, MicrophoneRequest,
-    ModelMutation, ModelPreview, ModelsRequest, OutputRule, Page, PreferencesRequest, Response,
-    ScenesRequest,
+    Action, AppRulesRequest, DictionaryRequest, FileFormat, FileRequest, HistoryRequest,
+    MicrophoneRequest, ModelMutation, ModelPreview, ModelsRequest, OutputRule, Page,
+    PreferencesRequest, Response, ScenesRequest,
 };
 
 pub(super) const GROUPS: &[&str] = &[

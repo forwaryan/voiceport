@@ -10,9 +10,9 @@ pub use dictation::{
 };
 mod product;
 pub use product::{
-    AppRulesRequest, DictionaryRequest, FileFormat, FileRequest, HistoryRequest, MicrophoneRequest, ModelMutation,
-    ModelPreview, ModelsRequest, OutputRule, Page, PreferencesRequest, RecordingMode,
-    ScenesRequest,
+    AppRulesRequest, DictionaryRequest, FileFormat, FileRequest, HistoryRequest, MicrophoneRequest,
+    ModelMutation, ModelPreview, ModelsRequest, OutputRule, Page, PreferencesRequest,
+    RecordingMode, ScenesRequest,
 };
 pub mod readiness;
 

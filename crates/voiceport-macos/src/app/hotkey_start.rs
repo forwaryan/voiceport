@@ -207,7 +207,17 @@ impl Delegate {
                 trace["outcome"] = "panel_only".into();
             }
             self.with_controller(|c| {
-                self.start_from_press(c, event.stroke, held_mode, Controller::start)
+                let target = event.target.as_ref().filter(|_| {
+                    c.workflows.app_rules.enabled
+                        && event.at.elapsed() < input_target::START_DEADLINE
+                        && event
+                            .application
+                            .as_ref()
+                            .is_some_and(|app| !app.isTerminated())
+                });
+                self.start_from_press(c, event.stroke, held_mode, |c| {
+                    c.start_from_shortcut(target)
+                })
             });
             return;
         }
@@ -318,7 +328,7 @@ impl Delegate {
                 if let Some(target) = event.target {
                     self.with_controller(|c| {
                         self.start_from_press(c, event.stroke, held_mode, |c| {
-                            c.start_in_application(&target)
+                            c.start_from_shortcut(Some(&target))
                         });
                     });
                 }

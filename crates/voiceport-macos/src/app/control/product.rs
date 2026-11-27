@@ -15,8 +15,8 @@ use crate::{
 use objc2::DefinedClass;
 use serde_json::{Value, json};
 use voiceport_control::{
-    AppRulesRequest, DictionaryRequest, MicrophoneRequest, OutputRule, Page, PreferencesRequest, RecordingMode,
-    ScenesRequest, TranscriptionState,
+    AppRulesRequest, DictionaryRequest, MicrophoneRequest, OutputRule, Page, PreferencesRequest,
+    RecordingMode, ScenesRequest, TranscriptionState,
 };
 
 pub(super) enum Window {

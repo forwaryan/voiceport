@@ -102,6 +102,7 @@ impl SyntheticDictations {
                 "zh".into(),
                 automatic,
                 gui,
+                None,
                 |delivery| delivery.begin_fixture(Box::new(SyntheticTarget(receiver.clone()))),
             )
             .unwrap();

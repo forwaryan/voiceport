@@ -5,7 +5,7 @@ use crate::{
         diagnostics::{CaptureDiagnostics, InputSignal, StageTimer, StageTimings},
         worker::{self as audio, Capture, Reply as CaptureReply},
     },
-    delivery::Delivery,
+    delivery::{Delivery, model::ApplicationTarget},
     dictation_output::OutputPipeline,
     dictation_workflows::Workflows,
     lifecycle::{Lifecycle, Phase},
@@ -243,6 +243,11 @@ impl GuiDiagnostics {
 pub(crate) enum VisibleTranscript {
     Preview(u64),
     Final(u64),
+}
+
+enum GuiStartOrigin<'a> {
+    Frontmost,
+    Shortcut(Option<&'a ApplicationTarget>),
 }
 
 pub struct Controller {
@@ -741,18 +746,12 @@ impl Controller {
         }
     }
     pub fn start(&mut self) {
-        self.start_for_application(None);
+        self.start_gui(GuiStartOrigin::Frontmost);
     }
-    pub(crate) fn start_in_application(
-        &mut self,
-        target: &crate::delivery::model::ApplicationTarget,
-    ) {
-        self.start_for_application(Some(target));
+    pub(crate) fn start_from_shortcut(&mut self, target: Option<&ApplicationTarget>) {
+        self.start_gui(GuiStartOrigin::Shortcut(target));
     }
-    fn start_for_application(
-        &mut self,
-        target: Option<&crate::delivery::model::ApplicationTarget>,
-    ) {
+    fn start_gui(&mut self, start: GuiStartOrigin<'_>) {
         if self.busy() {
             return;
         }
@@ -771,22 +770,41 @@ impl Controller {
                 return;
             }
         };
-        let origin = target.map(|target| target.pid);
+        let delivery_target = match start {
+            GuiStartOrigin::Shortcut(target) if self.automatic => target,
+            _ => None,
+        };
         #[cfg(debug_assertions)]
         let fixture = self.audio_lane.fixture.is_some();
         #[cfg(not(debug_assertions))]
         let fixture = false;
-        let origin = if fixture {
-            origin
+        let frontmost = if fixture || delivery_target.is_some() {
+            None
         } else {
-            origin.or_else(Self::foreground_pid)
+            objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication()
+        };
+        let origin = delivery_target
+            .map(|target| target.pid)
+            .or_else(|| frontmost.as_ref().map(|app| app.processIdentifier()));
+        let panel_target =
+            if self.workflows.app_rules.enabled && matches!(start, GuiStartOrigin::Frontmost) {
+                frontmost
+                    .as_deref()
+                    .and_then(crate::hotkey::application_target)
+            } else {
+                None
+            };
+        let rule_target = match start {
+            GuiStartOrigin::Frontmost => panel_target.as_ref(),
+            GuiStartOrigin::Shortcut(target) => target,
         };
         if let Some((generation, use_speech)) = self.prepare_start_in_application(
             source,
             self.language.clone(),
             self.automatic,
-            target,
+            delivery_target,
             true,
+            rule_target,
         ) {
             self.overlay_origin_pid = origin;
             #[cfg(debug_assertions)]
@@ -867,21 +885,25 @@ impl Controller {
         language: String,
         automatic: bool,
     ) -> Option<(u64, bool)> {
-        self.prepare_start_in_application(source, language, automatic, None, false)
+        self.prepare_start_in_application(source, language, automatic, None, false, None)
     }
     fn prepare_start_in_application(
         &mut self,
         source: SessionSource,
         language: String,
         automatic: bool,
-        target: Option<&crate::delivery::model::ApplicationTarget>,
+        target: Option<&ApplicationTarget>,
         gui: bool,
+        rule_target: Option<&ApplicationTarget>,
     ) -> Option<(u64, bool)> {
         let mut original_application = None;
-        let start = self.prepare_start_with(source, language, automatic, gui, |delivery| {
-            delivery
-                .begin_in_application_reporting(target, gui.then_some(&mut original_application))
-        });
+        let start =
+            self.prepare_start_with(source, language, automatic, gui, rule_target, |delivery| {
+                delivery.begin_in_application_reporting(
+                    target,
+                    gui.then_some(&mut original_application),
+                )
+            });
         if let Some(application) = original_application {
             self.gui_result_context.target = Some(application);
         }
@@ -893,6 +915,7 @@ impl Controller {
         language: String,
         automatic: bool,
         gui: bool,
+        rule_target: Option<&ApplicationTarget>,
         capture_target: impl FnOnce(&mut Delivery) -> Result<(), String>,
     ) -> Option<(u64, bool)> {
         if self.busy() {
@@ -953,10 +976,25 @@ impl Controller {
         self.cancel_capture();
         self.recording = None;
         self.recorded_output = if gui {
-            self.workflows.output_for_session(
-                self.workflows.dictionary_enabled,
-                self.workflows.output_rules,
-            )
+            let bundle_id = rule_target
+                .filter(|target| target.pid > 0 && target.pid as u32 != std::process::id())
+                .map(|target| target.bundle.as_str());
+            let rules = &self.workflows.app_rules;
+            let scene = rules.matched_scene(bundle_id, &self.workflows.presets);
+            self.gui_result_context.app_rule = rules.enabled.then(|| {
+                scene.map_or_else(
+                    || "全局规则".into(),
+                    |preset| format!("场景「{}」", preset.name),
+                )
+            });
+            let (dictionary, output) = scene.map_or(
+                (
+                    self.workflows.dictionary_enabled,
+                    self.workflows.output_rules,
+                ),
+                |preset| (preset.dictionary_enabled, preset.output_rules),
+            );
+            self.workflows.output_for_session(dictionary, output)
         } else {
             OutputPipeline::default()
         };
@@ -2506,6 +2544,7 @@ pub(crate) mod stop_failure_regression {
                     "zh".into(),
                     true,
                     true,
+                    None,
                     |delivery| delivery.begin_fixture(Box::new(Receiver(receiver.clone()))),
                 )
                 .unwrap();
@@ -2693,9 +2732,16 @@ pub(crate) mod stop_failure_regression {
         assert_eq!(c.gui_result_context().target, None);
         assert_eq!(c.transcript, "测试");
         let (panel, _) = c
-            .prepare_start_with(SessionSource::ChatGpt, "zh".into(), false, true, |_| {
-                panic!("panel-only GUI must not capture a target");
-            })
+            .prepare_start_with(
+                SessionSource::ChatGpt,
+                "zh".into(),
+                false,
+                true,
+                None,
+                |_| {
+                    panic!("panel-only GUI must not capture a target");
+                },
+            )
             .unwrap();
         let receipt = c.gui_dictation_receipt().unwrap();
         assert_eq!(receipt.generation, panel);
@@ -3428,9 +3474,14 @@ pub(crate) mod tests {
     fn late_permission_after_shortcut_release_cannot_capture_or_transcribe() {
         let mut c = Controller::new();
         let (generation, _) = c
-            .prepare_start_with(SessionSource::ChatGpt, String::new(), false, true, |_| {
-                panic!("panel-only start must not capture a target")
-            })
+            .prepare_start_with(
+                SessionSource::ChatGpt,
+                String::new(),
+                false,
+                true,
+                None,
+                |_| panic!("panel-only start must not capture a target"),
+            )
             .unwrap();
         c.poll_with_capture(
             |_| panic!("permission has not arrived"),
