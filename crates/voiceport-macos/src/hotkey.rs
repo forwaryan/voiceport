@@ -81,8 +81,13 @@ unsafe extern "C" {
     fn CGEventSourceKeyState(state: i32, key: u16) -> bool;
 }
 
+enum Listener {
+    Events(Sender<HotKeyEvent>),
+    Press(Box<dyn Fn(KeyPress)>),
+}
+
 struct Context {
-    sender: Sender<HotKeyEvent>,
+    listener: Listener,
     id: u32,
     edges: Cell<Edges>,
 }
@@ -248,11 +253,19 @@ pub struct GlobalHotKey {
 
 impl GlobalHotKey {
     pub fn new(sender: Sender<HotKeyEvent>) -> Self {
+        Self::with_listener(Listener::Events(sender))
+    }
+
+    pub(crate) fn on_press(action: impl Fn(KeyPress) + 'static) -> Self {
+        Self::with_listener(Listener::Press(Box::new(action)))
+    }
+
+    fn with_listener(listener: Listener) -> Self {
         Self {
             reference: ptr::null_mut(),
             handler: ptr::null_mut(),
             context: Box::new(Context {
-                sender,
+                listener,
                 id: 0,
                 edges: Cell::default(),
             }),
@@ -331,8 +344,10 @@ impl GlobalHotKey {
             // open; no monitor, event tap or user keystroke contents are read.
             let down = unsafe { CGEventSourceKeyState(1, shortcut.key_code() as u16) };
             let at = unsafe { GetCurrentEventTime() };
-            if let Some(Edge::Release(stroke)) = edges.reconcile(self.context.id, down, at) {
-                let _ = self.context.sender.send(HotKeyEvent::Release(stroke));
+            if let Some(Edge::Release(stroke)) = edges.reconcile(self.context.id, down, at)
+                && let Listener::Events(sender) = &self.context.listener
+            {
+                let _ = sender.send(HotKeyEvent::Release(stroke));
             }
             self.context.edges.set(edges);
         }
@@ -378,10 +393,16 @@ unsafe extern "C" fn handle_edge(_: NativeRef, event: NativeRef, context: *mut c
     if let Some(edge) = edge {
         // Bind the application here, before the AppKit timer may process a
         // later activation. A release never recaptures the application.
-        let _ = context.sender.send(match edge {
-            Edge::Press(stroke) => HotKeyEvent::Press(KeyPress::capture(stroke, at)),
-            Edge::Release(stroke) => HotKeyEvent::Release(stroke),
-        });
+        match (&context.listener, edge) {
+            (Listener::Events(sender), edge) => {
+                let _ = sender.send(match edge {
+                    Edge::Press(stroke) => HotKeyEvent::Press(KeyPress::capture(stroke, at)),
+                    Edge::Release(stroke) => HotKeyEvent::Release(stroke),
+                });
+            }
+            (Listener::Press(action), Edge::Press(stroke)) => action(KeyPress::capture(stroke, at)),
+            (Listener::Press(_), Edge::Release(_)) => {}
+        }
     }
     0
 }

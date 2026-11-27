@@ -475,6 +475,7 @@ pub(super) fn capabilities() -> Response {
         "user_scope":"effective_user", "platform":"macos",
         "app_update":["check","status"],
         "dictionary_output":["show","set","preview"],
+        "dictation_output":["copy-last","paste-last"],
         "groups":["app","status","sources","plugins","dictation","preferences","microphone","models","dictionary","scenes","history","file"],
     }))
 }
