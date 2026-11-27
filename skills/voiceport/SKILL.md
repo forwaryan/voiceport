@@ -19,7 +19,7 @@ Choose the command for the question:
 | Inspect hardware and settings | `microphone list/status`, `models list`, `preferences get` | Selected and available devices/models, language, shortcut registration and delivery preferences |
 | Suggest a local model | `models recommend [--language CODE\|auto] [--preview any\|live\|after-stop]` | Read-only recommendation based on language, preview mode and download size. A null result means no compatible model. |
 | Edit or exchange the personal dictionary | `dictionary show/set/preview`, `dictionary import/import-preview/import-apply/import-cancel/export` | Local post-transcription replacements. Review before applying. For exact readback, start at `dictionary show --offset 0` and follow `next_offset` with the returned `revision`. |
-| Manage named dictation scenes | `scenes list/add/remove/apply` | Saved settings with native destination confirmation to apply a scene |
+| Configure or preview dictation output | `dictionary show/set/preview`, `dictionary output show/set/preview`, `scenes list/add/remove/apply` | Local settings and explicit sample preview for panel text, not the target write; applying a scene requires native confirmation |
 | Examine recent GUI dictation | `history list`, then explicitly requested `history show ID` | Bounded, process-local metadata and separately requested text |
 | Transcribe and export a chosen audio file | `app open files`, `file sources/plan/start/status/result/export` | Reviewable source/destination, operation ID, explicit text and new export file |
 | Check a QQ installation | `qq doctor [--qq ABSOLUTE_APP_PATH]` | Read-only installation report; inspect `data.blockers`, not just exit 0; no bridge or transcription proof |

@@ -10,6 +10,8 @@ mod controller;
 #[cfg(target_os = "macos")]
 mod dictation_dictionary;
 #[cfg(target_os = "macos")]
+mod dictation_output;
+#[cfg(target_os = "macos")]
 mod dictation_workflows;
 #[cfg(target_os = "macos")]
 mod dictionary_exchange;

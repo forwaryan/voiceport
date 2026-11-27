@@ -507,7 +507,9 @@ impl Delegate {
                 request:
                     request @ (DictionaryRequest::Show
                     | DictionaryRequest::ShowPage { .. }
-                    | DictionaryRequest::Preview { .. }),
+                    | DictionaryRequest::Preview { .. }
+                    | DictionaryRequest::OutputShow
+                    | DictionaryRequest::OutputPreview { .. }),
             } => self.control_dictionary(control, c, request),
             Action::Scenes {
                 request: request @ ScenesRequest::List,

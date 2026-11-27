@@ -1,7 +1,7 @@
-//! Explicit GUI entry points for the personal dictionary and manual presets.
+//! Explicit GUI entry points for dictation output and manual presets.
 use super::*;
 use crate::{
-    dictation_dictionary::{Dictionary, Rule},
+    dictation_output::OutputRules,
     dictation_workflows::{Preset, Workflows},
     dictionary_exchange as exchange,
 };
@@ -65,7 +65,7 @@ impl Delegate {
             let view = self.workflow_view(170.);
             self.workflow_text(&view, &original, "原始转写", 0., 170., false);
             let alert =
-                self.workflow_alert("原始转写", "个人词典处理前的本次听写结果。", &["关闭"]);
+                self.workflow_alert("原始转写", "应用文字处理规则前的本次听写结果。", &["关闭"]);
             alert.setAccessoryView(Some(&view));
             alert.runModal();
             Ok(())
@@ -81,27 +81,39 @@ impl Delegate {
             .unwrap()
             .workflows
             .clone();
-        let view = self.workflow_view(268.);
+        let view = self.workflow_view(324.);
         let enable = self.workflow_checkbox(
             &view,
             "启用转写后替换",
             preferences.dictionary_enabled,
-            242.,
+            298.,
         );
-        self.label(&view, "纠错与常用短语", rect(0., 217., 410., 22.), 13.);
+        self.label(&view, "纠错与常用短语", rect(0., 273., 410., 22.), 13.);
         let rules = self.workflow_text(
             &view,
             &exchange::format_editor(&preferences.rules),
             "词典规则",
-            81.,
+            137.,
             130.,
             true,
         );
+        let trim = self.workflow_checkbox(
+            &view,
+            "去除首尾空白",
+            preferences.output_rules.trim_edges,
+            109.,
+        );
+        let newlines = self.workflow_checkbox(
+            &view,
+            "统一换行为 LF",
+            preferences.output_rules.normalize_newlines,
+            81.,
+        );
         self.label(&view, "试一段文字", rect(0., 55., 410., 22.), 13.);
-        let sample = self.workflow_text(&view, "", "词典预览输入", 0., 52., true);
+        let sample = self.workflow_text(&view, "", "输出预览输入", 0., 52., true);
         let alert = self.workflow_alert(
-            "个人词典",
-            "规则在本机替换最终转写文字，识别模型不会收到词典。每行用 → 分隔，例如 北经 → 北京。词典也支持 UTF-8 CSV。",
+            "个人词典与输出",
+            "规则在本机替换最终转写文字，识别模型不会收到词典。每行用 → 分隔，例如 北经 → 北京。词典也支持 UTF-8 CSV。可在本机预览草稿。",
             &["保存", "预览", "交换文件…", "取消"],
         );
         alert.setAccessoryView(Some(&view));
@@ -111,7 +123,7 @@ impl Delegate {
                 return Ok(());
             }
             if response == NSAlertThirdButtonReturn {
-                if let Err(error) = self.exchange_dictionary(&rules, &preferences.rules) {
+                if let Err(error) = self.exchange_dictionary(&rules) {
                     self.workflow_alert("无法交换词典", &error, &["返回编辑"])
                         .runModal();
                 }
@@ -128,35 +140,42 @@ impl Delegate {
                     continue;
                 }
             };
+            preferences.rules = candidate;
+            preferences.dictionary_enabled = enable.state() == NSControlStateValueOn;
+            preferences.output_rules = OutputRules {
+                trim_edges: trim.state() == NSControlStateValueOn,
+                normalize_newlines: newlines.state() == NSControlStateValueOn,
+            };
             if response == NSAlertSecondButtonReturn {
                 let sample = sample.string().to_string();
-                let dictionary = Dictionary::compile(&candidate)?;
-                let preview = self.workflow_view(166.);
-                self.label(&preview, "原文", rect(0., 143., 410., 20.), 13.);
-                self.workflow_text(&preview, &sample, "预览原文", 85., 55., false);
-                self.label(&preview, "应用词典后", rect(0., 60., 410., 20.), 13.);
-                self.workflow_text(
-                    &preview,
-                    &dictionary.apply(&sample),
-                    "预览结果",
-                    0.,
-                    56.,
-                    false,
+                let pipeline = preferences
+                    .output_for_session(preferences.dictionary_enabled, preferences.output_rules);
+                let stages = pipeline.process(&sample);
+                let preview = self.workflow_view(247.);
+                for (label, text, y) in [
+                    ("原文", stages.original, 166.),
+                    ("词典结果", stages.after_dictionary.as_ref(), 83.),
+                    ("最终输出", stages.final_text(), 0.),
+                ] {
+                    self.label(&preview, label, rect(0., y + 58., 410., 20.), 13.);
+                    self.workflow_text(&preview, text, label, y, 56., false);
+                }
+                let result = self.workflow_alert(
+                    "输出预览",
+                    "最终输出是面板保留的正文。自动输入会将换行和控制字符转为空格，不会发送回车。",
+                    &["返回编辑"],
                 );
-                let result = self.workflow_alert("词典预览", "", &["返回编辑"]);
                 result.setAccessoryView(Some(&preview));
                 result.runModal();
                 continue;
             }
-            preferences.rules = candidate;
-            preferences.dictionary_enabled = enable.state() == NSControlStateValueOn;
             self.update_workflows(preferences)?;
-            self.with_controller(|c| c.message = "已保存个人词典。".into());
+            self.with_controller(|c| c.message = "已保存个人词典与输出规则。".into());
             return Ok(());
         }
     }
 
-    fn exchange_dictionary(&self, editor: &NSTextView, saved: &[Rule]) -> Result<(), String> {
+    fn exchange_dictionary(&self, editor: &NSTextView) -> Result<(), String> {
         let action = self.workflow_alert(
             "交换个人词典",
             "导入到当前草稿，或将已保存规则导出为 UTF-8 CSV。",
@@ -173,7 +192,16 @@ impl Delegate {
                         .URL()
                         .and_then(|url| url.path())
                         .ok_or("无法读取导出路径。")?;
-                    exchange::write(&PathBuf::from(path.to_string()), saved)?;
+                    let saved = self
+                        .ivars()
+                        .controller
+                        .borrow()
+                        .as_ref()
+                        .unwrap()
+                        .workflows
+                        .rules
+                        .clone();
+                    exchange::write(&PathBuf::from(path.to_string()), &saved)?;
                     self.workflow_alert(
                         "已导出个人词典",
                         &format!("已导出 {} 条规则。", saved.len()),
@@ -254,7 +282,7 @@ impl Delegate {
             if self
                 .workflow_alert(
                     "听写场景",
-                    "保存来源、识别语言和词典开关，之后可手动应用。",
+                    "保存来源、识别语言、词典开关和当前输出规则，之后可手动应用。",
                     &["新建场景", "关闭"],
                 )
                 .runModal()
@@ -349,7 +377,7 @@ impl Delegate {
             self.workflow_checkbox(&view, "使用个人词典", preferences.dictionary_enabled, 0.);
         let alert = self.workflow_alert(
             "新建听写场景",
-            "保存后可从听写场景手动应用。",
+            "新场景会保存当前输出规则，之后可手动应用。",
             &["保存场景", "取消"],
         );
         alert.setAccessoryView(Some(&view));
@@ -365,6 +393,7 @@ impl Delegate {
                 source_id,
                 language: language::code(language.indexOfSelectedItem() as usize).into(),
                 dictionary_enabled: dictionary.state() == NSControlStateValueOn,
+                output_rules: preferences.output_rules,
             };
             let validation = {
                 let slot = self.ivars().controller.borrow();
@@ -422,8 +451,17 @@ impl Delegate {
         } else {
             "关闭"
         };
+        let output = [
+            (preset.output_rules.trim_edges, "去除首尾空白"),
+            (preset.output_rules.normalize_newlines, "统一换行为 LF"),
+        ]
+        .into_iter()
+        .filter_map(|(enabled, title)| enabled.then_some(title))
+        .collect::<Vec<_>>()
+        .join("、");
+        let output = if output.is_empty() { "关闭" } else { &output };
         let details = format!(
-            "来源：{source_title}\n识别语言：{language_title}\n个人词典：{dictionary}\n\n{}",
+            "来源：{source_title}\n识别语言：{language_title}\n个人词典：{dictionary}\n输出规则：{output}\n\n{}",
             destination.details(),
         );
         if self
@@ -445,6 +483,7 @@ impl Delegate {
             }
         }
         preferences.dictionary_enabled = preset.dictionary_enabled;
+        preferences.output_rules = preset.output_rules;
         self.update_workflows(preferences)?;
         self.with_controller(|c| {
             self.set_language(c, preset.language.clone());

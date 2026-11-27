@@ -132,6 +132,21 @@ pub enum DictionaryRequest {
     Export {
         path: PathBuf,
     },
+    OutputShow,
+    OutputSet {
+        rule: OutputRule,
+        enabled: bool,
+    },
+    OutputPreview {
+        text: String,
+    },
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputRule {
+    TrimEdges,
+    NormalizeNewlines,
 }
 
 #[derive(Deserialize, Serialize)]

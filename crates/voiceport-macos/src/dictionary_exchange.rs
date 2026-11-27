@@ -1,16 +1,20 @@
 //! Local exchange for the post-transcription dictionary.
 use crate::{
-    app_update::has_no_acl_grants,
+    app_update::has_no_extended_acl,
     dictation_dictionary::{Dictionary, RULE_LIMIT, Rule, canonical, format_rules, parse_rules},
 };
 use std::{
     collections::HashSet,
-    fs::{OpenOptions, Permissions},
+    ffi::CString,
+    fs::{Metadata, OpenOptions, Permissions},
     io::{Read, Write},
     iter::Peekable,
     os::{
         fd::AsRawFd,
-        unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+        unix::{
+            ffi::OsStrExt,
+            fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+        },
     },
     path::Path,
     str::Chars,
@@ -22,7 +26,8 @@ const HEADER: &str = "input,output";
 const MAX_BYTES: usize = 1024 * 1024;
 const FILE_ERROR: &str = "请选择可读取的 UTF-8 CSV 或 TXT 普通文件。";
 const SAVE_ERROR: &str = "无法导出词典。请选择一个新的 .csv 文件名。";
-const PRIVATE_SAVE_ERROR: &str = "无法确认导出文件仅当前用户可读写。请选择没有额外访问授权的目录。";
+const PRIVATE_SAVE_ERROR: &str = "无法确认导出文件仅当前用户可读写。请选择没有继承访问规则的目录。";
+const CLEANUP_SAVE_ERROR: &str = "无法导出词典，也无法确认已清除临时文件内容。请检查所选目录中的 .voiceport-dictionary- 临时文件。";
 
 pub(crate) struct ImportPlan {
     pub(crate) rules: Vec<Rule>,
@@ -131,23 +136,45 @@ pub(crate) fn write(path: &Path, rules: &[Rule]) -> Result<(), String> {
     if !path.is_absolute() || !extension(path).is_some_and(|ext| ext.eq_ignore_ascii_case("csv")) {
         return Err(SAVE_ERROR.into());
     }
-    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().ok_or(SAVE_ERROR)?)
+    let destination = CString::new(path.as_os_str().as_bytes()).map_err(|_| SAVE_ERROR)?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".voiceport-dictionary-")
+        .disable_cleanup(true)
+        .tempfile_in(path.parent().ok_or(SAVE_ERROR)?)
         .map_err(|_| SAVE_ERROR)?;
-    temporary
-        .as_file()
-        .set_permissions(Permissions::from_mode(0o600))
-        .map_err(|_| PRIVATE_SAVE_ERROR)?;
-    // Creation can inherit an ACL that grants access despite mode 0600.
-    // Refuse before placing any rules in such a file.
-    verify_private_export(&temporary)?;
-    temporary
-        .write_all(format_csv(rules).as_bytes())
-        .and_then(|_| temporary.as_file().sync_all())
-        .map_err(|_| SAVE_ERROR)?;
-    verify_private_export(&temporary)?;
-    // Publication only renames or links this inode in the same directory.
-    temporary.persist_noclobber(path).map_err(|_| SAVE_ERROR)?;
+    let mut may_contain_rules = false;
+    let result = (|| {
+        let source =
+            CString::new(temporary.path().as_os_str().as_bytes()).map_err(|_| SAVE_ERROR)?;
+        temporary
+            .as_file()
+            .set_permissions(Permissions::from_mode(0o600))
+            .map_err(|_| PRIVATE_SAVE_ERROR)?;
+        verify_private_export(&temporary)?;
+        may_contain_rules = true;
+        temporary
+            .write_all(format_csv(rules).as_bytes())
+            .and_then(|_| temporary.as_file().sync_all())
+            .map_err(|_| SAVE_ERROR)?;
+        verify_private_export(&temporary)?;
+        // An exclusive rename publishes one name or fails. In particular, it
+        // cannot leave a second name behind if the filesystem rejects unlink.
+        if unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) }
+            != 0
+        {
+            return Err(SAVE_ERROR);
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        discard_export(temporary, may_contain_rules)?;
+        return Err(error.into());
+    }
     Ok(())
+}
+
+fn same_file(open: &Metadata, named: &Metadata) -> bool {
+    named.is_file() && (open.dev(), open.ino()) == (named.dev(), named.ino())
 }
 
 fn verify_private_export(temporary: &tempfile::NamedTempFile) -> Result<(), &'static str> {
@@ -157,16 +184,46 @@ fn verify_private_export(temporary: &tempfile::NamedTempFile) -> Result<(), &'st
         .path()
         .symlink_metadata()
         .map_err(|_| PRIVATE_SAVE_ERROR)?;
-    if !named.is_file()
-        || (open.dev(), open.ino()) != (named.dev(), named.ino())
+    if !same_file(&open, &named)
         || open.nlink() != 1
         || open.uid() != unsafe { libc::geteuid() }
         || open.mode() & 0o7777 != 0o600
-        || !matches!(has_no_acl_grants(file.as_raw_fd()), Ok(true))
+        || !matches!(has_no_extended_acl(file.as_raw_fd()), Ok(true))
     {
         return Err(PRIVATE_SAVE_ERROR);
     }
+    // The creation descriptor can stay writable even if a fresh open is denied.
+    let reopened = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(temporary.path())
+        .map_err(|_| PRIVATE_SAVE_ERROR)?;
+    if !same_file(&open, &reopened.metadata().map_err(|_| PRIVATE_SAVE_ERROR)?) {
+        return Err(PRIVATE_SAVE_ERROR);
+    }
     Ok(())
+}
+
+fn discard_export(
+    temporary: tempfile::NamedTempFile,
+    may_contain_rules: bool,
+) -> Result<(), &'static str> {
+    let (file, path) = temporary.into_parts();
+    // Directory permissions can block unlink while the owned handle can still
+    // clear the inode. If the handle cannot clear it, check that it was unlinked.
+    let cleared = !may_contain_rules || file.set_len(0).and_then(|_| file.sync_all()).is_ok();
+    if file.metadata().is_ok_and(|open| {
+        path.symlink_metadata()
+            .is_ok_and(|named| same_file(&open, &named))
+    }) {
+        let _ = path.close();
+    }
+    if cleared || file.metadata().is_ok_and(|open| open.nlink() == 0) {
+        Ok(())
+    } else {
+        Err(CLEANUP_SAVE_ERROR)
+    }
 }
 
 fn without_bom(text: &str) -> &str {

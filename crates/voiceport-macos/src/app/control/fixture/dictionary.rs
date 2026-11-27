@@ -94,11 +94,21 @@ pub fn isolated_dictionary_exchange_regression(mtm: MainThreadMarker, cli: &Path
     );
     assert_eq!(shown(), initial);
     assert!(persisted().is_none());
+    let capabilities = call(&["app", "capabilities"], 0);
+    assert!(capabilities["data"]["dictionary_exchange"].is_array());
+    assert!(capabilities["data"]["dictionary_output"].is_array());
+    for rule in ["trim-edges", "normalize-newlines"] {
+        call(&["dictionary", "output", "set", rule, "on"], 0);
+    }
+    let switches = call(&["dictionary", "output", "show"], 0)["data"].clone();
+    assert_eq!(switches["trim_edges"], true);
+    assert_eq!(switches["normalize_newlines"], true);
     let applied = call(&["dictionary", "import-apply", id, "--confirm"], 0);
     assert_eq!(applied["data"]["rule_count"], 18);
     let saved = persisted().unwrap();
     assert_eq!(saved["presets"][0]["name"], "Synthetic");
     assert_eq!(saved["dictionary_enabled"], true);
+    assert_eq!(saved["output_rules"], switches);
     assert_eq!(saved["rules"][17]["output"], " new, \"值\" → 🦀 ");
 
     let output = folder.join("export.csv");

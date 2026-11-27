@@ -31,25 +31,36 @@ impl Drop for Acl {
 }
 
 impl Acl {
-    fn has_only_denials(&self) -> io::Result<bool> {
-        let acl = self.0.as_ptr();
-        if unsafe { acl_valid(acl) } != 0 {
-            return Err(io::Error::last_os_error());
+    fn validate(&self) -> io::Result<()> {
+        if unsafe { acl_valid(self.0.as_ptr()) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
         }
+    }
+
+    fn entry(&self, entry_id: libc::c_int) -> io::Result<Option<NonNull<libc::c_void>>> {
+        let mut entry = std::ptr::null_mut();
+        if unsafe { acl_get_entry(self.0.as_ptr(), entry_id, &mut entry) } == 0 {
+            return NonNull::new(entry)
+                .map(Some)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing ACL entry"));
+        }
+        let error = io::Error::last_os_error();
+        // On a valid Darwin ACL, iteration past the last entry yields EINVAL.
+        if error.raw_os_error() == Some(libc::EINVAL) {
+            Ok(None)
+        } else {
+            Err(error)
+        }
+    }
+
+    fn has_only_denials(&self) -> io::Result<bool> {
+        self.validate()?;
         let mut entry_id = ACL_FIRST_ENTRY;
-        loop {
-            let mut entry = std::ptr::null_mut();
-            if unsafe { acl_get_entry(acl, entry_id, &mut entry) } != 0 {
-                let error = io::Error::last_os_error();
-                // On a valid Darwin ACL, iteration past the last entry yields EINVAL.
-                return if error.raw_os_error() == Some(libc::EINVAL) {
-                    Ok(true)
-                } else {
-                    Err(error)
-                };
-            }
+        while let Some(entry) = self.entry(entry_id)? {
             let mut tag = 0;
-            if unsafe { acl_get_tag_type(entry, &mut tag) } != 0 {
+            if unsafe { acl_get_tag_type(entry.as_ptr(), &mut tag) } != 0 {
                 return Err(io::Error::last_os_error());
             }
             match tag {
@@ -63,22 +74,36 @@ impl Acl {
                 }
             }
         }
+        Ok(true)
     }
 }
 
-pub(crate) fn has_no_acl_grants(fd: RawFd) -> io::Result<bool> {
-    match NonNull::new(unsafe { acl_get_fd_np(fd, ACL_TYPE_EXTENDED) }) {
-        Some(acl) => Acl(acl).has_only_denials(),
-        None => {
-            let error = io::Error::last_os_error();
-            // For this open descriptor, Darwin uses ENOENT for an absent ACL.
-            if error.raw_os_error() == Some(libc::ENOENT) {
-                Ok(true)
-            } else {
-                Err(error)
-            }
-        }
+fn read_acl(fd: RawFd) -> io::Result<Option<Acl>> {
+    if let Some(acl) = NonNull::new(unsafe { acl_get_fd_np(fd, ACL_TYPE_EXTENDED) }) {
+        return Ok(Some(Acl(acl)));
     }
+    let error = io::Error::last_os_error();
+    // For this open descriptor, Darwin uses ENOENT for an absent ACL.
+    if error.raw_os_error() == Some(libc::ENOENT) {
+        Ok(None)
+    } else {
+        Err(error)
+    }
+}
+
+pub(super) fn has_no_acl_grants(fd: RawFd) -> io::Result<bool> {
+    match read_acl(fd)? {
+        Some(acl) => acl.has_only_denials(),
+        None => Ok(true),
+    }
+}
+
+pub(crate) fn has_no_extended_acl(fd: RawFd) -> io::Result<bool> {
+    let Some(acl) = read_acl(fd)? else {
+        return Ok(true);
+    };
+    acl.validate()?;
+    Ok(acl.entry(ACL_FIRST_ENTRY)?.is_none())
 }
 
 #[cfg(test)]

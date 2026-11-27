@@ -164,9 +164,12 @@ impl Delegate {
                 })),
                 Err(message) => err("invalid_config", &message),
             },
-            Show | Set { .. } | Preview { .. } => {
-                err("invalid_request", "Invalid exchange request.")
-            }
+            Show
+            | Set { .. }
+            | Preview { .. }
+            | OutputShow
+            | OutputSet { .. }
+            | OutputPreview { .. } => err("invalid_request", "Invalid exchange request."),
         }
     }
 }

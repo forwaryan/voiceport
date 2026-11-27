@@ -95,10 +95,16 @@ fn file_exchange_is_bounded_private_and_never_clobbers() {
         fs::metadata(&csv).unwrap().permissions().mode() & 0o777,
         0o600
     );
-    let exported = fs::File::open(&csv).unwrap();
-    assert!(has_no_acl_grants(exported.as_raw_fd()).unwrap());
-    assert!(write(&csv, &[]).is_err());
+    let exported = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&csv)
+        .unwrap();
+    assert!(has_no_extended_acl(exported.as_raw_fd()).unwrap());
+    assert_eq!(exported.metadata().unwrap().nlink(), 1);
+    assert_eq!(write(&csv, &[]).unwrap_err(), SAVE_ERROR);
     assert_eq!(read(&csv).unwrap(), rules);
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
     let alias = dir.path().join("alias.csv");
     symlink(&csv, &alias).unwrap();
     assert!(read(&alias).is_err());
@@ -115,31 +121,66 @@ fn file_exchange_is_bounded_private_and_never_clobbers() {
 }
 
 #[test]
-fn export_rejects_inherited_acl_grants_before_publication() {
-    let dir = tempfile::tempdir().unwrap();
-    let chmod = std::process::Command::new("/bin/chmod")
-        .args(["+a", "group:everyone allow read,file_inherit"])
-        .arg(dir.path())
-        .output()
-        .unwrap();
-    assert!(
-        chmod.status.success(),
-        "ACL fixture failed: {:?}",
-        chmod.stderr
-    );
-    {
-        let control = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
-        let file = control.as_file();
-        file.set_permissions(Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(file.metadata().unwrap().mode() & 0o7777, 0o600);
+fn export_rejects_inherited_acl_grants_and_denials_before_publication() {
+    for (entry, owner_can_open) in [
+        ("group:everyone allow read,file_inherit,only_inherit", true),
+        ("group:everyone deny read,file_inherit,only_inherit", false),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let chmod = std::process::Command::new("/bin/chmod")
+            .args(["+a", entry])
+            .arg(dir.path())
+            .output()
+            .unwrap();
         assert!(
-            !has_no_acl_grants(file.as_raw_fd()).unwrap(),
-            "expected a real inherited grant"
+            chmod.status.success(),
+            "ACL fixture failed: {:?}",
+            chmod.stderr
         );
+        {
+            let control = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+            let file = control.as_file();
+            file.set_permissions(Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(file.metadata().unwrap().mode() & 0o7777, 0o600);
+            assert!(!has_no_extended_acl(file.as_raw_fd()).unwrap());
+            assert_eq!(
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(control.path())
+                    .is_ok(),
+                owner_can_open,
+                "fixture must exercise real access for {entry}"
+            );
+        }
+        let target = dir.path().join("private.csv");
+        let rules = parse_rules("synthetic → only owner").unwrap();
+        assert_eq!(write(&target, &rules).unwrap_err(), PRIVATE_SAVE_ERROR);
+        assert!(fs::read_dir(dir.path()).unwrap().next().is_none());
     }
-    let target = dir.path().join("private.csv");
-    let rules = parse_rules("synthetic → only owner").unwrap();
-    assert_eq!(write(&target, &rules).unwrap_err(), PRIVATE_SAVE_ERROR);
-    assert!(!target.exists());
-    assert!(fs::read_dir(dir.path()).unwrap().next().is_none());
+}
+
+#[test]
+fn failed_export_clears_the_staged_inode_even_when_unlink_is_denied() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut staged = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+    let path = staged.path().to_owned();
+    let rules = parse_rules("synthetic → staged content").unwrap();
+    staged.write_all(format_csv(&rules).as_bytes()).unwrap();
+    staged.as_file().sync_all().unwrap();
+    assert_eq!(
+        parse_csv(&fs::read_to_string(&path).unwrap()).unwrap(),
+        rules
+    );
+
+    fs::set_permissions(dir.path(), Permissions::from_mode(0o500)).unwrap();
+    let unlink = fs::remove_file(&path);
+    let cleanup = discard_export(staged, true);
+    fs::set_permissions(dir.path(), Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        unlink.unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    cleanup.unwrap();
+    assert!(fs::read(&path).unwrap().is_empty());
 }
