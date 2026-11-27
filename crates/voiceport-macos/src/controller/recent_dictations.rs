@@ -1,6 +1,7 @@
 //! Process-local, opt-in history of final GUI dictations.
 
 use super::{BlockReason, Controller, TranscriptionState, VisibleTranscript};
+use objc2_foundation::{NSString, NSStringCompareOptions};
 use serde::Serialize;
 use std::{collections::VecDeque, time::SystemTime};
 use voiceport_control::{DeliveryReceipt, DeliveryState, HistoryDelivery};
@@ -150,7 +151,22 @@ impl Controller {
         query: &str,
         delivery: Option<HistoryDelivery>,
     ) -> Vec<RecentDictationMetadata> {
-        let query = query.trim().to_lowercase();
+        // Fold both sides rather than lowercasing in context: a word-final Σ
+        // and an isolated Σ otherwise become different lowercase characters.
+        let fold = |text: &str| {
+            NSString::from_str(text)
+                .stringByFoldingWithOptions_locale(
+                    NSStringCompareOptions::CaseInsensitiveSearch,
+                    None,
+                )
+                .to_string()
+        };
+        let query = query.trim();
+        let query = if query.is_empty() {
+            String::new()
+        } else {
+            fold(query)
+        };
         self.recent_dictations
             .entries
             .iter()
@@ -161,8 +177,8 @@ impl Controller {
                 query.is_empty()
                     || entry
                         .text
-                        .as_ref()
-                        .is_some_and(|text| text.to_lowercase().contains(&query))
+                        .as_deref()
+                        .is_some_and(|text| fold(text).contains(&query))
             })
             .take(limit)
             .map(|entry| entry.metadata.clone())

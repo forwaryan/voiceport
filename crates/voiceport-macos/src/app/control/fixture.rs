@@ -21,7 +21,7 @@ use std::{
 };
 
 const SOURCE: &str = "fixture-file-http";
-const HISTORY_TEXT: &str = "Synthetic GUI selection 聽寫";
+const HISTORY_TEXT: &str = "Synthetic GUI selection 聽寫 ΟΔΟΣ Straße";
 const FILE_TEXT: &str = "Synthetic file result";
 const LIMIT: Duration = Duration::from_secs(8);
 
@@ -331,24 +331,28 @@ pub fn isolated_control_regression(mtm: MainThreadMarker, cli: &Path) {
     assert_eq!(history["data"]["entries"].as_array().unwrap().len(), 5);
     assert!(!history.to_string().contains(HISTORY_TEXT));
     let id = history["data"]["entries"][0]["id"].as_str().unwrap();
-    let filtered = call(
-        &[
-            "history",
-            "list",
-            "--delivery",
-            "confirmed",
-            "--limit",
-            "1",
-            "--query",
-            "  gUi SELECTION 聽寫  ",
-        ],
-        0,
-    );
-    assert_eq!(
-        filtered["data"],
-        json!({"enabled":true,"entries":[history["data"]["entries"][0].clone()]})
-    );
-    assert!(!filtered.to_string().contains(HISTORY_TEXT));
+    // The stored final sigma matches either sigma form; the fold also handles ß → ss.
+    for query in ["  gUi SELECTION 聽寫  ", "Σ", "ς", "STRASSE"] {
+        let filtered = call(
+            &[
+                "history",
+                "list",
+                "--delivery",
+                "confirmed",
+                "--limit",
+                "1",
+                "--query",
+                query,
+            ],
+            0,
+        );
+        assert_eq!(
+            filtered["data"],
+            json!({"enabled":true,"entries":[history["data"]["entries"][0].clone()]}),
+            "query: {query:?}"
+        );
+        assert!(!filtered.to_string().contains(HISTORY_TEXT));
+    }
     for words in [
         ["history", "list", "--delivery", "failed"],
         ["history", "list", "--delivery", "not-sent"],
