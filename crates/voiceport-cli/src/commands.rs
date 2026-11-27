@@ -285,6 +285,8 @@ fn option_takes_value(option: &str) -> bool {
             | "--limit"
             | "--offset"
             | "--revision"
+            | "--query"
+            | "--delivery"
             | "--output"
             | "--format"
     )

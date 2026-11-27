@@ -24,7 +24,7 @@ use std::{
 };
 
 const SOURCE: &str = "fixture-file-http";
-const HISTORY_TEXT: &str = "Synthetic GUI selection 聽寫";
+const HISTORY_TEXT: &str = "Synthetic GUI selection 聽寫 ΟΔΟΣ Straße AßB";
 const FILE_TEXT: &str = "Synthetic file result";
 const LIMIT: Duration = Duration::from_secs(8);
 
@@ -329,9 +329,10 @@ pub fn isolated_control_regression(mtm: MainThreadMarker, cli: &Path) {
         .as_str()
         .unwrap()
         .to_owned();
-    for n in 0..5 {
+    for n in 0..4 {
         fixture.finish_gui(&mut rig, &format!("bounded entry {n}"));
     }
+    fixture.finish_gui(&mut rig, "bounded entry 4 AS marker");
     assert_eq!(
         call(&["history", "show", &oldest], 6)["error"]["code"],
         "not_found"
@@ -349,6 +350,54 @@ pub fn isolated_control_regression(mtm: MainThreadMarker, cli: &Path) {
     assert_eq!(history["data"]["entries"].as_array().unwrap().len(), 5);
     assert!(!history.to_string().contains(HISTORY_TEXT));
     let id = history["data"]["entries"][0]["id"].as_str().unwrap();
+    // The final sigma matches all three forms; a full ß can match ss.
+    for query in [
+        "  gUi SELECTION 聽寫  ",
+        "Σ",
+        "σ",
+        "ς",
+        "STRASSE",
+        "ASSB",
+        "SS",
+    ] {
+        let filtered = call(
+            &[
+                "history",
+                "list",
+                "--delivery",
+                "confirmed",
+                "--limit",
+                "1",
+                "--query",
+                query,
+            ],
+            0,
+        );
+        assert_eq!(
+            filtered["data"],
+            json!({"enabled":true,"entries":[history["data"]["entries"][0].clone()]}),
+            "query: {query:?}"
+        );
+        assert!(!filtered.to_string().contains(HISTORY_TEXT));
+    }
+    for words in [
+        ["history", "list", "--delivery", "failed"],
+        ["history", "list", "--delivery", "not-sent"],
+        ["history", "list", "--query", "xxxx"],
+    ] {
+        assert_eq!(
+            call(&words, 0)["data"],
+            json!({"enabled":true,"entries":[]})
+        );
+    }
+    for query in ["bounded", "as"] {
+        let older = call(&["history", "list", "--limit", "1", "--query", query], 0);
+        assert_eq!(
+            older["data"]["entries"],
+            json!([history["data"]["entries"][2].clone()]),
+            "query {query:?} must match the older entry, not half of the newer AßB"
+        );
+    }
     assert_eq!(
         call(&["history", "show", id], 0)["data"]["text"],
         HISTORY_TEXT

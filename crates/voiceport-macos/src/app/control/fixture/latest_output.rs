@@ -311,6 +311,24 @@ pub(super) fn verify(fixture: &Fixture<'_>, rig: &mut SyntheticDictations) {
         history["data"]["entries"][0]["delivery"]["state"],
         "notSent"
     );
+    assert_eq!(
+        call(
+            &[
+                "history",
+                "list",
+                "--query",
+                "FINAL FROM RETRY",
+                "--delivery",
+                "not-sent"
+            ],
+            0
+        ),
+        history,
+    );
+    assert_eq!(
+        call(&["history", "list", "--delivery", "confirmed"], 0)["data"]["entries"],
+        json!([]),
+    );
     eprintln!("repaste fixture: confirmed preview retry duplicate guard");
     let captured = captures.get();
     assert_eq!(call(PASTE, 1)["error"]["code"], "possible_duplicate");
@@ -385,6 +403,7 @@ pub(super) fn verify(fixture: &Fixture<'_>, rig: &mut SyntheticDictations) {
     );
 
     // Changing settings after capture leaves the result tied to its original output rules.
+    call(&["history", "settings", "on"], 0);
     let original_target = {
         let mut slot = fixture.owner.ivars().controller.borrow_mut();
         let controller = slot.as_mut().unwrap();
@@ -401,12 +420,34 @@ pub(super) fn verify(fixture: &Fixture<'_>, rig: &mut SyntheticDictations) {
     };
     assert_eq!(original_target.borrow().writes, 1);
     assert_eq!(original_target.borrow().snapshot.text, "AFirst SecondB");
+    let processed_search = [
+        "history",
+        "list",
+        "--query",
+        "FIRST\nSECOND",
+        "--delivery",
+        "confirmed",
+    ];
+    let processed_history = call(&processed_search, 0);
+    let entries = processed_history["data"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].get("text").is_none());
+    let id = entries[0]["id"].as_str().unwrap();
+    assert_eq!(
+        call(&["history", "show", id], 0)["data"]["text"],
+        "First\nSecond"
+    );
     call(&["dictation", "copy-last"], 0);
     assert_eq!(clipboard.borrow().as_str(), "First\nSecond");
     editor.borrow_mut().snapshot = initial;
     assert_eq!(call(PASTE, 0)["data"]["delivery"]["state"], "confirmed");
     assert_eq!(editor.borrow().snapshot.text, "AFirst SecondB");
     assert_eq!(editor.borrow().writes, writes + 2);
+    assert_eq!(call(&processed_search, 0), processed_history);
+    call(&["history", "settings", "off", "--confirm"], 0);
+    println!(
+        "PASS history searches processed text and preserves the original receipt across repaste"
+    );
     println!(
         "PASS actual CLI and AppKit action handlers: copy, confirmed repaste, stale target, secure/unknown focus, changed caret, and duplicate/uncertain receipts; synthetic boundaries"
     );
