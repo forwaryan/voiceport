@@ -155,6 +155,17 @@ impl ModelDisk {
 }
 
 impl ModelView {
+    pub fn recommendation_status(&self, selected: bool) -> &'static str {
+        match self.primary {
+            PrimaryAction::Use if selected => "使用中",
+            PrimaryAction::Use => "已安装",
+            PrimaryAction::AwaitCatalog => "已安装 · 正在刷新",
+            // The same repair action covers missing engines and damaged weights.
+            PrimaryAction::Reinstall => "当前不可用",
+            PrimaryAction::Download => "未安装",
+        }
+    }
+
     pub fn owned(&self) -> bool {
         self.installation != Installation::Missing
     }
@@ -232,6 +243,52 @@ mod tests {
         orca: &Path,
     ) -> bool {
         refresh.sample(now, visible, reason, || LocalDisk::probe(paths, Some(orca)))
+    }
+
+    #[test]
+    fn recommendation_does_not_prescribe_reinstall_when_only_engine_is_missing() {
+        use crate::local_models::{CHATGPT, NEMOTRON, SENSEVOICE};
+        use crate::model_library::recommend;
+        use voiceport_control::ModelPreview;
+
+        if std::env::consts::ARCH != "aarch64" {
+            return;
+        }
+        let (_temp, paths) = fixture();
+        assert_eq!(recommend("yue", ModelPreview::Any).unwrap().id, SENSEVOICE);
+        // Nemotron requires the current engine at the explicit fixture path.
+        let d = recommend("ja", ModelPreview::Live).unwrap();
+        assert_eq!(d.id, NEMOTRON);
+        let index = MODELS.iter().position(|model| model.id == d.id).unwrap();
+        let probe =
+            |catalog: &Catalog| LocalDisk::probe(&paths, None).rows[index].view(catalog, d.id);
+        let pending = Catalog::pending(CHATGPT);
+        write_model(&paths.root, d);
+
+        let missing = probe(&pending);
+        assert_eq!(missing.primary, PrimaryAction::Reinstall);
+        assert_eq!(missing.recommendation_status(false), "当前不可用");
+        assert_eq!(missing.recommendation_status(true), "当前不可用");
+
+        write_engine(&paths);
+        assert_eq!(
+            probe(&pending).recommendation_status(false),
+            "已安装 · 正在刷新"
+        );
+        let catalog = Catalog::discover(
+            &paths.root,
+            &paths.runtime(),
+            CHATGPT,
+            std::env::consts::ARCH,
+        );
+        let available = probe(&catalog);
+        assert_eq!(available.recommendation_status(false), "已安装");
+        assert_eq!(available.recommendation_status(true), "使用中");
+
+        std::fs::remove_file(paths.model(d).join(d.assets[0].name)).unwrap();
+        let damaged = probe(&catalog);
+        assert_eq!(damaged.primary, PrimaryAction::Reinstall);
+        assert_eq!(damaged.recommendation_status(false), "当前不可用");
     }
 
     #[test]

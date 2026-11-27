@@ -57,14 +57,39 @@ pub enum ModelMutation {
     InstallEngine,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelPreview {
+    #[default]
+    Any,
+    Live,
+    AfterStop,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModelsRequest {
-    Details { id: String },
-    Plan { mutation: ModelMutation },
-    Start { operation: String, confirm: bool },
-    Status { operation: String },
-    Cancel { operation: String },
+    Details {
+        id: String,
+    },
+    Recommend {
+        language: Option<String>,
+        #[serde(default)]
+        preview: ModelPreview,
+    },
+    Plan {
+        mutation: ModelMutation,
+    },
+    Start {
+        operation: String,
+        confirm: bool,
+    },
+    Status {
+        operation: String,
+    },
+    Cancel {
+        operation: String,
+    },
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]

@@ -17,6 +17,7 @@ Choose the command for the question:
 | Identify the running App and its configuration | `status`, `app capabilities`, `sources list`, `sources destination ID` | Instance, supported groups, and sanitized audio destination |
 | Inspect App updates | `app update status`, `app update check` | Read the current snapshot first. Request a release lookup only when asked. The user confirms downloads and installations in the workbench’s Software Updates page. |
 | Inspect hardware and settings | `microphone list/status`, `models list`, `preferences get` | Selected and available devices/models, language, shortcut registration and delivery preferences |
+| Suggest a local model | `models recommend [--language CODE\|auto] [--preview any\|live\|after-stop]` | Read-only recommendation based on language, preview mode and download size. A null result means no compatible model. |
 | Edit or exchange the personal dictionary | `dictionary show/set/preview`, `dictionary import/import-preview/import-apply/import-cancel/export` | Local post-transcription replacements. Review before applying. For exact readback, start at `dictionary show --offset 0` and follow `next_offset` with the returned `revision`. |
 | Manage named dictation scenes | `scenes list/add/remove/apply` | Saved settings with native destination confirmation to apply a scene |
 | Examine recent GUI dictation | `history list`, then explicitly requested `history show ID` | Bounded, process-local metadata and separately requested text |
@@ -63,7 +64,7 @@ For a failed retained recording, inspect result data for `state:"failed"`, curre
 
 For a selected local audio file, use `file sources` and `file plan` to identify the actual source and destination. Submit `file start OPERATION --confirm` only for the reviewed file, language and destination. If the reply is lost, `file status` accepts the known proposal ID. Retrieve text or export it only when requested. Use `history list` for metadata and `history show ID` only when the user asks to read the retained text. Clearing history and disabling collection both require explicit confirmation.
 
-For native permissions or a physical shortcut, open `app open first-run` or `app open shortcut` and let the user complete the indicated `next` action. Model changes use a proposal and `models start OPERATION --confirm`; follow with `models status` and verify the installation through `models details`. `models open` presents the native manager. A local microphone level test requires an existing grant and explicit acceptance with `microphone test-start --confirm`.
+For native permissions or a physical shortcut, open `app open first-run` or `app open shortcut` and let the user complete the indicated `next` action. For a recommendation, report the matching language, preview mode, download size and availability or explain the null result. Treat accuracy and performance as unmeasured. With user approval, prepare an installation proposal and run `models start OPERATION --confirm`, then use `models status` and `models details` to verify installation. Run `sources select ID` only after the user confirms the source switch. `models open` presents the native manager. A local microphone level test requires an existing grant and explicit acceptance with `microphone test-start --confirm`.
 
 ## Step 6: Diagnose recognized text not reaching a target
 

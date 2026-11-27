@@ -11,8 +11,8 @@ pub use dictation::{
 mod product;
 pub use product::{
     DictionaryImportMode, DictionaryRequest, FileFormat, FileRequest, HistoryRequest,
-    MicrophoneRequest, ModelMutation, ModelsRequest, Page, PreferencesRequest, RecordingMode,
-    ScenesRequest,
+    MicrophoneRequest, ModelMutation, ModelPreview, ModelsRequest, Page, PreferencesRequest,
+    RecordingMode, ScenesRequest,
 };
 pub mod readiness;
 
