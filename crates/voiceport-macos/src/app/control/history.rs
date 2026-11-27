@@ -21,8 +21,13 @@ impl Delegate {
 pub(super) fn dispatch(c: &mut Controller, request: HistoryRequest) -> Response {
     let enabled = c.recent_dictations_enabled();
     match request {
-        HistoryRequest::List { limit } if (1..=100).contains(&limit) => Response::ok(json!({
-            "enabled":enabled, "entries":c.list_recent_dictations(usize::from(limit)),
+        HistoryRequest::List {
+            limit,
+            query,
+            delivery,
+        } if (1..=100).contains(&limit) => Response::ok(json!({
+            "enabled":enabled,
+            "entries":c.search_recent_dictations(usize::from(limit), query.as_deref().unwrap_or(""), delivery),
         })),
         HistoryRequest::List { .. } => err(
             "invalid_request",
