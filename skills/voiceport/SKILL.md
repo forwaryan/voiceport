@@ -80,6 +80,10 @@ Use `dictation copy-last` only when the user requests a clipboard write. For dir
 
 Read `status` on the same socket and check the bundle path, PID, `permissions` and `input.gui_receipt`. Correlate the GUI session and generation before reporting whether transcription finished or delivery reached the target. Older App builds may provide only legacy fields that carry over between rounds. Use `app show --settings` to expose the intended instance's settings when requested. CLI dictation uses `delivery:"none"`. For GUI failures, check the recognition source and the receiving app independently. `qq doctor` checks installation only. Do not read target text or transcripts for routine diagnostics, change permissions, reprobe sources or reupload audio automatically. [Delivery status](references/cli.md#delivery-status) · [Troubleshooting workflow](references/workflows.md#recognized-text-not-delivered)
 
+## Compare development performance reports
+
+In a repository checkout, run `python3 -I scripts/performance_compare.py --help` and follow [the fixture and comparison guide](../../docs/PERFORMANCE_BASELINE.md#生成-pr-对照-markdown). Compare two pinned, same-environment synthetic fixture reports and keep their raw logs local. Preserve the comparator's exit status and the missing/failed/incomparable labels. Do not use live `dictation start`, source probes, or real audio to fill missing stages. The command writes Markdown to stdout and does not update a PR.
+
 ## Error handling
 
 Parse `error.code`, not localized messages. Do not log transcript-bearing results as routine diagnostics.

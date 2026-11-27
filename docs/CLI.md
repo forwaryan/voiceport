@@ -74,6 +74,8 @@ voiceport --json sources probe-cancel OPERATION
 
 取消和清理未确认时仍保持 busy，不能启动新任务或正常退出；只读轮询不触发新的清理观察。再次显式取消只检查一次，不能自动反复调用。独立操作 ID 不接管 GUI 测试；旧 `sources test` 与 `dictation result/cancel` 的插件样例协议继续兼容。新操作需要同样包含这些命令的 App，旧 App 会返回 `invalid_request`，应显式启动匹配版本后再使用。
 
+仓库开发者比较两个版本的合成听写时，使用 `python3 -I scripts/performance_compare.py --help` 和[性能基线操作指南](PERFORMANCE_BASELINE.md#生成-pr-对照-markdown)。这是本地开发入口，不是安装版 `voiceport` 的录音或来源探测命令。
+
 ## 已识别但未输入
 
 先用同一 `--socket` 读取 `status`，核对 `bundle_path`、PID 和 `permissions`，然后查看 `input.gui_receipt` 的 `session`、`generation`、转写和投递状态。`input.automatic` 与 `input.start` 仍用于检查设置和启动路径。旧版 App 可能缺少 `gui_receipt`，旧 `input.method` 和 `input.failure_stage` 可能沿用此前一轮的值。需要展示设置时用 `app show --settings`。CLI 听写始终为 `delivery:"none"`。
