@@ -1,8 +1,5 @@
 //! Exercise production start admission and completion with a synthetic worker.
 use super::*;
-use crate::{
-    dictation_dictionary::parse_rules, dictation_output::OutputRules, dictation_workflows::Preset,
-};
 
 fn complete(c: &mut Controller, generation: u64, original: &str) {
     let (jobs, _incoming) = mpsc::sync_channel(1);
@@ -27,6 +24,8 @@ fn complete(c: &mut Controller, generation: u64, original: &str) {
 
 #[test]
 fn dictation_workflow_frozen_gui_profile_preserves_original_and_keeps_cli_literal() {
+    use crate::dictation_dictionary::parse_rules;
+
     let mut c = Controller::new();
     c.workflows.rules = parse_rules("北经 → 北京\nvp → VoicePort").unwrap();
     c.workflows.dictionary_enabled = true;
@@ -71,6 +70,11 @@ fn dictation_workflow_frozen_gui_profile_preserves_original_and_keeps_cli_litera
 
 #[test]
 fn app_rules_gui_start_freezes_scene_or_global_output_only() {
+    use crate::{
+        dictation_dictionary::parse_rules, dictation_output::OutputRules,
+        dictation_workflows::Preset,
+    };
+
     let editor = ApplicationTarget {
         pid: 1,
         bundle: "com.example.Editor".into(),

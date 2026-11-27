@@ -2029,12 +2029,16 @@ pub(crate) mod stop_failure_regression {
 
     impl Fixture {
         fn new(input: Input) -> Self {
+            Self::with_start(input, |controller| controller.state.begin().unwrap())
+        }
+
+        fn with_start(input: Input, start: impl FnOnce(&mut Controller) -> u64) -> Self {
             assert!(MainThreadMarker::new().is_some());
             let temp = tempfile::tempdir().unwrap();
             let store = Storage::at(temp.path().canonicalize().unwrap().join(NAMESPACE));
             let mut controller = Controller::new();
             controller.automatic = false;
-            let generation = controller.state.begin().unwrap();
+            let generation = start(&mut controller);
             assert!(controller.state.permissions(generation, true));
             let (recorder, recording, audio) = stop_failure_fixture::recorder(
                 &store,
@@ -2210,9 +2214,44 @@ pub(crate) mod stop_failure_regression {
     }
 
     fn retry_preserves_recording() {
-        let mut fixture = Fixture::new(Input::Valid);
+        use crate::{dictation_output::OutputRules, dictation_workflows::Preset};
+
+        let mut fixture = Fixture::with_start(Input::Valid, |c| {
+            let editor = ApplicationTarget {
+                pid: 1,
+                bundle: "com.example.Editor".into(),
+            };
+            c.workflows.output_rules.normalize_newlines = true;
+            c.workflows
+                .add_preset(Preset {
+                    name: "编辑".into(),
+                    source_id: CHATGPT.into(),
+                    language: "ja".into(),
+                    dictionary_enabled: false,
+                    output_rules: OutputRules {
+                        trim_edges: true,
+                        ..Default::default()
+                    },
+                })
+                .unwrap();
+            c.workflows.app_rules.enabled = true;
+            c.workflows
+                .app_rules
+                .assign(&editor.bundle, "编辑", &c.workflows.presets)
+                .unwrap();
+            c.prepare_start_with(
+                SessionSource::ChatGpt,
+                "zh".into(),
+                false,
+                true,
+                Some(&editor),
+                |_| panic!("synthetic panel-only session cannot capture an input target"),
+            )
+            .unwrap()
+            .0
+        });
         let original = fixture.controller.state.generation();
-        fixture.controller.begin_gui_receipt(original, false);
+        assert_eq!(fixture.controller.active_app_rule(), Some("场景「编辑」"));
         fixture.controller.gui_diagnostics.capture_pending = Some(original);
         let control = controlled_worker(&mut fixture.controller, 2);
         fixture.controller.stop();
@@ -2248,7 +2287,9 @@ pub(crate) mod stop_failure_regression {
         let failed = fixture.controller.gui_dictation_diagnostics().unwrap();
         assert_eq!(failed.capture.unwrap().generation, original);
         assert!(failed.timings.transcription_ms.is_some());
+        fixture.controller.workflows = Workflows::default();
         fixture.controller.retry();
+        assert_eq!(fixture.controller.active_app_rule(), Some("场景「编辑」"));
         let current = control
             .started
             .recv_timeout(Duration::from_secs(5))
@@ -2282,10 +2323,8 @@ pub(crate) mod stop_failure_regression {
             assert_eq!(fixture.controller.transcript, PREVIEW);
             assert!(fixture.recording.upgrade().is_some() && fixture.lease_active());
         }
-        control
-            .reply
-            .send(Ok("synthetic final transcription".into()))
-            .unwrap();
+        const RAW: &str = "  synthetic final\r\ntranscription  ";
+        control.reply.send(Ok(RAW.into())).unwrap();
         control
             .published
             .recv_timeout(Duration::from_secs(5))
@@ -2295,8 +2334,9 @@ pub(crate) mod stop_failure_regression {
         assert!(!fixture.controller.state.retry_available);
         assert_eq!(
             fixture.controller.transcript,
-            "synthetic final transcription"
+            "synthetic final\r\ntranscription"
         );
+        assert_eq!(fixture.controller.raw_transcript.as_deref(), Some(RAW));
         assert!(fixture.released("retry", "matching-success"));
         control.thread.join().unwrap();
     }

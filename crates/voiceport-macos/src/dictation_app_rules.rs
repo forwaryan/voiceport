@@ -98,7 +98,6 @@ impl AppRules {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::dictation_workflows::Workflows;
 
     fn preferences() -> Workflows {
@@ -113,6 +112,8 @@ mod tests {
 
     #[test]
     fn app_rules_legacy_disabled_exact_match_and_global_fallback() {
+        use super::AppRules;
+
         let mut prefs = preferences();
         let rules = &mut prefs.app_rules;
         assert_eq!(*rules, AppRules::default());
@@ -156,6 +157,8 @@ mod tests {
 
     #[test]
     fn app_rules_edit_roundtrip_validation_and_scene_removal() {
+        use super::{AppRules, MAX_RULES};
+
         let mut prefs = preferences();
         let rules = &mut prefs.app_rules;
         *rules = AppRules::from_editor(

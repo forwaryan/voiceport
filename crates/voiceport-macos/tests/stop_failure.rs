@@ -11,6 +11,10 @@ mod audio;
 mod controller;
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
+#[path = "../src/dictation_app_rules.rs"]
+mod dictation_app_rules;
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
 #[path = "../src/dictation_dictionary.rs"]
 mod dictation_dictionary;
 #[cfg(target_os = "macos")]
@@ -21,6 +25,10 @@ mod dictation_output;
 #[allow(dead_code)]
 #[path = "../src/dictation_workflows.rs"]
 mod dictation_workflows;
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "../src/hotkey.rs"]
+mod hotkey;
 #[cfg(target_os = "macos")]
 #[allow(dead_code, unused_imports)]
 #[path = "../src/local_audio.rs"]
@@ -57,6 +65,10 @@ use plugin_dependencies::{
 #[allow(dead_code, unused_imports)] // Its libtest-only imports are inert in this harness.
 #[path = "../src/proxy.rs"]
 mod proxy;
+#[cfg(target_os = "macos")]
+#[allow(dead_code, unused_imports)]
+#[path = "../src/shortcut.rs"]
+mod shortcut;
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 #[path = "../src/status_overlay.rs"]
