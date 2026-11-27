@@ -86,8 +86,85 @@ pub(super) fn render_progress(manager: &Manager, display: ProgressDisplay) {
 
 pub(super) const ROW_HEIGHT: f64 = 104.;
 
-pub(super) fn list_frame(width: f64, height: f64) -> NSRect {
-    rect(20., 76., width - 40., height - 282.)
+pub(super) fn list_frame(width: f64, height: f64, local: bool) -> NSRect {
+    rect(
+        20.,
+        76.,
+        width - 40.,
+        height - if local { 328. } else { 282. },
+    )
+}
+
+pub(super) fn recommendation_frame(width: f64, height: f64) -> NSRect {
+    rect(24., height - 246., width - 48., 46.)
+}
+
+pub(super) struct Recommendation {
+    pub container: Retained<NSView>,
+    title: Retained<NSTextField>,
+    detail: Retained<NSTextField>,
+}
+
+impl Recommendation {
+    fn build(owner: &Delegate, view: &NSView, frame: NSRect) -> Self {
+        let container = NSView::initWithFrame(NSView::alloc(owner.mtm()), frame);
+        view.addSubview(&container);
+        surface(
+            owner,
+            &container,
+            rect(0., 0., frame.size.width, frame.size.height),
+        );
+        let width = frame.size.width - 24.;
+        let title = owner.label(&container, "", rect(12., 23., width, 18.), 12.);
+        title.setAccessibilityIdentifier(Some(ns_string!("voiceport.models.recommendation")));
+        let detail = owner.caption(&container, "", rect(12., 5., width, 16.));
+        detail
+            .setAccessibilityIdentifier(Some(ns_string!("voiceport.models.recommendation.detail")));
+        Self {
+            container,
+            title,
+            detail,
+        }
+    }
+
+    pub(super) fn render(&self, view: &LocalView) {
+        let language =
+            voiceport_core::language::LANGUAGES[voiceport_core::language::index(&view.language)].1;
+        let preview = |mode| match mode {
+            ModelPreview::Any => "全部预览方式",
+            ModelPreview::Live => "实时预览",
+            ModelPreview::AfterStop => "停止后出字",
+        };
+        let (title, detail) =
+            match crate::model_library::recommend(&view.language, view.browse.preview) {
+                Some(model) => {
+                    let index = MODELS.iter().position(|d| d.id == model.id).unwrap();
+                    let status = match view.rows[index].primary {
+                        PrimaryAction::Use if view.source_id == model.id => "使用中",
+                        PrimaryAction::Use => "已安装",
+                        PrimaryAction::AwaitCatalog => "已安装 · 正在刷新",
+                        PrimaryAction::Reinstall => "需要更新或重装",
+                        PrimaryAction::Download => "未安装",
+                    };
+                    (
+                        format!("本地推荐 · {} · {status}", model.name),
+                        format!(
+                            "听写语言：{language} · {} · 兼容模型中下载量最小（{}）",
+                            preview(model.preview()),
+                            model_size(model.bytes())
+                        ),
+                    )
+                }
+                None => (
+                    "本地推荐 · 无兼容模型".into(),
+                    format!("听写语言：{language} · {}", preview(view.browse.preview)),
+                ),
+            };
+        self.title.setStringValue(&NSString::from_str(&title));
+        self.title.setToolTip(Some(&NSString::from_str(&title)));
+        self.detail.setStringValue(&NSString::from_str(&detail));
+        self.detail.setToolTip(Some(&NSString::from_str(&detail)));
+    }
 }
 
 pub(super) fn surface(owner: &Delegate, view: &NSView, frame: NSRect) -> Retained<NSBox> {
@@ -111,9 +188,9 @@ fn divider(owner: &Delegate, view: &NSView, frame: NSRect) {
 
 fn description(kind: ModelKind) -> &'static str {
     match kind {
-        ModelKind::SenseVoice => "自动识别中日韩英粤，适合日常听写。",
-        ModelKind::WhisperTurbo => "覆盖多种语言；运行时需要更多内存。",
-        ModelKind::Whisper => "体积小，适合先体验本地识别。",
+        ModelKind::SenseVoice => "自动识别中日韩英粤，停止后转写。",
+        ModelKind::WhisperTurbo => "覆盖多种语言，支持粤语。",
+        ModelKind::Whisper => "下载量小，停止后转写。",
         ModelKind::Paraformer => "中英双语，边说边显示文字。",
         ModelKind::ParakeetTdtV3 => "欧洲多语言识别，录音结束后转写。",
         ModelKind::ParakeetTdtV2 => "英语识别，录音结束后转写。",
@@ -266,7 +343,7 @@ fn row(
 }
 
 pub(super) fn build(manager: &Manager, owner: &Delegate) {
-    let size = source_manager::content_size(owner, NSSize::new(620., 520.));
+    let size = source_manager::content_size(owner, NSSize::new(620., 566.));
     let (width, available_height) = (size.width, size.height);
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -451,7 +528,10 @@ pub(super) fn build(manager: &Manager, owner: &Delegate) {
     manager.ivars().browse_preview.set(preview).ok();
     manager.ivars().browse_order.set(order).ok();
 
-    let frame = list_frame(width, height);
+    let recommendation = Recommendation::build(owner, &view, recommendation_frame(width, height));
+    manager.ivars().recommendation.set(recommendation).ok();
+
+    let frame = list_frame(width, height, true);
     let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(owner.mtm()), frame);
     scroll.setHasVerticalScroller(true);
     scroll.setAutohidesScrollers(true);
@@ -494,7 +574,10 @@ pub(super) fn build(manager: &Manager, owner: &Delegate) {
     );
     empty.setHidden(true);
     list.scrollPoint(NSPoint::new(0., list_height));
-    let cloud_scroll = NSScrollView::initWithFrame(NSScrollView::alloc(owner.mtm()), frame);
+    let cloud_scroll = NSScrollView::initWithFrame(
+        NSScrollView::alloc(owner.mtm()),
+        list_frame(width, height, false),
+    );
     cloud_scroll.setHasVerticalScroller(true);
     cloud_scroll.setAutohidesScrollers(true);
     cloud_scroll.setDrawsBackground(false);

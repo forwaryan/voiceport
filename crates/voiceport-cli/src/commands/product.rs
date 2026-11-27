@@ -5,7 +5,7 @@ use std::{
 };
 use voiceport_control::{
     Action, DictionaryRequest, FileFormat, FileRequest, HistoryRequest, MicrophoneRequest,
-    ModelMutation, ModelsRequest, Page, PreferencesRequest, Response, ScenesRequest,
+    ModelMutation, ModelPreview, ModelsRequest, Page, PreferencesRequest, Response, ScenesRequest,
 };
 
 pub(super) const GROUPS: &[&str] = &[
@@ -115,6 +115,34 @@ fn absolute_path(value: &str) -> Result<PathBuf, Response> {
 }
 
 fn models(words: &[&str]) -> Result<ModelsRequest, Response> {
+    if let ["recommend", options @ ..] = words {
+        let mut requested_language = None;
+        let mut preview = None;
+        let mut pairs = options.chunks_exact(2);
+        for pair in &mut pairs {
+            match pair {
+                ["--language", code] if requested_language.is_none() => {
+                    requested_language = Some(language(code)?);
+                }
+                ["--preview", mode] if preview.is_none() => {
+                    preview = Some(match *mode {
+                        "any" => ModelPreview::Any,
+                        "live" => ModelPreview::Live,
+                        "after-stop" => ModelPreview::AfterStop,
+                        _ => return Err(invalid()),
+                    });
+                }
+                _ => return Err(invalid()),
+            }
+        }
+        if !pairs.remainder().is_empty() {
+            return Err(invalid());
+        }
+        return Ok(ModelsRequest::Recommend {
+            language: requested_language,
+            preview: preview.unwrap_or_default(),
+        });
+    }
     let mutation = match words {
         ["download", id] if positional(id) => ModelMutation::Download { id: (*id).into() },
         ["update", id] if positional(id) => ModelMutation::Update { id: (*id).into() },
