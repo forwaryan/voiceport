@@ -151,22 +151,8 @@ impl Controller {
         query: &str,
         delivery: Option<HistoryDelivery>,
     ) -> Vec<RecentDictationMetadata> {
-        // Fold both sides rather than lowercasing in context: a word-final Σ
-        // and an isolated Σ otherwise become different lowercase characters.
-        let fold = |text: &str| {
-            NSString::from_str(text)
-                .stringByFoldingWithOptions_locale(
-                    NSStringCompareOptions::CaseInsensitiveSearch,
-                    None,
-                )
-                .to_string()
-        };
         let query = query.trim();
-        let query = if query.is_empty() {
-            String::new()
-        } else {
-            fold(query)
-        };
+        let query = (!query.is_empty()).then(|| NSString::from_str(query));
         self.recent_dictations
             .entries
             .iter()
@@ -174,11 +160,18 @@ impl Controller {
                 delivery.is_none_or(|filter| entry.metadata.delivery_filter() == filter)
             })
             .filter(|entry| {
-                query.is_empty()
-                    || entry
-                        .text
-                        .as_deref()
-                        .is_some_and(|text| fold(text).contains(&query))
+                query.as_ref().is_none_or(|query| {
+                    entry.text.as_deref().is_some_and(|text| {
+                        // Search original ranges, so a query cannot match half of ß → ss.
+                        NSString::from_str(text)
+                            .rangeOfString_options(
+                                query,
+                                NSStringCompareOptions::CaseInsensitiveSearch,
+                            )
+                            .length
+                            > 0
+                    })
+                })
             })
             .take(limit)
             .map(|entry| entry.metadata.clone())
