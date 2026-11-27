@@ -70,11 +70,11 @@ impl OutputPipeline {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::dictation_dictionary::parse_rules;
-
     #[test]
     fn dictation_output_preserves_default_bytes_and_applies_rules_independently() {
+        use super::{OutputPipeline, OutputRules};
+        use std::borrow::Cow;
+
         let input = "\u{3000}e\u{301}\r\n👩🏽‍💻\r🙂  \n";
         let identity = OutputPipeline::default();
         assert!(identity.is_identity());
@@ -109,6 +109,9 @@ mod tests {
 
     #[test]
     fn dictation_output_exposes_dictionary_result_before_formatting() {
+        use super::{OutputPipeline, OutputRules};
+        use crate::dictation_dictionary::parse_rules;
+
         let dictionary = parse_rules("vp → VoicePort").unwrap();
         let pipeline = OutputPipeline::compile(
             &dictionary,
