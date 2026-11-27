@@ -10,7 +10,8 @@ use std::{path::PathBuf, time::Instant};
 mod browse;
 mod cloud;
 mod local_state;
-use browse::{Browse, Order, Preview};
+use browse::{Browse, Order, preview_from_index};
+use voiceport_control::ModelPreview;
 mod presentation;
 use presentation::ROW_HEIGHT;
 
@@ -61,6 +62,7 @@ pub(super) struct State {
     browse_language: OnceCell<Retained<NSPopUpButton>>,
     browse_preview: OnceCell<Retained<NSPopUpButton>>,
     browse_order: OnceCell<Retained<NSPopUpButton>>,
+    recommendation: OnceCell<presentation::Recommendation>,
     scroll: OnceCell<Retained<NSScrollView>>,
     list: OnceCell<Retained<NSView>>,
     empty: OnceCell<Retained<NSTextField>>,
@@ -352,6 +354,12 @@ impl Manager {
         self.ivars().scroll.get().unwrap().setHidden(cloud_page);
         self.ivars().tabs.get().unwrap().setHidden(cloud_page);
         self.ivars().browse_bar.get().unwrap().setHidden(cloud_page);
+        self.ivars()
+            .recommendation
+            .get()
+            .unwrap()
+            .container
+            .setHidden(cloud_page);
         self.ivars().engine.get().unwrap().setHidden(cloud_page);
         self.ivars()
             .cloud
@@ -376,7 +384,7 @@ impl Manager {
             .setStringValue(&NSString::from_str(if cloud_page {
                 "凭据保存在系统钥匙串；连接未检测，识别质量尚未测量。"
             } else {
-                "模型来源与许可见详情；更新失败保留旧副本。识别质量尚未测量。"
+                "模型来源与许可见详情；更新失败保留旧副本。识别质量与性能尚未测量。"
             }));
         let slot = self.ivars().owner.ivars().controller.borrow();
         let Some(c) = slot.as_ref() else {
@@ -437,7 +445,7 @@ impl Manager {
                         .unwrap()
                         .indexOfSelectedItem() as usize,
                 ),
-                preview: Preview::from_index(
+                preview: preview_from_index(
                     self.ivars()
                         .browse_preview
                         .get()
@@ -489,6 +497,7 @@ impl Manager {
     }
     fn render_local(&self, view: &LocalView) {
         self.set_current(&view.current_title);
+        self.ivars().recommendation.get().unwrap().render(view);
         let engine = self.ivars().engine.get().unwrap();
         engine.setEnabled(view.ready && !view.engine_ready);
         engine.setTitle(if view.engine_ready {
@@ -802,7 +811,7 @@ fn discard_queued_hotkeys(receiver: &std::sync::mpsc::Receiver<crate::hotkey::Ho
 }
 
 fn page_height(height: f64) -> f64 {
-    height.max(516.)
+    height.max(562.)
 }
 
 fn model_size(bytes: u64) -> String {
@@ -836,6 +845,7 @@ pub(super) fn show(owner: &Delegate) -> Result<(), String> {
         browse_language: OnceCell::new(),
         browse_preview: OnceCell::new(),
         browse_order: OnceCell::new(),
+        recommendation: OnceCell::new(),
         scroll: OnceCell::new(),
         list: OnceCell::new(),
         empty: OnceCell::new(),
@@ -894,12 +904,12 @@ mod tests {
         for content_height in [1., 383., 503., 623., 740.] {
             let layout = page_height(content_height);
             let filter_bottom = layout - 194.;
-            let list = presentation::list_frame(620., layout);
+            let recommendation = presentation::recommendation_frame(620., layout);
+            let recommendation_top = recommendation.origin.y + recommendation.size.height;
+            let list = presentation::list_frame(620., layout, true);
             let list_top = list.origin.y + list.size.height;
-            assert!(
-                list_top <= filter_bottom - 12.,
-                "screen content height {content_height}"
-            );
+            assert!(recommendation_top < filter_bottom);
+            assert!(list_top < recommendation.origin.y);
             assert!(list.origin.y >= 76., "list must not cover the task footer");
             assert!(
                 list.size.height >= ROW_HEIGHT * 2.,
