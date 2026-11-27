@@ -370,10 +370,15 @@ impl Delegate {
 }
 
 pub(super) fn capabilities() -> Response {
+    let updates: &[&str] = if voiceport_core::test_build::active() {
+        &["status"]
+    } else {
+        &["check", "status"]
+    };
     Response::ok(json!({
         "control_schema":voiceport_control::VERSION, "version":env!("CARGO_PKG_VERSION"),
         "user_scope":"effective_user", "platform":"macos",
-        "app_update":["check","status"],
+        "app_update":updates,
         "groups":["app","status","sources","plugins","dictation","preferences","microphone","models","dictionary","scenes","history","file"],
     }))
 }

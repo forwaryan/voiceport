@@ -459,8 +459,13 @@ impl Drop for Recording {
 pub fn default_storage() -> io::Result<Storage> {
     let home = objc2_foundation::NSHomeDirectory().to_string();
     require(!home.is_empty())?;
+    let namespace = if voiceport_core::test_build::active() {
+        "io.voiceport.test-rust-recordings-v1"
+    } else {
+        NAMESPACE
+    };
     Ok(Storage::at(
-        PathBuf::from(home).join("Library/Caches").join(NAMESPACE),
+        PathBuf::from(home).join("Library/Caches").join(namespace),
     ))
 }
 

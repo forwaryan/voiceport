@@ -42,6 +42,25 @@ python3 -I -m unittest discover -s Tests/PackagingTests -v
 
 Negative cases cover unknown arguments, missing release products without implicit rebuilding, custom metadata/output paths from an external cwd, existing output protection, executable modes, wrong re-signed GUI and CLI products, tampered/extra Skill files, missing/tampered/unlisted licence material, unknown declarations/selections, omitted packages, root/descendant symlinks, extra helpers and inventory drift.
 
+## Isolated macOS test ZIP
+
+```sh
+python3 -I scripts/macos_artifacts.py test-build dist/test-01
+```
+
+Use an unused output directory with an existing parent. The command takes the shared host and checkout verification locks, builds from cached dependencies with the locked workspace, and uses the same package and bundle correspondence checks as a normal build. `--skip-build` reuses the selected Cargo target directory's release products from the current checkout. The package checks both products expose the test profile before creating the ZIP. Output contains `VoicePort-Test-macos-arm64.zip`, `artifact-manifest.json`, and the manifest digest in the JSON receipt on stdout. Existing outputs are rejected. Signing is always ad-hoc for this profile.
+
+Extract into a new location. Finder shows **VoicePort Test** with bundle ID `io.github.forwaryan.voiceport.test`. If launch has been authorized, open that exact `.app`, and use its bundled `Contents/MacOS/voiceport-test` for control:
+
+```sh
+"/absolute/extracted/VoicePort Test.app/Contents/MacOS/voiceport-test" --json app status
+"/absolute/extracted/VoicePort Test.app/Contents/MacOS/voiceport-test" --json app update status
+```
+
+Confirm `data.bundle_path` and `pid` before mutations. App and CLI use `/private/tmp/voiceport-test-control-UID/control.sock`. The App ignores the inherited `VOICEPORT_CONTROL_SOCKET`; the test CLI accepts only its own endpoint, including when `--socket` is supplied. Keep both executables inside the bundle with their shipped names so the test profile stays active. macOS uses the separate bundle ID for preferences. Sources, managed models and default ChatGPT auth live under `~/Library/Application Support/VoicePort Test/`; the auth file is `codex/auth.json`. Source, model and Codex home overrides used by the regular build are ignored for these defaults. Recordings use `~/Library/Caches/io.voiceport.test-rust-recordings-v1`; plugin credentials use the `VoicePortTest.TranscriptionSources.v1` Keychain service. The test profile does not discover models or runtime libraries from the regular Orca installation. Global dictation shortcut and automatic input are off on first launch. Use synthetic data in isolation; macOS permissions and hardware are still managed by the OS.
+
+The workbench shows **VoicePort Test** and its Software Update page shows updates disabled. `app update status` returns `state:"disabled"` and `app update check` returns `unsupported`. Automatic checks, downloads and installs are disabled. See [verification of a final ZIP and its attachments](MACOS_UPDATES.md#核验最终-zip-和附件) for checking the ZIP before opening it.
+
 ## Product inputs and licence materials
 
 Complete product manifests include `.gitignore`, Cargo manifests and lockfile, README/THIRD_PARTY_NOTICES, and all regular inputs under Tests/crates/scripts/resources/automation/docs/skills, including new/untracked files. Entries have path/bytes/SHA256/mode and a directory set. New/deleted/content/mode changes fail start/end equality; symlink/special inputs fail closed. target/.build/dist, private evidence/coordination, root planning and generated pycache are excluded. This is a run-integrity check, not the coordinator's independent acceptance freeze.

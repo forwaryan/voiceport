@@ -7,6 +7,7 @@ pub mod auth;
 mod client;
 mod error;
 pub mod language;
+pub mod test_build;
 
 pub use client::TranscriptionClient;
 pub use error::{Error, Result};

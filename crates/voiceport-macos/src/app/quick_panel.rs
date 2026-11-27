@@ -547,7 +547,12 @@ impl Delegate {
 
         let icon = self.icon(&header, "waveform.circle.fill", rect(16., 133., 21., 21.));
         icon.setContentTintColor(Some(&NSColor::controlAccentColor()));
-        let brand = self.label(&header, "VoicePort", rect(45., 134., 135., 21.), 14.);
+        let brand = self.label(
+            &header,
+            voiceport_core::test_build::application_name(),
+            rect(45., 134., 135., 21.),
+            14.,
+        );
         brand.setFont(Some(&NSFont::boldSystemFontOfSize(14.)));
         let open = panel_button(
             self,

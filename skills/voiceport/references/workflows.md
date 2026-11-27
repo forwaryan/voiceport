@@ -1,5 +1,11 @@
 # VoicePort automation workflows
 
+## Build or verify a test ZIP
+
+From the source checkout, `python3 -I scripts/macos_artifacts.py test-build NEW_OUTPUT` produces an offline ad-hoc ZIP and manifest. Use the digest from the build receipt with `python3 -I scripts/macos_artifacts.py verify OUTPUT --manifest-sha256 DIGEST --version VERSION --build BUILD --signature test`. For regular release assets, use the same verifier with the separately recorded manifest digest and the expected `--signature preview --certificate-sha1 SHA1` or `--signature distribution --team-id TEAM_ID`. Help and usage are available via `scripts/macos_artifacts.py --help` when run with Python 3.11 or newer.
+
+When authorized to launch the extracted **VoicePort Test.app**, address its `Contents/MacOS/voiceport-test` CLI. It connects to the dedicated test socket. Verify `app status` reports the exact bundle path and expected PID before mutations. The test copy has separate preferences, sources, models, recordings and credential identifiers, and its updater reports disabled.
+
 ## Configure a controlled local service
 
 First identify the intended running instance and inspect capabilities:

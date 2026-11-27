@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from product_inventory import inventory, FILES, FOLDERS
 from license_materials import check
 from check_bundle import validate
+from macos_artifacts import TEST_ARCHIVE, build_test, extract_zip
 
 
 def cargo_target():
@@ -224,6 +225,36 @@ class RealBundleTests(unittest.TestCase):
                             '--entitlements', str(ROOT / 'resources/VoicePort.entitlements'), str(app)],
                            check=True, capture_output=True)
             self.assertTrue(validate(app, self.native)['signed_copy_matches'])
+
+    def test_actual_rust_test_package_routes_offline_cli_and_blocks_apply(self):
+        # The owning verification entry point already holds the shared lock.
+        with tempfile.TemporaryDirectory(prefix='voiceport-test-package-') as temp:
+            root = pathlib.Path(temp)
+            output = root / 'artifacts'
+            with patch.dict(os.environ, {'VOICEPORT_CODESIGN_IDENTITY': 'unused-test-fixture'}):
+                report = build_test(output, skip_build=True)
+            self.assertEqual(report['status'], 'verified')
+            self.assertEqual(report['signature'], 'test')
+            extracted = root / 'extracted'
+            extracted.mkdir()
+            app = extract_zip((output / TEST_ARCHIVE).read_bytes(), extracted, 'VoicePort Test.app')
+            cli = app / 'Contents/MacOS/voiceport-test'
+            main = app / 'Contents/MacOS/voiceport-test-app'
+            version = json.loads(subprocess.check_output([cli, '--json', '--version']))
+            self.assertEqual(version['data']['build_profile'], 'test')
+            self.assertEqual(version['data']['version'], report['version'])
+            refusal = subprocess.run([cli, '--json', '--socket', str(root / 'other.sock'), 'app', 'status'],
+                                     capture_output=True, text=True)
+            self.assertEqual(refusal.returncode, 2, refusal.stdout + refusal.stderr)
+            self.assertIn('dedicated control socket', refusal.stdout)
+            apply = subprocess.run([main, '--apply-staged-update', '2', str(root / 'absent.app'),
+                                    str(root / 'absent-staging'), report['version'], '0', '0'],
+                                   capture_output=True, text=True)
+            self.assertEqual(apply.returncode, 1, apply.stderr)
+            self.assertIn('VoicePort Test 已停用软件更新', apply.stderr)
+            self.assertFalse((root / 'absent.app').exists())
+            with self.assertRaisesRegex(ValueError, 'already exists'):
+                build_test(output, skip_build=True)
 
     def test_bundle_contains_rust_main_without_helper(self):
         self.assertTrue(validate(self.app, self.native)['main_signed_copy_matches'])

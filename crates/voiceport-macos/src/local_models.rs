@@ -153,6 +153,10 @@ pub struct Catalog {
 const ORCA_HOME_ERROR: &str = "无法定位 Orca 模型目录。请检查 HOME。";
 
 pub(crate) fn orca_model_root() -> Option<PathBuf> {
+    if voiceport_core::test_build::active() {
+        return voiceport_core::test_build::support_directory()
+            .map(|path| path.join("orca-models"));
+    }
     std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
         .map(|home| PathBuf::from(home).join("Library/Application Support/orca/speech-models"))
@@ -176,10 +180,11 @@ impl<'a> OrcaDiscovery<'a> {
             if !metadata.is_dir() {
                 return Err(format!("Orca 模型路径不是目录：{}", root.display()));
             }
-            let runtime = paths.map_or_else(
-                || PathBuf::from(RUNTIME_DIRECTORY),
-                |paths| paths.runtime_or_orca(),
-            );
+            let runtime = match paths {
+                Some(paths) => paths.runtime_or_orca(),
+                None if voiceport_core::test_build::active() => return Err(ORCA_HOME_ERROR.into()),
+                None => PathBuf::from(RUNTIME_DIRECTORY),
+            };
             validate_runtime(&runtime, std::env::consts::ARCH)?;
             Ok((root, runtime))
         })();
