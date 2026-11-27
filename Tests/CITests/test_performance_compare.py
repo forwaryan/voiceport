@@ -38,6 +38,17 @@ class PerformanceCompareTests(unittest.TestCase):
                 if label == 'headless' and case == 'failed':
                     rows.pop()
                     report['status'] = 'failed'
+                idle_scene = 'idle_panel_uncreated' if label == 'headless' else 'idle_detached_hidden'
+                idle = dict(scene=idle_scene, window_seconds=1.1, panel_created=label == 'detached')
+                if label == 'headless' and case == 'idle-config':
+                    idle.update(window_seconds=0.1, panel_created=True)
+                if label == 'headless' and case == 'copied-observations':
+                    idle['window_seconds'] = 1.2  # Different bytes, identical measured vectors.
+                if label != 'headless' or case != 'missing-idle':
+                    rows.append(idle)
+                    report[idle_scene] = idle
+                if label == 'detached' and case == 'detached-idle':
+                    report[idle_scene] = {**idle, 'panel_created': False}
                 raw = ''.join(json.dumps(row) + '\n' for row in rows).encode()
                 check = dict(clean_check, label=label, argv=['probe', label, 'cli', '3', '1'],
                              stdout_sha256=sha256(raw), stdout_bytes=len(raw))
@@ -77,9 +88,14 @@ class PerformanceCompareTests(unittest.TestCase):
                 ('wrong-fixture', 1, 'Sample manifest mismatch'),
                 ('different-environment', 1, 'Environment mismatch'),
                 ('failed', 1, 'headless: failed or incomplete check (exit 101)'),
+                ('missing-idle', 1, 'idle_panel_uncreated: expected exactly one idle observation'),
+                ('idle-config', 1, 'idle_panel_uncreated: invalid or shorter idle window than requested'),
+                ('detached-idle', 1, 'idle_detached_hidden: report idle observation differs from stdout'),
+                ('copied-observations', 1, 'Both sides use identical synthetic dictation observations'),
             ):
                 with self.subTest(case=case):
-                    result = compare(make(directory / case, 5, case), '--environment-id', 'synthetic-test')
+                    offset = 0 if case == 'copied-observations' else 5
+                    result = compare(make(directory / case, offset, case), '--environment-id', 'synthetic-test')
                     self.assertEqual(result.returncode, expected, result.stderr)
                     self.assertIn(marker, result.stdout)
                     self.assertIn('first audio frame | Not measured | Not measured', result.stdout)
@@ -87,7 +103,9 @@ class PerformanceCompareTests(unittest.TestCase):
                     self.assertTrue(all('observation only' in line and '+5.000' not in line
                                         for line in result.stdout.splitlines() if 'Offscreen refresh' in line))
                     if case not in ('good', 'missing-stage', 'missing-summary'):
-                        self.assertNotIn('+5.000 / +5.000', result.stdout)
+                        self.assertNotRegex(result.stdout, r'\| [+-]\d+\.\d+ / [+-]\d+\.\d+ \|')
+                    if case == 'idle-config':
+                        self.assertIn('idle_panel_uncreated: panel creation state does not match mode', result.stdout)
                     if case == 'failed':
                         self.assertIn('(2 / 0 / 1)', result.stdout)
             result = compare(directory / 'good' / 'report.json')

@@ -72,23 +72,26 @@ def fixture_identity(head):
     return sha256(''.join(sha256(git_file(head, path)) for path in PROBE_SOURCES).encode())
 
 
-def sealed_rows(path, check, scenes, runs):
+def sealed_rows(path, check, scenes, idle_scene, runs):
     data = bounded_bytes(path)
     if (type(check.get('stdout_bytes')) is not int or len(data) != check['stdout_bytes']
             or sha256(data) != check.get('stdout_sha256') or (data and not data.endswith(b'\n'))):
         raise ValueError('stdout digest, size, or line ending mismatch')
     rows = {scene: [] for scene in scenes}
+    idle_rows = []
     for line in data.splitlines():
         row = json.loads(line)
         if not isinstance(row, dict):
             raise ValueError('invalid observation')
         scene = row.get('scene')
-        if isinstance(scene, str) and scene in rows:
+        if scene == idle_scene:
+            idle_rows.append(row)
+        elif isinstance(scene, str) and scene in rows:
             index = row.get('iteration')
             if type(index) is not int or index != len(rows[scene]) + 1 or index > runs:
                 raise ValueError('missing, repeated, or unordered iteration')
             rows[scene].append(row)
-    return rows
+    return rows, idle_rows
 
 
 def check_passed(check):
@@ -99,7 +102,7 @@ def check_passed(check):
             and 'error' not in check)
 
 
-def milliseconds(value):
+def nonnegative_number(value):
     return (type(value) in (float, int) and 0 <= value <= sys.float_info.max
             and math.isfinite(value))
 
@@ -175,11 +178,25 @@ class Evidence:
                 self.idle_seconds = int(argv[4])
             elif self.idle_seconds != int(argv[4]):
                 self.issues.append('detached: idle window does not match headless')
+            scenes = ('synthetic_dictation',) if label == 'headless' else DETACHED
+            idle_scene = 'idle_panel_uncreated' if label == 'headless' else 'idle_detached_hidden'
             try:
-                scenes = ('synthetic_dictation',) if label == 'headless' else DETACHED
-                self.rows.update(sealed_rows(path.with_name(f'{label}.stdout'), check, scenes, self.runs))
+                rows, idle_rows = sealed_rows(path.with_name(f'{label}.stdout'), check, scenes, idle_scene, self.runs)
             except (OSError, ValueError, RecursionError):
                 self.issues.append(f'{label}: stdout missing, truncated, altered, or invalid')
+                continue
+            self.rows.update(rows)
+            if len(idle_rows) != 1:
+                self.issues.append(f'{idle_scene}: expected exactly one idle observation')
+                continue
+            idle, = idle_rows
+            window = idle.get('window_seconds')
+            if not nonnegative_number(window) or window < int(argv[4]):
+                self.issues.append(f'{idle_scene}: invalid or shorter idle window than requested')
+            if idle.get('panel_created') is not (label == 'detached'):
+                self.issues.append(f'{idle_scene}: panel creation state does not match mode')
+            if idle != report.get(idle_scene):
+                self.issues.append(f'{idle_scene}: report idle observation differs from stdout')
 
     def digest(self, key):
         identity = object_or_empty(self.report.get(key))
@@ -187,17 +204,22 @@ class Evidence:
             return token(identity.get('sha256'), DIGEST)
         return None
 
+    def dictation_timings(self):
+        # Compare the measured vectors, not report metadata, log encoding or idle counters.
+        return [tuple(row.get(key) for key in STAGES)
+                for row in self.rows.get('synthetic_dictation', [])]
+
     def stage(self, scene, key):
         rows = self.rows.get(scene)
         if rows is None:
             return '— (counts unknown)', None
-        values = [row[key] for row in rows if milliseconds(row.get(key))]
+        values = [row[key] for row in rows if nonnegative_number(row.get(key))]
         stats = percentiles(values) if values else {'n': 0}
         display = f"{stats['p50']:.3f} / {stats['p95']:.3f}" if values else '—'
         display += f' ({len(values)} / {len(rows) - len(values)} / {self.runs - len(rows)})'
         recorded = object_or_empty(object_or_empty(self.report.get(scene)).get(key))
         complete = (len(values) == self.runs and type(recorded.get('n')) is int
-                    and all(milliseconds(recorded.get(p)) for p in ('p50', 'p95')) and recorded == stats)
+                    and all(nonnegative_number(recorded.get(p)) for p in ('p50', 'p95')) and recorded == stats)
         return display, stats if complete else None
 
 
@@ -206,8 +228,9 @@ def render(base, candidate, environment_id):
     gates = [f'{name}: {issue}' for name, side in zip(('Base', 'Candidate'), sides) for issue in side.issues]
     if not environment_id:
         gates.append('Same host/build/runtime conditions not attested (`--environment-id`).')
-    if base.report_digest and base.report_digest == candidate.report_digest:
-        gates.append('Both sides use the same report, not independent runs.')
+    base_timings = base.dictation_timings()
+    if base_timings and base_timings == candidate.dictation_timings():
+        gates.append('Both sides use identical synthetic dictation observations; independent runs are not established.')
     for field, label in (('environment', 'Environment'), ('fixture', 'Fixture source'),
                          ('manifest', 'Sample manifest'), ('runs', 'Requested runs'), ('idle_seconds', 'Idle window')):
         if getattr(base, field) != getattr(candidate, field):
