@@ -5,8 +5,9 @@ use crate::{
         status_overlay, workbench,
     },
     controller::{Controller, VisibleTranscript},
-    dictation_dictionary::{Dictionary, format_rules, parse_rules},
-    dictation_workflows::Preset,
+    dictation_dictionary::{format_rules, parse_rules},
+    dictation_output::{OutputPipeline, OutputRules},
+    dictation_workflows::{Preset, Workflows},
     local_models::SessionSource,
     model_library::MODELS,
     shortcut::ShortcutMode,
@@ -14,8 +15,8 @@ use crate::{
 use objc2::DefinedClass;
 use serde_json::{Value, json};
 use voiceport_control::{
-    DictionaryRequest, MicrophoneRequest, Page, PreferencesRequest, RecordingMode, ScenesRequest,
-    TranscriptionState,
+    DictionaryRequest, MicrophoneRequest, OutputRule, Page, PreferencesRequest, RecordingMode,
+    ScenesRequest, TranscriptionState,
 };
 
 pub(super) enum Window {
@@ -301,23 +302,24 @@ impl Delegate {
                 }
             }
             DictionaryRequest::Preview { text } => {
-                if text.len() > 24_000 {
-                    return err(
-                        "invalid_request",
-                        "Dictionary preview exceeds the input limit.",
-                    );
+                return output_preview(&c.workflows, &text, false);
+            }
+            DictionaryRequest::OutputPreview { text } => {
+                return output_preview(&c.workflows, &text, true);
+            }
+            DictionaryRequest::OutputShow => {
+                return Response::ok(json!(c.workflows.output_rules));
+            }
+            DictionaryRequest::OutputSet { rule, enabled } => {
+                let mut next = c.workflows.clone();
+                match rule {
+                    OutputRule::TrimEdges => next.output_rules.trim_edges = enabled,
+                    OutputRule::NormalizeNewlines => next.output_rules.normalize_newlines = enabled,
                 }
-                let Ok(dictionary) = Dictionary::compile(&c.workflows.rules) else {
-                    return err("invalid_config", "Invalid saved dictionary rules.");
-                };
-                let result = dictionary.apply(&text);
-                if result.len() > 32_000 {
-                    return err(
-                        "output_too_large",
-                        "Dictionary preview exceeds the output limit.",
-                    );
+                if self.commit_workflows(c, next).is_err() {
+                    return err("invalid_config", "Could not save output settings.");
                 }
-                return Response::ok(json!({"text":result, "changed":result != text}));
+                return Response::ok(json!(c.workflows.output_rules));
             }
         }
         Response::ok(
@@ -340,6 +342,7 @@ impl Delegate {
                     source_id: source,
                     language,
                     dictionary_enabled,
+                    output_rules: next.output_rules,
                 };
                 if preset.source(&c.catalog).is_err() || next.add_preset(preset).is_err() {
                     return err(
@@ -369,11 +372,91 @@ impl Delegate {
     }
 }
 
+fn output_preview(workflows: &Workflows, text: &str, staged: bool) -> Response {
+    if text.len() > 24_000 {
+        return err(
+            "invalid_request",
+            "Dictionary preview exceeds the input limit.",
+        );
+    }
+    let pipeline = if staged {
+        workflows.output_for_session(workflows.dictionary_enabled, workflows.output_rules)
+    } else {
+        // Legacy preview tests the dictionary even when disabled for dictation.
+        match OutputPipeline::compile(&workflows.rules, OutputRules::default()) {
+            Ok(pipeline) => pipeline,
+            Err(_) => return err("invalid_config", "Invalid saved dictionary rules."),
+        }
+    };
+    let stages = pipeline.process(text);
+    if stages.after_dictionary.len() > 32_000 {
+        return err(
+            "output_too_large",
+            "Dictionary preview exceeds the output limit.",
+        );
+    }
+    if staged {
+        Response::ok(json!({
+            "original": stages.original,
+            "after_dictionary": stages.after_dictionary,
+            "text": stages.final_text(),
+            "changed": stages.final_text() != text,
+        }))
+    } else {
+        Response::ok(json!({"text":stages.final_text(), "changed":stages.final_text() != text}))
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn dictation_output_preview_respects_toggle_and_preserves_legacy_shape() {
+    let mut workflows = Workflows {
+        rules: parse_rules("vp → VoicePort").unwrap(),
+        output_rules: OutputRules {
+            trim_edges: true,
+            normalize_newlines: true,
+        },
+        ..Workflows::default()
+    };
+    let sample = " vp\r\n🙂 ";
+    assert_eq!(
+        output_preview(&workflows, sample, false).data,
+        json!({"text":" VoicePort\r\n🙂 ", "changed":true})
+    );
+    assert_eq!(
+        output_preview(&workflows, sample, true).data,
+        json!({"original":sample, "after_dictionary":sample, "text":"vp\n🙂", "changed":true})
+    );
+    workflows.dictionary_enabled = true;
+    assert_eq!(
+        output_preview(&workflows, sample, true).data,
+        json!({"original":sample, "after_dictionary":" VoicePort\r\n🙂 ", "text":"VoicePort\n🙂", "changed":true})
+    );
+    let oversized_input = "a".repeat(24_001);
+    assert_eq!(
+        output_preview(&workflows, &oversized_input, true)
+            .error
+            .unwrap()
+            .code,
+        "invalid_request"
+    );
+    let expanded = format!("a → {}", "b".repeat(512));
+    workflows.rules = parse_rules(&expanded).unwrap();
+    assert_eq!(
+        output_preview(&workflows, &"a ".repeat(100), true)
+            .error
+            .unwrap()
+            .code,
+        "output_too_large"
+    );
+}
+
 pub(super) fn capabilities() -> Response {
     Response::ok(json!({
         "control_schema":voiceport_control::VERSION, "version":env!("CARGO_PKG_VERSION"),
         "user_scope":"effective_user", "platform":"macos",
         "app_update":["check","status"],
+        "dictionary_output":["show","set","preview"],
         "groups":["app","status","sources","plugins","dictation","preferences","microphone","models","dictionary","scenes","history","file"],
     }))
 }

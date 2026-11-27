@@ -17,7 +17,7 @@ Choose the command for the question:
 | Identify the running App and its configuration | `status`, `app capabilities`, `sources list`, `sources destination ID` | Instance, supported groups, and sanitized audio destination |
 | Inspect App updates | `app update status`, `app update check` | Read the current snapshot first. Request a release lookup only when asked. The user confirms downloads and installations in the workbench’s Software Updates page. |
 | Inspect hardware and settings | `microphone list/status`, `models list`, `preferences get` | Selected and available devices/models, language, shortcut registration and delivery preferences |
-| Configure dictionary or scenes | `dictionary show/set/preview`, `scenes list/add/remove/apply` | Saved local rules and named settings, with native destination confirmation to apply a scene |
+| Configure or preview dictation output | `dictionary show/set/preview`, `dictionary output show/set/preview`, `scenes list/add/remove/apply` | Local settings and explicit sample preview; applying a scene requires native confirmation |
 | Examine recent GUI dictation | `history list`, then explicitly requested `history show ID` | Bounded, process-local metadata and separately requested text |
 | Transcribe and export a chosen audio file | `app open files`, `file sources/plan/start/status/result/export` | Reviewable source/destination, operation ID, explicit text and new export file |
 | Check a QQ installation | `qq doctor [--qq ABSOLUTE_APP_PATH]` | Read-only installation report; inspect `data.blockers`, not just exit 0; no bridge or transcription proof |
