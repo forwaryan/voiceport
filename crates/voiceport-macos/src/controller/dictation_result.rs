@@ -8,6 +8,7 @@ use voiceport_control::{GuiDictationDiagnostics, GuiDictationReceipt};
 pub(crate) struct GuiResultContext {
     pub(crate) source: Option<String>,
     pub(crate) target: Option<String>,
+    pub(super) app_rule: Option<String>,
 }
 
 impl GuiResultContext {
@@ -59,6 +60,7 @@ impl GuiResultContext {
         Self {
             source: Some(format!("{title} · {language} · {destination}")),
             target: None,
+            app_rule: None,
         }
     }
 }

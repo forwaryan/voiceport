@@ -8,6 +8,8 @@ mod cloud_models;
 #[cfg(target_os = "macos")]
 mod controller;
 #[cfg(target_os = "macos")]
+mod dictation_app_rules;
+#[cfg(target_os = "macos")]
 mod dictation_dictionary;
 #[cfg(target_os = "macos")]
 mod dictation_output;

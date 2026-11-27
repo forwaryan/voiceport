@@ -57,6 +57,7 @@ models list/details/refresh/open/download/update/import/remove/install-engine/st
 dictionary show/set/preview/import/import-preview/import-apply/import-cancel/export (post-transcription replacements)
 dictionary output show/set/preview
 scenes list/add/remove/apply
+app-rules list/enable/set/remove/match
 history list/show/clear/settings
 file open/sources/plan/start/status/result/cancel/export
 qq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)
@@ -113,6 +114,9 @@ pub fn run(raw: &[OsString]) -> Option<u8> {
     let mut flags = raw.iter();
     let mut json_output = false;
     while let Some(arg) = flags.next() {
+        if arg == "--" {
+            break;
+        }
         if arg == "--json" {
             json_output = true;
         } else if arg.to_str().is_some_and(option_takes_value) {
@@ -136,6 +140,7 @@ fn execute(mut args: Vec<String>) -> Result<Response, Response> {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--" => break,
             "--json" if !seen_json => {
                 seen_json = true;
                 args.remove(i);
@@ -420,6 +425,11 @@ fn contextual_help(args: &[String]) -> Option<String> {
             "scenes",
             &["list", "add", "remove", "apply"],
             "Dictionary and scenes",
+        ),
+        "app-rules" => (
+            "app-rules",
+            &["list", "enable", "set", "remove", "match"],
+            "Application output rules",
         ),
         "history" => (
             "history",

@@ -1,6 +1,7 @@
 //! Explicit GUI entry points for dictation output and manual presets.
 use super::*;
 use crate::{
+    dictation_app_rules::AppRuleSelection,
     dictation_output::OutputRules,
     dictation_workflows::{Preset, Workflows},
     dictionary_exchange as exchange,
@@ -47,6 +48,61 @@ impl Delegate {
 
     pub(super) fn show_presets(&self) {
         self.workflow_dialog(|| self.edit_presets());
+    }
+
+    pub(super) fn show_app_rules(&self) {
+        self.workflow_dialog(|| self.edit_app_rules());
+    }
+
+    fn edit_app_rules(&self) -> Result<(), String> {
+        let mut preferences = self
+            .ivars()
+            .controller
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .workflows
+            .clone();
+        let view = self.workflow_view(171.);
+        let enabled =
+            self.workflow_checkbox(&view, "启用应用输出规则", preferences.app_rules.enabled, 0.);
+        let rules = self.workflow_text(
+            &view,
+            &preferences.app_rules.editor_text(),
+            "应用 Bundle ID 和听写场景的映射",
+            32.,
+            139.,
+            true,
+        );
+        let mut detail = String::from(
+            "每行填写 Bundle ID → 已保存的场景名称。精确命中时采用场景的输出设置，其余情况使用全局设置。",
+        );
+        if let AppRuleSelection::Manual(name) =
+            preferences.app_rules.selection(None, &preferences.presets)
+        {
+            detail.push_str(&format!(
+                "\n\n当前优先使用手动场景「{name}」。勾选并保存可恢复应用匹配。"
+            ));
+        }
+        let alert = self.workflow_alert("应用输出规则", &detail, &["保存", "取消"]);
+        alert.setAccessoryView(Some(&view));
+        while alert.runModal() == NSAlertFirstButtonReturn && !self.ivars().quitting.get() {
+            match crate::dictation_app_rules::AppRules::from_editor(
+                enabled.state() == NSControlStateValueOn,
+                &rules.string().to_string(),
+                &preferences.presets,
+            ) {
+                Ok(rules) => {
+                    preferences.app_rules = rules;
+                    return self.update_workflows(preferences);
+                }
+                Err(error) => {
+                    self.workflow_alert("检查应用输出规则", &error, &["返回编辑"])
+                        .runModal();
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn show_original_transcript(&self) {
@@ -330,7 +386,7 @@ impl Delegate {
             && !self.ivars().quitting.get()
         {
             let mut preferences = preferences;
-            preferences.presets.remove(index);
+            preferences.remove_preset(index);
             self.update_workflows(preferences)?;
         }
         Ok(())
@@ -460,10 +516,13 @@ impl Delegate {
         .collect::<Vec<_>>()
         .join("、");
         let output = if output.is_empty() { "关闭" } else { &output };
-        let details = format!(
+        let mut details = format!(
             "来源：{source_title}\n识别语言：{language_title}\n个人词典：{dictionary}\n输出规则：{output}\n\n{}",
             destination.details(),
         );
+        if preferences.app_rules.enabled {
+            details.push_str("\n\n手动场景的输出设置优先，直至重新启用应用匹配。");
+        }
         if self
             .workflow_alert(
                 &format!("应用「{}」？", preset.name),
@@ -482,8 +541,7 @@ impl Delegate {
                 return Err("来源配置已变化，请重新确认音频去向。".into());
             }
         }
-        preferences.dictionary_enabled = preset.dictionary_enabled;
-        preferences.output_rules = preset.output_rules;
+        preferences.apply_preset_output(preset);
         self.update_workflows(preferences)?;
         self.with_controller(|c| {
             self.set_language(c, preset.language.clone());

@@ -18,6 +18,7 @@ fn offline_help_and_invalid_arguments_never_connect() {
             ("microphone", "microphone test-start"),
             ("dictionary", "dictionary set"),
             ("scenes", "scenes apply"),
+            ("app-rules", "app-rules match"),
             ("history", "history list [--query TEXT]"),
             ("history", "history clear"),
             ("dictation", "dictation paste-last"),
@@ -351,6 +352,18 @@ fn real_binaries_and_transport_carry_product_requests_and_mock_receipts() {
             "dictionary",
             json!({"action":"show"}),
         ),
+        example(
+            &[
+                "dictionary",
+                "show",
+                "--offset",
+                "16",
+                "--revision",
+                "fixture",
+            ],
+            "dictionary",
+            json!({"action":"show_page", "offset":16, "revision":"fixture"}),
+        ),
         Example {
             stdin: Some("原 → 合成\n"),
             ..example(
@@ -385,6 +398,66 @@ fn real_binaries_and_transport_carry_product_requests_and_mock_receipts() {
                 json!({"action":"output_preview", "text":" vp\r\n🙂 "}),
             )
         },
+        Example {
+            args: &["app", "open", "app-rules"],
+            wire: json!({"command":"open", "page":"app_rules"}),
+            stdin: None,
+        },
+        example(
+            &["app-rules", "list"],
+            "app_rules",
+            json!({"action":"list"}),
+        ),
+        example(
+            &["app-rules", "enable", "on"],
+            "app_rules",
+            json!({"action":"enable", "enabled":true}),
+        ),
+        example(
+            &["app-rules", "set", "com.example.Editor", "Synthetic scene"],
+            "app_rules",
+            json!({"action":"set", "bundle_id":"com.example.Editor", "scene":"Synthetic scene"}),
+        ),
+        example(
+            &["app-rules", "remove", "com.example.Editor"],
+            "app_rules",
+            json!({"action":"remove", "bundle_id":"com.example.Editor"}),
+        ),
+        example(
+            &["app-rules", "match", "com.example.Editor"],
+            "app_rules",
+            json!({"action":"match", "bundle_id":"com.example.Editor"}),
+        ),
+        example(
+            &["app-rules", "match"],
+            "app_rules",
+            json!({"action":"match", "bundle_id":null}),
+        ),
+        example(
+            &["app-rules", "set", "-com.example.Editor", "-draft"],
+            "app_rules",
+            json!({"action":"set", "bundle_id":"-com.example.Editor", "scene":"-draft"}),
+        ),
+        example(
+            &["app-rules", "set", "--", "--socket", "--help"],
+            "app_rules",
+            json!({"action":"set", "bundle_id":"--socket", "scene":"--help"}),
+        ),
+        example(
+            &["app-rules", "match", "-com.example.Editor"],
+            "app_rules",
+            json!({"action":"match", "bundle_id":"-com.example.Editor"}),
+        ),
+        example(
+            &["app-rules", "match", "--", "--help"],
+            "app_rules",
+            json!({"action":"match", "bundle_id":"--help"}),
+        ),
+        example(
+            &["app-rules", "remove", "-com.example.Editor"],
+            "app_rules",
+            json!({"action":"remove", "bundle_id":"-com.example.Editor"}),
+        ),
         example(&["scenes", "list"], "scenes", json!({"action":"list"})),
         example(
             &[

@@ -1,24 +1,17 @@
 //! A shortcut keeps its key-down application across later AppKit activations.
 use super::*;
 use crate::{
-    hotkey::{HotKeyEvent, KeyPress, Stroke},
+    hotkey::{HotKeyEvent, KeyPress, Stroke, application_target},
     input_target::{self, ApplicationTarget, StartRoute},
     shortcut::ShortcutMode,
 };
 use serde_json::json;
 
-fn identity(app: &NSRunningApplication) -> Option<ApplicationTarget> {
-    Some(ApplicationTarget {
-        pid: app.processIdentifier(),
-        bundle: app.bundleIdentifier()?.to_string(),
-    })
-}
-
 fn foreground() -> Option<ApplicationTarget> {
     NSWorkspace::sharedWorkspace()
         .frontmostApplication()
         .as_deref()
-        .and_then(identity)
+        .and_then(application_target)
 }
 
 /// A release may affect only the controller generation begun by its down edge.
@@ -214,7 +207,17 @@ impl Delegate {
                 trace["outcome"] = "panel_only".into();
             }
             self.with_controller(|c| {
-                self.start_from_press(c, event.stroke, held_mode, Controller::start)
+                let target = event.target.as_ref().filter(|_| {
+                    c.workflows.app_rules.enabled
+                        && event.at.elapsed() < input_target::START_DEADLINE
+                        && event
+                            .application
+                            .as_ref()
+                            .is_some_and(|app| !app.isTerminated())
+                });
+                self.start_from_press(c, event.stroke, held_mode, |c| {
+                    c.start_from_shortcut(target)
+                })
             });
             return;
         }
@@ -325,7 +328,7 @@ impl Delegate {
                 if let Some(target) = event.target {
                     self.with_controller(|c| {
                         self.start_from_press(c, event.stroke, held_mode, |c| {
-                            c.start_in_application(&target)
+                            c.start_from_shortcut(Some(&target))
                         });
                     });
                 }

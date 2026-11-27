@@ -808,7 +808,15 @@ impl QuickPanel {
         } else {
             state
         };
-        set_label_text(&self.status, &format!("听写状态：{message}"));
+        let active_rule = c.active_app_rule();
+        let status = match active_rule {
+            Some(rule) => format!("听写状态：{message} · {rule}"),
+            None => format!("听写状态：{message}"),
+        };
+        if set_label_text(&self.status, &status) {
+            let tooltip = active_rule.map(|_| self.status.stringValue());
+            self.status.setToolTip(tooltip.as_deref());
+        }
         let has_shortcut = d.ivars().hotkey_error.borrow().is_none();
         let shortcut_help = if has_shortcut {
             d.ivars().shortcut_mode.get().instruction()

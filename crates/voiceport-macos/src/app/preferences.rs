@@ -190,6 +190,14 @@ impl Delegate {
             8.,
             132.,
         ));
+        let _ = self.ivars().app_rules_settings.set(self.button(
+            section,
+            "应用输出规则…",
+            sel!(showDictationAppRules:),
+            292.,
+            8.,
+            152.,
+        ));
     }
 
     fn build_input_preferences(&self, section: &NSView) {
@@ -428,6 +436,7 @@ pub(super) fn isolated_layout_regression(mtm: MainThreadMarker) {
         }
         assert!(delegate.ivars().dictionary_settings.get().is_some());
         assert!(delegate.ivars().preset_settings.get().is_some());
+        assert!(delegate.ivars().app_rules_settings.get().is_some());
         assert!(delegate.ivars().manage_sources.get().is_some());
         assert!(delegate.ivars().test_source.get().is_some());
     }

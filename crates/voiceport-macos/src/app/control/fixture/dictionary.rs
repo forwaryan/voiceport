@@ -103,6 +103,10 @@ pub fn isolated_dictionary_exchange_regression(mtm: MainThreadMarker, cli: &Path
     let switches = call(&["dictionary", "output", "show"], 0)["data"].clone();
     assert_eq!(switches["trim_edges"], true);
     assert_eq!(switches["normalize_newlines"], true);
+    const BUNDLE: &str = "-com.example.Editor";
+    call(&["app-rules", "set", BUNDLE, "Synthetic"], 0);
+    call(&["app-rules", "enable", "on"], 0);
+    let before_import = call(&["app-rules", "list"], 0)["data"].clone();
     let applied = call(&["dictionary", "import-apply", id, "--confirm"], 0);
     assert_eq!(applied["data"]["rule_count"], 18);
     let saved = persisted().unwrap();
@@ -110,6 +114,10 @@ pub fn isolated_dictionary_exchange_regression(mtm: MainThreadMarker, cli: &Path
     assert_eq!(saved["dictionary_enabled"], true);
     assert_eq!(saved["output_rules"], switches);
     assert_eq!(saved["rules"][17]["output"], " new, \"值\" → 🦀 ");
+    assert_eq!(saved["app_rules"], before_import);
+    let matched = call(&["app-rules", "match", BUNDLE], 0);
+    assert_eq!(matched["data"]["selection"], "scene");
+    assert_eq!(matched["data"]["scene"], "Synthetic");
 
     let output = folder.join("export.csv");
     let path = output.to_str().unwrap();

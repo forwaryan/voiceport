@@ -20,6 +20,7 @@ Choose the command for the question:
 | Suggest a local model | `models recommend [--language CODE\|auto] [--preview any\|live\|after-stop]` | Read-only recommendation based on language, preview mode and download size. A null result means no compatible model. |
 | Edit or exchange the personal dictionary | `dictionary show/set/preview`, `dictionary import/import-preview/import-apply/import-cancel/export` | Local post-transcription replacements. Review before applying. For exact readback, start at `dictionary show --offset 0` and follow `next_offset` with the returned `revision`. |
 | Configure or preview dictation output | `dictionary show/set/preview`, `dictionary output show/set/preview`, `scenes list/add/remove/apply` | Local settings and panel-only sample preview. Applying a scene requires native confirmation |
+| Configure or check application output rules | `app-rules list/enable/set/remove/match` | Saved Bundle ID bindings and the output selection for a supplied ID |
 | Copy or repaste an existing GUI result | `dictation copy-last`, `dictation paste-last --target-pid PID --target-bundle ID` | Explicit clipboard or focused-field action with content-free receipts |
 | Examine recent GUI dictation | `history list`, then explicitly requested `history show ID` | Bounded, process-local metadata and separately requested text |
 | Transcribe and export a chosen audio file | `app open files`, `file sources/plan/start/status/result/export` | Reviewable source/destination, operation ID, explicit text and new export file |
