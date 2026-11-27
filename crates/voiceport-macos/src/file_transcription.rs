@@ -393,24 +393,95 @@ impl Work {
         } else {
             // Use the same bounded decoder as the local engine before dispatch.
             // Configured adapters already normalize before sending audio.
-            crate::audio::read_pcm(&snapshot.path, |_| {
-                check_cancel(&self.cancel).map_err(|e| e.message.into())
-            })
-            .map_err(|_| INVALID_AUDIO)?;
+            validate_audio(&snapshot.path, &self.cancel)?;
             snapshot.path.clone()
         };
         check_cancel(&self.cancel)?;
         let text = transcribe(&self.plan, &path, &self.cancel, &self.custody)?;
         check_cancel(&self.cancel)?;
-        let text = text.trim();
-        if text.is_empty() {
-            return Err(Error::new("empty_transcript", "未识别到文字。"));
-        }
-        if text.len() > MAX_TEXT_BYTES {
-            return Err(Error::new("transcript_too_large", "转写结果超过大小限制。"));
-        }
-        Ok(text.to_owned())
+        finish_text(&text)
     }
+}
+
+fn validate_audio(path: &Path, cancel: &CancellationToken) -> Result<(), Error> {
+    crate::audio::read_pcm(path, |_| check_cancel(cancel).map_err(|e| e.message.into()))
+        .map_err(|_| INVALID_AUDIO)
+}
+
+fn finish_text(text: &str) -> Result<String, Error> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(Error::new("empty_transcript", "未识别到文字。"));
+    }
+    if text.len() > MAX_TEXT_BYTES {
+        return Err(Error::new("transcript_too_large", "转写结果超过大小限制。"));
+    }
+    Ok(text.to_owned())
+}
+
+/// Decode a user-selected file via one explicit local model, without opening
+/// AppKit, reading configured sources, or invoking any installer/provider.
+#[cfg(target_arch = "aarch64")]
+pub fn transcribe_local_file(
+    path: &Path,
+    model_id: &str,
+    language: &str,
+    cancel: &CancellationToken,
+) -> Result<String, voiceport_control::Response> {
+    let run = || {
+        use crate::model_library::{MODELS, Paths};
+        check_cancel(cancel)?;
+        let definition = MODELS.iter().find(|m| m.id == model_id).ok_or(Error::new(
+            "not_found",
+            "未知本地模型 ID。请查看 voiceport transcribe-local --help。",
+        ))?;
+        let language = if language == "auto" { "" } else { language };
+        if !voiceport_core::language::supported(language)
+            || !definition.kind.supports_language(language)
+        {
+            return Err(Error::new(
+                "unsupported_language",
+                "所选来源不支持当前语言。",
+            ));
+        }
+        let paths = Paths::system().map_err(|_| {
+            Error::new(
+                "invalid_config",
+                "无法定位模型目录。请检查 HOME 或非空绝对路径 VOICEPORT_MODELS_PATH。",
+            )
+        })?;
+        let catalog = Catalog::system_models(model_id, Some(&paths));
+        let Ok(SessionSource::Local(model)) = catalog.snapshot(model_id) else {
+            return Err(Error::new(
+                "source_unavailable",
+                "本地模型或识别引擎未安装或不可用。请打开 VoicePort 的「语音模型」安装或修复后再试。",
+            ));
+        };
+        transcribe_local_input(path, cancel, |audio| {
+            crate::local_runtime::transcribe_file(&model, language, audio, cancel, |_| {})
+                .map_err(|_| TRANSCRIPTION)
+        })
+    };
+    let result = run();
+    // Cancellation takes precedence even when a blocking native call fails.
+    check_cancel(cancel)
+        .and(result)
+        .map_err(|e| voiceport_control::Response::error(e.code, e.message))
+}
+
+#[cfg(target_arch = "aarch64")]
+fn transcribe_local_input(
+    path: &Path,
+    cancel: &CancellationToken,
+    recognize: impl FnOnce(&Path) -> Result<String, Error>,
+) -> Result<String, Error> {
+    let path = std::path::absolute(path).map_err(|_| INVALID_FILE)?;
+    let snapshot = Input::open(&path)?.stage(cancel)?;
+    validate_audio(&snapshot.path, cancel)?;
+    check_cancel(cancel)?;
+    let result = recognize(&snapshot.path);
+    check_cancel(cancel)?;
+    finish_text(&result?)
 }
 
 fn stage_upload_wav(path: &Path, cancel: &CancellationToken) -> Result<std::path::PathBuf, Error> {

@@ -57,6 +57,9 @@ class DistributionSigningTests(unittest.TestCase):
         self.assertEqual(entitlements, signing.APP_ENTITLEMENTS)
         self.assertNotIn('com.apple.security.get-task-allow', entitlements)
         self.assertNotIn('com.apple.security.cs.allow-jit', entitlements)
+        cli = plistlib.loads((ROOT / 'resources/VoicePortCLI.entitlements').read_bytes())
+        self.assertEqual(cli, {'com.apple.security.cs.disable-library-validation': True})
+        self.assertEqual(cli, signing.CLI_ENTITLEMENTS)
 
     def test_distribution_preflight_cannot_build_without_certificate(self):
         with tempfile.TemporaryDirectory() as temp:

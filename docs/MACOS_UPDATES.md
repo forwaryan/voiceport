@@ -64,7 +64,7 @@ VOICEPORT_APP_DIRECTORY="$PWD/dist/signed/VoicePort.app" \
   bash scripts/package_app.sh --distribution --skip-build
 ```
 
-GUI 与 CLI 均带 hardened runtime 和安全时间戳。主程序仅带 `audio-input` 与 `disable-library-validation` 两项 entitlement：前者用于麦克风，后者用于现有本地模型后端加载单独安装在 Orca 中、由其他身份签名的 sherpa/onnx 动态库。CLI 不带这两项权限；不启用 JIT、调试或不受限可执行内存。依据：[Apple hardened runtime](https://developer.apple.com/documentation/xcode/configuring-the-hardened-runtime)、[audio-input](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.device.audio-input)、[library validation](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.cs.disable-library-validation)。这些 entitlement 不自动授予 TCC 权限。
+GUI 与 CLI 均带 hardened runtime 和安全时间戳。主程序带 `audio-input` 与 `disable-library-validation` 两项 entitlement，CLI 只带 `disable-library-validation`。该项允许本地模型后端加载另行安装、签名身份不同的 sherpa/ONNX 动态库；仍复用引擎路径、版本和架构检查。CLI 本地文件转写不用麦克风权限。两者都不启用 JIT、调试或不受限可执行内存。依据：[Apple hardened runtime](https://developer.apple.com/documentation/xcode/configuring-the-hardened-runtime)、[audio-input](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.device.audio-input)、[library validation](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.cs.disable-library-validation)。这些 entitlement 不自动授予 TCC 权限。
 
 完整发行使用以下三个入口；输出目录必须尚不存在：
 

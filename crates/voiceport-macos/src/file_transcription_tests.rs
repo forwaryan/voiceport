@@ -57,6 +57,54 @@ fn unexpected(_: &Plan, _: &Path, _: &CancellationToken, _: &Custody) -> Result<
     panic!("adapter dispatcher must remain unreachable");
 }
 
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn standalone_file_fixture_validates_then_disposes_its_snapshot_on_success_and_cancel() {
+    let folder = tempfile::tempdir().unwrap();
+    let selected = wav(folder.path());
+    let mut staged = None;
+    let cancel = CancellationToken::new();
+    let text = transcribe_local_input(&selected, &cancel, |audio| {
+        assert_ne!(audio, selected);
+        assert_eq!(fs::read(audio).unwrap(), crate::plugin_runtime::sample());
+        staged = Some(audio.to_owned());
+        Ok(" fixture transcript \n".into())
+    });
+    assert_eq!(text.unwrap(), "fixture transcript");
+    assert!(!staged.take().unwrap().exists());
+    let result = transcribe_local_input(&selected, &cancel, |audio| {
+        staged = Some(audio.to_owned());
+        cancel.cancel();
+        Err(TRANSCRIPTION)
+    });
+    assert_eq!(result, Err(CANCELLED));
+    assert!(!staged.unwrap().exists());
+    assert!(selected.is_file());
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn standalone_file_fixture_rejects_missing_and_malformed_audio_before_recognition() {
+    let folder = tempfile::tempdir().unwrap();
+    let selected = folder.path().join("input.wav");
+    let cancel = CancellationToken::new();
+    let unexpected = |_: &Path| panic!("invalid audio must not reach recognition");
+    assert_eq!(
+        transcribe_local_input(&selected, &cancel, unexpected),
+        Err(INVALID_FILE)
+    );
+    fs::write(&selected, b"RIFF\x10\0\0\0WAVEbroken").unwrap();
+    assert_eq!(
+        transcribe_local_input(&selected, &cancel, unexpected),
+        Err(INVALID_AUDIO)
+    );
+    cancel.cancel();
+    assert_eq!(
+        transcribe_local_input(&selected, &cancel, unexpected),
+        Err(CANCELLED)
+    );
+}
+
 #[test]
 fn missing_source_confirmation_target_and_config_change_do_not_dispatch() {
     let folder = tempfile::tempdir().unwrap();

@@ -13,10 +13,8 @@ from check_bundle import real_tree
 from signing_identity import validate_team_id
 
 BUNDLE_ID = 'io.github.forwaryan.voiceport'
-APP_ENTITLEMENTS = {
-    'com.apple.security.device.audio-input': True,
-    'com.apple.security.cs.disable-library-validation': True,
-}
+CLI_ENTITLEMENTS = {'com.apple.security.cs.disable-library-validation': True}
+APP_ENTITLEMENTS = {**CLI_ENTITLEMENTS, 'com.apple.security.device.audio-input': True}
 
 
 def require_metadata(metadata, *, team_id, identifier):
@@ -49,7 +47,7 @@ def validate(app, team_id):
                    f'and certificate leaf[subject.OU] = "{team_id}"')
     for binary, identifier, expected in [
         (app, BUNDLE_ID, APP_ENTITLEMENTS),
-        (app / 'Contents/MacOS/voiceport', BUNDLE_ID + '.cli', {}),
+        (app / 'Contents/MacOS/voiceport', BUNDLE_ID + '.cli', CLI_ENTITLEMENTS),
     ]:
         verify_requirement(binary, requirement)
         result = subprocess.run(['/usr/bin/codesign', '--display', '--verbose=4', str(binary)],

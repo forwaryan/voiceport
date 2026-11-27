@@ -125,6 +125,18 @@ The personal dictionary performs local post-transcription replacements on final 
 - `history show ID` explicitly returns `id` and `text`. An oversized eligible entry has `textAvailable:false` and returns `text_unavailable`. Evicted, cleared, and unknown IDs return `not_found`. IDs belong to the running App process.
 - `history settings` reads the opt-in state. `history settings on` enables collection. Use `history settings off --confirm` to disable and clear old entries, or `history clear --confirm` to clear entries while preserving the setting. Clear returns `enabled` and `removed`. Collection starts disabled for first-time users and retains eligible GUI results in memory until eviction, clear, disable, or App exit.
 
+## Standalone local file transcription
+
+```sh
+voiceport transcribe-local ./sample.wav --model orca:whisper-tiny --language en
+voiceport --json transcribe-local ./sample.wav --model orca:whisper-tiny
+```
+
+- Requires an **Apple Silicon macOS** CLI and an already installed compatible local model and engine. `--model` is required; `--language CODE|auto` defaults to `auto`, not the App preference. Use the exact ID: `orca:whisper-tiny`, `orca:whisper-large-v3-turbo`, `orca:paraformer-bilingual-zh-en`, `orca:sensevoice`, `orca:parakeet-tdt-v3`, `orca:parakeet-tdt-v2`, `orca:parakeet-unified-en`, or `orca:nemotron-3.5`. Each model has its own supported languages.
+- Supply one local regular audio file (absolute or relative path, no final symlink). Supported: decodable WAV, M4A and MP3, up to 20,000,000 bytes and 180 seconds. No URLs, stdin, video, or batch input. Neither the App nor its socket is used; explicit `--socket` is rejected. No recording, network, auto-download, upload, history or delivery. The command does not read App source settings or cloud credentials.
+- Plain stdout contains just the transcript. JSON uses the standard envelope with `data.text`, `data.source`, `data.language` (including `auto`), `data.destination.kind:"on_device"`, and `data.delivery:"none"`. Exit 0 means a nonempty final transcript, not job submission. An unknown model is `not_found` (6); a known model or engine missing/unusable is `source_unavailable` (1). In the latter case, explicitly install or repair it in the App's Speech Models window, then rerun; the App can be closed for transcription. Unsupported platform is `unsupported` (7); invalid options are `invalid_arguments` (2). Common file/recognition failures include `invalid_file`, `invalid_audio`, `audio_too_large`, `unsupported_language`, `empty_transcript`, and `transcription_error` (1).
+- Ctrl-C requests cancellation and waits for the current native load/decode call to return and release its resources. The command exits 130 with `cancelled` in JSON mode and prints no transcript.
+
 ## Single-file transcription
 
 - `app open files`, `app open file`, and `file open` open the workbench’s file-transcription page and report `next:"choose_audio_file"`. Choose a single file in its picker or drop it on the Files or Dictation Result page. The CLI accepts an explicit absolute path through `file plan`.

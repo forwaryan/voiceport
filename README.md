@@ -207,7 +207,15 @@ voiceport="$HOME/Applications/VoicePort.app/Contents/MacOS/voiceport"
 "$voiceport" skills get plugin-examples
 ```
 
-CLI 可通过本机 IPC 复用运行中的 App，管理来源与插件，并读取版本匹配的接入指南。它不会隐式启动 App；CLI 听写需要显式开始，固定关闭自动投递。独立的 `transcribe` 文件命令仅使用 ChatGPT。
+CLI 可通过本机 IPC 复用运行中的 App，管理来源与插件，并读取版本匹配的接入指南。它不会隐式启动 App；CLI 听写需要显式开始，固定关闭自动投递。
+
+在 Apple Silicon Mac 上，模型和引擎装好后，即使 App 已关闭也能转写本地文件：
+
+```bash
+"$voiceport" transcribe-local ./sample.wav --model orca:whisper-tiny --language zh
+```
+
+支持 WAV、M4A、MP3。该命令不录音、不联网、不下载或上传；原 `transcribe` 仍使用 ChatGPT，`file` 命令组仍使用 App。
 
 命令、JSON 输出与退出码见 [CLI 文档](docs/CLI.md)，程序间集成见 [宿主协议](docs/HOST_PROTOCOL.md)。
 

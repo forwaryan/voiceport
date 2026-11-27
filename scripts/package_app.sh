@@ -77,6 +77,7 @@ plutil -lint "$staged_app/Contents/Info.plist"
 # Use the verified identity selected before the build for both signatures.
 if [[ "$distribution" == true ]]; then
     codesign --force --sign "$signing_identity" --options runtime --timestamp \
+        --entitlements resources/VoicePortCLI.entitlements \
         --identifier io.github.forwaryan.voiceport.cli "$staged_app/Contents/MacOS/voiceport"
     codesign --force --sign "$signing_identity" --options runtime --timestamp \
         --entitlements resources/VoicePort.entitlements "$staged_app"
