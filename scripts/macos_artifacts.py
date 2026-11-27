@@ -163,7 +163,9 @@ def extract_zip(data, directory, root):
                     with target.open('xb') as output:
                         shutil.copyfileobj(source, output, length=65536)
                     require(target.stat().st_size == entry.file_size, f'ZIP member size mismatch: {name!r}')
-                    target.chmod(0o755 if mode & 0o111 else 0o644)
+                    # ZIP creator systems 3 and 19 encode Unix and macOS modes.
+                    # Keep exact file permissions for the bundle layout check.
+                    target.chmod(stat.S_IMODE(mode) if entry.create_system in (3, 19) else 0o644)
         app = directory / root
         require(app.is_dir(), 'ZIP lacks the expected application root')
         for parts, is_directory in metadata:

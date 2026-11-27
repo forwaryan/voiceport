@@ -64,7 +64,15 @@ class ArtifactTests(unittest.TestCase):
                                               '--attachment', attachment.name])
             return json.loads(result)['manifest_sha256']
 
+        def archive_mode(binary):
+            with zipfile.ZipFile(archive) as final_zip:
+                entry = final_zip.getinfo(binary.relative_to(app.parent).as_posix())
+                self.assertIn(entry.create_system, (3, 19))
+                return stat.S_IMODE(entry.external_attr >> 16)
+
         digest = package()
+        self.assertEqual(archive_mode(main), 0o755)
+        self.assertEqual(archive_mode(cli), 0o755)
         params = dict(version=info['CFBundleShortVersionString'], build=info['CFBundleVersion'], signature='test')
         command = [sys.executable, '-I', str(ROOT / 'scripts/macos_artifacts.py'), 'verify', str(self.attachments),
                    '--manifest-sha256', digest, '--version', params['version'], '--build', params['build'], '--signature', 'test']
@@ -92,6 +100,19 @@ class ArtifactTests(unittest.TestCase):
         archive.write_bytes(archive.read_bytes() + b'!')
         with self.assertRaisesRegex(ValueError, 'attachment size mismatch'):
             artifacts.verify(self.attachments, digest, **params)
+
+        # Keep the signature bytes unchanged and replace the archive manifest.
+        # Group and other users retain execute permission, while the owner lacks it.
+        for binary, role in [(main, 'main'), (cli, 'CLI')]:
+            with self.subTest(binary=binary.name):
+                binary.chmod(0o655)
+                digest = package()
+                self.assertEqual(archive_mode(binary), 0o655)
+                with self.assertRaisesRegex(AssertionError, f'{role} must be executable mode 0755'):
+                    artifacts.verify(self.attachments, digest, **params)
+                binary.chmod(0o755)
+        digest = package()
+        self.assertEqual(artifacts.verify(self.attachments, digest, **params)['status'], 'verified')
 
         # Recompute digests after damage to prove the final ZIP is itself verified.
         (resources / 'AppIcon.icns').write_text('changed after signing')
