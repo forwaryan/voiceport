@@ -15,6 +15,10 @@ mod controller;
 mod dictation_dictionary;
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
+#[path = "../src/dictation_output.rs"]
+mod dictation_output;
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
 #[path = "../src/dictation_workflows.rs"]
 mod dictation_workflows;
 #[cfg(target_os = "macos")]

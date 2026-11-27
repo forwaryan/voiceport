@@ -176,7 +176,7 @@ impl Delegate {
         let _ = self.ivars().language.set(language);
         let _ = self.ivars().dictionary_settings.set(self.button(
             section,
-            "个人词典…",
+            "个人词典与输出…",
             sel!(showPersonalDictionary:),
             12.,
             8.,
