@@ -2,6 +2,27 @@
 
 产品基线为 `0b6bd0cbaed04d14e66a0c3d8567c2185298f260`（VoicePort `0.3.16`，build `22`）。该提交缺少 Python 驱动和 Rust debug example。#54 同机配对先把冻结探针移植到产品基线，再测 #63 的 freeze-05。两侧均运行实际 `voiceport` CLI、生产 Controller、IPC 和 AppKit 定时器，设备、识别和更新使用合成输入。
 
+## 生成 PR 对照 Markdown
+
+两侧从各自干净的 checkout 用现有 `fixture` 入口采样，保留 `report.json` 和同目录原始日志。用实际完整提交 SHA 替换变量；基线和候选按顺序采样，保持同主机、开机期、SDK、工具链、构建配置、供电和负载条件。每侧用新证据目录，先按项目规则协调共享锁。命令默认 30 轮、空闲 60 秒；缩短只作 smoke。
+
+```sh
+# 每侧在对应 checkout 执行；为 REPORT_DIR 指定全新私有目录。
+python3 -I scripts/performance_baseline.py fixture --expected-head "$SIDE_SHA" \
+  --evidence-dir "$REPORT_DIR"
+
+# 从能解析两个提交的仓库运行；stdout 可本地保存、检查后手工粘贴。
+python3 -I scripts/performance_compare.py "$BASE_REPORT" "$CANDIDATE_REPORT" \
+  --base-sha "$BASE_SHA" --candidate-sha "$CANDIDATE_SHA" \
+  --environment-id same-host-session-01 > comparison.md
+```
+
+`--environment-id` 是采样者对上述条件一致的声明，不是从同型号机器推断。用不含身份或路径的标签，另在私有证据中保留实测环境。未声明或报告环境字段不一致时不算差值。比较器核对 schema 1 的夹具报告、完成/退出/清理回执、HEAD 与干净状态、固定夹具源码及样本清单、同窗同样本数、原始 stdout 的摘要与逐轮顺序，并用最近秩从原始样本复算汇总。样本清单为报告的固定清单身份，设备实际用的是源码生成音频，由夹具源码身份另行核对。历史 #54 补丁物化树不是干净 checkout，仍用该配对的冻结比较器。
+
+退出 `0` 表示受支持的合成阶段有完整配对证据，不是预算通过或性能提升；退出 `1` 仍输出 Markdown，标明失败、缺失或不兼容；用法错误退出 `2`。计数为有效 / 已观察但无有效阶段值 / 未观察。日志无法复核时计数未知，不当作零。任一全局证据不成立时不算差值；缺失阶段只禁用该行差值，整份报告仍以非零退出。`Recording` 不代表首个音频帧，现有探针不对首帧计时。离屏准备只并排报告，不能算差值或套用真实点击预算。只生成本地 Markdown，不读取或上传真实音频，不发送 PR 更新。沿用 [Hex v3.5.2](https://github.com/anomalyco/hex/blob/v3.5.2/docs/perf.md#in-a-pull-request) 的人工解读与生成证据分离做法，不引入其工具或外发步骤。
+
+定向回归：`python3 -I -m unittest discover -s Tests/CITests -p test_performance_compare.py`。
+
 ## 固定并物化两侧源码
 
 从 #54 配对归档取得 `reference.patch`、`freeze-05.patch` 和独立比较器 `check.py`。两份补丁均以产品基线为 HEAD。freeze-05 的物化树等于 #68 旧 head `1108b427be7b323a585c3de5611d5204976757b3` 的提交树。后续文档修订产生的提交有自己的树 ID，复跑历史配对仍固定下列输入。
