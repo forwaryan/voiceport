@@ -447,8 +447,6 @@ impl Worker {
             let recover = || {
                 if self.activity.cancelled() {
                     Err(CANCELLED.into())
-                } else if self.activity.stopping() {
-                    Err("麦克风在结束录音前已断开；未转写本轮音频，请重新开始。".into())
                 } else if Instant::now() >= deadline {
                     Err(RECOVERY_TIMEOUT.into())
                 } else {
@@ -466,14 +464,12 @@ impl Worker {
                     || self.activity.stopping(),
                 )
             });
-            if Instant::now() >= deadline && !self.activity.stopping() {
-                return Err(RECOVERY_TIMEOUT.into());
-            }
+            recover()?;
             match recovered? {
                 Recovery::Unchanged => {}
                 Recovery::Recovered => {
-                    // Do not finalize a replacement that raced Stop or Cancel.
-                    recover()?;
+                    // Admission succeeded before Stop. Its command finalizes
+                    // the verified capture in the next iteration.
                     self.input_lost.store(false, Ordering::Release);
                     push(Reply::Route(recorder.route().unwrap().summary()))?;
                 }

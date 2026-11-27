@@ -892,6 +892,93 @@ pub fn isolated_audio_start_regression(
     );
     assert_eq!(cache_count(), 1);
 
+    // Stop while the first replacement is opening can keep the original
+    // audio only if the replacement checks settle within the recovery deadline.
+    enum Reopen {
+        Stop,
+        Cancel,
+        PermissionRevoked,
+        DefaultChanged,
+        TimedOut,
+    }
+    for case in [
+        Reopen::Stop,
+        Reopen::Cancel,
+        Reopen::PermissionRevoked,
+        Reopen::DefaultChanged,
+        Reopen::TimedOut,
+    ] {
+        prepare();
+        let operation = cli_start(&fixture);
+        phase(&fixture, Phase::Recording);
+        sampled(&fixture);
+        let before = backend.counts();
+        let resume = backend.block_next_open();
+        backend.set_default(2);
+        backend.disconnect(1);
+        until(|| backend.counts().0 == before.0 + 1);
+        let opening = Instant::now();
+        let cancel = matches!(case, Reopen::Cancel);
+        if matches!(case, Reopen::TimedOut) {
+            // Make the later Stop deadline distinct from the recovery deadline.
+            until(|| opening.elapsed() >= Duration::from_millis(1500));
+        }
+        fixture.call(
+            &[
+                "dictation",
+                if cancel { "cancel" } else { "stop" },
+                &operation,
+            ],
+            0,
+        );
+        let rejection = match case {
+            Reopen::PermissionRevoked => {
+                backend.set_authorized(false);
+                Some("麦克风权限")
+            }
+            Reopen::DefaultChanged => {
+                let (resume_id, entered) = backend.block_next_final_default_id();
+                resume.send(true).unwrap();
+                until(|| entered.try_recv().is_ok());
+                backend.disconnect(0);
+                backend.set_default(1);
+                assert!(backend.notify_default_changed());
+                resume_id.send(()).unwrap();
+                Some("麦克风已变化")
+            }
+            Reopen::TimedOut => {
+                until(|| opening.elapsed() >= crate::audio::WAIT);
+                Some("等待麦克风恢复超时")
+            }
+            Reopen::Stop | Reopen::Cancel => None,
+        };
+        if !matches!(case, Reopen::DefaultChanged) {
+            resume.send(true).unwrap();
+        }
+        released(&fixture);
+        phase(&fixture, if cancel { Phase::Idle } else { Phase::Failed });
+        assert_eq!(backend.counts().0, before.0 + 1);
+        assert_eq!(backend.counts().2, before.2);
+        asr.assert_no_job();
+        if let Some(reason) = rejection {
+            owner.with_controller(|c| assert!(c.message.contains(reason), "{}", c.message));
+        }
+        if matches!(case, Reopen::Stop) {
+            let result = fixture.call(&["dictation", "result", &operation], 1);
+            assert_eq!(result["data"]["fragment_available"], true);
+            assert_eq!(result["data"]["retry_available"], false);
+            let offer = fixture.call(&["dictation", "fragment", &operation], 0);
+            assert_eq!(offer["data"]["incomplete"], true);
+            assert_eq!(cache_count(), 2);
+            fixture.call(&["dictation", "cancel", &operation], 0);
+        }
+        fixture.call(&["dictation", "fragment", &operation], 1);
+        assert_eq!(cache_count(), 1);
+    }
+    println!(
+        "audio-start first reopen: Stop retained only original audio; Cancel, permission, route and deadline failures discarded it"
+    );
+
     // Stop or Cancel can race a second disconnect's native teardown. A Stop
     // settles the one verified lease and a Cancel invalidates the pending reply.
     for cancel in [false, true] {

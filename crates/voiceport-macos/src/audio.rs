@@ -359,18 +359,24 @@ impl Recorder {
         if input.healthy(route, false) {
             return Ok(Recovery::Unchanged);
         }
-        if !stopping() {
-            check()?;
-        }
+        check()?;
         on_disconnect()?;
         let confirmed_loss = input.revoke_and_confirm_loss(route);
         self.fragment_ownership_verified &= confirmed_loss;
         self.route = None;
         self.input.take(); // Drain and revoke old tap access before opening another one.
-        if stopping() && confirmed_loss {
-            return Ok(Recovery::Interrupted("麦克风在结束录音前已断开。".into()));
-        }
         check()?;
+        let stop_during_loss = || {
+            let reason = "麦克风在结束录音前已断开。";
+            if confirmed_loss {
+                Ok(Recovery::Interrupted(reason.into()))
+            } else {
+                Err(format!("{reason} 无法核实录音片段的输入归属，请重新开始。"))
+            }
+        };
+        if stopping() {
+            return stop_during_loss();
+        }
         if std::mem::replace(&mut self.recovered_input, true) {
             let reason = "麦克风再次断开，已停止本轮录音；请检查设备后重新开始。".to_owned();
             return if confirmed_loss {
@@ -416,7 +422,7 @@ impl Recorder {
             .activity
             .clone()
             .expect("recording owns its tap admission");
-        if let Some(bridge) = bridge {
+        let attached = if let Some(bridge) = bridge {
             let bridge = Mutex::new(bridge);
             input.attach(
                 &verify_recovery,
@@ -433,14 +439,18 @@ impl Recorder {
                         sink.fail_route_conversion(error);
                     }
                 },
-            )?;
+            )
         } else {
             input.attach(
                 &verify_recovery,
                 move || activity.accepting(),
                 move |buffer| sink.consume(buffer),
-            )?;
+            )
+        };
+        if matches!(attached, Err(devices::OpenError::AdmissionClosed)) && stopping() {
+            return stop_during_loss();
         }
+        attached?;
         self.input = Some(input);
         self.route = Some(route);
         Ok(Recovery::Recovered)

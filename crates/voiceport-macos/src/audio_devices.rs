@@ -96,6 +96,13 @@ trait Inventory {
 pub(super) enum OpenError {
     Unavailable(String),
     Unverified(String),
+    AdmissionClosed,
+}
+
+impl From<OpenError> for String {
+    fn from(error: OpenError) -> Self {
+        error.message()
+    }
 }
 
 impl From<&str> for OpenError {
@@ -114,6 +121,7 @@ impl OpenError {
     pub fn message(self) -> String {
         match self {
             Self::Unavailable(message) | Self::Unverified(message) => message,
+            Self::AdmissionClosed => "音频操作已停止或取消。".into(),
         }
     }
 }
@@ -724,7 +732,7 @@ impl OpenInput {
         check: &impl Fn() -> Result<(), String>,
         accepting: impl Fn() -> bool + Send + Sync + 'static,
         consume: impl Fn(&AVAudioPCMBuffer) + Send + Sync + 'static,
-    ) -> Result<(), String> {
+    ) -> Result<(), OpenError> {
         check()?;
         if let Some(watch) = &self.default_watch {
             // Details/UID and Speech setup can block. Read only the default ID
@@ -740,25 +748,24 @@ impl OpenInput {
             }
         }
         let mut slot = self.gate.0.lock().expect("newly opened tap gate");
-        if self.gate.1.load(Ordering::Acquire) || !accepting() {
-            return Err("麦克风配置已变化或音频操作已取消。".into());
-        }
-        *slot = Some(Box::new(move |buffer| {
-            if accepting() {
-                consume(buffer);
-            }
-        }));
-        // The staged consumer is invisible to callbacks until this lock opens.
-        // An observed default change can still win up to the admission CAS.
+        // Resolve default-route invalidation before distinguishing a closed
+        // capture from an unverified route. The lock keeps callbacks out.
         if self
             .default_watch
             .as_ref()
             .is_some_and(|watch| !watch.admission.admit())
             || self.gate.1.load(Ordering::Acquire)
         {
-            slot.take();
             return Err(INPUT_CHANGED.into());
         }
+        if !accepting() {
+            return Err(OpenError::AdmissionClosed);
+        }
+        *slot = Some(Box::new(move |buffer| {
+            if accepting() {
+                consume(buffer);
+            }
+        }));
         #[cfg(debug_assertions)]
         if let InputEngine::Synthetic(input) = &self.native {
             input.attached();
