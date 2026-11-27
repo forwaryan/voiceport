@@ -41,6 +41,17 @@ impl Presentation {
             return None;
         }
 
+        if receipt.block_reason == Some(DictationBlockReason::InterruptedPanelOnly) {
+            return Some(Self {
+                generation,
+                outcome: Outcome::NotSent,
+                status: "不完整 · 仅供查看或复制",
+                next: "原输入框可能已有实时文字，请先检查。",
+                reason: None,
+                settled: phase == Phase::Ready,
+            });
+        }
+
         // A retry transcribes only. Its receipt retains the prior attempt's writes.
         let retried = receipt.session != generation
             || receipt.block_reason == Some(DictationBlockReason::RetryPanelOnly);

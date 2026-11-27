@@ -179,6 +179,12 @@ For an explicit request to discard the active recording or cancel its transcript
 
 When authorized to read the text, run `vp_same && vp dictation result "$DICTATION"`. A running reply has `data.busy`. A successful final reply has `data.state:"ready"`, `text`, `empty`, and `delivery:"none"`. An empty result is valid. A terminal transcription failure has a nonzero exit, `data.state:"failed"` and `data.retry_available`. Use global `status` for metadata-only polling because `dictation result` can return text once ready. Sharing or inserting the returned text requires the user's separate instruction.
 
+## Interrupted recordings
+
+Use the original operation ID and verified App instance. `vp_same && vp dictation fragment "$DICTATION"` reads the offer and its original source, language and redacted destination. This read does not trigger transcription. Present these details to the user and obtain explicit approval for this fragment. When `requires_accept_upload` is true, obtain specific consent for that destination, including loopback or an external program that may relay the audio.
+
+Set `TOKEN` to the offer's `confirmation` and submit once with `vp_same && vp dictation transcribe-fragment "$DICTATION" --confirm "$TOKEN"`. Append `--accept-upload` only where required and approved. Use the returned new operation ID for `result` or `cancel`. Retrieve `incomplete:true` text only with authorization to read it. Offer viewing or explicit copying. To discard an offer on request, use `dictation cancel` with the original ID. If submission times out, inspect status on the same instance. A stale offer cannot authorize a later recording.
+
 ## Explicit retry of a failed recording
 
 Use a failure receipt already obtained for the original operation on this instance. It includes `operation`, `state:"failed"`, `retry_available`, and `delivery:"none"`. If you need to obtain that receipt with `dictation result`, obtain authorization to retrieve the result first: if the operation was actually ready, that command would disclose text. Explain that retry re-transcribes the retained audio with its original pinned source and language and may upload it again. Ask for explicit retry authorization for that destination. When busy/cleanup has cleared, set `FAILED_OPERATION` to that original ID and submit once:

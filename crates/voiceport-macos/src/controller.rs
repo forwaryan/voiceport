@@ -53,6 +53,7 @@ struct Job {
     incoming: Option<Incoming>,
     partial: PartialSlot,
     custody: Custody,
+    incomplete: bool,
 }
 struct Completion {
     generation: u64,
@@ -90,6 +91,14 @@ impl Worker {
                     // Unwind on the worker only. Controller already holds custody
                     // and its recording lease before Job can drop or send can fail.
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        if job.incomplete {
+                            crate::plugin_runtime::check(&job.cancel)?;
+                            job.recording
+                                .as_ref()
+                                .ok_or("录音片段已不可用。")?
+                                .validate_finalized()
+                                .map_err(|_| "无法确认保留录音的归属。")?;
+                        }
                         match &job.source {
                             SessionSource::Plugin(plugin) => {
                                 return if job.sample {
@@ -244,6 +253,30 @@ impl GuiDiagnostics {
 pub(crate) enum VisibleTranscript {
     Preview(u64),
     Final(u64),
+    Incomplete(u64),
+}
+
+impl VisibleTranscript {
+    pub(crate) fn final_generation(self) -> Option<u64> {
+        match self {
+            Self::Final(generation) | Self::Incomplete(generation) => Some(generation),
+            Self::Preview(_) => None,
+        }
+    }
+}
+
+struct InterruptedRecording {
+    generation: u64,
+    confirmation: String,
+}
+
+impl InterruptedRecording {
+    fn new(generation: u64) -> Self {
+        Self {
+            generation,
+            confirmation: uuid::Uuid::new_v4().to_string(),
+        }
+    }
 }
 
 enum GuiStartOrigin<'a> {
@@ -293,6 +326,7 @@ pub struct Controller {
     active: Option<ActiveJob>,
     cleanup: Option<CleanupBlock>,
     recording: Option<Arc<Recording>>,
+    interrupted_recording: Option<InterruptedRecording>,
     recorded_language: String,
     started: Option<Instant>,
     allow_delivery: bool,
@@ -321,6 +355,14 @@ impl AudioFixtureAsr {
     }
 
     pub fn complete(&self, generation: u64) -> bool {
+        self.complete_checked(generation, false, "")
+    }
+
+    pub fn stale_reply(&self, generation: u64) {
+        self.send_result(generation, "Late result from interrupted capture");
+    }
+
+    pub fn complete_checked(&self, generation: u64, incomplete: bool, language: &str) -> bool {
         let job = match self.jobs.try_recv() {
             Ok(job) => job,
             Err(TryRecvError::Empty) => return false,
@@ -328,19 +370,28 @@ impl AudioFixtureAsr {
         };
         assert_eq!(job.generation, generation);
         assert!(!job.sample && job.incoming.is_none());
+        assert_eq!(job.incomplete, incomplete);
+        if incomplete {
+            assert!(matches!(job.source, SessionSource::ChatGpt));
+            assert_eq!(job.language, language);
+        }
         job.recording
             .as_ref()
             .unwrap()
             .validate_finalized()
             .unwrap();
+        self.send_result(generation, "Synthetic capture result");
+        true
+    }
+
+    fn send_result(&self, generation: u64, text: &str) {
         self.results
             .send(Completion {
                 generation,
                 elapsed: None,
-                result: Ok("Synthetic capture result".into()),
+                result: Ok(text.into()),
             })
             .unwrap();
-        true
     }
 }
 
@@ -394,6 +445,7 @@ impl Controller {
             active: None,
             cleanup: None,
             recording: None,
+            interrupted_recording: None,
             recorded_language: String::new(),
             started: None,
             allow_delivery: false,
@@ -587,8 +639,9 @@ impl Controller {
     }
     pub(crate) fn retained_gui_result(&self) -> Option<&RetainedGuiResult> {
         self.retained_gui_result.as_ref().filter(|result| {
-            matches!(self.visible_transcript, Some(VisibleTranscript::Final(generation))
-                if generation == result.receipt.generation)
+            self.visible_transcript
+                .and_then(VisibleTranscript::final_generation)
+                == Some(result.receipt.generation)
         })
     }
     fn seal_gui_capture(&mut self, capture: Option<CaptureDiagnostics>) {
@@ -674,8 +727,10 @@ impl Controller {
     fn begin_gui_receipt(&mut self, generation: u64, automatic: bool) {
         let context = std::mem::take(&mut self.gui_result_context);
         if let Some(receipt) = self.gui_dictation_receipt()
-            && matches!(self.visible_transcript, Some(VisibleTranscript::Final(visible))
-                if visible == receipt.generation)
+            && self
+                .visible_transcript
+                .and_then(VisibleTranscript::final_generation)
+                == Some(receipt.generation)
         {
             self.retained_gui_result = Some(RetainedGuiResult {
                 diagnostics: self.gui_diagnostics.projection(&receipt),
@@ -729,6 +784,9 @@ impl Controller {
         self.mark_start_rejected(message);
     }
     fn mark_start_rejected(&mut self, message: &str) {
+        if self.interrupted_recording.take().is_some() {
+            self.recording = None;
+        }
         self.state.phase = Phase::Failed;
         self.state.retry_available = false;
         self.message = format!("{message} 本轮未开始录音，已有文字保留在结果区。");
@@ -976,6 +1034,7 @@ impl Controller {
         }
         self.cancel_capture();
         self.recording = None;
+        self.interrupted_recording = None;
         self.recorded_output = if gui {
             let bundle_id = rule_target
                 .filter(|target| target.pid > 0 && target.pid as u32 != std::process::id())
@@ -1048,6 +1107,7 @@ impl Controller {
         self.gui_diagnostics.abandon_stages();
         self.delivery.clear();
         self.recording = None;
+        self.interrupted_recording = None;
         self.latest_output.clear_notice();
         self.transcript.clear();
         self.visible_transcript = None;
@@ -1074,11 +1134,6 @@ impl Controller {
             return;
         }
         self.started = None;
-        if self.recorded_output.is_identity() {
-            self.delivery_status = self.delivery.finish_preview();
-        } else if self.allow_delivery && self.delivery.failure_stage().is_none() {
-            self.delivery_status = "文字处理完成后，再输入最终文字。".into();
-        }
         if let Some(capture) = &self.capture {
             match capture.stop() {
                 Ok(()) => {
@@ -1099,6 +1154,11 @@ impl Controller {
     fn finish_capture(&mut self, recording: Result<Arc<Recording>, String>) {
         match recording {
             Ok(recording) => {
+                if self.recorded_output.is_identity() {
+                    self.delivery_status = self.delivery.finish_preview();
+                } else if self.allow_delivery && self.delivery.failure_stage().is_none() {
+                    self.delivery_status = "文字处理完成后，再输入最终文字。".into();
+                }
                 self.recording = Some(recording);
                 self.state.transcribe();
                 if self.recorded_source.is_local() && self.active.is_some() {
@@ -1111,20 +1171,44 @@ impl Controller {
         }
     }
     fn fail_capture(&mut self, message: String) {
-        // A local job keeps its lease until completion, but neither it nor a
-        // partial AAC from an interrupted capture may be submitted for delivery.
+        self.settle_capture_failure(message, None);
+    }
+
+    fn settle_capture_failure(&mut self, mut message: String, fragment: Option<Arc<Recording>>) {
+        // A live local job must still settle before a separate explicit request
+        // can use the finalized fragment; its old completion is not a result.
         self.started = None;
+        let lost = fragment.is_some() || self.capture_has_input_loss();
         self.cancel_capture();
-        self.recording = None;
+        let offered = fragment.is_some();
+        self.recording = fragment;
+        self.interrupted_recording =
+            offered.then(|| InterruptedRecording::new(self.state.generation()));
+        if offered {
+            message.push_str(" 已保留有声片段；未自动转写或发送。");
+        }
+        if lost {
+            self.delivery.stop_interrupted_preview();
+            self.allow_delivery = false;
+            self.discard_recent_dictation_candidate();
+            self.delivery_status = "已停止自动输入；原输入框可能已有实时文字，请先检查。".into();
+        }
         self.state.phase = Phase::Failed;
         if let Some(active) = &self.active {
             active.cancel.cancel();
             self.stop_failure = Some(message.clone());
             self.state.phase = Phase::Stopping;
         }
-        self.state.retry_available = false;
+        self.state.retry_available = offered;
         self.message = message;
-        self.report_gui_transcription(TranscriptionState::Failed, Some(BlockReason::CaptureFailed));
+        self.report_gui_transcription(
+            TranscriptionState::Failed,
+            Some(if offered {
+                BlockReason::InterruptedPanelOnly
+            } else {
+                BlockReason::CaptureFailed
+            }),
+        );
         self.gui_diagnostics.abandon_stages();
         self.delivery.retain_preview();
         self.wait_for_delivery();
@@ -1198,32 +1282,101 @@ impl Controller {
             && self.recording.is_some()
             && self.state.phase == Phase::Failed
             && self.state.retry_available
+            && self.interrupted_recording.is_none()
     }
-    pub fn retry(&mut self) {
-        if !self.can_retry_recording() {
-            return;
+
+    pub(crate) fn fragment_offer(&self) -> Option<(u64, &str, &SessionSource, &str)> {
+        let fragment = self.interrupted_recording.as_ref()?;
+        (!self.busy()
+            && !self.audio_lane.busy()
+            && self.active.is_none()
+            && self.cleanup.is_none()
+            && self.state.phase == Phase::Failed
+            && self.state.accepts(fragment.generation)
+            && self.recording.is_some())
+        .then_some((
+            fragment.generation,
+            &fragment.confirmation,
+            &self.recorded_source,
+            &self.recorded_language,
+        ))
+        .map(|(generation, confirmation, source, language)| {
+            (generation, confirmation.as_str(), source, language.as_str())
+        })
+    }
+
+    pub(crate) fn gui_fragment_retained(&self) -> bool {
+        self.fragment_generation(self.state.generation())
+            && self.recording.is_some()
+            && self
+                .gui_receipt
+                .as_ref()
+                .is_some_and(|r| r.generation == self.state.generation())
+    }
+
+    pub(crate) fn fragment_generation(&self, generation: u64) -> bool {
+        self.interrupted_recording
+            .as_ref()
+            .is_some_and(|fragment| fragment.generation == generation)
+    }
+
+    pub(crate) fn transcribe_fragment(&mut self, confirmation: &str) -> bool {
+        if self
+            .fragment_offer()
+            .is_none_or(|(_, token, _, _)| token != confirmation)
+        {
+            return false;
         }
+        if !self.audio_lane.microphone_authorized() {
+            self.interrupted_recording = None;
+            self.recording = None;
+            self.state.retry_available = false;
+            self.message = "无法确认麦克风权限；未转写录音片段。".into();
+            return false;
+        }
+        self.retry_retained(true)
+    }
+
+    pub fn retry(&mut self) {
+        if self.can_retry_recording() {
+            self.retry_retained(false);
+        }
+    }
+
+    fn retry_retained(&mut self, incomplete: bool) -> bool {
         let gui = self.current_gui_receipt().is_some();
         let previous = self.state.generation();
         let Some(generation) = self.state.retry() else {
-            return;
+            return false;
         };
+        if incomplete {
+            self.interrupted_recording = Some(InterruptedRecording::new(generation));
+        }
         self.detach_gui_delivery();
         if gui && let Some(receipt) = self.gui_receipt.as_mut() {
             receipt.generation = generation;
             receipt.transcription = TranscriptionState::Pending;
-            receipt.block_reason = Some(BlockReason::RetryPanelOnly);
+            receipt.block_reason = Some(if incomplete {
+                BlockReason::InterruptedPanelOnly
+            } else {
+                BlockReason::RetryPanelOnly
+            });
             self.overlay_origin_pid = Self::foreground_pid();
             self.gui_diagnostics.timings = StageTimings {
                 capture_first_frame: self.gui_diagnostics.timings.capture_first_frame,
                 ..StageTimings::default()
             };
-            self.retry_recent_dictation(previous, generation);
+            if !incomplete {
+                self.retry_recent_dictation(previous, generation);
+            }
         }
         self.gui_diagnostics.abandon_stages();
-        self.delivery.clear();
+        if !incomplete {
+            self.delivery.clear();
+        }
         self.allow_delivery = false;
         self.submit();
+        true
     }
     fn submit(&mut self) {
         self.submit_input(None);
@@ -1257,6 +1410,7 @@ impl Controller {
                 source: self.recorded_source.clone(),
                 incoming,
                 partial: self.partial.clone(),
+                incomplete: self.fragment_generation(self.state.generation()),
             };
             self.active = Some(ActiveJob {
                 generation: self.state.generation(),
@@ -1400,16 +1554,11 @@ impl Controller {
                 let block = self.cleanup.take().expect("matching cleanup observation");
                 self.active = None;
                 if block.cancelled {
-                    self.recording = None;
-                    if let Some(error) = self.stop_failure.take() {
-                        self.state.phase = Phase::Failed;
-                        self.message = error;
-                    } else {
-                        self.state.phase = Phase::Idle;
+                    self.finish_stopping();
+                    if self.state.phase == Phase::Idle {
                         self.message =
                             format!("{}插件清理已确认；听写已取消。", block.original_error);
                     }
-                    self.state.retry_available = false;
                 } else {
                     self.state.phase = Phase::Failed;
                     self.state.retry_available = self.recording.is_some();
@@ -1444,6 +1593,9 @@ impl Controller {
             self.request_cleanup_observation();
             return;
         }
+        if self.capture_has_input_loss() {
+            self.delivery.stop_interrupted_preview();
+        }
         let delivery_pending = self.delivery.has_pending();
         let gui_pending = self.current_gui_receipt().is_some_and(|receipt| {
             if receipt.transcription == TranscriptionState::Pending {
@@ -1461,6 +1613,7 @@ impl Controller {
             self.detach_gui_delivery();
         }
         self.stop_failure = None;
+        self.interrupted_recording = None;
         self.delivery_settle = None;
         let worker_active = self.active.is_some();
         self.state.cancel(worker_active);
@@ -1484,7 +1637,20 @@ impl Controller {
         self.message = "准备期间已松开快捷键，未开始录音。".into();
     }
 
+    fn capture_has_input_loss(&self) -> bool {
+        self.capture.as_ref().is_some_and(|capture| {
+            capture.input_lost() || (!self.opening_microphone() && self.capture_route.is_none())
+        })
+    }
+
+    fn capture_suspends_preview(&self) -> bool {
+        self.capture_stop.is_some() || self.capture_has_input_loss()
+    }
+
     fn update_dictation_partial(&mut self, generation: u64, text: String) {
+        if self.capture_suspends_preview() {
+            return;
+        }
         self.transcript = text;
         self.visible_transcript = Some(VisibleTranscript::Preview(generation));
         // An append-only target cannot undo raw partial text after correction.
@@ -1677,14 +1843,43 @@ impl Controller {
                 diagnostics,
             } if self.capture_stop.take().is_some() => {
                 let recording = result.and_then(|()| capture.take_finalized());
-                self.capture = None;
-                self.input_check = None;
                 self.seal_gui_capture(diagnostics);
+                if recording.is_ok() {
+                    self.capture = None;
+                    self.input_check = None;
+                }
                 self.finish_capture(recording);
+            }
+            CaptureReply::Interrupted {
+                reason,
+                diagnostics,
+            } if !opening => {
+                let fragment = capture.take_finalized();
+                self.capture = None;
+                self.seal_gui_capture(diagnostics);
+                match fragment {
+                    Ok(fragment) => self.settle_capture_failure(reason, Some(fragment)),
+                    Err(message) => self.fail_capture(message),
+                }
             }
             CaptureReply::Failed(message) if opening => self.fail_start(message),
             CaptureReply::Failed(message) => self.fail_capture(message),
             _ => {}
+        }
+    }
+
+    fn finish_stopping(&mut self) {
+        self.cancel_capture();
+        if self.interrupted_recording.is_none() {
+            self.recording = None;
+        }
+        if let Some(error) = self.stop_failure.take() {
+            self.state.phase = Phase::Failed;
+            self.state.retry_available = self.interrupted_recording.is_some();
+            self.message = error;
+        } else {
+            self.state.phase = Phase::Idle;
+            self.message = "听写已取消。".into();
         }
     }
 
@@ -1719,14 +1914,7 @@ impl Controller {
                     let stopping = self.state.phase == Phase::Stopping;
                     if self.state.worker_disconnected(self.recording.is_some()) {
                         if stopping {
-                            self.cancel_capture();
-                            self.recording = None;
-                            if let Some(error) = self.stop_failure.take() {
-                                self.state.phase = Phase::Failed;
-                                self.message = error;
-                            } else {
-                                self.message = "听写已取消。".into();
-                            }
+                            self.finish_stopping();
                         } else {
                             self.report_gui_transcription(
                                 TranscriptionState::Failed,
@@ -1919,15 +2107,7 @@ impl Controller {
             }
             self.active = None;
             if self.state.phase == Phase::Stopping {
-                self.cancel_capture();
-                self.recording = None;
-                if let Some(error) = self.stop_failure.take() {
-                    self.state.phase = Phase::Failed;
-                    self.message = error;
-                } else {
-                    self.state.phase = Phase::Idle;
-                    self.message = "听写已取消。".into();
-                }
+                self.finish_stopping();
             } else if self.state.complete(
                 completion.generation,
                 completion.result.is_ok(),
@@ -1935,14 +2115,22 @@ impl Controller {
             ) {
                 match completion.result {
                     Ok(text) => {
+                        let incomplete = self.fragment_generation(completion.generation);
                         self.apply_dictation_final(text);
+                        if incomplete {
+                            self.raw_transcript = None;
+                        }
                         let has_text = !self.transcript.trim().is_empty();
                         if has_text {
                             self.report_gui_transcription(TranscriptionState::Completed, None);
                         } else {
                             self.report_gui_transcription(
                                 TranscriptionState::Empty,
-                                Some(BlockReason::EmptyTranscript),
+                                Some(if incomplete {
+                                    BlockReason::InterruptedPanelOnly
+                                } else {
+                                    BlockReason::EmptyTranscript
+                                }),
                             );
                         }
                         if self.gui_owns_delivery
@@ -1956,10 +2144,15 @@ impl Controller {
                         if !has_text {
                             self.gui_diagnostics.preparation = None;
                         }
-                        self.visible_transcript =
-                            has_text.then_some(VisibleTranscript::Final(completion.generation));
-                        self.delivery_status =
-                            self.delivery.deliver(&self.transcript, self.allow_delivery);
+                        self.visible_transcript = has_text.then_some(if incomplete {
+                            VisibleTranscript::Incomplete(completion.generation)
+                        } else {
+                            VisibleTranscript::Final(completion.generation)
+                        });
+                        if !incomplete {
+                            self.delivery_status =
+                                self.delivery.deliver(&self.transcript, self.allow_delivery);
+                        }
                         self.gui_diagnostics
                             .finish_delivery_if_settled(&self.delivery);
                         self.message = match (self.testing, has_text) {
@@ -1969,7 +2162,15 @@ impl Controller {
                             (false, true) => "最终转写完成。",
                         }
                         .into();
-                        if self.allow_delivery && has_text && self.delivery.uses_clipboard() {
+                        if incomplete {
+                            self.message = if has_text {
+                                "不完整 · 已转写录音片段；仅供查看或复制。"
+                            } else {
+                                "不完整 · 保留的录音片段未识别到文字。"
+                            }
+                            .into();
+                        } else if self.allow_delivery && has_text && self.delivery.uses_clipboard()
+                        {
                             self.message = self.delivery_status.clone();
                         }
                         self.cancel_capture();
@@ -1989,9 +2190,12 @@ impl Controller {
             }
         }
         self.wait_for_delivery();
-        let status = self
-            .delivery
-            .poll_observing_preparation(|| self.gui_diagnostics.finish_preparation());
+        let status = if self.capture_suspends_preview() && !self.opening_microphone() {
+            None
+        } else {
+            self.delivery
+                .poll_observing_preparation(|| self.gui_diagnostics.finish_preparation())
+        };
         self.gui_diagnostics
             .finish_delivery_if_settled(&self.delivery);
         if let Some(status) = status {
@@ -2930,6 +3134,65 @@ pub(crate) mod stop_failure_regression {
             "gui-delivery: audible empty ASR requests=1 writes=0 diagnostics={}",
             serde_json::to_string(&diagnostics).unwrap()
         );
+
+        #[cfg(debug_assertions)]
+        {
+            let mut fixture = Fixture::new(Input::Valid);
+            let c = &mut fixture.controller;
+            let storage = Storage::at(fixture._temp.path().join(NAMESPACE));
+            let asr =
+                c.install_audio_fixture(crate::audio::devices::fixture::Backend::new(storage));
+            let generation = c.state.generation();
+            c.begin_gui_receipt(generation, true);
+            c.allow_delivery = true;
+            c.gui_owns_delivery = true;
+            let target = Rc::new(RefCell::new(ReceiverState {
+                snapshot: Snapshot {
+                    text: "A|B".into(),
+                    selection: TextRange {
+                        location: 1,
+                        length: 1,
+                    },
+                },
+                focused: true,
+                write_error: false,
+                writes: 0,
+            }));
+            c.delivery
+                .begin_fixture(Box::new(Receiver(target.clone())))
+                .unwrap();
+            c.update_dictation_partial(generation, "实时".into());
+            assert_eq!(target.borrow().writes, 1);
+            assert_eq!(target.borrow().snapshot.text, "A实时B");
+            let fragment = c.stop_fixture_capture().unwrap();
+            c.settle_capture_failure("合成断开".into(), Some(fragment));
+            assert!(c.gui_fragment_retained());
+            asr.assert_no_job();
+            let token = c.fragment_offer().unwrap().1.to_owned();
+            assert!(c.transcribe_fragment(&token));
+            assert_eq!(target.borrow().writes, 1);
+            assert_eq!(target.borrow().snapshot.text, "A实时B");
+            assert!(!c.transcribe_fragment(&token));
+            let attempt = c.state.generation();
+            assert!(asr.complete_checked(attempt, true, ""));
+            c.poll();
+            assert!(
+                matches!(c.visible_transcript, Some(VisibleTranscript::Incomplete(generation)) if generation == attempt)
+            );
+            let receipt = c.gui_dictation_receipt().unwrap();
+            assert_eq!(
+                receipt.block_reason,
+                Some(BlockReason::InterruptedPanelOnly)
+            );
+            assert_eq!(receipt.delivery.submitted_operations, 1);
+            assert!(receipt.delivery.stopped);
+            assert_eq!(target.borrow().writes, 1);
+            assert_eq!(target.borrow().snapshot.text, "A实时B");
+            assert!(!fixture.audio.exists() && !fixture.lease_active());
+            println!(
+                "gui-delivery: interrupted final retains one preview write with no restoration or replay"
+            );
+        }
     }
 
     pub(crate) fn run(case: &str, _main_thread: MainThreadMarker) {

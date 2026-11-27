@@ -90,6 +90,14 @@ pub enum Action {
     DictationRetry {
         operation: String,
     },
+    DictationFragment {
+        operation: String,
+    },
+    DictationTranscribeFragment {
+        operation: String,
+        confirmation: String,
+        accept_upload: bool,
+    },
     Cancel {
         operation: String,
     },

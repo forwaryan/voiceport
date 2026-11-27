@@ -132,6 +132,7 @@ pub(in crate::app::quick_panel) fn run(
         origin: Some(dictation_page::TranscriptOrigin {
             generation: second,
             final_text: true,
+            incomplete: false,
         }),
         original: &source.controller.transcript,
         raw_available: false,
@@ -143,6 +144,7 @@ pub(in crate::app::quick_panel) fn run(
             can_toggle: true,
             can_cancel: false,
             can_retry: false,
+            can_transcribe_fragment: false,
         },
     };
     super::super::fixture::result_scene(d, snapshot, output, |page| {

@@ -95,6 +95,7 @@ fn main() {
             can_toggle: true,
             can_cancel: false,
             can_retry: false,
+            can_transcribe_fragment: false,
         };
         let attempt = ResultDetails {
             receipt: &receipt,
@@ -109,6 +110,7 @@ fn main() {
                 origin: Some(TranscriptOrigin {
                     generation,
                     final_text,
+                    incomplete: false,
                 }),
                 original: &original,
                 raw_available: true,
@@ -126,6 +128,27 @@ fn main() {
             page.result.accessibilityLabel().unwrap().to_string(),
             "本轮转写正文（只读）"
         );
+        page.refresh(Snapshot {
+            attempt: Some(attempt),
+            retained: None,
+            origin: Some(TranscriptOrigin {
+                generation: 18,
+                final_text: true,
+                incomplete: true,
+            }),
+            original: &original,
+            raw_available: true,
+            can_open_raw: true,
+            shortcut: "Fixture shortcut",
+            activity,
+        });
+        assert!(page.result.isSelectable() && !page.result.isEditable());
+        assert!(page.raw_original.isHidden() && !page.edit.isEnabled() && page.copy.isEnabled());
+        assert_eq!(
+            page.result.accessibilityLabel().unwrap().to_string(),
+            "不完整 · 片段正文（只读）"
+        );
+        refresh(18, true);
         page.result.setSelectedRange(NSRange::new(0, 3));
         refresh(18, true);
         assert_eq!(
@@ -214,6 +237,7 @@ fn main() {
                 origin: generation.map(|generation| TranscriptOrigin {
                     generation,
                     final_text: true,
+                    incomplete: false,
                 }),
                 original: text,
                 raw_available: false,

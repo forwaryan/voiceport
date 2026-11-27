@@ -54,7 +54,7 @@ pub(crate) struct CaptureDiagnostics {
 
 /// A diagnostic peak boundary of -60 dBFS. Each channel is tested before mixing.
 /// Even a single nonzero sample below the boundary is distinct from digital zero.
-const SIGNAL_PEAK: f64 = 0.001;
+pub(super) const SIGNAL_PEAK: f64 = 0.001;
 
 pub(super) struct CaptureObservation {
     started: StageTimer,

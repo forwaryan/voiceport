@@ -543,6 +543,7 @@ pub(super) fn capabilities() -> Response {
         "dictionary_exchange":["import","import-preview","import-apply","import-cancel","export"],
         "dictionary_output":["show","set","preview"],
         "dictation_output":["copy-last","paste-last"],
+        "dictation_recovery":["fragment","transcribe-fragment"],
         "groups":["app","status","sources","plugins","dictation","preferences","microphone","models","dictionary","scenes","app-rules","history","file"],
     }))
 }
@@ -579,7 +580,15 @@ pub(super) fn destination(c: &Controller, source_id: &str) -> Response {
         _ => None,
     };
     let destination = Destination::configured(Some(&descriptor), configuration);
-    let (kind, origin) = match &destination {
+    Response::ok(json!({
+        "source":source_id, "destination":destination_data(&destination),
+        "languages":voiceport_core::language::LANGUAGES.iter().filter(|(code, _)| source_allows(&source, code)).map(|(code, _)| language_code(code)).collect::<Vec<_>>(),
+        "external_audio_possible": !matches!(destination, Destination::OnDevice),
+    }))
+}
+
+pub(super) fn destination_data(destination: &Destination) -> Value {
+    let (kind, origin) = match destination {
         Destination::OnDevice => ("on_device", None),
         Destination::ChatGpt => ("chatgpt", None),
         Destination::LoopbackHttp(origin) => ("loopback_http", Some(origin)),
@@ -588,11 +597,7 @@ pub(super) fn destination(c: &Controller, source_id: &str) -> Response {
         Destination::ExternalProgram => ("external_program", None),
         Destination::Unknown => ("unknown", None),
     };
-    Response::ok(json!({
-        "source":source_id, "destination":{"kind":kind,"origin":origin},
-        "languages":voiceport_core::language::LANGUAGES.iter().filter(|(code, _)| source_allows(&source, code)).map(|(code, _)| language_code(code)).collect::<Vec<_>>(),
-        "external_audio_possible": !matches!(destination, Destination::OnDevice),
-    }))
+    json!({"kind":kind,"origin":origin})
 }
 
 pub(super) fn models(c: &Controller) -> Response {
@@ -612,7 +617,7 @@ pub(super) fn gui_result(c: &Controller, generation: u64, original: bool) -> Res
     };
     let text = match receipt.transcription {
         TranscriptionState::Empty => "",
-        TranscriptionState::Completed if matches!(c.visible_transcript, Some(VisibleTranscript::Final(current)) if current == generation) => {
+        TranscriptionState::Completed if matches!(c.visible_transcript, Some(VisibleTranscript::Final(current) | VisibleTranscript::Incomplete(current)) if current == generation) => {
             if original {
                 c.raw_transcript.as_deref().unwrap_or(&c.transcript)
             } else {
@@ -633,7 +638,7 @@ pub(super) fn gui_result(c: &Controller, generation: u64, original: bool) -> Res
         );
     }
     Response::ok(
-        json!({"generation":generation,"original":original,"text":text,"empty":text.is_empty(),"receipt":receipt}),
+        json!({"generation":generation,"original":original,"text":text,"empty":text.is_empty(),"receipt":receipt,"incomplete":c.fragment_generation(generation)}),
     )
 }
 

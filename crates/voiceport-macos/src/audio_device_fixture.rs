@@ -26,6 +26,8 @@ struct State {
     default: AtomicU32,
     missing: AtomicU32,
     authorized: AtomicBool,
+    sample: AtomicU32,
+    frames: AtomicU32,
     opens: AtomicU32,
     starts: AtomicU32,
     attached: AtomicU32,
@@ -61,6 +63,8 @@ impl Backend {
             default: AtomicU32::new(1),
             missing: AtomicU32::new(0),
             authorized: AtomicBool::new(true),
+            sample: AtomicU32::new(0.125_f32.to_bits()),
+            frames: AtomicU32::new(1024),
             opens: AtomicU32::new(0),
             starts: AtomicU32::new(0),
             attached: AtomicU32::new(0),
@@ -133,6 +137,12 @@ impl Backend {
         self.0.missing.store(id, Ordering::Release);
     }
 
+    pub(crate) fn set_samples(&self, frames: u32, sample: f32) {
+        assert!(frames <= 1024);
+        self.0.sample.store(sample.to_bits(), Ordering::Release);
+        self.0.frames.store(frames, Ordering::Release);
+    }
+
     pub(crate) fn set_authorized(&self, allowed: bool) {
         self.0.authorized.store(allowed, Ordering::Release);
     }
@@ -161,14 +171,16 @@ impl Backend {
         device: &Device,
         check: &impl Fn() -> Result<(), String>,
         prepare: &impl Fn(&AVAudioFormat) -> Result<T, String>,
-    ) -> Result<(OpenInput, T), String> {
+    ) -> Result<(OpenInput, T), OpenError> {
         check()?;
         // Synthetic equivalent of inputNode returning after a blocked hardware
         // initialization. The same open/commit guards run before device use.
         let gate = self.0.open_gates.lock().unwrap().pop_front();
         self.0.opens.fetch_add(1, Ordering::Release);
         if gate.is_some_and(|gate| gate.recv() != Ok(true)) {
-            return Err("Synthetic input initialization failed.".into());
+            return Err(OpenError::Unavailable(
+                "Synthetic input initialization failed.".into(),
+            ));
         }
         check()?;
         let sample_rate = if device.id == 1 { 48_000.0 } else { 16_000.0 };
@@ -185,8 +197,11 @@ impl Backend {
                 1024,
             )
             .unwrap();
-            pcm.setFrameLength(1024);
-            std::slice::from_raw_parts_mut((*pcm.floatChannelData()).as_ptr(), 1024).fill(0.125);
+            let frames = self.0.frames.load(Ordering::Acquire);
+            pcm.setFrameLength(frames);
+            let sample = f32::from_bits(self.0.sample.load(Ordering::Acquire));
+            std::slice::from_raw_parts_mut((*pcm.floatChannelData()).as_ptr(), frames as usize)
+                .fill(sample);
             (format, pcm)
         };
         let prepared = prepare(&format)?;
@@ -217,12 +232,11 @@ impl Inventory for Backend {
             .collect())
     }
 
-    fn system_input(&self) -> Result<Device, String> {
+    fn default_candidate(&self) -> Result<Option<Device>, String> {
         // Match HAL: capture the ID before looking up the device details.
         let id = self.0.default.load(Ordering::Acquire);
         pause_query(&self.0.default_gate);
-        self.device(id)
-            .ok_or_else(|| "No synthetic default input.".into())
+        Ok(self.device(id))
     }
 }
 

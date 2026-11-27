@@ -1,5 +1,5 @@
 //! Main-thread IPC dispatch. Native Controller is never moved to a socket thread.
-use super::*;
+use super::{interrupted_dictation::FragmentPlan, *};
 use crate::{
     local_models::SessionSource,
     plugins::{FieldKind, Manifest, Source, Store},
@@ -101,6 +101,73 @@ impl Operation {
             && self.generation == c.state.generation()
             && c.can_retry_recording()
     }
+    fn fragment_plan(&self, c: &Controller) -> Option<FragmentPlan> {
+        if self.cancelled || self.sample {
+            return None;
+        }
+        FragmentPlan::read(c).filter(|plan| plan.generation == self.generation)
+    }
+
+    fn fragment(&self, c: &Controller) -> Response {
+        match self.fragment_plan(c) {
+            Some(plan) => Response::ok(self.fragment_data(&plan)),
+            None => err(
+                "invalid_state",
+                "No usable interrupted recording belongs to this operation.",
+            ),
+        }
+    }
+
+    fn fragment_data(&self, plan: &FragmentPlan) -> Value {
+        json!({
+            "operation":self.id, "generation":plan.generation, "state":"fragment_available",
+            "source":plan.source, "source_name":plan.source_name, "language":plan.language,
+            "destination":product::destination_data(&plan.destination),
+            "requires_accept_upload":plan.destination.requires_confirmation(),
+            "confirmation":plan.confirmation, "incomplete":true, "delivery":"none",
+        })
+    }
+
+    fn transcribe_fragment(
+        &mut self,
+        c: &mut Controller,
+        confirmation: &str,
+        accept_upload: bool,
+    ) -> Response {
+        let Some(plan) = self.fragment_plan(c) else {
+            return err(
+                "invalid_state",
+                "No usable interrupted recording belongs to this operation.",
+            );
+        };
+        if confirmation != plan.confirmation {
+            return err(
+                "invalid_state",
+                "This confirmation does not match the retained recording.",
+            );
+        }
+        if plan.destination.requires_confirmation() && !accept_upload {
+            let mut response = err(
+                "confirmation_required",
+                "Explicit --accept-upload is required for this audio destination.",
+            );
+            response.data = self.fragment_data(&plan);
+            return response;
+        }
+        if !c.transcribe_fragment(confirmation) {
+            return err(
+                "invalid_state",
+                "The interrupted recording could not be submitted.",
+            );
+        }
+        self.id = uuid::Uuid::new_v4().to_string();
+        self.generation = c.state.generation();
+        self.result = None;
+        Response::ok(
+            json!({"operation":self.id,"state":phase(c.state.phase),"incomplete":true,"delivery":"none"}),
+        )
+    }
+
     fn settle(&mut self, c: &Controller) {
         if self.result.is_some() || c.busy() {
             return;
@@ -114,7 +181,7 @@ impl Operation {
             )
         } else if c.state.phase == Phase::Ready {
             Response::ok(
-                json!({"operation":self.id,"state":"ready","text":c.transcript,"empty":c.transcript.is_empty(),"delivery":"none"}),
+                json!({"operation":self.id,"state":"ready","text":c.transcript,"empty":c.transcript.is_empty(),"incomplete":c.fragment_generation(self.generation),"delivery":"none"}),
             )
         } else {
             let mut response = err(
@@ -125,7 +192,7 @@ impl Operation {
                 },
                 "Operation failed. No service response body or credentials are included.",
             );
-            response.data = json!({"operation":self.id,"state":"failed","retry_available":self.retry_available(c),"delivery":"none"});
+            response.data = json!({"operation":self.id,"state":"failed","retry_available":self.retry_available(c),"fragment_available":self.fragment_plan(c).is_some(),"incomplete":c.fragment_generation(self.generation),"delivery":"none"});
             response
         });
     }
@@ -135,6 +202,7 @@ impl Operation {
             // its new recording as retryable with this old operation ID.
             if response.data.get("retry_available").is_some() {
                 response.data["retry_available"] = self.retry_available(c).into();
+                response.data["fragment_available"] = self.fragment_plan(c).is_some().into();
             }
             response
         } else if self.generation != c.state.generation() {
@@ -409,6 +477,10 @@ impl Delegate {
                 Some(op) if op.id == operation => op.result(c),
                 _ => missing(),
             },
+            Action::DictationFragment { operation } => match &control.operation {
+                Some(op) if op.id == operation => op.fragment(c),
+                _ => missing(),
+            },
             Action::Cancel { operation } => {
                 return self.finish_control_operation(control, pending, operation, c, false);
             }
@@ -616,6 +688,16 @@ impl Delegate {
             }
             Action::Scenes { request } => self.control_scenes(c, request),
             Action::AppRules { request } => self.control_app_rules(c, request),
+            Action::DictationTranscribeFragment {
+                operation,
+                confirmation,
+                accept_upload,
+            } => match &mut control.operation {
+                Some(op) if op.id == operation => {
+                    op.transcribe_fragment(c, &confirmation, accept_upload)
+                }
+                _ => missing(),
+            },
             Action::DictationRetry { operation } => match &mut control.operation {
                 Some(op) => op.retry(&operation, c),
                 None => missing(),
@@ -728,7 +810,9 @@ impl Delegate {
         let response = if let Some(op) = &mut control.operation {
             if op.id != operation {
                 missing()
-            } else if op.result.is_some() || op.generation != c.state.generation() {
+            } else if op.generation != c.state.generation()
+                || (op.result.is_some() && (stop || op.fragment_plan(c).is_none()))
+            {
                 err("invalid_state", "Operation is no longer active.")
             } else if stop && c.state.phase != Phase::Recording && !c.opening_microphone() {
                 err(
@@ -740,6 +824,7 @@ impl Delegate {
                     c.stop();
                 } else {
                     op.cancelled = true;
+                    op.result = None;
                     c.cancel();
                     op.generation = c.state.generation();
                 }

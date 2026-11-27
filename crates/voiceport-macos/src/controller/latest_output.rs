@@ -1,5 +1,5 @@
 //! Explicit actions on the existing final result. No transcript is retained here.
-use super::{Controller, Delivery};
+use super::{Controller, Delivery, VisibleTranscript};
 use crate::delivery::model::{ApplicationTarget, DeliveryReceipt, DeliveryState, Failure};
 use serde_json::{Value, json};
 use voiceport_control::Response;
@@ -43,7 +43,14 @@ fn may_have_written(receipt: DeliveryReceipt) -> bool {
 
 impl Controller {
     pub(crate) fn has_latest_result(&self) -> bool {
-        self.latest_result().is_some()
+        self.incomplete_result().is_some() || self.latest_result().is_some()
+    }
+
+    fn incomplete_result(&self) -> Option<u64> {
+        match self.visible_transcript {
+            Some(VisibleTranscript::Incomplete(generation)) => Some(generation),
+            _ => None,
+        }
     }
 
     pub(crate) fn latest_output_notice(&self) -> Option<&'static str> {
@@ -67,6 +74,25 @@ impl Controller {
     }
 
     pub(crate) fn copy_latest_with(&mut self, copy: impl FnOnce(&str) -> bool) -> Response {
+        if let Some(generation) = self.incomplete_result() {
+            if !copy(&self.transcript) {
+                self.latest_feedback("复制失败", "复制失败，请在结果区手动复制文字。");
+                return Response::error(
+                    "clipboard_error",
+                    "Could not copy the incomplete dictation.",
+                );
+            }
+            let possible_duplicate = self
+                .gui_dictation_receipt()
+                .filter(|receipt| receipt.generation == generation)
+                .is_some_and(|receipt| may_have_written(receipt.delivery));
+            self.latest_feedback(
+                "已复制不完整片段",
+                "不完整片段已复制。原输入框可能已有实时文字，请先检查。",
+            );
+            return Response::ok(json!({"generation":generation,"copied":true,
+                "incomplete":true,"possible_duplicate":possible_duplicate}));
+        }
         let Some(result) = self.latest_result() else {
             return self.no_latest_result();
         };
@@ -98,6 +124,13 @@ impl Controller {
             return Response::error(
                 "busy",
                 "App is busy; wait for the current operation to settle.",
+            );
+        }
+        if self.incomplete_result().is_some() {
+            self.latest_feedback("不完整 · 仅供查看或复制", "录音片段仅供查看或复制。");
+            return Response::error(
+                "invalid_state",
+                "Incomplete dictation can only be viewed or copied.",
             );
         }
         let Some(result) = self.latest_result() else {

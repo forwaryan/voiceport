@@ -664,6 +664,16 @@ impl Delivery {
         self.session = None;
     }
 
+    /// Stop all remaining output without restoring or extending a previously
+    /// written preview. The original receipt remains visible on the result.
+    pub(crate) fn stop_interrupted_preview(&mut self) {
+        self.receipt = self.receipt();
+        self.receipt.stop();
+        self.final_accepted = true;
+        self.discard_preparation();
+        self.session = None;
+    }
+
     /// Cancellation restores only an unchanged ordinary owned span. Terminal
     /// input is append-only and is never retracted.
     pub fn clear(&mut self) {
