@@ -310,7 +310,7 @@ Check `data.exported:true`. The App preserves existing paths. If an export reply
 
 ## Use recent dictation without copying text implicitly
 
-`history list` retrieves metadata for the current App process. Use `history show ID` only on request to disclose the selected text. `history clear --confirm` clears retained results while leaving collection enabled or disabled as before. `history settings off --confirm` disables and clears. Deleted and evicted IDs cannot be recovered from this command family.
+`history list` retrieves metadata for the current App process. For example, `history list --query 'weekly notes' --delivery failed` finds a matching clear failure before writing. Use `--delivery uncertain` to inspect unverified or partial outcomes separately and `--delivery not-sent` to find results that stayed in VoicePort without a recorded delivery failure. Use `history show ID` only on request to disclose the selected text. `history clear --confirm` clears retained results while leaving collection enabled or disabled as before. `history settings off --confirm` disables and clears. Deleted and evicted IDs cannot be recovered from this command family.
 
 ## Build or verify a test ZIP
 
