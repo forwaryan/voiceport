@@ -17,7 +17,7 @@ pub(crate) struct ReceiverState {
     pub(crate) failure: Option<InputFailure>,
 }
 
-struct SyntheticTarget(Rc<RefCell<ReceiverState>>);
+pub(in crate::controller) struct SyntheticTarget(pub(in crate::controller) Rc<RefCell<ReceiverState>>);
 
 impl Target for SyntheticTarget {
     fn read(&mut self) -> Result<Snapshot, InputFailure> {
@@ -83,6 +83,15 @@ impl SyntheticDictations {
         gui: bool,
         automatic: bool,
     ) -> (u64, Rc<RefCell<ReceiverState>>) {
+        self.begin_with_rule_target(gui, automatic, None)
+    }
+
+    pub(in crate::controller) fn begin_with_rule_target(
+        &mut self,
+        gui: bool,
+        automatic: bool,
+        rule_target: Option<&ApplicationTarget>,
+    ) -> (u64, Rc<RefCell<ReceiverState>>) {
         let receiver = Rc::new(RefCell::new(ReceiverState {
             snapshot: Snapshot {
                 text: "A|B".into(),
@@ -102,7 +111,7 @@ impl SyntheticDictations {
                 "zh".into(),
                 automatic,
                 gui,
-                None,
+                rule_target,
                 |delivery| delivery.begin_fixture(Box::new(SyntheticTarget(receiver.clone()))),
             )
             .unwrap();

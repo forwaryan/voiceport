@@ -66,6 +66,12 @@ impl Workflows {
         Ok(())
     }
 
+    pub(crate) fn apply_preset_output(&mut self, preset: &Preset) {
+        self.dictionary_enabled = preset.dictionary_enabled;
+        self.output_rules = preset.output_rules;
+        self.app_rules.prioritize_manual_scene(&preset.name);
+    }
+
     pub(crate) fn remove_preset(&mut self, index: usize) {
         let preset = self.presets.remove(index);
         self.app_rules.remove_scene(&preset.name);

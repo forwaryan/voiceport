@@ -28,7 +28,9 @@
 
 在「偏好设置 → 应用输出规则…」填入一行 `com.example.Editor → 写作`，其中「写作」是已保存的听写场景名称。勾选「启用应用输出规则」并保存。功能默认关闭，关闭时保留映射。每个应用 Bundle ID 只能绑定一个场景，删除场景时一并删除关联映射。可通过 `plutil -extract CFBundleIdentifier raw -o - '/path/to/App.app/Contents/Info.plist'` 查看所选应用的 ID。
 
-启用后，开始 GUI 听写时用前台应用的 Bundle ID 做区分大小写的精确匹配。快捷键使用按下瞬间的应用身份。命中时采用该场景的词典开关和输出规则，所选转写来源、模型、识别语言和音频目的地仍由当前设置决定。未命中、身份未知或从 VoicePort 自身开始时使用全局输出设置。规则只读取应用的 Bundle ID，无需检查网页或浏览器 URL。
+启用应用输出规则后，手动确认「应用场景」会优先使用该场景写入的全局输出设置。这个选择会保存，删除手动场景或在「应用输出规则…」勾选并保存可恢复匹配，也可运行 `voiceport app-rules enable on`。期间对全局词典开关和输出规则的修改仍会用于之后的听写。
+
+应用匹配按前台应用的 Bundle ID 做区分大小写的精确匹配。快捷键使用按下瞬间的应用身份。命中时采用该场景的词典开关和输出规则，所选转写来源、模型、识别语言和音频目的地仍由当前设置决定。未命中、身份未知或从 VoicePort 自身开始时使用全局输出设置。规则只读取应用的 Bundle ID，无需检查网页或浏览器 URL。
 
 本次选中的场景与输出设置随录音固定，切换应用和手动重试均沿用这份快照。启用时，听写页和快捷面板会显示本次使用的场景或「全局规则」。CLI 听写继续返回来源原文。可用 `voiceport app-rules match com.example.Editor` 检查所填 ID 的选路。命令详见 [CLI 参考](../skills/voiceport/references/cli.md#application-output-rules)。
 

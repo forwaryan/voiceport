@@ -345,20 +345,27 @@ fn scenes(words: &[&str]) -> Result<ScenesRequest, Response> {
 
 fn app_rules(words: &[&str]) -> Result<AppRulesRequest, Response> {
     use AppRulesRequest::*;
-    Ok(match words {
-        ["list"] => List,
-        ["enable", value] => Enable {
+    let [verb, values @ ..] = words else {
+        return Err(invalid());
+    };
+    let values = match *verb {
+        "set" | "remove" | "match" => values.strip_prefix(&["--"]).unwrap_or(values),
+        _ => values,
+    };
+    Ok(match (*verb, values) {
+        ("list", []) => List,
+        ("enable", [value]) => Enable {
             enabled: boolean(value)?,
         },
-        ["set", id, scene] if positional(id) && positional(scene) => Set {
+        ("set", [id, scene]) if !id.is_empty() && !scene.is_empty() => Set {
             bundle_id: (*id).into(),
             scene: (*scene).into(),
         },
-        ["remove", id] if positional(id) => Remove {
+        ("remove", [id]) if !id.is_empty() => Remove {
             bundle_id: (*id).into(),
         },
-        ["match"] => Match { bundle_id: None },
-        ["match", id] if positional(id) => Match {
+        ("match", []) => Match { bundle_id: None },
+        ("match", [id]) if !id.is_empty() => Match {
             bundle_id: Some((*id).into()),
         },
         _ => return Err(invalid()),

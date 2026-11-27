@@ -112,6 +112,9 @@ pub fn run(raw: &[OsString]) -> Option<u8> {
     let mut flags = raw.iter();
     let mut json_output = false;
     while let Some(arg) = flags.next() {
+        if arg == "--" {
+            break;
+        }
         if arg == "--json" {
             json_output = true;
         } else if arg.to_str().is_some_and(option_takes_value) {
@@ -135,6 +138,7 @@ fn execute(mut args: Vec<String>) -> Result<Response, Response> {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--" => break,
             "--json" if !seen_json => {
                 seen_json = true;
                 args.remove(i);

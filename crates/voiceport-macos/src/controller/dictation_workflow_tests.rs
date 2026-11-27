@@ -144,3 +144,83 @@ fn app_rules_gui_start_freezes_scene_or_global_output_only() {
         assert_eq!(c.active_app_rule(), None);
     }
 }
+
+#[cfg(debug_assertions)]
+#[test]
+fn app_rules_manual_scene_preserves_processed_history_and_repaste() {
+    use crate::{
+        controller::recent_dictations::fixture::{SyntheticDictations, SyntheticTarget},
+        dictation_dictionary::parse_rules, dictation_output::OutputRules,
+        dictation_workflows::Preset,
+    };
+    use voiceport_control::HistoryDelivery;
+
+    let mut rig = SyntheticDictations::new();
+    let editor = ApplicationTarget {
+        pid: 1,
+        bundle: "com.example.Editor".into(),
+    };
+    let manual = Preset {
+        name: "手选".into(),
+        source_id: CHATGPT.into(),
+        language: "zh".into(),
+        dictionary_enabled: true,
+        output_rules: OutputRules {
+            trim_edges: true,
+            ..Default::default()
+        },
+    };
+    let bound = Preset {
+        name: "绑定".into(),
+        dictionary_enabled: false,
+        output_rules: OutputRules::default(),
+        ..manual.clone()
+    };
+    let c = &mut rig.controller;
+    c.set_recent_dictations_enabled(true);
+    c.workflows.rules = parse_rules("vp → VoicePort").unwrap();
+    c.workflows.add_preset(manual.clone()).unwrap();
+    c.workflows.add_preset(bound).unwrap();
+    c.workflows.app_rules.set_enabled(true);
+    c.workflows
+        .app_rules
+        .assign(&editor.bundle, "绑定", &c.workflows.presets)
+        .unwrap();
+    c.workflows.apply_preset_output(&manual);
+    let saved = serde_json::to_string(&c.workflows).unwrap();
+    c.workflows = Workflows::load(Some(&saved)).unwrap();
+
+    let (generation, receiver) = rig.begin_with_rule_target(true, false, Some(&editor));
+    assert_eq!(rig.controller.active_app_rule(), Some("手动场景「手选」"));
+    rig.controller.workflows.app_rules.set_enabled(true);
+    assert_eq!(rig.controller.active_app_rule(), Some("手动场景「手选」"));
+    const RAW: &str = "  vp🙂  ";
+    const FINAL: &str = "VoicePort🙂";
+    rig.finish(generation, RAW);
+    let c = &mut rig.controller;
+    assert_eq!(c.transcript, FINAL);
+    assert_eq!(c.raw_transcript.as_deref(), Some(RAW));
+    let entries = c.search_recent_dictations(5, "voiceport", Some(HistoryDelivery::NotSent));
+    assert_eq!(entries.len(), 1);
+    assert_eq!(c.read_recent_dictation(&entries[0].id), Some(FINAL));
+    assert!(c.search_recent_dictations(5, "vp", None).is_empty());
+    assert!(c.search_recent_dictations(5, "voiceport", Some(HistoryDelivery::Confirmed)).is_empty());
+
+    let original_receipt = c.gui_dictation_receipt().unwrap();
+    let repaste = c.repaste_latest_with(|delivery| {
+        delivery.begin_fixture(Box::new(SyntheticTarget(receiver.clone())))
+    });
+    assert!(repaste.error.is_none());
+    assert_eq!(repaste.data["delivery"]["state"], "confirmed");
+    assert_eq!(receiver.borrow().snapshot.text, format!("A{FINAL}B"));
+    assert_eq!(receiver.borrow().writes, 1);
+    assert_eq!(c.gui_dictation_receipt().unwrap(), original_receipt);
+    assert_eq!(c.search_recent_dictations(5, "voiceport", Some(HistoryDelivery::NotSent))[0].id, entries[0].id);
+    let duplicate = c.repaste_latest_with(|_| panic!("duplicate must not capture a target"));
+    assert_eq!(duplicate.error.unwrap().code, "possible_duplicate");
+
+    let (next, _) = rig.begin_with_rule_target(true, false, Some(&editor));
+    assert_eq!(rig.controller.active_app_rule(), Some("场景「绑定」"));
+    rig.finish(next, RAW);
+    assert_eq!(rig.controller.transcript, RAW);
+}

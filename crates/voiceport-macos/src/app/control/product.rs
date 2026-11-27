@@ -5,6 +5,7 @@ use crate::{
         status_overlay, workbench,
     },
     controller::{Controller, VisibleTranscript},
+    dictation_app_rules::AppRuleSelection,
     dictation_dictionary::{format_rules, parse_rules},
     dictation_output::{OutputPipeline, OutputRules},
     dictation_workflows::{Preset, Workflows},
@@ -337,18 +338,22 @@ impl Delegate {
             AppRulesRequest::List => return Response::ok(json!(c.workflows.app_rules)),
             AppRulesRequest::Match { bundle_id } => {
                 let rules = &c.workflows.app_rules;
-                let scene = rules.matched_scene(bundle_id.as_deref(), &c.workflows.presets);
+                let (selection, scene) = match rules.selection(bundle_id.as_deref(), &c.workflows.presets) {
+                    AppRuleSelection::Global => ("global", None),
+                    AppRuleSelection::Application(preset) => ("scene", Some(preset.name.as_str())),
+                    AppRuleSelection::Manual(name) => ("manual", Some(name)),
+                };
                 return Response::ok(json!({
                     "enabled": rules.enabled,
-                    "selection": if scene.is_some() { "scene" } else { "global" },
-                    "scene": scene.map(|preset| preset.name.as_str()),
+                    "selection": selection,
+                    "scene": scene,
                 }));
             }
             _ => {}
         }
         let mut next = c.workflows.clone();
         match request {
-            AppRulesRequest::Enable { enabled } => next.app_rules.enabled = enabled,
+            AppRulesRequest::Enable { enabled } => next.app_rules.set_enabled(enabled),
             AppRulesRequest::Set { bundle_id, scene } => {
                 if let Err(message) = next.app_rules.assign(&bundle_id, &scene, &next.presets) {
                     return err("invalid_config", &message);

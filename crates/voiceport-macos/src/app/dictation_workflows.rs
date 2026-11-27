@@ -1,6 +1,7 @@
 //! Explicit GUI entry points for dictation output and manual presets.
 use super::*;
 use crate::{
+    dictation_app_rules::AppRuleSelection,
     dictation_dictionary::{format_rules, parse_rules},
     dictation_output::OutputRules,
     dictation_workflows::{Preset, Workflows},
@@ -81,11 +82,17 @@ impl Delegate {
             139.,
             true,
         );
-        let alert = self.workflow_alert(
-            "应用输出规则",
+        let mut detail = String::from(
             "每行填写 Bundle ID → 已保存的场景名称。精确命中时采用场景的输出设置，其余情况使用全局设置。",
-            &["保存", "取消"],
         );
+        if let AppRuleSelection::Manual(name) =
+            preferences.app_rules.selection(None, &preferences.presets)
+        {
+            detail.push_str(&format!(
+                "\n\n当前优先使用手动场景「{name}」。勾选并保存可恢复应用匹配。"
+            ));
+        }
+        let alert = self.workflow_alert("应用输出规则", &detail, &["保存", "取消"]);
         alert.setAccessoryView(Some(&view));
         while alert.runModal() == NSAlertFirstButtonReturn && !self.ivars().quitting.get() {
             match crate::dictation_app_rules::AppRules::from_editor(
@@ -416,10 +423,13 @@ impl Delegate {
         .collect::<Vec<_>>()
         .join("、");
         let output = if output.is_empty() { "关闭" } else { &output };
-        let details = format!(
+        let mut details = format!(
             "来源：{source_title}\n识别语言：{language_title}\n个人词典：{dictionary}\n输出规则：{output}\n\n{}",
             destination.details(),
         );
+        if preferences.app_rules.enabled {
+            details.push_str("\n\n手动场景的输出设置优先，直至重新启用应用匹配。");
+        }
         if self
             .workflow_alert(
                 &format!("应用「{}」？", preset.name),
@@ -438,8 +448,7 @@ impl Delegate {
                 return Err("来源配置已变化，请重新确认音频去向。".into());
             }
         }
-        preferences.dictionary_enabled = preset.dictionary_enabled;
-        preferences.output_rules = preset.output_rules;
+        preferences.apply_preset_output(preset);
         self.update_workflows(preferences)?;
         self.with_controller(|c| {
             self.set_language(c, preset.language.clone());

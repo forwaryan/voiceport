@@ -421,6 +421,31 @@ fn real_binaries_and_transport_carry_product_requests_and_mock_receipts() {
             "app_rules",
             json!({"action":"match", "bundle_id":null}),
         ),
+        example(
+            &["app-rules", "set", "-com.example.Editor", "-draft"],
+            "app_rules",
+            json!({"action":"set", "bundle_id":"-com.example.Editor", "scene":"-draft"}),
+        ),
+        example(
+            &["app-rules", "set", "--", "--socket", "--help"],
+            "app_rules",
+            json!({"action":"set", "bundle_id":"--socket", "scene":"--help"}),
+        ),
+        example(
+            &["app-rules", "match", "-com.example.Editor"],
+            "app_rules",
+            json!({"action":"match", "bundle_id":"-com.example.Editor"}),
+        ),
+        example(
+            &["app-rules", "match", "--", "--help"],
+            "app_rules",
+            json!({"action":"match", "bundle_id":"--help"}),
+        ),
+        example(
+            &["app-rules", "remove", "-com.example.Editor"],
+            "app_rules",
+            json!({"action":"remove", "bundle_id":"-com.example.Editor"}),
+        ),
         example(&["scenes", "list"], "scenes", json!({"action":"list"})),
         example(
             &[

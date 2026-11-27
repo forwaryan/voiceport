@@ -108,9 +108,10 @@ These actions use the eligible result still visible in the App, with a fallback 
 
 ## Application output rules
 
-- `app-rules list` reads the local `enabled` switch and `bindings` from Bundle ID to saved scene name. `app-rules enable on|off` changes the switch. It starts off and retains bindings when turned off.
-- `app-rules set BUNDLE_ID SCENE` assigns a saved scene to an exact, case-sensitive identifier, replacing any mapping for that identifier. `app-rules remove BUNDLE_ID` removes the mapping. Removing a scene also removes its bindings. `app open app-rules` opens the native editor.
-- `app-rules match [BUNDLE_ID]` evaluates the saved rules for an explicitly supplied identifier. With no identifier it demonstrates the unknown-application fallback. It returns `enabled`, `selection` (`scene` or `global`), and nullable `scene`. It uses only the supplied identifier and saved rules. Use `app capabilities` to check support. See [recording and precedence](../../../docs/DICTATION_WORKFLOWS.md#应用输出规则).
+- `app-rules list` reads the local `enabled` switch, Bundle ID `bindings`, and the optional active `manual_scene` name. `app-rules enable on` resumes application matching after a manual scene selection. `app-rules enable off` restores global rules and retains bindings. Matching starts disabled.
+- `app-rules set BUNDLE_ID SCENE` assigns a saved scene to an exact, case-sensitive identifier. `app-rules remove BUNDLE_ID` removes the mapping. Removing a scene also removes its bindings. `app open app-rules` opens the native editor.
+- `app-rules match [BUNDLE_ID]` evaluates saved precedence for the supplied identifier. Omit the identifier to check the unknown-application case. It returns `enabled`, `selection` (`manual`, `scene`, or `global`), and nullable `scene`. It uses saved settings and the supplied identifier. Use `app capabilities` to check support. [Recording and precedence](../../../docs/DICTATION_WORKFLOWS.md#应用输出规则)
+- `set`, `remove`, and `match` accept values beginning with a hyphen. Put `--` before positional values that double as options, as in `app-rules set -- -com.example.Editor --help`. Place global options before `--`.
 
 ## Recent dictation
 

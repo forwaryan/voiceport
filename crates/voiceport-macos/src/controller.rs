@@ -6,6 +6,7 @@ use crate::{
         worker::{self as audio, Capture, Reply as CaptureReply},
     },
     delivery::{Delivery, model::ApplicationTarget},
+    dictation_app_rules::AppRuleSelection,
     dictation_output::OutputPipeline,
     dictation_workflows::Workflows,
     lifecycle::{Lifecycle, Phase},
@@ -980,20 +981,17 @@ impl Controller {
                 .filter(|target| target.pid > 0 && target.pid as u32 != std::process::id())
                 .map(|target| target.bundle.as_str());
             let rules = &self.workflows.app_rules;
-            let scene = rules.matched_scene(bundle_id, &self.workflows.presets);
-            self.gui_result_context.app_rule = rules.enabled.then(|| {
-                scene.map_or_else(
-                    || "全局规则".into(),
-                    |preset| format!("场景「{}」", preset.name),
-                )
-            });
-            let (dictionary, output) = scene.map_or(
-                (
-                    self.workflows.dictionary_enabled,
-                    self.workflows.output_rules,
+            let (dictionary, output) = (self.workflows.dictionary_enabled, self.workflows.output_rules);
+            let (dictionary, output, label) = match rules.selection(bundle_id, &self.workflows.presets) {
+                AppRuleSelection::Global => (dictionary, output, rules.enabled.then(|| "全局规则".into())),
+                AppRuleSelection::Manual(name) => (dictionary, output, Some(format!("手动场景「{name}」"))),
+                AppRuleSelection::Application(preset) => (
+                    preset.dictionary_enabled,
+                    preset.output_rules,
+                    Some(format!("场景「{}」", preset.name)),
                 ),
-                |preset| (preset.dictionary_enabled, preset.output_rules),
-            );
+            };
+            self.gui_result_context.app_rule = label;
             self.workflows.output_for_session(dictionary, output)
         } else {
             OutputPipeline::default()
@@ -2221,24 +2219,33 @@ pub(crate) mod stop_failure_regression {
                 pid: 1,
                 bundle: "com.example.Editor".into(),
             };
-            c.workflows.output_rules.normalize_newlines = true;
+            let manual = Preset {
+                name: "手选".into(),
+                source_id: CHATGPT.into(),
+                language: "zh".into(),
+                dictionary_enabled: false,
+                output_rules: OutputRules {
+                    trim_edges: true,
+                    ..Default::default()
+                },
+            };
+            c.workflows.add_preset(manual.clone()).unwrap();
             c.workflows
                 .add_preset(Preset {
                     name: "编辑".into(),
-                    source_id: CHATGPT.into(),
-                    language: "ja".into(),
-                    dictionary_enabled: false,
                     output_rules: OutputRules {
-                        trim_edges: true,
+                        normalize_newlines: true,
                         ..Default::default()
                     },
+                    ..manual.clone()
                 })
                 .unwrap();
-            c.workflows.app_rules.enabled = true;
+            c.workflows.app_rules.set_enabled(true);
             c.workflows
                 .app_rules
                 .assign(&editor.bundle, "编辑", &c.workflows.presets)
                 .unwrap();
+            c.workflows.apply_preset_output(&manual);
             c.prepare_start_with(
                 SessionSource::ChatGpt,
                 "zh".into(),
@@ -2251,7 +2258,7 @@ pub(crate) mod stop_failure_regression {
             .0
         });
         let original = fixture.controller.state.generation();
-        assert_eq!(fixture.controller.active_app_rule(), Some("场景「编辑」"));
+        assert_eq!(fixture.controller.active_app_rule(), Some("手动场景「手选」"));
         fixture.controller.gui_diagnostics.capture_pending = Some(original);
         let control = controlled_worker(&mut fixture.controller, 2);
         fixture.controller.stop();
@@ -2287,9 +2294,9 @@ pub(crate) mod stop_failure_regression {
         let failed = fixture.controller.gui_dictation_diagnostics().unwrap();
         assert_eq!(failed.capture.unwrap().generation, original);
         assert!(failed.timings.transcription_ms.is_some());
-        fixture.controller.workflows = Workflows::default();
+        fixture.controller.workflows.app_rules.set_enabled(true);
         fixture.controller.retry();
-        assert_eq!(fixture.controller.active_app_rule(), Some("场景「编辑」"));
+        assert_eq!(fixture.controller.active_app_rule(), Some("手动场景「手选」"));
         let current = control
             .started
             .recv_timeout(Duration::from_secs(5))

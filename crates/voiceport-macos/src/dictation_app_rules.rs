@@ -10,6 +10,14 @@ const MAX_RULES: usize = 32;
 pub(crate) struct AppRules {
     pub(crate) enabled: bool,
     bindings: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manual_scene: Option<String>,
+}
+
+pub(crate) enum AppRuleSelection<'a> {
+    Global,
+    Application(&'a Preset),
+    Manual(&'a str),
 }
 
 pub(crate) fn valid_bundle_id(id: &str) -> bool {
@@ -23,7 +31,31 @@ pub(crate) fn valid_bundle_id(id: &str) -> bool {
 }
 
 impl AppRules {
-    pub(crate) fn matched_scene<'a>(
+    pub(crate) fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        self.manual_scene = None;
+    }
+
+    pub(crate) fn prioritize_manual_scene(&mut self, name: &str) {
+        self.manual_scene = self.enabled.then(|| name.to_owned());
+    }
+
+    pub(crate) fn selection<'a>(
+        &'a self,
+        bundle_id: Option<&str>,
+        presets: &'a [Preset],
+    ) -> AppRuleSelection<'a> {
+        if self.enabled
+            && let Some(name) = self.manual_scene.as_deref()
+            && presets.iter().any(|preset| preset.name == name)
+        {
+            return AppRuleSelection::Manual(name);
+        }
+        self.matched_scene(bundle_id, presets)
+            .map_or(AppRuleSelection::Global, AppRuleSelection::Application)
+    }
+
+    fn matched_scene<'a>(
         &self,
         bundle_id: Option<&str>,
         presets: &'a [Preset],
@@ -58,6 +90,9 @@ impl AppRules {
 
     pub(crate) fn remove_scene(&mut self, name: &str) {
         self.bindings.retain(|_, scene| scene != name);
+        if self.manual_scene.as_deref() == Some(name) {
+            self.manual_scene = None;
+        }
     }
 
     pub(crate) fn from_editor(
