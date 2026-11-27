@@ -15,6 +15,14 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from license_materials import check
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+APP_NAME = 'VoicePort'
+APP_ID = 'io.github.forwaryan.voiceport'
+MAIN = 'voiceport-app'
+CLI = 'voiceport'
+TEST_NAME = 'VoicePort Test'
+TEST_ID = APP_ID + '.test'
+TEST_MAIN = 'voiceport-test-app'
+TEST_CLI = 'voiceport-test'
 
 
 def sha(path):
@@ -32,32 +40,51 @@ def real_tree(path):
             real_tree(child)
 
 
-def validate(app, target):
-    app, target = pathlib.Path(app), pathlib.Path(target)
+def validate_layout(app, *, test=False, stapled=False):
     real_tree(app)
     contents = app / 'Contents'
     assert {p.name for p in app.iterdir()} == {'Contents'}, 'unexpected bundle root'
-    assert {p.name for p in contents.iterdir()} == {'Info.plist', 'MacOS', 'Resources', '_CodeSignature'}, 'unexpected bundle contents (no helpers are shipped)'
-    assert {p.name for p in (contents / 'MacOS').iterdir()} == {'voiceport-app', 'voiceport'}, 'unexpected app executable'
-    assert {p.name for p in (contents / 'Resources').iterdir()} == {'AppIcon.icns', 'THIRD_PARTY_NOTICES.md', 'third-party', 'skills'}, 'unexpected app resources'
+    expected = {'Info.plist', 'MacOS', 'Resources', '_CodeSignature'}
+    entries = {p.name for p in contents.iterdir()}
+    assert entries == expected or (stapled and entries == expected | {'CodeResources'}
+                                   and (contents / 'CodeResources').is_file()), 'unexpected bundle contents (no helpers are shipped)'
+    main = contents / 'MacOS' / (TEST_MAIN if test else MAIN)
+    cli = contents / 'MacOS' / (TEST_CLI if test else CLI)
+    assert {p.name for p in main.parent.iterdir()} == {main.name, cli.name}, 'unexpected app executable'
+    resources = contents / 'Resources'
+    assert {p.name for p in resources.iterdir()} == {'AppIcon.icns', 'THIRD_PARTY_NOTICES.md', 'third-party', 'skills'}, 'unexpected app resources'
+    assert all((resources / name).is_dir() for name in ('third-party', 'skills')), 'expected resource directories'
+    assert all((resources / name).is_file() for name in ('AppIcon.icns', 'THIRD_PARTY_NOTICES.md')), 'expected resource files'
+    assert main.is_file() and stat.S_IMODE(main.stat().st_mode) == 0o755, 'main must be executable mode 0755'
+    assert cli.is_file() and stat.S_IMODE(cli.stat().st_mode) == 0o755, 'CLI must be executable mode 0755'
+    assert_arm64(main)
+    assert_arm64(cli)
+    return main, cli
+
+
+def assert_arm64(binary):
+    assert subprocess.check_output(['/usr/bin/lipo', '-archs', str(binary)], text=True,
+                                   timeout=30).strip() == 'arm64', 'unexpected architecture'
+
+
+def validate(app, target):
+    app, target = pathlib.Path(app), pathlib.Path(target)
+    main, cli = validate_layout(app)
+    contents = app / 'Contents'
     installed_skills = contents / 'Resources/skills'
     expected_skills = ROOT / 'skills'
     assert {str(p.relative_to(installed_skills)) for p in installed_skills.rglob('*')} == {str(p.relative_to(expected_skills)) for p in expected_skills.rglob('*')}, 'unexpected Skill files'
     for source in expected_skills.rglob('*'):
         if source.is_file():
             assert (installed_skills / source.relative_to(expected_skills)).read_bytes() == source.read_bytes(), 'Skill differs from repository source'
-    cli = contents / 'MacOS/voiceport'
     cli_target = target.parent / 'voiceport'
-    assert stat.S_IMODE(cli.stat().st_mode) == 0o755, 'CLI must be executable mode 0755'
     assert stat.S_ISREG(cli_target.lstat().st_mode), 'expected current CLI release product'
     assert (contents / 'Resources/AppIcon.icns').read_bytes() == (ROOT / 'resources/AppIcon.icns').read_bytes(), 'unexpected app icon'
-    main = contents / 'MacOS/voiceport-app'
-    assert main.is_file() and stat.S_IMODE(main.stat().st_mode) == 0o755, 'main must be executable mode 0755'
     assert stat.S_ISREG(target.lstat().st_mode) and target.stat().st_mode & 0o111, 'expected executable Rust macOS product'
     assert (contents / 'Info.plist').read_bytes() == (ROOT / 'resources/Info.plist').read_bytes(), 'unexpected bundle Info'
     assert plistlib.loads((contents / 'Info.plist').read_bytes())['CFBundleExecutable'] == 'voiceport-app'
-    for binary in [main, target, cli, cli_target]:
-        assert subprocess.check_output(['lipo', '-archs', str(binary)], text=True).strip() == 'arm64', 'unexpected architecture'
+    for binary in (target, cli_target):
+        assert_arm64(binary)
     assert (contents / 'Resources/THIRD_PARTY_NOTICES.md').read_bytes() == (ROOT / 'THIRD_PARTY_NOTICES.md').read_bytes(), 'unexpected third-party notices'
     materials = check(contents / 'Resources/third-party')
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
