@@ -5,7 +5,7 @@ use crate::{
     model_library::{self, Definition, Installation, Job, MODELS, Operation, Paths, Progress},
 };
 use serde_json::{Value, json};
-use voiceport_control::{ModelMutation, ModelsRequest};
+use voiceport_control::{ModelMutation, ModelPreview, ModelsRequest};
 
 #[derive(Default)]
 pub(super) struct ModelControl(Option<Receipt>);
@@ -40,6 +40,9 @@ impl ModelControl {
     ) -> Response {
         match request {
             ModelsRequest::Details { id } => details(c, &id),
+            ModelsRequest::Recommend { language, preview } => {
+                recommendation(c, language.as_deref(), preview)
+            }
             ModelsRequest::Plan { mutation } => {
                 if locked || c.busy() {
                     return busy();
@@ -281,6 +284,29 @@ fn definition(id: &str) -> Option<&'static Definition> {
     MODELS.iter().find(|model| model.id == id)
 }
 
+fn recommendation(c: &Controller, language: Option<&str>, preview: ModelPreview) -> Response {
+    let language = language.unwrap_or(&c.language);
+    if !voiceport_core::language::supported(language) {
+        return err(
+            "invalid_arguments",
+            "Supply a supported speech language code.",
+        );
+    }
+    let model = model_library::recommend(language, preview).map(|model| {
+        json!({
+            "id":model.id,"name":model.name,"languages":model.languages,"bytes":model.bytes(),
+            "preview":model.preview(),"available":c.catalog.snapshot(model.id).is_ok(),
+            "selected":c.source_id == model.id,
+        })
+    });
+    Response::ok(json!({
+        "language":if language.is_empty() { "auto" } else { language },
+        "preview":preview,"discovering":c.discovering(),
+        "reason":if model.is_some() { "smallest_compatible_download" } else { "no_compatible_model" },
+        "recommendation":model,"accuracy":"unmeasured","performance":"unmeasured",
+    }))
+}
+
 fn details(c: &Controller, id: &str) -> Response {
     let Some(model) = definition(id) else {
         return missing();
@@ -298,4 +324,94 @@ fn details(c: &Controller, id: &str) -> Response {
         "available":c.catalog.snapshot(model.id).is_ok(),"selected":c.source_id == model.id,
         "voiceport_installation":installation,
     }))
+}
+
+#[cfg(all(test, target_arch = "aarch64"))]
+mod tests {
+    use super::*;
+    use crate::local_models::{CHATGPT, Catalog, PARAFORMER, WHISPER};
+    use std::fs;
+
+    #[test]
+    fn recommendation_is_read_only_with_missing_and_available_models() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let runtime = root.join("runtime");
+        let directory = root.join("paraformer-bilingual-zh-en");
+        let mut c = Controller::new();
+        c.language = "zh".into();
+        c.automatic = false;
+        let mut control = ModelControl::default();
+        let mut query = |c: &mut Controller, language: Option<&str>, preview| {
+            let reply = control.dispatch(
+                c,
+                ModelsRequest::Recommend {
+                    language: language.map(str::to_owned),
+                    preview,
+                },
+                true,
+            );
+            assert!(reply.error.is_none());
+            reply.data
+        };
+
+        let default = query(&mut c, None, ModelPreview::Any);
+        assert_eq!(default["language"], "zh");
+        assert_eq!(default["recommendation"]["id"], WHISPER);
+        assert_eq!(default["recommendation"]["preview"], "after_stop");
+        assert_eq!(default["accuracy"], "unmeasured");
+        assert_eq!(default["performance"], "unmeasured");
+        let missing = query(&mut c, Some("en"), ModelPreview::Live);
+        assert_eq!(missing["language"], "en");
+        assert_eq!(missing["reason"], "smallest_compatible_download");
+        assert_eq!(missing["recommendation"]["id"], PARAFORMER);
+        assert_eq!(missing["recommendation"]["available"], false);
+        assert_eq!(missing["recommendation"]["selected"], false);
+        let unsupported = query(&mut c, Some("yue"), ModelPreview::Live);
+        assert_eq!(unsupported["reason"], "no_compatible_model");
+        assert!(unsupported["recommendation"].is_null());
+        assert_eq!(fs::read_dir(root).unwrap().count(), 0);
+
+        fs::create_dir(&runtime).unwrap();
+        fs::write(runtime.join("package.json"), br#"{"version":"2.0.1"}"#).unwrap();
+        for filename in ["libsherpa-onnx-c-api.dylib", "libonnxruntime.dylib"] {
+            fs::write(
+                runtime.join(filename),
+                [0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0, 0, 1],
+            )
+            .unwrap();
+        }
+        fs::create_dir(&directory).unwrap();
+        let d = definition(PARAFORMER).unwrap();
+        for asset in d.assets {
+            fs::write(directory.join(asset.name), b"synthetic fixture").unwrap();
+        }
+        c.catalog = Catalog::discover(root, &runtime, CHATGPT, std::env::consts::ARCH);
+        let before = c.catalog.clone();
+        let available = query(&mut c, None, ModelPreview::Live);
+        assert_eq!(available["recommendation"]["id"], PARAFORMER);
+        assert_eq!(available["recommendation"]["bytes"], d.bytes());
+        assert_eq!(available["recommendation"]["available"], true);
+        assert_eq!(available["recommendation"]["selected"], false);
+        assert_eq!(c.source_id, CHATGPT);
+        c.source_id = PARAFORMER.into();
+        assert_eq!(
+            query(&mut c, Some("en"), ModelPreview::Live)["recommendation"]["selected"],
+            true
+        );
+        assert_eq!(c.source_id, PARAFORMER);
+        assert_eq!(c.language, "zh");
+        assert!(!c.automatic);
+        assert!(!c.busy() && !c.discovering());
+        assert_eq!(c.catalog, before);
+        assert!(control.0.is_none());
+        assert_eq!(fs::read_dir(root).unwrap().count(), 2);
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), d.assets.len());
+        for asset in d.assets {
+            assert_eq!(
+                fs::read(directory.join(asset.name)).unwrap(),
+                b"synthetic fixture"
+            );
+        }
+    }
 }
