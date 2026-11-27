@@ -54,7 +54,9 @@ preferences get/set
 microphone list/status/select/test-start/test-stop/open
 models recommend [--language CODE|auto] [--preview any|live|after-stop]
 models list/details/refresh/open/download/update/import/remove/install-engine/start/status/cancel
-dictionary show/set/preview/output | scenes list/add/remove/apply
+dictionary show/set/preview/import/import-preview/import-apply/import-cancel/export (post-transcription replacements)
+dictionary output show/set/preview
+scenes list/add/remove/apply
 history list/show/clear/settings
 file open/sources/plan/start/status/result/cancel/export
 qq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)
@@ -294,6 +296,8 @@ fn option_takes_value(option: &str) -> bool {
             | "--dictionary"
             | "--device"
             | "--limit"
+            | "--offset"
+            | "--revision"
             | "--query"
             | "--delivery"
             | "--output"
@@ -394,7 +398,17 @@ fn contextual_help(args: &[String]) -> Option<String> {
         ),
         "dictionary" => (
             "dictionary",
-            &["show", "set", "preview", "output"],
+            &[
+                "show",
+                "set",
+                "preview",
+                "output",
+                "import",
+                "import-preview",
+                "import-apply",
+                "import-cancel",
+                "export",
+            ],
             "Dictionary and scenes",
         ),
         "dictionary output" => (

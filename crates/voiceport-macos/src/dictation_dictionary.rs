@@ -7,14 +7,14 @@ use std::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-const RULE_LIMIT: usize = 256;
+pub(crate) const RULE_LIMIT: usize = 256;
 const TERM_LIMIT: usize = 128;
 const EXPANSION_LIMIT: usize = 512;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub(crate) struct Rule {
-    input: String,
-    output: String,
+    pub(crate) input: String,
+    pub(crate) output: String,
 }
 
 pub(crate) fn parse_rules(text: &str) -> Result<Vec<Rule>, String> {
@@ -53,7 +53,7 @@ struct Node {
     replacement: Option<String>,
 }
 
-fn canonical(grapheme: &str) -> Cow<'_, str> {
+pub(crate) fn canonical(grapheme: &str) -> Cow<'_, str> {
     if grapheme.is_ascii() {
         Cow::Borrowed(grapheme)
     } else {
