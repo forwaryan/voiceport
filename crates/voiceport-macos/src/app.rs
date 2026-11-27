@@ -12,6 +12,7 @@ use objc2_foundation::{
     NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSUserDefaults, ns_string,
 };
 use std::cell::{Cell, OnceCell, RefCell};
+use voiceport_core::test_build;
 mod control;
 #[cfg(debug_assertions)]
 pub use control::{
@@ -677,7 +678,8 @@ impl Delegate {
         let _ = self.ivars().update.borrow().running_version();
         let menu = NSMenu::new(mtm);
         menu.setAutoenablesItems(false);
-        let heading = self.menu_item("VoicePort · 就绪", sel!(showWindow:), "");
+        let name = test_build::application_name();
+        let heading = self.menu_item(&format!("{name} · 就绪"), sel!(showWindow:), "");
         heading.setEnabled(false);
         menu.addItem(&heading);
         let _ = self.ivars().menu_state.set(heading);
@@ -734,14 +736,16 @@ impl Delegate {
         let update = self.menu_item("软件更新…", sel!(updateVoicePort:), "");
         menu.addItem(&update);
         let _ = self.ivars().update_item.set(update);
-        let refresh = self.menu_item("重新检查更新…", sel!(refreshVoicePortUpdate:), "");
-        menu.addItem(&refresh);
-        let _ = self.ivars().update_refresh_item.set(refresh);
-        let automatic = self.menu_item("自动检查更新", sel!(toggleAutoUpdate:), "");
-        menu.addItem(&automatic);
-        let _ = self.ivars().update_auto_item.set(automatic);
+        if !test_build::active() {
+            let refresh = self.menu_item("重新检查更新…", sel!(refreshVoicePortUpdate:), "");
+            menu.addItem(&refresh);
+            let _ = self.ivars().update_refresh_item.set(refresh);
+            let automatic = self.menu_item("自动检查更新", sel!(toggleAutoUpdate:), "");
+            menu.addItem(&automatic);
+            let _ = self.ivars().update_auto_item.set(automatic);
+        }
         menu.addItem(&NSMenuItem::separatorItem(mtm));
-        menu.addItem(&self.menu_item("退出 VoicePort", sel!(terminate:), ""));
+        menu.addItem(&self.menu_item(&format!("退出 {name}"), sel!(terminate:), ""));
         let _ = self.ivars().context_menu.set(menu);
     }
 
@@ -751,12 +755,19 @@ impl Delegate {
         // A fixed, compact slot avoids shifting neighboring menu extras as
         // recording and processing states change. Template images follow macOS.
         let status = NSStatusBar::systemStatusBar().statusItemWithLength(28.);
-        status.setAutosaveName(Some(ns_string!("VoicePortStatusItem")));
+        let name = test_build::application_name();
+        status.setAutosaveName(Some(if test_build::active() {
+            ns_string!("VoicePortTestStatusItem")
+        } else {
+            ns_string!("VoicePortStatusItem")
+        }));
         if let Some(button) = status.button(mtm) {
             self.update_status_icon(&button, StatusAppearance::Ready);
             button.setAccessibilityIdentifier(Some(ns_string!("voiceport.menu-bar")));
-            button.setAccessibilityLabel(Some(ns_string!("VoicePort · 就绪")));
-            button.setToolTip(Some(ns_string!("VoicePort · 点击选择转写方式")));
+            button.setAccessibilityLabel(Some(&NSString::from_str(&format!("{name} · 就绪"))));
+            button.setToolTip(Some(&NSString::from_str(&format!(
+                "{name} · 点击选择转写方式"
+            ))));
             unsafe {
                 button.setTarget(Some(self));
                 button.setAction(Some(sel!(showQuickPanel:)));
@@ -768,7 +779,7 @@ impl Delegate {
 
         let main_menu = NSMenu::new(mtm);
         let application_item = NSMenuItem::new(mtm);
-        let application_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), ns_string!("VoicePort"));
+        let application_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(name));
         application_menu.addItem(&self.menu_item("结果与设置…", sel!(showWindow:), ","));
         application_menu.addItem(&self.menu_item(
             "转写音频文件…",
@@ -776,7 +787,7 @@ impl Delegate {
             "o",
         ));
         application_menu.addItem(&NSMenuItem::separatorItem(mtm));
-        application_menu.addItem(&self.menu_item("退出 VoicePort", sel!(terminate:), "q"));
+        application_menu.addItem(&self.menu_item(&format!("退出 {name}"), sel!(terminate:), "q"));
         application_item.setSubmenu(Some(&application_menu));
         main_menu.addItem(&application_item);
         NSApplication::sharedApplication(mtm).setMainMenu(Some(&main_menu));
@@ -796,6 +807,9 @@ impl Delegate {
     fn initialize(&self) {
         let defaults = NSUserDefaults::standardUserDefaults();
         let mut controller = Controller::new();
+        if test_build::active() {
+            controller.automatic = false;
+        }
         controller.microphone_uid = microphone::preference(&defaults);
         controller.set_recent_dictations_enabled(recent_dictations::preference(&defaults));
         if defaults
@@ -834,7 +848,9 @@ impl Delegate {
             .set(crate::shortcut::ShortcutMode::load(mode.as_deref()));
         *self.ivars().controller.borrow_mut() = Some(controller);
         let _ = crate::storage::cleanup_expired();
-        if let Err(message) = self.install_hotkey(shortcut) {
+        if (!test_build::active() || saved.is_some())
+            && let Err(message) = self.install_hotkey(shortcut)
+        {
             *self.ivars().hotkey_error.borrow_mut() = Some(message.clone());
             self.with_controller(|c| c.message = message);
         }
@@ -1391,7 +1407,8 @@ pub fn run() {
     }
     if arguments.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "VoicePort Rust macOS\n  --show-window             Explicitly open results and settings (skip the first-run window)\n  --show-models             Open the local speech model library\n  --smoke-test              Build menu and exit without recording or network\n  --check-input-permission  Print input authorization JSON for this execution context\n  --diagnose-input          Inspect focused input metadata without writing\n  --input-self-test         Write fixed text only to the dedicated development fixture\n  --help                   Show this help"
+            "{} Rust macOS\n  --show-window             Explicitly open results and settings (skip the first-run window)\n  --show-models             Open the local speech model library\n  --smoke-test              Build menu and exit without recording or network\n  --check-input-permission  Print input authorization JSON for this execution context\n  --diagnose-input          Inspect focused input metadata without writing\n  --input-self-test         Write fixed text only to the dedicated development fixture\n  --help                   Show this help",
+            test_build::application_name()
         );
         return;
     }

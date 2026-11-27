@@ -270,8 +270,14 @@ impl Library {
         });
     }
     fn ai_help(&self) {
+        let cli_name = if voiceport_core::test_build::active() {
+            "voiceport-test"
+        } else {
+            "voiceport"
+        };
         let cli = PathBuf::from(NSBundle::mainBundle().bundlePath().to_string())
-            .join("Contents/MacOS/voiceport");
+            .join("Contents/MacOS")
+            .join(cli_name);
         let prompt = format!(
             "请用 VoicePort 接入 Skill，根据我接下来提供的服务文档判断：直接配置兼容 API，还是生成 JSONL 适配器和清单。给出具体配置、文件路径和使用步骤；缺失信息不要猜。\n\n当前 App 的 CLI 完整路径：{}\n请用该路径运行离线命令：\nskills get plugins\nskills get plugin-examples\n\n只生成和检查方案；不要读取真实密钥、录音、上传音频或修改配置。",
             cli.display()

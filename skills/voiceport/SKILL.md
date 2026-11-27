@@ -35,6 +35,8 @@ The portable `doctor` only checks ChatGPT auth-file metadata. `transcribe AUDIO`
 
 Start with `voiceport --version`, `voiceport --help`, and `voiceport skills get cli`. If the CLI is not on PATH, use the chosen App's exact `Contents/MacOS/voiceport` path. Do not install a global binary or edit shell startup files just to locate it. `voiceport-rs` is a compatible entry.
 
+For **VoicePort Test**, use that bundle's `Contents/MacOS/voiceport-test`. This CLI uses the dedicated test socket and reports `data.build_profile:"test"` from `--json --version`. See [building and verifying the test ZIP](references/workflows.md#build-or-verify-a-test-zip).
+
 For App commands, use `voiceport --json --socket ABSOLUTE_SOCKET status --expect-bundle ABSOLUTE_APP` and `app capabilities`. Verify `data.readiness.instance:"matched"`, the returned socket, bundle path and PID. Reuse that socket and PID and check them before mutations. Inspect `state`, `busy`, `discovering` and `permissions` for readiness. Start the intended App only when authorized. An older App may return `invalid_request` on a newer command. The [workflow guide](references/workflows.md#connect-to-the-intended-app) shows the instance check and JSON parsing.
 
 ## Step 2: Inspect and configure only the requested source
@@ -69,7 +71,7 @@ Use `history list` with `--query TEXT` and `--delivery STATE` as needed to find 
 
 For native permissions or a physical shortcut, open `app open first-run` or `app open shortcut` and let the user complete the indicated `next` action. For a recommendation, report the matching language, preview mode, download size and availability or explain the null result. Treat accuracy and performance as unmeasured. With user approval, prepare an installation proposal and run `models start OPERATION --confirm`, then use `models status` and `models details` to verify installation. Run `sources select ID` only after the user confirms the source switch. `models open` presents the native manager. A local microphone level test requires an existing grant and explicit acceptance with `microphone test-start --confirm`.
 
-Use `dictation copy-last` only when the user requests a clipboard write. For direct `dictation paste-last`, the user must explicitly request insertion, identify the exact target PID and bundle ID, and keep the intended field focused. The user can also focus the field and press `⌃⌥⇧V` themselves. Report pending readback as pending. For a rejected or ambiguous delivery, inspect the receipt and have the user check the actual field before deciding whether to copy and paste manually. `possible_duplicate` calls for inspection and manual recovery. Never automate resubmission. [CLI syntax and receipts](references/cli.md#dictation-and-test-operations)
+Use `dictation copy-last` only when the user requests a clipboard write. For direct `dictation paste-last`, the user must explicitly request insertion, identify the exact target PID and bundle ID, and keep the intended field focused. In the regular VoicePort App, the user can also focus the field and press `⌃⌥⇧V` themselves. Report pending readback as pending. For a rejected or ambiguous delivery, inspect the receipt and have the user check the actual field before deciding whether to copy and paste manually. `possible_duplicate` calls for inspection and manual recovery. Never automate resubmission. [CLI syntax and receipts](references/cli.md#dictation-and-test-operations)
 
 ## Step 6: Diagnose recognized text not reaching a target
 

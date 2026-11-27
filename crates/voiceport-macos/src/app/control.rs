@@ -217,8 +217,17 @@ impl Delegate {
             .is_some_and(Operation::has_retained_text))
     }
 
+    fn control_path() -> Result<std::path::PathBuf, Response> {
+        use voiceport_control::transport;
+        if voiceport_core::test_build::active() {
+            Ok(transport::test_path())
+        } else {
+            transport::path_from_env()
+        }
+    }
+
     pub(super) fn start_control(&self) -> Result<(), Response> {
-        let path = voiceport_control::transport::path_from_env()?;
+        let path = Self::control_path()?;
         self.ivars().control.borrow_mut().server = Some(Server::bind(&path)?);
         Ok(())
     }
@@ -364,7 +373,7 @@ impl Delegate {
                     "version": env!("CARGO_PKG_VERSION"),
                     "pid": std::process::id(),
                     "bundle_path": NSBundle::mainBundle().bundlePath().to_string(),
-                    "socket": voiceport_control::transport::path_from_env().ok(),
+                    "socket": Self::control_path().ok(),
                     "permissions": {
                         "microphone": microphone,
                         "speech": speech,

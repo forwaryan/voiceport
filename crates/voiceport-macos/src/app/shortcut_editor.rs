@@ -143,7 +143,11 @@ impl Delegate {
         }
         // Cancel or failed candidate registration restores the prior binding.
         // If a different app took it during editing, report the actual failure.
-        let needs_restore = self.ivars().hotkey.borrow().is_none();
+        let needs_restore = self.ivars().hotkey.borrow().is_none()
+            && (!test_build::active()
+                || NSUserDefaults::standardUserDefaults()
+                    .objectForKey(ns_string!("dictationShortcut"))
+                    .is_some());
         if needs_restore
             && let Err(error) = self.install_hotkey(self.ivars().shortcut_binding.get())
         {

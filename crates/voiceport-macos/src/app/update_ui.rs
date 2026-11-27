@@ -458,6 +458,9 @@ impl Delegate {
 
     /// Read-only compact caption shared with the native update menu.
     pub(super) fn compact_update_title(&self) -> String {
+        if test_build::active() {
+            return "软件更新已停用".into();
+        }
         let snapshot = self.update_view_snapshot();
         if let Some(transfer) = snapshot.transfer
             && matches!(
@@ -480,7 +483,11 @@ impl Delegate {
         let update = self.ivars().update.borrow();
         if let Some(item) = self.ivars().update_item.get() {
             let current = update.running_version();
-            let title = NSString::from_str(&update.state.menu_title(&current));
+            let title = NSString::from_str(&if test_build::active() {
+                "软件更新已停用".into()
+            } else {
+                update.state.menu_title(&current)
+            });
             if !item.title().isEqualToString(&title) {
                 item.setTitle(&title);
             }
@@ -515,6 +522,9 @@ impl Delegate {
     }
 
     pub(super) fn toggle_auto_update(&self) {
+        if test_build::active() {
+            return;
+        }
         let (installed, home) = location();
         if !app_update::checkable_installation(&installed, &home) {
             self.update_message(
@@ -564,6 +574,8 @@ impl Delegate {
         let last = &update.last_check;
         let state = if quitting {
             "quitting"
+        } else if test_build::active() {
+            "disabled"
         } else if let Some(active) = active {
             active
         } else if matches!(update.state, State::Ready(..)) {
@@ -578,11 +590,14 @@ impl Delegate {
             "latest_version": last.latest,
             "latest_version_stale": update.latest_version_stale(),
             "last_check_state": last.state,
-            "reason": last.reason,
+            "reason": if test_build::active() { Some(app_update::TEST_BUILD_UPDATES_DISABLED) } else { last.reason },
         })
     }
 
     fn request_update_check(&self, manual: bool) -> Result<(), (&'static str, &'static str)> {
+        if test_build::active() {
+            return Err(("unsupported", app_update::TEST_BUILD_UPDATES_DISABLED));
+        }
         let mut update = self.ivars().update.borrow_mut();
         if self.ivars().quitting.get() {
             return Err(("busy", "The App is quitting."));
@@ -911,7 +926,7 @@ impl Delegate {
     }
 
     pub(super) fn update_tick(&self) {
-        if self.ivars().quitting.get() {
+        if test_build::active() || self.ivars().quitting.get() {
             return;
         }
         enum Completion {

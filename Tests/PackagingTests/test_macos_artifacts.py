@@ -192,6 +192,32 @@ class ArtifactTests(unittest.TestCase):
                         artifacts.extract_zip(data.getvalue(), Path(extraction), self.app_name)
                     self.assertFalse((Path(extraction) / 'escape').exists())
 
+    def test_test_build_preserves_the_publication_boundary(self):
+        output = self.root / 'delivery'
+
+        def fake_package(args, **kwargs):
+            if args[0] == '/usr/bin/ditto':
+                Path(args[-1]).write_bytes(b'invalid synthetic ZIP')
+            return subprocess.CompletedProcess(args, 0)
+
+        with patch.object(artifacts.subprocess, 'run', side_effect=fake_package):
+            with self.assertRaises(zipfile.BadZipFile):
+                artifacts.build_test(output, skip_build=True)
+            self.assertFalse(output.exists())
+            self.assertFalse(list(self.root.glob('.voiceport-test-build-*')))
+
+            def reserve_during_verification(directory, digest, **kwargs):
+                self.assertEqual(artifacts.read_manifest(directory, digest)[0], artifacts.TEST_ARCHIVE)
+                output.mkdir()
+                return {'status': 'verified'}
+
+            with patch.object(artifacts, 'verify', side_effect=reserve_during_verification):
+                with self.assertRaises(FileExistsError):
+                    artifacts.build_test(output, skip_build=True)
+            self.assertTrue(output.is_dir())
+            self.assertEqual(list(output.iterdir()), [])
+            self.assertFalse(list(self.root.glob('.voiceport-test-build-*')))
+
     def test_unapproved_attachments_and_signing_flags_fail_before_verification(self):
         zip_path = self.attachments / artifacts.TEST_ARCHIVE
         zip_path.write_bytes(b'fixture')
