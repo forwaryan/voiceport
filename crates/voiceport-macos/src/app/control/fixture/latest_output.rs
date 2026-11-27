@@ -345,7 +345,7 @@ pub(super) fn verify(fixture: &Fixture<'_>, rig: &mut SyntheticDictations) {
     // A setter error can leave text even when it reports no successful submission.
     let uncertain_text = "Final with uncertain write";
     assert_eq!(fixture.finish_gui(rig, uncertain_text), 1);
-    editor.borrow_mut().snapshot = initial;
+    editor.borrow_mut().snapshot = initial.clone();
     editor.borrow_mut().mode = Mode::UncertainWrite;
     let writes = editor.borrow().writes;
     let uncertain = call(PASTE, 1);
@@ -373,7 +373,42 @@ pub(super) fn verify(fixture: &Fixture<'_>, rig: &mut SyntheticDictations) {
         true
     );
     assert_eq!(clipboard.borrow().as_str(), uncertain_text);
+
+    let capabilities = call(&["app", "capabilities"], 0);
+    assert_eq!(
+        capabilities["data"]["dictionary_output"],
+        json!(["show", "set", "preview"])
+    );
+    assert_eq!(
+        capabilities["data"]["dictation_output"],
+        json!(["copy-last", "paste-last"])
+    );
+
+    // Changing settings after capture leaves the result tied to its original output rules.
+    let original_target = {
+        let mut slot = fixture.owner.ivars().controller.borrow_mut();
+        let controller = slot.as_mut().unwrap();
+        std::mem::swap(controller, &mut rig.controller);
+        let rules = &mut rig.controller.workflows.output_rules;
+        let saved = *rules;
+        rules.trim_edges = true;
+        rules.normalize_newlines = true;
+        let (generation, target) = rig.begin(true, true);
+        rig.controller.workflows.output_rules = saved;
+        rig.finish(generation, "  First\r\nSecond  ");
+        std::mem::swap(controller, &mut rig.controller);
+        target
+    };
+    assert_eq!(original_target.borrow().writes, 1);
+    assert_eq!(original_target.borrow().snapshot.text, "AFirst SecondB");
+    call(&["dictation", "copy-last"], 0);
+    assert_eq!(clipboard.borrow().as_str(), "First\nSecond");
+    editor.borrow_mut().snapshot = initial;
+    assert_eq!(call(PASTE, 0)["data"]["delivery"]["state"], "confirmed");
+    assert_eq!(editor.borrow().snapshot.text, "AFirst SecondB");
+    assert_eq!(editor.borrow().writes, writes + 2);
     println!(
         "PASS actual CLI and AppKit action handlers: copy, confirmed repaste, stale target, secure/unknown focus, changed caret, and duplicate/uncertain receipts; synthetic boundaries"
     );
+    println!("PASS captured GUI output rules for copy, automatic delivery, and repaste");
 }

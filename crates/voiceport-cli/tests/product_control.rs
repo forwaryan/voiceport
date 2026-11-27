@@ -52,7 +52,28 @@ fn offline_help_and_invalid_arguments_never_connect() {
             assert!(help.contains("app update check"));
             assert!(help.contains("app update status"));
         }
+        let output = Command::new(bin)
+            .args([
+                "--json",
+                "--socket",
+                "intentionally-invalid",
+                "dictionary",
+                "output",
+                "preview",
+                "--help",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            reply["data"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("dictionary output preview --stdin")
+        );
         for args in [
+            vec!["dictionary", "output", "set", "arbitrary", "on"],
             vec!["app", "update", "install"],
             vec!["app", "update", "check", "--confirm"],
             vec!["app", "open", "arbitrary-url"],
@@ -340,6 +361,24 @@ fn real_binaries_and_transport_carry_product_requests_and_mock_receipts() {
                 &["dictionary", "preview", "--stdin"],
                 "dictionary",
                 json!({"action":"preview", "text":"合成"}),
+            )
+        },
+        example(
+            &["dictionary", "output", "show"],
+            "dictionary",
+            json!({"action":"output_show"}),
+        ),
+        example(
+            &["dictionary", "output", "set", "normalize-newlines", "on"],
+            "dictionary",
+            json!({"action":"output_set", "rule":"normalize_newlines", "enabled":true}),
+        ),
+        Example {
+            stdin: Some(" vp\r\n🙂 "),
+            ..example(
+                &["dictionary", "output", "preview", "--stdin"],
+                "dictionary",
+                json!({"action":"output_preview", "text":" vp\r\n🙂 "}),
             )
         },
         example(&["scenes", "list"], "scenes", json!({"action":"list"})),

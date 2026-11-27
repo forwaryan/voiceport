@@ -1,6 +1,7 @@
 //! Preferences that are independent of the legacy source and language keys.
 use crate::{
     dictation_dictionary::{Dictionary, Rule},
+    dictation_output::{OutputPipeline, OutputRules},
     local_models::{Catalog, SessionSource},
 };
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct Workflows {
     pub(crate) rules: Vec<Rule>,
     pub(crate) dictionary_enabled: bool,
+    pub(crate) output_rules: OutputRules,
     pub(crate) presets: Vec<Preset>,
 }
 
@@ -19,6 +21,8 @@ pub(crate) struct Preset {
     pub(crate) source_id: String,
     pub(crate) language: String,
     pub(crate) dictionary_enabled: bool,
+    #[serde(default)]
+    pub(crate) output_rules: OutputRules,
 }
 
 impl Workflows {
@@ -31,14 +35,18 @@ impl Workflows {
         Ok(preferences)
     }
 
-    pub(crate) fn dictionary_for_session(&self) -> Dictionary {
-        if self.dictionary_enabled {
-            // Settings are validated when loaded or saved. If this invariant is
-            // broken, preserving the transcript takes priority over corrections.
-            Dictionary::compile(&self.rules).unwrap_or_default()
+    pub(crate) fn output_for_session(
+        &self,
+        dictionary_enabled: bool,
+        output_rules: OutputRules,
+    ) -> OutputPipeline {
+        let rules = if dictionary_enabled {
+            &self.rules[..]
         } else {
-            Dictionary::default()
-        }
+            &[]
+        };
+        // If validated settings somehow become invalid, preserve the source text.
+        OutputPipeline::compile(rules, output_rules).unwrap_or_default()
     }
 
     pub(crate) fn add_preset(&mut self, mut preset: Preset) -> Result<(), String> {
@@ -81,14 +89,24 @@ mod tests {
             let old = Workflows::load(input).unwrap();
             assert!(!old.dictionary_enabled);
             assert!(old.presets.is_empty());
-            assert!(old.dictionary_for_session().is_empty());
+            assert_eq!(old.output_rules, OutputRules::default());
+            assert!(
+                old.output_for_session(false, old.output_rules)
+                    .is_identity()
+            );
         }
+        let legacy = Workflows::load(Some(r#"{"presets":[{"name":"test","source_id":"chatgpt","language":"zh","dictionary_enabled":true}]}"#)).unwrap();
+        assert_eq!(legacy.presets[0].output_rules, OutputRules::default());
         let mut config = Workflows::default();
         let preset = Preset {
             name: "中英会议".into(),
             source_id: CHATGPT.into(),
             language: "zh".into(),
             dictionary_enabled: true,
+            output_rules: OutputRules {
+                trim_edges: true,
+                ..Default::default()
+            },
         };
         config.add_preset(preset.clone()).unwrap();
         assert!(config.add_preset(preset).is_err());
@@ -100,6 +118,7 @@ mod tests {
             "saving does not activate a preset"
         );
         assert!(preset.dictionary_enabled);
+        assert!(preset.output_rules.trim_edges);
         assert_eq!(preset.language, "zh");
         let catalog = Catalog::pending(CHATGPT);
         assert_eq!(preset.source(&catalog), Ok(SessionSource::ChatGpt));
@@ -112,23 +131,31 @@ mod tests {
     }
 
     #[test]
-    fn workflow_dictionary_is_frozen_at_start_and_can_be_disabled() {
+    fn workflow_output_uses_explicit_session_choices() {
         use super::*;
         use crate::dictation_dictionary::parse_rules;
 
-        let mut config = Workflows {
+        let config = Workflows {
             rules: parse_rules("vp → VoicePort").unwrap(),
-            dictionary_enabled: true,
             ..Workflows::default()
         };
-        let original = config.dictionary_for_session();
-        config.rules = parse_rules("vp → second choice").unwrap();
-        assert_eq!(original.apply("使用vp"), "使用VoicePort");
+        let rules = OutputRules {
+            trim_edges: true,
+            ..Default::default()
+        };
         assert_eq!(
-            config.dictionary_for_session().apply("使用vp"),
-            "使用second choice"
+            config
+                .output_for_session(false, rules)
+                .process(" vp ")
+                .final_text(),
+            "vp"
         );
-        config.dictionary_enabled = false;
-        assert_eq!(config.dictionary_for_session().apply("使用vp"), "使用vp");
+        assert_eq!(
+            config
+                .output_for_session(true, rules)
+                .process(" vp ")
+                .final_text(),
+            "VoicePort"
+        );
     }
 }

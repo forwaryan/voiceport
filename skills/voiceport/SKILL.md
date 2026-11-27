@@ -18,7 +18,7 @@ Choose the command for the question:
 | Inspect App updates | `app update status`, `app update check` | Read the current snapshot first. Request a release lookup only when asked. The user confirms downloads and installations in the workbench’s Software Updates page. |
 | Inspect hardware and settings | `microphone list/status`, `models list`, `preferences get` | Selected and available devices/models, language, shortcut registration and delivery preferences |
 | Suggest a local model | `models recommend [--language CODE\|auto] [--preview any\|live\|after-stop]` | Read-only recommendation based on language, preview mode and download size. A null result means no compatible model. |
-| Configure dictionary or scenes | `dictionary show/set/preview`, `scenes list/add/remove/apply` | Saved local rules and named settings, with native destination confirmation to apply a scene |
+| Configure or preview dictation output | `dictionary show/set/preview`, `dictionary output show/set/preview`, `scenes list/add/remove/apply` | Local settings and panel-only sample preview. Applying a scene requires native confirmation |
 | Copy or repaste an existing GUI result | `dictation copy-last`, `dictation paste-last --target-pid PID --target-bundle ID` | Explicit clipboard or focused-field action with content-free receipts |
 | Examine recent GUI dictation | `history list`, then explicitly requested `history show ID` | Bounded, process-local metadata and separately requested text |
 | Transcribe and export a chosen audio file | `app open files`, `file sources/plan/start/status/result/export` | Reviewable source/destination, operation ID, explicit text and new export file |
