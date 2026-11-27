@@ -432,7 +432,7 @@ impl Page {
         empty.setTextColor(Some(&NSColor::secondaryLabelColor()));
         empty.setHidden(true);
         let raw_original = make(
-            "查看词典处理前文字",
+            "查看原始转写",
             sel!(showOriginalTranscript:),
             "voiceport.dictation.raw-original",
             trailing(178.),

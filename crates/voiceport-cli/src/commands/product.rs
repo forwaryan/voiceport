@@ -5,8 +5,8 @@ use std::{
 };
 use voiceport_control::{
     Action, DictionaryRequest, FileFormat, FileRequest, HistoryDelivery, HistoryRequest,
-    MicrophoneRequest, ModelMutation, ModelPreview, ModelsRequest, Page, PreferencesRequest,
-    Response, ScenesRequest,
+    MicrophoneRequest, ModelMutation, ModelPreview, ModelsRequest, OutputRule, Page,
+    PreferencesRequest, Response, ScenesRequest,
 };
 
 pub(super) const GROUPS: &[&str] = &[
@@ -234,6 +234,18 @@ fn dictionary(words: &[&str]) -> Result<DictionaryRequest, Response> {
             rules: stdin_text()?,
         },
         ["preview", "--stdin"] => Preview {
+            text: stdin_text()?,
+        },
+        ["output", "show"] => OutputShow,
+        ["output", "set", rule, enabled] => OutputSet {
+            rule: match *rule {
+                "trim-edges" => OutputRule::TrimEdges,
+                "normalize-newlines" => OutputRule::NormalizeNewlines,
+                _ => return Err(invalid()),
+            },
+            enabled: boolean(enabled)?,
+        },
+        ["output", "preview", "--stdin"] => OutputPreview {
             text: stdin_text()?,
         },
         _ => return Err(invalid()),

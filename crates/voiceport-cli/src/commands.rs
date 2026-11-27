@@ -54,7 +54,7 @@ preferences get/set
 microphone list/status/select/test-start/test-stop/open
 models recommend [--language CODE|auto] [--preview any|live|after-stop]
 models list/details/refresh/open/download/update/import/remove/install-engine/start/status/cancel
-dictionary show/set/preview | scenes list/add/remove/apply
+dictionary show/set/preview/output | scenes list/add/remove/apply
 history list/show/clear/settings
 file open/sources/plan/start/status/result/cancel/export
 qq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)
@@ -296,6 +296,7 @@ fn contextual_help(args: &[String]) -> Option<String> {
     };
     let (group, rest) = match path {
         ["app", "update", rest @ ..] => ("app update", rest),
+        ["dictionary", "output", rest @ ..] => ("dictionary output", rest),
         [group, rest @ ..] => (*group, rest),
         [] => return None,
     };
@@ -369,6 +370,11 @@ fn contextual_help(args: &[String]) -> Option<String> {
         ),
         "dictionary" => (
             "dictionary",
+            &["show", "set", "preview", "output"],
+            "Dictionary and scenes",
+        ),
+        "dictionary output" => (
+            "dictionary output",
             &["show", "set", "preview"],
             "Dictionary and scenes",
         ),
