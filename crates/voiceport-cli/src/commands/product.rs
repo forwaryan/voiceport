@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
 };
 use voiceport_control::{
-    Action, DictionaryRequest, FileFormat, FileRequest, HistoryRequest, MicrophoneRequest,
+    Action, AppRulesRequest, DictionaryRequest, FileFormat, FileRequest, HistoryRequest, MicrophoneRequest,
     ModelMutation, ModelPreview, ModelsRequest, OutputRule, Page, PreferencesRequest, Response,
     ScenesRequest,
 };
@@ -15,6 +15,7 @@ pub(super) const GROUPS: &[&str] = &[
     "models",
     "dictionary",
     "scenes",
+    "app-rules",
     "history",
     "file",
 ];
@@ -35,6 +36,7 @@ pub(super) fn parse(words: &[&str]) -> Result<Action, Response> {
                 "shortcut" => Page::Shortcut,
                 "dictionary" => Page::Dictionary,
                 "scenes" => Page::Scenes,
+                "app-rules" => Page::AppRules,
                 "quick-panel" => Page::QuickPanel,
                 "file" | "files" => Page::File,
                 _ => return Err(invalid()),
@@ -63,6 +65,9 @@ pub(super) fn parse(words: &[&str]) -> Result<Action, Response> {
         },
         ["scenes", rest @ ..] => Action::Scenes {
             request: scenes(rest)?,
+        },
+        ["app-rules", rest @ ..] => Action::AppRules {
+            request: app_rules(rest)?,
         },
         ["dictation", "gui-result", generation, rest @ ..]
             if rest.is_empty() || *rest == ["--original"] =>
@@ -333,6 +338,28 @@ fn scenes(words: &[&str]) -> Result<ScenesRequest, Response> {
         }
         ["apply", name] if positional(name) => Apply {
             name: (*name).into(),
+        },
+        _ => return Err(invalid()),
+    })
+}
+
+fn app_rules(words: &[&str]) -> Result<AppRulesRequest, Response> {
+    use AppRulesRequest::*;
+    Ok(match words {
+        ["list"] => List,
+        ["enable", value] => Enable {
+            enabled: boolean(value)?,
+        },
+        ["set", id, scene] if positional(id) && positional(scene) => Set {
+            bundle_id: (*id).into(),
+            scene: (*scene).into(),
+        },
+        ["remove", id] if positional(id) => Remove {
+            bundle_id: (*id).into(),
+        },
+        ["match"] => Match { bundle_id: None },
+        ["match", id] if positional(id) => Match {
+            bundle_id: Some((*id).into()),
         },
         _ => return Err(invalid()),
     })

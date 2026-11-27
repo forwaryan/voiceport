@@ -206,6 +206,7 @@ struct Ivars {
     show_models_on_launch: Cell<bool>,
     dictionary_settings: OnceCell<Retained<NSButton>>,
     preset_settings: OnceCell<Retained<NSButton>>,
+    app_rules_settings: OnceCell<Retained<NSButton>>,
     workflow_dialog: Cell<bool>,
     automatic: OnceCell<Retained<NSSwitch>>,
     recent_dictations_switch: OnceCell<Retained<NSSwitch>>,
@@ -513,6 +514,8 @@ define_class!(
         fn dictionary_action(&self, _sender: Option<&AnyObject>) { self.show_dictionary(); }
         #[unsafe(method(showDictationPresets:))]
         fn presets_action(&self, _sender: Option<&AnyObject>) { self.show_presets(); }
+        #[unsafe(method(showDictationAppRules:))]
+        fn app_rules_action(&self, _sender: Option<&AnyObject>) { self.show_app_rules(); }
         #[unsafe(method(showOriginalTranscript:))]
         fn original_action(&self, _sender: Option<&AnyObject>) { self.show_original_transcript(); }
         #[unsafe(method(cycleShortcut:))]
@@ -994,6 +997,7 @@ impl Delegate {
                 iv.language.get().unwrap(),
                 iv.dictionary_settings.get().unwrap(),
                 iv.preset_settings.get().unwrap(),
+                iv.app_rules_settings.get().unwrap(),
                 iv.automatic.get().unwrap(),
                 iv.accessibility.get().unwrap(),
                 iv.prepare_permissions.get().unwrap(),
@@ -1135,6 +1139,7 @@ impl Delegate {
         for button in [
             self.ivars().dictionary_settings.get(),
             self.ivars().preset_settings.get(),
+            self.ivars().app_rules_settings.get(),
         ]
         .into_iter()
         .flatten()
@@ -1199,6 +1204,18 @@ impl Delegate {
                 }
             });
             let context = c.gui_result_context();
+            let activity_title = release_notice
+                .or_else(|| capture_stage.map(|stage| stage.title()))
+                .or_else(|| {
+                    (!c.state.can_start()
+                        || preparing_permissions
+                        || returning_to_input
+                        || c.source_tests.busy())
+                    .then_some(state_text)
+                });
+            let rule_title = c
+                .active_app_rule()
+                .map(|rule| format!("{} · {rule}", activity_title.unwrap_or(state_text)));
             page.refresh(dictation_page::Snapshot {
                 attempt: receipt
                     .as_ref()
@@ -1229,15 +1246,7 @@ impl Delegate {
                     }
                 ),
                 activity: dictation_page::Activity {
-                    title: release_notice
-                        .or_else(|| capture_stage.map(|stage| stage.title()))
-                        .or_else(|| {
-                            (!c.state.can_start()
-                                || preparing_permissions
-                                || returning_to_input
-                                || c.source_tests.busy())
-                            .then_some(state_text)
-                        }),
+                    title: rule_title.as_deref().or(activity_title),
                     recording,
                     can_toggle: !preparing_permissions
                         && !returning_to_input

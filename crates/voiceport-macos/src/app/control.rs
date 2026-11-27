@@ -10,8 +10,8 @@ use std::{
     sync::mpsc::{self, Receiver},
 };
 use voiceport_control::{
-    Action, DictionaryRequest, FileRequest, HistoryRequest, Page, PreferencesRequest, Response,
-    ScenesRequest,
+    Action, AppRulesRequest, DictionaryRequest, FileRequest, HistoryRequest, Page,
+    PreferencesRequest, Response, ScenesRequest,
     readiness::Hotkey,
     transport::{Pending, Server},
 };
@@ -529,6 +529,9 @@ impl Delegate {
             Action::Scenes {
                 request: request @ ScenesRequest::List,
             } => self.control_scenes(c, request),
+            Action::AppRules {
+                request: request @ (AppRulesRequest::List | AppRulesRequest::Match { .. }),
+            } => self.control_app_rules(c, request),
             Action::Microphone {
                 request: voiceport_control::MicrophoneRequest::List,
             } => {
@@ -599,6 +602,7 @@ impl Delegate {
                 }
             }
             Action::Scenes { request } => self.control_scenes(c, request),
+            Action::AppRules { request } => self.control_app_rules(c, request),
             Action::DictationRetry { operation } => match &mut control.operation {
                 Some(op) => op.retry(&operation, c),
                 None => missing(),

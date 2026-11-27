@@ -18,6 +18,7 @@ pub enum Page {
     Scenes,
     QuickPanel,
     File,
+    AppRules,
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -108,6 +109,16 @@ pub enum DictionaryRequest {
 pub enum OutputRule {
     TrimEdges,
     NormalizeNewlines,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AppRulesRequest {
+    List,
+    Enable { enabled: bool },
+    Set { bundle_id: String, scene: String },
+    Remove { bundle_id: String },
+    Match { bundle_id: Option<String> },
 }
 
 #[derive(Deserialize, Serialize)]

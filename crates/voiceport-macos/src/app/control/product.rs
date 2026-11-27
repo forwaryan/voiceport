@@ -15,7 +15,7 @@ use crate::{
 use objc2::DefinedClass;
 use serde_json::{Value, json};
 use voiceport_control::{
-    DictionaryRequest, MicrophoneRequest, OutputRule, Page, PreferencesRequest, RecordingMode,
+    AppRulesRequest, DictionaryRequest, MicrophoneRequest, OutputRule, Page, PreferencesRequest, RecordingMode,
     ScenesRequest, TranscriptionState,
 };
 
@@ -91,11 +91,12 @@ impl Delegate {
                 self.show_file_transcription();
                 user_action(page, "choose_audio_file")
             }
-            Page::Dictionary | Page::Scenes => {
+            Page::Dictionary | Page::Scenes | Page::AppRules => {
                 pending.respond(user_action(page, "complete_native_dialog"));
                 match page {
                     Page::Dictionary => self.show_dictionary(),
                     Page::Scenes => self.show_presets(),
+                    Page::AppRules => self.show_app_rules(),
                     _ => unreachable!(),
                 }
                 return;
@@ -327,6 +328,45 @@ impl Delegate {
         )
     }
 
+    pub(super) fn control_app_rules(
+        &self,
+        c: &mut Controller,
+        request: AppRulesRequest,
+    ) -> Response {
+        match request {
+            AppRulesRequest::List => return Response::ok(json!(c.workflows.app_rules)),
+            AppRulesRequest::Match { bundle_id } => {
+                let rules = &c.workflows.app_rules;
+                let scene = rules.matched_scene(bundle_id.as_deref(), &c.workflows.presets);
+                return Response::ok(json!({
+                    "enabled": rules.enabled,
+                    "selection": if scene.is_some() { "scene" } else { "global" },
+                    "scene": scene.map(|preset| preset.name.as_str()),
+                }));
+            }
+            _ => {}
+        }
+        let mut next = c.workflows.clone();
+        match request {
+            AppRulesRequest::Enable { enabled } => next.app_rules.enabled = enabled,
+            AppRulesRequest::Set { bundle_id, scene } => {
+                if let Err(message) = next.app_rules.assign(&bundle_id, &scene, &next.presets) {
+                    return err("invalid_config", &message);
+                }
+            }
+            AppRulesRequest::Remove { bundle_id } => {
+                if !next.app_rules.remove(&bundle_id) {
+                    return missing();
+                }
+            }
+            AppRulesRequest::List | AppRulesRequest::Match { .. } => unreachable!(),
+        }
+        if self.commit_workflows(c, next).is_err() {
+            return err("invalid_config", "Could not save application output rules.");
+        }
+        Response::ok(json!(c.workflows.app_rules))
+    }
+
     pub(super) fn control_scenes(&self, c: &mut Controller, request: ScenesRequest) -> Response {
         let mut next = c.workflows.clone();
         match request {
@@ -361,7 +401,7 @@ impl Delegate {
                         "Confirm removal of the named scene with --confirm.",
                     );
                 }
-                next.presets.remove(index);
+                next.remove_preset(index);
             }
             ScenesRequest::Apply { .. } => unreachable!("handled as a named native confirmation"),
         }
@@ -476,7 +516,7 @@ pub(super) fn capabilities() -> Response {
         "app_update":["check","status"],
         "dictionary_output":["show","set","preview"],
         "dictation_output":["copy-last","paste-last"],
-        "groups":["app","status","sources","plugins","dictation","preferences","microphone","models","dictionary","scenes","history","file"],
+        "groups":["app","status","sources","plugins","dictation","preferences","microphone","models","dictionary","scenes","app-rules","history","file"],
     }))
 }
 

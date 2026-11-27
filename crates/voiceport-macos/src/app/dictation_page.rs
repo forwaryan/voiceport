@@ -20,8 +20,8 @@ pub(crate) struct TranscriptOrigin {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct Activity {
-    pub(super) title: Option<&'static str>,
+pub(super) struct Activity<'a> {
+    pub(super) title: Option<&'a str>,
     pub(super) recording: bool,
     pub(super) can_toggle: bool,
     pub(super) can_cancel: bool,
@@ -44,7 +44,7 @@ pub(super) struct Snapshot<'a> {
     pub(super) raw_available: bool,
     pub(super) can_open_raw: bool,
     pub(super) shortcut: &'a str,
-    pub(super) activity: Activity,
+    pub(super) activity: Activity<'a>,
 }
 
 fn receipt_text(receipt: &GuiDictationReceipt) -> &'static str {

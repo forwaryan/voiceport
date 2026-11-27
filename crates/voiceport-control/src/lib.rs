@@ -10,7 +10,7 @@ pub use dictation::{
 };
 mod product;
 pub use product::{
-    DictionaryRequest, FileFormat, FileRequest, HistoryRequest, MicrophoneRequest, ModelMutation,
+    AppRulesRequest, DictionaryRequest, FileFormat, FileRequest, HistoryRequest, MicrophoneRequest, ModelMutation,
     ModelPreview, ModelsRequest, OutputRule, Page, PreferencesRequest, RecordingMode,
     ScenesRequest,
 };
@@ -121,6 +121,9 @@ pub enum Action {
     },
     Scenes {
         request: ScenesRequest,
+    },
+    AppRules {
+        request: AppRulesRequest,
     },
     GuiResult {
         generation: u64,

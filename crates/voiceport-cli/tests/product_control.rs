@@ -18,6 +18,7 @@ fn offline_help_and_invalid_arguments_never_connect() {
             ("microphone", "microphone test-start"),
             ("dictionary", "dictionary set"),
             ("scenes", "scenes apply"),
+            ("app-rules", "app-rules match"),
             ("history", "history clear"),
             ("dictation", "dictation paste-last"),
             ("file", "file export"),
@@ -381,6 +382,41 @@ fn real_binaries_and_transport_carry_product_requests_and_mock_receipts() {
                 json!({"action":"output_preview", "text":" vp\r\n🙂 "}),
             )
         },
+        Example {
+            args: &["app", "open", "app-rules"],
+            wire: json!({"command":"open", "page":"app_rules"}),
+            stdin: None,
+        },
+        example(
+            &["app-rules", "list"],
+            "app_rules",
+            json!({"action":"list"}),
+        ),
+        example(
+            &["app-rules", "enable", "on"],
+            "app_rules",
+            json!({"action":"enable", "enabled":true}),
+        ),
+        example(
+            &["app-rules", "set", "com.example.Editor", "Synthetic scene"],
+            "app_rules",
+            json!({"action":"set", "bundle_id":"com.example.Editor", "scene":"Synthetic scene"}),
+        ),
+        example(
+            &["app-rules", "remove", "com.example.Editor"],
+            "app_rules",
+            json!({"action":"remove", "bundle_id":"com.example.Editor"}),
+        ),
+        example(
+            &["app-rules", "match", "com.example.Editor"],
+            "app_rules",
+            json!({"action":"match", "bundle_id":"com.example.Editor"}),
+        ),
+        example(
+            &["app-rules", "match"],
+            "app_rules",
+            json!({"action":"match", "bundle_id":null}),
+        ),
         example(&["scenes", "list"], "scenes", json!({"action":"list"})),
         example(
             &[

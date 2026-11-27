@@ -13,6 +13,7 @@ pub(crate) struct Workflows {
     pub(crate) dictionary_enabled: bool,
     pub(crate) output_rules: OutputRules,
     pub(crate) presets: Vec<Preset>,
+    pub(crate) app_rules: crate::dictation_app_rules::AppRules,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -63,6 +64,11 @@ impl Workflows {
         preset.name = name.to_owned();
         self.presets.push(preset);
         Ok(())
+    }
+
+    pub(crate) fn remove_preset(&mut self, index: usize) {
+        let preset = self.presets.remove(index);
+        self.app_rules.remove_scene(&preset.name);
     }
 }
 

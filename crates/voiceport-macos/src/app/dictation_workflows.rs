@@ -57,6 +57,55 @@ impl Delegate {
         self.workflow_dialog(|| self.edit_presets());
     }
 
+    pub(super) fn show_app_rules(&self) {
+        self.workflow_dialog(|| self.edit_app_rules());
+    }
+
+    fn edit_app_rules(&self) -> Result<(), String> {
+        let mut preferences = self
+            .ivars()
+            .controller
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .workflows
+            .clone();
+        let view = self.workflow_view(171.);
+        let enabled =
+            self.workflow_checkbox(&view, "启用应用输出规则", preferences.app_rules.enabled, 0.);
+        let rules = self.workflow_text(
+            &view,
+            &preferences.app_rules.editor_text(),
+            "应用 Bundle ID 和听写场景的映射",
+            32.,
+            139.,
+            true,
+        );
+        let alert = self.workflow_alert(
+            "应用输出规则",
+            "每行填写 Bundle ID → 已保存的场景名称。精确命中时采用场景的输出设置，其余情况使用全局设置。",
+            &["保存", "取消"],
+        );
+        alert.setAccessoryView(Some(&view));
+        while alert.runModal() == NSAlertFirstButtonReturn && !self.ivars().quitting.get() {
+            match crate::dictation_app_rules::AppRules::from_editor(
+                enabled.state() == NSControlStateValueOn,
+                &rules.string().to_string(),
+                &preferences.presets,
+            ) {
+                Ok(rules) => {
+                    preferences.app_rules = rules;
+                    return self.update_workflows(preferences);
+                }
+                Err(error) => {
+                    self.workflow_alert("检查应用输出规则", &error, &["返回编辑"])
+                        .runModal();
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn show_original_transcript(&self) {
         self.workflow_dialog(|| {
             let Some(original) = self
@@ -237,7 +286,7 @@ impl Delegate {
             && !self.ivars().quitting.get()
         {
             let mut preferences = preferences;
-            preferences.presets.remove(index);
+            preferences.remove_preset(index);
             self.update_workflows(preferences)?;
         }
         Ok(())

@@ -55,6 +55,7 @@ microphone list/status/select/test-start/test-stop/open
 models recommend [--language CODE|auto] [--preview any|live|after-stop]
 models list/details/refresh/open/download/update/import/remove/install-engine/start/status/cancel
 dictionary show/set/preview/output | scenes list/add/remove/apply
+app-rules list/enable/set/remove/match
 history list/show/clear/settings
 file open/sources/plan/start/status/result/cancel/export
 qq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)
@@ -391,6 +392,11 @@ fn contextual_help(args: &[String]) -> Option<String> {
             "scenes",
             &["list", "add", "remove", "apply"],
             "Dictionary and scenes",
+        ),
+        "app-rules" => (
+            "app-rules",
+            &["list", "enable", "set", "remove", "match"],
+            "Application output rules",
         ),
         "history" => (
             "history",

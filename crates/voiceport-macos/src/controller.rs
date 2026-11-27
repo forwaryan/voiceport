@@ -566,6 +566,19 @@ impl Controller {
     pub(crate) fn gui_result_context(&self) -> &GuiResultContext {
         &self.gui_result_context
     }
+    pub(crate) fn active_app_rule(&self) -> Option<&str> {
+        let receipt = self.gui_receipt.as_ref()?;
+        if receipt.generation == self.state.generation()
+            && matches!(
+                self.state.phase,
+                Phase::Permissions | Phase::Recording | Phase::Transcribing | Phase::Delivering
+            )
+        {
+            self.gui_result_context.app_rule.as_deref()
+        } else {
+            None
+        }
+    }
     pub(crate) fn retained_gui_result(&self) -> Option<&RetainedGuiResult> {
         self.retained_gui_result.as_ref().filter(|result| {
             matches!(self.visible_transcript, Some(VisibleTranscript::Final(generation))
