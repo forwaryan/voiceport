@@ -139,13 +139,7 @@ impl Recommendation {
             match crate::model_library::recommend(&view.language, view.browse.preview) {
                 Some(model) => {
                     let index = MODELS.iter().position(|d| d.id == model.id).unwrap();
-                    let status = match view.rows[index].primary {
-                        PrimaryAction::Use if view.source_id == model.id => "使用中",
-                        PrimaryAction::Use => "已安装",
-                        PrimaryAction::AwaitCatalog => "已安装 · 正在刷新",
-                        PrimaryAction::Reinstall => "需要更新或重装",
-                        PrimaryAction::Download => "未安装",
-                    };
+                    let status = view.rows[index].recommendation_status(view.source_id == model.id);
                     (
                         format!("本地推荐 · {} · {status}", model.name),
                         format!(
