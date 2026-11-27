@@ -384,6 +384,7 @@ impl Delegate {
                         "start": self.ivars().last_start_trace.borrow().as_ref(),
                         "gui_receipt": c.gui_dictation_receipt(),
                         "gui_diagnostics": c.gui_dictation_diagnostics(),
+                        "repaste": c.repaste_receipt(),
                     },
                     "operation": control.operation.as_ref().filter(|o| o.result.is_none()).map(|o| &o.id),
                     "source_probe": {
@@ -442,6 +443,24 @@ impl Delegate {
             Action::Capabilities => product::capabilities(),
             Action::UpdateCheck => self.control_update_check(),
             Action::UpdateStatus => Response::ok(self.update_snapshot()),
+            Action::CopyLastDictation | Action::PasteLastDictation { .. } if locked || c.busy() => {
+                busy()
+            }
+            Action::CopyLastDictation => self.copy_latest_dictation(c),
+            Action::PasteLastDictation {
+                target_pid,
+                target_bundle,
+            } if target_pid > 0 && !target_bundle.is_empty() => self.paste_latest_dictation(
+                c,
+                crate::delivery::model::ApplicationTarget {
+                    pid: target_pid,
+                    bundle: target_bundle,
+                },
+            ),
+            Action::PasteLastDictation { .. } => err(
+                "invalid_request",
+                "Provide a target PID and bundle identifier.",
+            ),
             Action::History { .. } if self.ivars().quitting.get() => busy(),
             Action::History {
                 request:

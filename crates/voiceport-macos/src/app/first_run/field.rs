@@ -1,7 +1,7 @@
 //! Only the panel-owned AppKit text view is reachable through this target.
 use crate::delivery::{
     Delivery,
-    model::{DeliveryState, Failure, Snapshot, Target, TextRange, byte_range},
+    model::{DeliveryState, Failure, ReplacementFailure, Snapshot, Target, TextRange, byte_range},
 };
 use objc2::rc::Retained;
 use objc2_app_kit::NSTextView;
@@ -36,11 +36,12 @@ impl Target for FieldTarget {
         range: TextRange,
         text: &str,
         expected: &Snapshot,
-    ) -> Result<(), Failure> {
+    ) -> Result<(), ReplacementFailure> {
         if snapshot(&self.field) != *expected {
-            return Err(Failure::Ownership);
+            return Err(ReplacementFailure::BeforeWrite(Failure::Ownership));
         }
-        byte_range(&expected.text, range).ok_or(Failure::Selection)?;
+        byte_range(&expected.text, range)
+            .ok_or(ReplacementFailure::BeforeWrite(Failure::Selection))?;
         self.writes.set(self.writes.get() + 1);
         self.field.replaceCharactersInRange_withString(
             NSRange::new(range.location, range.length),

@@ -74,6 +74,10 @@ impl Shortcut {
         key_code: 49,
         modifiers: CONTROL | OPTION,
     };
+    pub(crate) const REPASTE: Self = Self {
+        key_code: 9,
+        modifiers: CONTROL | OPTION | SHIFT,
+    };
     pub(crate) const ALTERNATIVE: Self = Self {
         key_code: 49,
         modifiers: CONTROL | SHIFT,

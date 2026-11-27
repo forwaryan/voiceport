@@ -85,6 +85,7 @@ impl Delegate {
         // Drop both registration and queue: neither a captured key nor
         // an event queued before the editor can later start dictation.
         self.ivars().hotkey.borrow_mut().take();
+        self.ivars().repaste_hotkey.borrow_mut().take();
         self.ivars().hotkey_rx.borrow_mut().take();
         self.with_controller(|c| c.set_stop_shortcut(None));
         self.refresh();
@@ -155,6 +156,7 @@ impl Delegate {
                 Some("原快捷键也无法恢复，请重新选择。".into());
             self.with_controller(|c| c.message = format!("{error} 请重新选择快捷键。"));
         }
+        self.install_repaste_shortcut();
         self.refresh();
     }
 }

@@ -202,6 +202,14 @@ pub fn automatic(text: &str) -> String {
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplacementFailure {
+    /// The target rejected the replacement before any native setter or event.
+    BeforeWrite(Failure),
+    /// A native setter or event was attempted and may have changed the target.
+    Uncertain(Failure),
+}
+
 pub trait Target {
     fn read(&mut self) -> Result<Snapshot, Failure>;
     /// Before starting a keyboard chunk, observe bounded prerequisites without
@@ -209,10 +217,14 @@ pub trait Target {
     fn ready(&mut self) -> Result<bool, Failure> {
         Ok(true)
     }
-    /// Must recheck the exact snapshot immediately before writing. A failed
-    /// write is never retried, because it may have partially succeeded.
-    fn replace(&mut self, range: TextRange, text: &str, expected: &Snapshot)
-    -> Result<(), Failure>;
+    /// Recheck the exact snapshot immediately before writing. Report a known
+    /// rejection only before crossing any mutating boundary.
+    fn replace(
+        &mut self,
+        range: TextRange,
+        text: &str,
+        expected: &Snapshot,
+    ) -> Result<(), ReplacementFailure>;
     /// Observe the one submitted replacement. False means it is still settling;
     /// implementations must bound that wait and never resubmit an uncertain write.
     fn confirm(&mut self, expected: &Snapshot) -> Result<bool, Failure> {
@@ -238,7 +250,7 @@ impl<T: Target + ?Sized> Target for Box<T> {
         range: TextRange,
         text: &str,
         expected: &Snapshot,
-    ) -> Result<(), Failure> {
+    ) -> Result<(), ReplacementFailure> {
         (**self).replace(range, text, expected)
     }
     fn confirm(&mut self, expected: &Snapshot) -> Result<bool, Failure> {
@@ -246,6 +258,28 @@ impl<T: Target + ?Sized> Target for Box<T> {
     }
     fn abandon(&mut self) {
         (**self).abandon();
+    }
+}
+
+fn submit_replacement<T: Target>(
+    receipt: &mut DeliveryReceipt,
+    target: &mut T,
+    range: TextRange,
+    text: &str,
+    expected: &Snapshot,
+) -> Result<(), Failure> {
+    let previous = *receipt;
+    receipt.attempting();
+    match target.replace(range, text, expected) {
+        Ok(()) => {
+            receipt.submitted(true);
+            Ok(())
+        }
+        Err(ReplacementFailure::BeforeWrite(failure)) => {
+            *receipt = previous;
+            Err(failure)
+        }
+        Err(ReplacementFailure::Uncertain(failure)) => Err(failure),
     }
 }
 
@@ -385,9 +419,13 @@ impl<T: Target> OwnedSpan<T> {
             }
             return Ok(());
         }
-        self.receipt.attempting();
-        self.target.replace(self.owned, &text, &self.expected)?;
-        self.receipt.submitted(true);
+        submit_replacement(
+            &mut self.receipt,
+            &mut self.target,
+            self.owned,
+            &text,
+            &self.expected,
+        )?;
         self.pending = Some(PendingSpan {
             next,
             owned,
@@ -498,10 +536,13 @@ impl<T: Target> OwnedSpan<T> {
                 location: owned.location + owned.length,
                 length: 0,
             };
-            self.receipt.attempting();
-            self.target
-                .replace(self.owned, &self.original, &self.expected)?;
-            self.receipt.submitted(true);
+            submit_replacement(
+                &mut self.receipt,
+                &mut self.target,
+                self.owned,
+                &self.original,
+                &self.expected,
+            )?;
             self.pending = Some(PendingSpan {
                 next,
                 owned,
@@ -673,9 +714,13 @@ impl<T: Target> ChunkedInput<T> {
             location: selection.location + chunk.encode_utf16().count(),
             length: 0,
         };
-        self.receipt.attempting();
-        self.target.replace(selection, &chunk, &self.expected)?;
-        self.receipt.submitted(true);
+        submit_replacement(
+            &mut self.receipt,
+            &mut self.target,
+            selection,
+            &chunk,
+            &self.expected,
+        )?;
         self.pending = Some(next);
         Ok(false)
     }

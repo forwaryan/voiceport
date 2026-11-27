@@ -5,9 +5,9 @@ use std::{cell::RefCell, rc::Rc};
 use voiceport_macos::delivery::{
     Delivery,
     model::{
-        ChunkedInput, EVENT_TAG, Failure, KeyboardPacing, OwnedSpan, Snapshot, StopShortcut,
-        Target, Terminal, TerminalTarget, TextRange, automatic, byte_range, invalidates_input,
-        unicode_chunks,
+        ChunkedInput, EVENT_TAG, Failure, KeyboardPacing, OwnedSpan, ReplacementFailure, Snapshot,
+        StopShortcut, Target, Terminal, TerminalTarget, TextRange, automatic, byte_range,
+        invalidates_input, unicode_chunks,
     },
 };
 
@@ -57,21 +57,27 @@ impl Target for FakeTarget {
             None => Ok(field.snapshot.clone()),
         }
     }
-    fn replace(&mut self, span: TextRange, text: &str, expected: &Snapshot) -> Result<(), Failure> {
+    fn replace(
+        &mut self,
+        span: TextRange,
+        text: &str,
+        expected: &Snapshot,
+    ) -> Result<(), ReplacementFailure> {
         let mut field = self.0.borrow_mut();
         if field.change_before_write {
             field.snapshot.text.push('!');
         }
         if field.snapshot != *expected {
-            return Err(Failure::Ownership);
+            return Err(ReplacementFailure::BeforeWrite(Failure::Ownership));
         }
         if let Some(failure) = field.failure {
-            return Err(failure);
+            return Err(ReplacementFailure::BeforeWrite(failure));
         }
         if field.reject {
-            return Err(Failure::Write);
+            return Err(ReplacementFailure::Uncertain(Failure::Write));
         }
-        let bytes = byte_range(&field.snapshot.text, span).ok_or(Failure::Selection)?;
+        let bytes = byte_range(&field.snapshot.text, span)
+            .ok_or(ReplacementFailure::BeforeWrite(Failure::Selection))?;
         field.snapshot.text.replace_range(bytes, text);
         field.snapshot.selection = range(span.location + text.encode_utf16().count(), 0);
         if field.corrupt_after_write {
@@ -104,7 +110,12 @@ impl Target for GatedTarget {
     fn ready(&mut self) -> Result<bool, Failure> {
         *self.ready.borrow()
     }
-    fn replace(&mut self, span: TextRange, text: &str, expected: &Snapshot) -> Result<(), Failure> {
+    fn replace(
+        &mut self,
+        span: TextRange,
+        text: &str,
+        expected: &Snapshot,
+    ) -> Result<(), ReplacementFailure> {
         self.field.replace(span, text, expected)
     }
 }
@@ -242,17 +253,23 @@ impl Target for DeferredTarget {
         }
         Ok(field.snapshot.clone())
     }
-    fn replace(&mut self, span: TextRange, text: &str, expected: &Snapshot) -> Result<(), Failure> {
+    fn replace(
+        &mut self,
+        span: TextRange,
+        text: &str,
+        expected: &Snapshot,
+    ) -> Result<(), ReplacementFailure> {
         let mut field = self.0.borrow_mut();
         assert!(
             field.submitted.is_none(),
             "must confirm before another write"
         );
         if field.snapshot != *expected {
-            return Err(Failure::Ownership);
+            return Err(ReplacementFailure::BeforeWrite(Failure::Ownership));
         }
         let mut next = expected.clone();
-        let bytes = byte_range(&next.text, span).ok_or(Failure::Selection)?;
+        let bytes = byte_range(&next.text, span)
+            .ok_or(ReplacementFailure::BeforeWrite(Failure::Selection))?;
         next.text.replace_range(bytes, text);
         next.selection = range(span.location + text.encode_utf16().count(), 0);
         field.before = Some(expected.clone());

@@ -1,6 +1,8 @@
 //! In-memory completion source and owned selection for the offscreen panel fixture.
 use super::super::*;
-use crate::delivery::model::{Failure as InputFailure, Snapshot, Target, TextRange, byte_range};
+use crate::delivery::model::{
+    Failure as InputFailure, ReplacementFailure, Snapshot, Target, TextRange, byte_range,
+};
 use std::{cell::RefCell, rc::Rc};
 
 pub(crate) struct SyntheticDictations {
@@ -31,8 +33,11 @@ impl Target for SyntheticTarget {
         range: TextRange,
         text: &str,
         expected: &Snapshot,
-    ) -> Result<(), InputFailure> {
-        assert_eq!(&self.read()?, expected);
+    ) -> Result<(), ReplacementFailure> {
+        assert_eq!(
+            &self.read().map_err(ReplacementFailure::BeforeWrite)?,
+            expected
+        );
         let mut target = self.0.borrow_mut();
         let bytes = byte_range(&target.snapshot.text, range).unwrap();
         target.snapshot.text.replace_range(bytes, text);
@@ -131,6 +136,52 @@ impl SyntheticDictations {
             })
             .unwrap();
         self.poll();
+    }
+
+    pub(crate) fn retry_after_confirmed_preview(&mut self, final_text: &str) {
+        let (original, target) = self.begin(true, true);
+        self.controller
+            .update_dictation_partial(original, "Synthetic preview".into());
+        assert_eq!(target.borrow().writes, 1);
+
+        let folder = tempfile::tempdir().unwrap();
+        let storage = crate::storage::Storage::at(
+            folder
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(crate::storage::NAMESPACE),
+        );
+        self.controller.recording = Some(Arc::new(storage.create_recording().unwrap()));
+        self.completions
+            .send(Completion {
+                generation: original,
+                elapsed: None,
+                result: Err(Failure::from("synthetic ASR failure".to_owned())),
+            })
+            .unwrap();
+        self.poll();
+        assert_eq!(self.controller.state.phase, Phase::Failed);
+        assert_eq!(
+            self.controller
+                .gui_dictation_receipt()
+                .unwrap()
+                .delivery
+                .state,
+            voiceport_control::DeliveryState::Confirmed
+        );
+
+        let (jobs, queued) = mpsc::sync_channel(1);
+        let original_sender =
+            std::mem::replace(&mut self.controller.worker.as_mut().unwrap().jobs, jobs);
+        self.controller.retry();
+        let job = queued.try_recv().unwrap();
+        assert_ne!(job.generation, original);
+        let generation = job.generation;
+        drop(job);
+        self.controller.worker.as_mut().unwrap().jobs = original_sender;
+        self.finish(generation, final_text);
+        assert_eq!(target.borrow().writes, 1);
     }
 
     pub(crate) fn finish_at(&mut self, generation: u64, text: &str, timestamp_ms: u64) {

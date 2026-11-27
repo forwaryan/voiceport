@@ -1,5 +1,6 @@
 //! Real CLI and production socket/Delegate routing in a fixture-owned AppKit process.
 mod audio_start;
+mod latest_output;
 mod update;
 pub use audio_start::{isolated_audio_start_regression, isolated_performance_baseline};
 
@@ -299,7 +300,7 @@ pub fn isolated_control_regression(mtm: MainThreadMarker, cli: &Path) {
         call(&["history", "list"], 0)["data"],
         json!({"enabled":false,"entries":[]})
     );
-    assert_eq!(fixture.finish_gui(&mut rig, "disabled"), 1);
+    latest_output::verify(&fixture, &mut rig);
     assert_eq!(call(&["history", "list"], 0)["data"]["entries"], json!([]));
     assert_eq!(
         call(&["history", "settings", "on"], 0)["data"]["enabled"],
