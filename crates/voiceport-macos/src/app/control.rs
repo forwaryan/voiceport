@@ -501,7 +501,11 @@ impl Delegate {
                 request: request @ PreferencesRequest::Get,
             } => self.control_preferences(c, request),
             Action::Dictionary {
-                request: request @ (DictionaryRequest::Show | DictionaryRequest::Preview { .. }),
+                request:
+                    request @ (DictionaryRequest::Show
+                    | DictionaryRequest::Preview { .. }
+                    | DictionaryRequest::OutputShow
+                    | DictionaryRequest::OutputPreview { .. }),
             } => self.control_dictionary(c, request),
             Action::Scenes {
                 request: request @ ScenesRequest::List,

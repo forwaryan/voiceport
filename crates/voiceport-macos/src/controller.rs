@@ -6,7 +6,7 @@ use crate::{
         worker::{self as audio, Capture, Reply as CaptureReply},
     },
     delivery::Delivery,
-    dictation_dictionary::Dictionary,
+    dictation_output::OutputPipeline,
     dictation_workflows::Workflows,
     lifecycle::{Lifecycle, Phase},
     local_audio::Incoming,
@@ -248,7 +248,7 @@ pub struct Controller {
     pub(crate) visible_transcript: Option<VisibleTranscript>,
     pub(crate) raw_transcript: Option<String>,
     pub(crate) workflows: Workflows,
-    recorded_dictionary: Dictionary,
+    recorded_output: OutputPipeline,
     pub message: String,
     pub preview_status: String,
     pub delivery_status: String,
@@ -348,7 +348,7 @@ impl Controller {
             visible_transcript: None,
             raw_transcript: None,
             workflows: Workflows::default(),
-            recorded_dictionary: Dictionary::default(),
+            recorded_output: OutputPipeline::default(),
             message: "聚焦输入框，按快捷键开始听写。".into(),
             preview_status: "本机预览尚未启动".into(),
             delivery_status: String::new(),
@@ -933,10 +933,13 @@ impl Controller {
         }
         self.cancel_capture();
         self.recording = None;
-        self.recorded_dictionary = if gui {
-            self.workflows.dictionary_for_session()
+        self.recorded_output = if gui {
+            self.workflows.output_for_session(
+                self.workflows.dictionary_enabled,
+                self.workflows.output_rules,
+            )
         } else {
-            Dictionary::default()
+            OutputPipeline::default()
         };
         self.testing = false;
         self.recorded_language = language;
@@ -986,7 +989,7 @@ impl Controller {
         self.visible_transcript = None;
         self.retained_gui_result = None;
         self.raw_transcript = None;
-        self.recorded_dictionary = Dictionary::default();
+        self.recorded_output = OutputPipeline::default();
         let generation = self.state.begin()?;
         self.discard_recent_dictation_candidate();
         self.state.permissions(generation, true);
@@ -1007,10 +1010,10 @@ impl Controller {
             return;
         }
         self.started = None;
-        if self.recorded_dictionary.is_empty() {
+        if self.recorded_output.is_identity() {
             self.delivery_status = self.delivery.finish_preview();
         } else if self.allow_delivery && self.delivery.failure_stage().is_none() {
-            self.delivery_status = "应用个人词典后，再输入最终文字。".into();
+            self.delivery_status = "文字处理完成后，再输入最终文字。".into();
         }
         if let Some(capture) = &self.capture {
             match capture.stop() {
@@ -1418,13 +1421,13 @@ impl Controller {
         self.transcript = text;
         self.visible_transcript = Some(VisibleTranscript::Preview(generation));
         // An append-only target cannot undo raw partial text after correction.
-        if self.recorded_dictionary.is_empty() {
+        if self.recorded_output.is_identity() {
             self.delivery_status = self.delivery.preview(&self.transcript);
         }
     }
 
     fn apply_dictation_final(&mut self, text: String) {
-        let corrected = self.recorded_dictionary.apply(&text);
+        let corrected = self.recorded_output.process(&text).into_final();
         if corrected == text {
             self.transcript = text;
             self.raw_transcript = None;
@@ -1864,7 +1867,8 @@ impl Controller {
             ) {
                 match completion.result {
                     Ok(text) => {
-                        let has_text = !text.trim().is_empty();
+                        self.apply_dictation_final(text);
+                        let has_text = !self.transcript.trim().is_empty();
                         if has_text {
                             self.report_gui_transcription(TranscriptionState::Completed, None);
                         } else {
@@ -1884,7 +1888,6 @@ impl Controller {
                         if !has_text {
                             self.gui_diagnostics.preparation = None;
                         }
-                        self.apply_dictation_final(text);
                         self.visible_transcript =
                             has_text.then_some(VisibleTranscript::Final(completion.generation));
                         self.delivery_status =
@@ -2685,26 +2688,44 @@ pub(crate) mod stop_failure_regression {
 
         c.workflows.dictionary_enabled = true;
         c.workflows.rules = crate::dictation_dictionary::parse_rules("北经 → 北京").unwrap();
+        c.workflows.output_rules.trim_edges = true;
+        c.workflows.output_rules.normalize_newlines = true;
         let (generation, corrected_receiver) = start(&mut c);
         assert!(c.retained_gui_result().is_none());
         c.update_dictation_partial(c.state.generation(), "北经".into());
         assert_eq!(c.transcript, "北经");
         assert_eq!(corrected_receiver.borrow().writes, 0);
-        finish(&mut c, &outgoing, generation, "北经🙂");
+        let original = "\r\n  北经🙂\r\n\r\n第二行 \r\n";
+        finish(&mut c, &outgoing, generation, original);
         finish(&mut c, &outgoing, generation, "重复结果");
-        assert_eq!(c.transcript, "北京🙂");
-        assert_eq!(c.raw_transcript.as_deref(), Some("北经🙂"));
+        assert_eq!(c.transcript, "北京🙂\n\n第二行");
+        assert_eq!(c.raw_transcript.as_deref(), Some(original));
         let corrected = corrected_receiver.borrow();
-        assert_eq!(corrected.snapshot.text, "A北京🙂B");
-        assert_eq!(corrected.snapshot.selection.location, 5);
+        assert_eq!(corrected.snapshot.text, "A北京🙂  第二行B");
+        assert_eq!(corrected.snapshot.selection.location, 10);
         assert_eq!(corrected.writes, 1);
         assert_eq!(
             c.gui_dictation_receipt().unwrap().delivery.state,
             DeliveryState::Confirmed
         );
         println!(
-            "gui-delivery: personal dictionary preview writes=0, corrected final writes=1, original retained"
+            "gui-delivery: dictionary and output preview writes=0, processed final writes=1, original retained; panel keeps LF, target receives spaces"
         );
+
+        c.workflows.dictionary_enabled = false;
+        let (generation, empty_receiver) = start(&mut c);
+        c.update_dictation_partial(generation, "仅面板预览".into());
+        assert_eq!(c.transcript, "仅面板预览");
+        assert_eq!(empty_receiver.borrow().writes, 0);
+        finish(&mut c, &outgoing, generation, " \t\n");
+        assert!(c.transcript.is_empty());
+        assert!(c.visible_transcript.is_none());
+        assert_eq!(
+            c.gui_dictation_receipt().unwrap().transcription,
+            TranscriptionState::Empty
+        );
+        assert_eq!(empty_receiver.borrow().snapshot.text, "A|B");
+        assert_eq!(empty_receiver.borrow().writes, 0);
 
         // Real synthetic PCM/AAC and production Stop/Job dispatch, with an
         // isolated receiver and an ASR stand-in that returns a successful empty
