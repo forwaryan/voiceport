@@ -1,5 +1,6 @@
 """Offline installer/lifecycle controls; no QQ, network, signing or account access."""
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib.util
 import io
@@ -198,19 +199,63 @@ with patch.object(subprocess, 'run', side_effect=ps):
             listener.bind(str(self.socket))
             self.assert_status_error(self.status(self.MAIN), 'bridge_status_unavailable', self.MAIN)
 
-    def test_status_rejects_invalid_readiness_and_reports_timeout(self):
+    def test_status_reports_timeout(self):
         plan = {'app': '/fixture/OwnedQQ.app'}
         main = {'pid': 1, 'parent': 1, 'executable': self.MAIN}
         with patch.object(setup, 'processes', return_value=[main]), \
-             patch.object(setup, 'control') as control:
-            control.return_value = {'type': 'status', 'ready': 'false', 'busy': False, 'cleanup_failed': False}
-            self.assertEqual(setup.status(plan, {}), {
-                'processes': [main], 'bridge': None, 'bridge_error': 'bridge_status_invalid_response',
-            })
-            control.side_effect = TimeoutError
+             patch.object(setup, 'control', side_effect=TimeoutError):
             self.assertEqual(setup.status(plan, {}), {
                 'processes': [main], 'bridge': None, 'bridge_error': 'bridge_status_timeout',
             })
+
+    def status_with_reply(self, reply):
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(self.socket))
+            listener.listen(1)
+            listener.settimeout(5)
+
+            def respond():
+                connection, _ = listener.accept()
+                with connection, connection.makefile('rb') as request:
+                    connection.settimeout(5)
+                    self.assertEqual(json.loads(request.readline(1024)), {
+                        'op': 'status', 'token': self.admin_token,
+                    })
+                    connection.sendall((json.dumps(reply) + '\n').encode())
+
+            try:
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    response = pool.submit(respond)
+                    result = self.status(self.MAIN)
+                    response.result(timeout=5)
+                    return result
+            finally:
+                self.socket.unlink()
+
+    def test_status_rejects_missing_or_invalid_snapshot_fields_over_socket(self):
+        valid = {'type': 'status', 'ready': True, 'busy': True, 'cleanup_failed': False,
+                 'submitted': 9, 'completed': 3, 'failed': 5, 'abandoned': 1}
+        for field in valid:
+            with self.subTest(missing=field):
+                reply = {key: value for key, value in valid.items() if key != field}
+                self.assert_status_error(self.status_with_reply(reply), 'bridge_status_invalid_response', self.MAIN)
+        for field, value in [('type', 'control'), ('ready', 'false'), ('busy', 1), ('cleanup_failed', None),
+                             ('submitted', True), ('completed', '3'), ('failed', -1), ('abandoned', 1.5)]:
+            with self.subTest(invalid=field):
+                reply = dict(valid, **{field: value})
+                self.assert_status_error(self.status_with_reply(reply), 'bridge_status_invalid_response', self.MAIN)
+
+    def test_status_projects_known_fields_and_preserves_nonzero_states_over_socket(self):
+        counts = {'submitted': 9, 'completed': 3, 'failed': 5, 'abandoned': 1}
+        for ready, busy, cleanup_failed in [(True, True, False), (False, False, True)]:
+            with self.subTest(cleanup_failed=cleanup_failed):
+                expected = {'type': 'status', 'ready': ready, 'busy': busy, 'cleanup_failed': cleanup_failed, **counts}
+                result = self.status_with_reply(dict(expected, unrelated={'private': self.admin_token}))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertNotIn('bridge_error', report)
+                self.assertEqual(report['bridge'], expected)
+                self.assertNotIn(self.admin_token, result.stdout + result.stderr)
 
     @unittest.skipUnless(shutil.which('node'), 'requires Node for the real bridge fixture')
     def test_status_reads_the_real_bridge_before_and_after_synthetic_service(self):

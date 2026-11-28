@@ -273,8 +273,11 @@ def status(plan, config):
     try:
         bridge = control(config, 'status')
         flags = ('ready', 'busy', 'cleanup_failed')
+        counters = ('submitted', 'completed', 'failed', 'abandoned')
         require(isinstance(bridge, dict) and bridge.get('type') == 'status'
-                and all(type(bridge.get(flag)) is bool for flag in flags), 'invalid_control_response')
+                and all(type(bridge.get(flag)) is bool for flag in flags)
+                and all(type(bridge.get(counter)) is int and bridge[counter] >= 0 for counter in counters),
+                'invalid_control_response')
     except FileNotFoundError:
         error = 'bridge_socket_missing'
     except TimeoutError:
@@ -284,7 +287,8 @@ def status(plan, config):
     except (RuntimeError, ValueError):
         error = 'bridge_status_invalid_response'
     else:
-        return dict(report, bridge=bridge)
+        snapshot = {field: bridge[field] for field in ('type', *flags, *counters)}
+        return dict(report, bridge=snapshot)
     return dict(report, bridge_error=error)
 
 
