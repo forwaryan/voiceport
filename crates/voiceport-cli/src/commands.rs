@@ -49,7 +49,7 @@ sources list/show/destination/add/update/remove/select/secret/test
 sources probe ID|--all [--language CODE|auto] [--accept-upload]
 sources probe-result/probe-cancel OPERATION
 plugins list/show/import
-dictation start/stop/retry/cancel/result/gui-result/copy-last/paste-last
+dictation start/stop/retry/fragment/transcribe-fragment/cancel/result/gui-result/copy-last/paste-last
 preferences get/set
 microphone list/status/select/test-start/test-stop/open
 models recommend [--language CODE|auto] [--preview any|live|after-stop]
@@ -361,6 +361,8 @@ fn contextual_help(args: &[String]) -> Option<String> {
                 "start",
                 "stop",
                 "retry",
+                "fragment",
+                "transcribe-fragment",
                 "cancel",
                 "result",
                 "gui-result",
@@ -536,6 +538,29 @@ fn parse(args: &[String]) -> Result<Action, Response> {
         ["dictation", "retry", operation] if !operation.is_empty() => Action::DictationRetry {
             operation: (*operation).into(),
         },
+        ["dictation", "fragment", operation] if !operation.is_empty() => {
+            Action::DictationFragment {
+                operation: (*operation).into(),
+            }
+        }
+        [
+            "dictation",
+            "transcribe-fragment",
+            operation,
+            "--confirm",
+            confirmation,
+            upload @ ..,
+        ] if !operation.is_empty()
+            && !confirmation.is_empty()
+            && !confirmation.starts_with('-')
+            && matches!(upload, [] | ["--accept-upload"]) =>
+        {
+            Action::DictationTranscribeFragment {
+                operation: (*operation).into(),
+                confirmation: (*confirmation).into(),
+                accept_upload: !upload.is_empty(),
+            }
+        }
         ["dictation", "cancel", operation] => Action::Cancel {
             operation: (*operation).into(),
         },

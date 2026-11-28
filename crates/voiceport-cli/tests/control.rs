@@ -103,6 +103,8 @@ fn contextual_help_is_offline_for_both_entrypoints() {
             vec!["sources", "--help"],
             vec!["help", "dictation"],
             vec!["dictation", "retry", "--help"],
+            vec!["dictation", "fragment", "--help"],
+            vec!["dictation", "transcribe-fragment", "--help"],
             vec!["qq", "doctor", "-h"],
             vec!["sources", "probe", "--help"],
             vec!["plugins", "import", "--help"],
@@ -157,6 +159,16 @@ fn probe_and_dictation_invalid_options_fail_before_ipc() {
         vec!["dictation", "retry"],
         vec!["dictation", "retry", ""],
         vec!["dictation", "retry", "id", "--source", "other"],
+        vec!["dictation", "fragment", "id", "--accept-upload"],
+        vec!["dictation", "transcribe-fragment", "id", "--accept-upload"],
+        vec!["dictation", "transcribe-fragment", "id", "--confirm", ""],
+        vec![
+            "dictation",
+            "transcribe-fragment",
+            "id",
+            "--confirm",
+            "--accept-upload",
+        ],
         vec!["dictation", "start", "--language", "en"],
         vec![
             "dictation",
@@ -233,6 +245,18 @@ fn parsed_options_reach_only_the_explicit_synthetic_server() {
         (vec!["sources", "probe-result", "probe-id"], "result"),
         (vec!["sources", "probe-cancel", "probe-id"], "cancel"),
         (vec!["dictation", "retry", "failed-id"], "retry"),
+        (vec!["dictation", "fragment", "failed-id"], "fragment"),
+        (
+            vec![
+                "dictation",
+                "transcribe-fragment",
+                "failed-id",
+                "--confirm",
+                "offer-token",
+                "--accept-upload",
+            ],
+            "transcribe-fragment",
+        ),
         (
             vec![
                 "dictation",
@@ -330,6 +354,21 @@ fn parsed_options_reach_only_the_explicit_synthetic_server() {
             }
             (Action::DictationRetry { operation }, "retry") => {
                 assert_eq!(operation, "failed-id");
+            }
+            (Action::DictationFragment { operation }, "fragment") => {
+                assert_eq!(operation, "failed-id");
+            }
+            (
+                Action::DictationTranscribeFragment {
+                    operation,
+                    confirmation,
+                    accept_upload,
+                },
+                "transcribe-fragment",
+            ) => {
+                assert_eq!(operation, "failed-id");
+                assert_eq!(confirmation, "offer-token");
+                assert!(accept_upload);
             }
             (Action::DictationStart { source, language }, "dictation") => {
                 assert_eq!(source, "chatgpt");

@@ -62,6 +62,12 @@ pub enum AudioEvent {
     LimitReached,
 }
 
+enum Recovery {
+    Unchanged,
+    Recovered,
+    Interrupted(String),
+}
+
 struct PreparedCapture {
     route: Route,
     input: OpenInput,
@@ -74,6 +80,7 @@ pub struct Recorder {
     input: Option<OpenInput>,
     route: Option<Route>,
     recovered_input: bool,
+    fragment_ownership_verified: bool,
     sink: Option<Arc<Sink>>,
     speech: Option<Speech>,
     recording: Option<Arc<Recording>>,
@@ -97,6 +104,7 @@ impl Recorder {
             input: None,
             route: None,
             recovered_input: false,
+            fragment_ownership_verified: true,
             sink: None,
             speech: None,
             recording: None,
@@ -319,6 +327,7 @@ impl Recorder {
             self.input = Some(input);
             self.route = Some(route);
             self.recovered_input = false;
+            self.fragment_ownership_verified = true;
             Ok(live)
         })();
         if result.is_err() {
@@ -342,20 +351,39 @@ impl Recorder {
         preferred_uid: Option<&str>,
         check: &impl Fn() -> Result<(), String>,
         on_disconnect: impl FnOnce() -> Result<(), String>,
-    ) -> Result<bool, String> {
+        stopping: impl Fn() -> bool,
+    ) -> Result<Recovery, String> {
         let (Some(input), Some(route)) = (self.input.as_mut(), self.route.as_ref()) else {
-            return Ok(false);
+            return Ok(Recovery::Unchanged);
         };
-        let healthy = input.healthy(route, false);
-        if healthy {
-            return Ok(false);
+        if input.healthy(route, false) {
+            return Ok(Recovery::Unchanged);
         }
         check()?;
         on_disconnect()?;
+        let confirmed_loss = input.revoke_and_confirm_loss(route);
+        self.fragment_ownership_verified &= confirmed_loss;
         self.route = None;
         self.input.take(); // Drain and revoke old tap access before opening another one.
+        check()?;
+        let stop_during_loss = || {
+            let reason = "麦克风在结束录音前已断开。";
+            if confirmed_loss {
+                Ok(Recovery::Interrupted(reason.into()))
+            } else {
+                Err(format!("{reason} 无法核实录音片段的输入归属，请重新开始。"))
+            }
+        };
+        if stopping() {
+            return stop_during_loss();
+        }
         if std::mem::replace(&mut self.recovered_input, true) {
-            return Err("麦克风再次断开，已停止本轮录音；请检查设备后重新开始。".into());
+            let reason = "麦克风再次断开，已停止本轮录音；请检查设备后重新开始。".to_owned();
+            return if confirmed_loss {
+                Ok(Recovery::Interrupted(reason))
+            } else {
+                Err(reason)
+            };
         }
         let Some(sink) = self.sink.clone() else {
             return Err("录音输入已关闭，请重新开始。".into());
@@ -372,16 +400,29 @@ impl Recorder {
             check()
         };
         let (route, (mut input, bridge)) =
-            OpenInput::open_prepared(preferred_uid, true, &verify_recovery, |new_format| {
+            match OpenInput::open_prepared(preferred_uid, true, &verify_recovery, |new_format| {
                 recovery_pcm::FormatBridge::new(new_format, &format)
-            })
-            .map_err(|error| format!("麦克风已断开，无法继续本轮录音：{error} 请重新开始。"))?;
+            }) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    // No replacement tap was admitted. An ordinary availability
+                    // failure is distinct from failed identity or permission checks.
+                    verify_recovery()?;
+                    let unavailable = matches!(error, devices::OpenError::Unavailable(_));
+                    let reason = format!("麦克风已断开，无法继续本轮录音：{}", error.message());
+                    return if unavailable && confirmed_loss {
+                        Ok(Recovery::Interrupted(reason))
+                    } else {
+                        Err(format!("{reason} 请重新开始。"))
+                    };
+                }
+            };
         input.verify_start(&route, &verify_recovery)?;
         let activity = self
             .activity
             .clone()
             .expect("recording owns its tap admission");
-        if let Some(bridge) = bridge {
+        let attached = if let Some(bridge) = bridge {
             let bridge = Mutex::new(bridge);
             input.attach(
                 &verify_recovery,
@@ -398,17 +439,21 @@ impl Recorder {
                         sink.fail_route_conversion(error);
                     }
                 },
-            )?;
+            )
         } else {
             input.attach(
                 &verify_recovery,
                 move || activity.accepting(),
                 move |buffer| sink.consume(buffer),
-            )?;
+            )
+        };
+        if matches!(attached, Err(devices::OpenError::AdmissionClosed)) && stopping() {
+            return stop_during_loss();
         }
+        attached?;
         self.input = Some(input);
         self.route = Some(route);
-        Ok(true)
+        Ok(Recovery::Recovered)
     }
 
     /// The settled capture snapshot survives stop, cancellation, and release
@@ -445,18 +490,38 @@ impl Recorder {
         self.stop_native_capture()
     }
 
+    fn interrupted_at_stop(&mut self) -> Option<bool> {
+        let (input, route) = self.input.as_mut().zip(self.route.as_ref())?;
+        (!input.healthy(route, true)).then(|| input.revoke_and_confirm_loss(route))
+    }
+
+    #[cfg(test)]
     fn stop_native_capture(&mut self) -> Result<Arc<Recording>, String> {
-        let interrupted = self
-            .input
-            .as_mut()
-            .zip(self.route.as_ref())
-            .is_some_and(|(input, route)| !input.healthy(route, true));
-        self.stop_native();
-        if interrupted {
-            self.failure = Some("麦克风在结束录音前已断开；未转写本轮音频，请重新开始。".into());
+        if self.interrupted_at_stop().is_some() {
+            self.stop_native();
             self.route = None;
             self.mark_capture_unknown();
+            return Err("麦克风在结束录音前已断开；未转写本轮音频，请重新开始。".into());
         }
+        self.finalize_capture()
+    }
+
+    fn finalize_interrupted(&mut self) -> Result<(), String> {
+        Self::check_microphone()?;
+        let recording = self.finalize_capture()?;
+        if !self.fragment_ownership_verified
+            || self
+                .capture_diagnostics
+                .is_none_or(|d| d.signal != InputSignal::Signal)
+        {
+            return Err("没有可以验证的有声录音片段。".into());
+        }
+        validate_fragment_signal(recording.path())?;
+        Self::check_microphone()
+    }
+
+    fn finalize_capture(&mut self) -> Result<Arc<Recording>, String> {
+        self.stop_native();
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
@@ -1393,6 +1458,47 @@ fn validate_aac(path: &Path) -> Result<(), String> {
         file.readIntoBuffer_error(&buffer).map_err(native_error)?;
         if buffer.frameLength() == 0 {
             return Err("录音文件不完整。".into());
+        }
+    }
+    Ok(())
+}
+
+/// The encoded mono file (not a peak from a pre-mix channel) must contain
+/// observable signal and decode completely within the existing capture limit.
+fn validate_fragment_signal(path: &Path) -> Result<(), String> {
+    let url = file_url(path)?;
+    unsafe {
+        let file =
+            AVAudioFile::initForReading_error(AVAudioFile::alloc(), &url).map_err(native_error)?;
+        let mut remaining = usize::try_from(file.length())
+            .ok()
+            .filter(|n| *n > 0 && *n <= MAXIMUM_OUTPUT_FRAMES as usize)
+            .ok_or("无法验证录音片段长度。")?;
+        let buffer = AVAudioPCMBuffer::initWithPCMFormat_frameCapacity(
+            AVAudioPCMBuffer::alloc(),
+            &file.processingFormat(),
+            4096,
+        )
+        .ok_or("无法验证录音片段。")?;
+        let mut audible = 0;
+        while remaining != 0 {
+            file.readIntoBuffer_error(&buffer).map_err(native_error)?;
+            let pcm = pcm_samples(&buffer, 4096)?;
+            if pcm.frames == 0 || pcm.frames > remaining || pcm.channels != 1 {
+                return Err("无法完整验证录音片段。".into());
+            }
+            remaining -= pcm.frames;
+            for frame in 0..pcm.frames {
+                let sample = (pcm.sample)(frame, 0);
+                if !sample.is_finite() {
+                    return Err("无法验证录音片段信号。".into());
+                }
+                audible += usize::from(sample.abs() >= diagnostics::SIGNAL_PEAK);
+            }
+        }
+        // Do not offer a fragment for a single click/sample above the boundary.
+        if audible < OUTPUT_RATE as usize / 100 {
+            return Err("没有可用的有声录音片段。".into());
         }
     }
     Ok(())

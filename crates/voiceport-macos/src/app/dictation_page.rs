@@ -17,6 +17,7 @@ use voiceport_control::{
 pub(crate) struct TranscriptOrigin {
     pub(crate) generation: u64,
     pub(crate) final_text: bool,
+    pub(crate) incomplete: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -26,6 +27,7 @@ pub(super) struct Activity<'a> {
     pub(super) can_toggle: bool,
     pub(super) can_cancel: bool,
     pub(super) can_retry: bool,
+    pub(super) can_transcribe_fragment: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -57,6 +59,9 @@ fn receipt_text(receipt: &GuiDictationReceipt) -> &'static str {
         Cancelled => "本轮已取消",
         Completed if receipt.block_reason == Some(Reason::RetryPanelOnly) => {
             "重试完成 · 正文保留在工作台"
+        }
+        Completed if receipt.block_reason == Some(Reason::InterruptedPanelOnly) => {
+            "不完整 · 录音片段转写完成"
         }
         Completed => delivery_text(receipt),
     }
@@ -110,6 +115,7 @@ fn reason_text(reason: Reason) -> &'static str {
     match reason {
         Reason::PanelOnly => "此轮只在面板显示。",
         Reason::RetryPanelOnly => "重试只转写，不自动向原输入框重投。",
+        Reason::InterruptedPanelOnly => "录音片段仅供查看或复制。",
         Reason::StartRejected => "未能开始；请检查当前任务和所选来源。",
         Reason::SourceUnavailable => "请在设置中检查转写来源。",
         Reason::UnsupportedLanguage => "所选来源不支持当前语言；请检查语言设置。",
@@ -551,6 +557,11 @@ impl Page {
         let title = s
             .activity
             .title
+            .or_else(|| {
+                s.activity
+                    .can_transcribe_fragment
+                    .then_some("麦克风断开 · 已保留录音片段")
+            })
             .or_else(|| attempt.map(receipt_text))
             .unwrap_or("就绪");
         set_label(&self.headline, title);
@@ -561,8 +572,13 @@ impl Page {
             .is_some_and(|(origin, receipt)| origin.generation == receipt.generation);
         let has_text = !s.original.trim().is_empty();
         let is_final = s.origin.is_some_and(|origin| origin.final_text) && has_text;
+        let incomplete = s.origin.is_some_and(|origin| origin.incomplete);
         let displayed_receipt = if has_text { text_receipt } else { attempt };
-        let guidance = if has_text && !current_round {
+        let guidance = if s.activity.can_transcribe_fragment {
+            "可确认原来源、语言及音频去向后转写片段。原输入框可能已有实时文字。"
+        } else if incomplete {
+            "不完整 · 仅供查看或复制。原输入框可能已有实时文字。"
+        } else if has_text && !current_round {
             if text_receipt.is_some_and(needs_inspection) {
                 "下方是保留正文。先检查它的原输入框，再决定是否复制并补写。"
             } else {
@@ -574,6 +590,7 @@ impl Page {
         set_label(&self.guidance, guidance);
 
         let can_edit = is_final
+            && !incomplete
             && text_receipt.is_none_or(|receipt| {
                 !needs_inspection(receipt)
                     && !matches!(
@@ -596,6 +613,8 @@ impl Page {
             "编辑副本"
         } else if !has_text {
             "暂无正文"
+        } else if incomplete {
+            "不完整 · 片段正文"
         } else if !is_final && s.activity.recording {
             "实时预览（非最终文字）"
         } else if !is_final {
@@ -619,7 +638,7 @@ impl Page {
         }
         self.edit.setEnabled(can_edit);
         self.copy.setEnabled(is_final);
-        let raw_visible = is_final && current_round && s.raw_available;
+        let raw_visible = is_final && !incomplete && current_round && s.raw_available;
         self.raw_original.setHidden(!raw_visible);
         self.raw_original.setEnabled(raw_visible && s.can_open_raw);
         self.disclosure
@@ -670,8 +689,18 @@ impl Page {
         );
         self.toggle.setEnabled(s.activity.can_toggle);
         self.cancel.setEnabled(s.activity.can_cancel);
-        self.retry
-            .setEnabled(s.activity.can_retry && !attempt.is_some_and(needs_inspection));
+        set_title(
+            &self.retry,
+            if s.activity.can_transcribe_fragment {
+                "转写片段"
+            } else {
+                "重试转写"
+            },
+        );
+        self.retry.setEnabled(
+            s.activity.can_transcribe_fragment
+                || (s.activity.can_retry && !attempt.is_some_and(needs_inspection)),
+        );
         set_label(&self.shortcut, s.shortcut);
         if !self.diagnostic_scroll.isHidden() {
             if !self.disclosure.isEnabled() {

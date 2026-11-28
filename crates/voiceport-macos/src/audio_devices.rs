@@ -85,7 +85,45 @@ impl Route {
 
 trait Inventory {
     fn inputs(&self) -> Result<Vec<Device>, String>;
-    fn system_input(&self) -> Result<Device, String>;
+    fn system_input(&self) -> Result<Device, String> {
+        self.default_candidate()?
+            .ok_or_else(|| "macOS 当前没有可用的系统输入。".into())
+    }
+    fn default_candidate(&self) -> Result<Option<Device>, String>;
+}
+
+#[derive(Debug)]
+pub(super) enum OpenError {
+    Unavailable(String),
+    Unverified(String),
+    AdmissionClosed,
+}
+
+impl From<OpenError> for String {
+    fn from(error: OpenError) -> Self {
+        error.message()
+    }
+}
+
+impl From<&str> for OpenError {
+    fn from(message: &str) -> Self {
+        Self::Unverified(message.into())
+    }
+}
+
+impl From<String> for OpenError {
+    fn from(message: String) -> Self {
+        Self::Unverified(message)
+    }
+}
+
+impl OpenError {
+    pub fn message(self) -> String {
+        match self {
+            Self::Unavailable(message) | Self::Unverified(message) => message,
+            Self::AdmissionClosed => "音频操作已停止或取消。".into(),
+        }
+    }
 }
 
 // No speculative "actual" route: only a successful, verified open can publish it.
@@ -94,11 +132,12 @@ fn open_route<T>(
     preferred_uid: Option<&str>,
     recovered: bool,
     check: &impl Fn() -> Result<(), String>,
-    mut open: impl FnMut(&Device) -> Result<T, String>,
-) -> Result<(Route, T), String> {
+    mut open: impl FnMut(&Device) -> Result<T, OpenError>,
+) -> Result<(Route, T), OpenError> {
     check()?;
     let mut rejected = None;
     let mut fallback = None;
+    let mut uncertain = false;
     if let Some(uid) = preferred_uid {
         let devices = inventory.inputs();
         check()?;
@@ -117,17 +156,32 @@ fn open_route<T>(
                         ));
                     }
                     Err(error) => {
+                        uncertain = matches!(error, OpenError::Unverified(_));
                         rejected = Some((device.id, device.uid, error));
                         fallback = Some(Fallback::OpenFailed);
                     }
                 },
                 None => fallback = Some(Fallback::Missing),
             },
-            Err(_) => fallback = Some(Fallback::InventoryFailed),
+            Err(_) => {
+                uncertain = true;
+                fallback = Some(Fallback::InventoryFailed);
+            }
         }
     }
+    let failed = |error: OpenError| {
+        if uncertain {
+            OpenError::Unverified(error.message())
+        } else {
+            error
+        }
+    };
     check()?;
-    let device = inventory.system_input()?;
+    let device = inventory.default_candidate()?.ok_or_else(|| {
+        failed(OpenError::Unavailable(
+            "macOS 当前没有可用的系统输入。".into(),
+        ))
+    })?;
     check()?;
     if let Some((id, uid, error)) = rejected
         && device.id == id
@@ -135,7 +189,20 @@ fn open_route<T>(
     {
         return Err(error);
     }
-    let input = open(&device)?;
+    let input = match open(&device).map_err(failed) {
+        Err(error @ OpenError::Unavailable(_)) if recovered => {
+            let still_default = inventory
+                .default_candidate()?
+                .is_some_and(|current| current.id == device.id && current.uid == device.uid);
+            check()?;
+            return Err(if still_default {
+                error
+            } else {
+                OpenError::Unverified(INPUT_CHANGED.into())
+            });
+        }
+        result => result?,
+    };
     if preferred_uid == Some(device.uid.as_str()) {
         fallback = None;
     }
@@ -286,9 +353,8 @@ impl Inventory for Hal {
         Ok(devices)
     }
 
-    fn system_input(&self) -> Result<Device, String> {
-        input_device(Hal::default_input_id()?)?
-            .ok_or_else(|| "macOS 当前没有可用的系统输入。".into())
+    fn default_candidate(&self) -> Result<Option<Device>, String> {
+        input_device(Hal::default_input_id()?)
     }
 }
 
@@ -501,6 +567,7 @@ impl OpenInput {
     ) -> Result<(Route, Self), String> {
         Self::open_prepared(preferred, false, check, validate)
             .map(|(route, (input, ()))| (route, input))
+            .map_err(OpenError::message)
     }
 
     pub fn open_prepared<T>(
@@ -508,7 +575,7 @@ impl OpenInput {
         recovered: bool,
         check: &impl Fn() -> Result<(), String>,
         prepare: impl Fn(&AVAudioFormat) -> Result<T, String>,
-    ) -> Result<(Route, (Self, T)), String> {
+    ) -> Result<(Route, (Self, T)), OpenError> {
         #[cfg(debug_assertions)]
         if let Some(fixture) = fixture::current() {
             return open_route(&fixture, preferred, recovered, check, |device| {
@@ -524,7 +591,7 @@ impl OpenInput {
         device: &Device,
         check: &impl Fn() -> Result<(), String>,
         prepare: &impl Fn(&AVAudioFormat) -> Result<T, String>,
-    ) -> Result<(Self, T), String> {
+    ) -> Result<(Self, T), OpenError> {
         check()?;
         let engine = unsafe { AVAudioEngine::new() };
         check()?;
@@ -532,7 +599,7 @@ impl OpenInput {
         check()?;
         let unit = unsafe { node.audioUnit() };
         if unit.is_null() {
-            return Err("麦克风音频单元不可用。".into());
+            return Err(OpenError::Unavailable("麦克风音频单元不可用。".into()));
         }
         if unit_device(&node).ok() != Some(device.id) {
             check()?;
@@ -549,7 +616,7 @@ impl OpenInput {
         }
         check()?;
         if unit_device(&node)? != device.id {
-            return Err("系统没有采用所选麦克风。".into());
+            return Err(OpenError::Unverified("系统没有采用所选麦克风。".into()));
         }
         check()?;
         let format = unsafe { node.outputFormatForBus(0) };
@@ -607,12 +674,14 @@ impl OpenInput {
                 native
                     .engine
                     .startAndReturnError()
-                    .map_err(super::native_error)?;
+                    .map_err(|error| OpenError::Unavailable(super::native_error(error)))?;
             }
         }
         check()?;
         if !input.matches(device) || input.gate.1.load(Ordering::Acquire) {
-            return Err("无法确认所选麦克风已使用预期格式打开。".into());
+            return Err(OpenError::Unverified(
+                "无法确认所选麦克风已使用预期格式打开。".into(),
+            ));
         }
         check()?;
         Ok((input, prepared))
@@ -663,7 +732,7 @@ impl OpenInput {
         check: &impl Fn() -> Result<(), String>,
         accepting: impl Fn() -> bool + Send + Sync + 'static,
         consume: impl Fn(&AVAudioPCMBuffer) + Send + Sync + 'static,
-    ) -> Result<(), String> {
+    ) -> Result<(), OpenError> {
         check()?;
         if let Some(watch) = &self.default_watch {
             // Details/UID and Speech setup can block. Read only the default ID
@@ -679,25 +748,24 @@ impl OpenInput {
             }
         }
         let mut slot = self.gate.0.lock().expect("newly opened tap gate");
-        if self.gate.1.load(Ordering::Acquire) || !accepting() {
-            return Err("麦克风配置已变化或音频操作已取消。".into());
-        }
-        *slot = Some(Box::new(move |buffer| {
-            if accepting() {
-                consume(buffer);
-            }
-        }));
-        // The staged consumer is invisible to callbacks until this lock opens.
-        // An observed default change can still win up to the admission CAS.
+        // Resolve default-route invalidation before distinguishing a closed
+        // capture from an unverified route. The lock keeps callbacks out.
         if self
             .default_watch
             .as_ref()
             .is_some_and(|watch| !watch.admission.admit())
             || self.gate.1.load(Ordering::Acquire)
         {
-            slot.take();
             return Err(INPUT_CHANGED.into());
         }
+        if !accepting() {
+            return Err(OpenError::AdmissionClosed);
+        }
+        *slot = Some(Box::new(move |buffer| {
+            if accepting() {
+                consume(buffer);
+            }
+        }));
         #[cfg(debug_assertions)]
         if let InputEngine::Synthetic(input) = &self.native {
             input.attached();
@@ -727,6 +795,26 @@ impl OpenInput {
             }
             #[cfg(debug_assertions)]
             InputEngine::Synthetic(input) => input.healthy(),
+        }
+    }
+
+    /// A previously admitted tap can be salvaged only after positive loss
+    /// evidence, not after an unexplained device/UID/format readback failure.
+    pub fn revoke_and_confirm_loss(&self, route: &Route) -> bool {
+        let invalidated = self.gate.1.load(Ordering::Acquire);
+        self.gate.close();
+        if invalidated {
+            return true;
+        }
+        match &self.native {
+            InputEngine::Native(_) => {
+                alive(route.device.id) == Ok(false)
+                    || Hal.inputs().is_ok_and(|devices| {
+                        devices.iter().all(|device| device.uid != route.device.uid)
+                    })
+            }
+            #[cfg(debug_assertions)]
+            InputEngine::Synthetic(input) => !input.healthy(),
         }
     }
 
@@ -803,8 +891,8 @@ mod tests {
         fn inputs(&self) -> Result<Vec<Device>, String> {
             self.devices.clone()
         }
-        fn system_input(&self) -> Result<Device, String> {
-            self.default.clone()
+        fn default_candidate(&self) -> Result<Option<Device>, String> {
+            self.default.clone().map(Some)
         }
     }
     fn device(id: u32, uid: &str) -> Device {

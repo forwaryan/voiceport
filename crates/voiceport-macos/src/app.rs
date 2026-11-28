@@ -23,6 +23,7 @@ mod control_probes;
 mod dictation_page;
 mod dictation_workflows;
 mod file_transcription;
+mod interrupted_dictation;
 #[cfg(debug_assertions)]
 pub use file_transcription::isolated_file_transcription_regression;
 mod first_run;
@@ -388,7 +389,13 @@ define_class!(
         #[unsafe(method(retry:))]
         fn retry_action(&self, _sender: Option<&AnyObject>) {
             if self.settings_locked() { return; }
-            self.with_controller(|c| c.retry()); self.refresh();
+            let mut fragment = None;
+            self.with_controller(|c| {
+                fragment = interrupted_dictation::FragmentPlan::read_gui(c);
+                if fragment.is_none() { c.retry(); }
+            });
+            if let Some(plan) = fragment { self.confirm_interrupted_dictation(plan); }
+            self.refresh();
         }
         #[unsafe(method(copyText:))]
         fn copy_action(&self, _sender: Option<&AnyObject>) {
@@ -1213,12 +1220,21 @@ impl Delegate {
                     dictation_page::TranscriptOrigin {
                         generation,
                         final_text: false,
+                        incomplete: false,
                     }
                 }
                 crate::controller::VisibleTranscript::Final(generation) => {
                     dictation_page::TranscriptOrigin {
                         generation,
                         final_text: true,
+                        incomplete: false,
+                    }
+                }
+                crate::controller::VisibleTranscript::Incomplete(generation) => {
+                    dictation_page::TranscriptOrigin {
+                        generation,
+                        final_text: true,
+                        incomplete: true,
                     }
                 }
             });
@@ -1271,7 +1287,11 @@ impl Delegate {
                         && !returning_to_input
                         && !self.settings_locked()
                         && (recording || (!c.busy() && release_notice.is_none())),
-                    can_cancel: (c.busy() && !c.file_jobs.busy()) || returning_to_input,
+                    can_cancel: (c.busy() && !c.file_jobs.busy())
+                        || returning_to_input
+                        || (!self.settings_locked() && c.gui_fragment_retained()),
+                    can_transcribe_fragment: !self.settings_locked()
+                        && interrupted_dictation::FragmentPlan::read_gui(c).is_some(),
                     can_retry: !self.settings_locked()
                         && c.can_retry_recording()
                         && receipt

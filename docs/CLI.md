@@ -49,6 +49,14 @@ The original portable `host`, `demo`, `doctor`, and `transcribe AUDIO` contracts
 
 使用 `voiceport skills get workflows` 获取随对应二进制分发的完整示例。仓库中的指南覆盖 [同实例检查](../skills/voiceport/references/workflows.md#connect-to-the-intended-app)、[文件操作](../skills/voiceport/references/workflows.md#transcribe-a-selected-file)、[听写](../skills/voiceport/references/workflows.md#explicit-recording)和[失败处理](../skills/voiceport/references/workflows.md#failure-handling)。
 
+## Interrupted recordings
+
+After confirmed input loss, a failed CLI result can report `fragment_available:true` for the current operation. `dictation fragment OPERATION` reads the pinned source, language, destination and one-attempt `confirmation` token. It does not read transcript text or send audio. HTTP destinations show a redacted origin. Loopback HTTP and external programs may relay audio.
+
+After the user confirms this specific audio destination and requests transcription, run `dictation transcribe-fragment OPERATION --confirm TOKEN`, adding `--accept-upload` when the preview reports `requires_accept_upload:true`. Acceptance returns a new operation ID. Read it with `dictation result NEW_OPERATION` when authorized. The result reports `incomplete:true` and `delivery:"none"`. `dictation cancel OPERATION` can discard the retained offer. Stop alone cannot submit a fragment. A new dictation invalidates the old offer. If a submission reply is lost, inspect status on the same App instance before taking further action.
+
+`voiceport dictation transcribe-fragment --help` 可离线查看命令指南。
+
 ## 来源连通性与耗时测试
 
 `voiceport sources --help`、`voiceport dictation start --help`、`voiceport dictation retry --help` 或 `voiceport help sources` 可离线查看对应指南，JSON 模式仍通过 `data.text` 返回。

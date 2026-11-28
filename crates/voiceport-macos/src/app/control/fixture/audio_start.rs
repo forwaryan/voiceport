@@ -736,6 +736,303 @@ pub fn isolated_audio_start_regression(
     asr.assert_no_job();
     println!("audio-start recovery timeout: no late replacement attachment or ASR");
 
+    let cache_count = || std::fs::read_dir(storage.path()).unwrap().count();
+    let prepare = || {
+        backend.set_authorized(true);
+        backend.disconnect(0);
+        backend.set_default(1);
+    };
+    for (frames, amplitude, revoke_permission) in [
+        (0, 0., false),
+        (1024, 0., false),
+        (1024, 0.0001, false),
+        (1024, 0.125, true),
+    ] {
+        prepare();
+        backend.set_samples(frames, amplitude);
+        let operation = cli_start(&fixture);
+        phase(&fixture, Phase::Recording);
+        if frames > 0 {
+            sampled(&fixture);
+        }
+        if revoke_permission {
+            backend.set_authorized(false);
+        }
+        backend.disconnect(1);
+        // No replacement device is available. Zero/low signal or permission loss
+        // must not leave a usable offer even though capture had been admitted.
+        phase(&fixture, Phase::Failed);
+        released(&fixture);
+        let result = fixture.call(&["dictation", "result", &operation], 1);
+        assert_eq!(result["data"]["retry_available"], false);
+        assert_eq!(result["data"]["fragment_available"], false);
+        assert_eq!(cache_count(), 1);
+        asr.assert_no_job();
+    }
+    backend.set_samples(1024, 0.125);
+
+    prepare();
+    let start = fixture.call(
+        &[
+            "dictation",
+            "start",
+            "--source",
+            CHATGPT,
+            "--language",
+            "fr",
+        ],
+        0,
+    );
+    let operation = start["data"]["operation"].as_str().unwrap();
+    phase(&fixture, Phase::Recording);
+    sampled(&fixture);
+    let before = backend.counts();
+    let fail = backend.block_next_open();
+    backend.set_default(2);
+    backend.disconnect(1);
+    until(|| backend.counts().0 == before.0 + 1);
+    fail.send(false).unwrap();
+    phase(&fixture, Phase::Failed);
+    released(&fixture);
+    assert_eq!(backend.counts().2, before.2);
+    assert_eq!(cache_count(), 2);
+    asr.assert_no_job();
+    let result = fixture.call(&["dictation", "result", operation], 1);
+    assert_eq!(result["data"]["fragment_available"], true);
+    assert_eq!(result["data"]["retry_available"], false);
+    let offer = fixture.call(&["dictation", "fragment", operation], 0);
+    let data = &offer["data"];
+    let interrupted_generation = data["generation"].as_u64().unwrap();
+    let token = data["confirmation"].as_str().unwrap();
+    assert_eq!(data["source"], CHATGPT);
+    assert_eq!(data["language"], "fr");
+    assert_eq!(data["destination"]["kind"], "chatgpt");
+    assert_eq!(data["requires_accept_upload"], true);
+    fixture.call(&["dictation", "retry", operation], 1);
+    fixture.call(
+        &[
+            "dictation",
+            "transcribe-fragment",
+            operation,
+            "--confirm",
+            "stale",
+            "--accept-upload",
+        ],
+        1,
+    );
+    let unconfirmed = fixture.call(
+        &[
+            "dictation",
+            "transcribe-fragment",
+            operation,
+            "--confirm",
+            token,
+        ],
+        5,
+    );
+    assert_eq!(unconfirmed["error"]["code"], "confirmation_required");
+    asr.assert_no_job();
+
+    let accepted = fixture.call(
+        &[
+            "dictation",
+            "transcribe-fragment",
+            operation,
+            "--confirm",
+            token,
+            "--accept-upload",
+        ],
+        0,
+    );
+    assert_eq!(accepted["data"]["incomplete"], true);
+    let attempt = accepted["data"]["operation"].as_str().unwrap();
+    assert_ne!(operation, attempt);
+    fixture.call(&["dictation", "fragment", operation], 6);
+    let mut generation = 0;
+    owner.with_controller(|c| generation = c.state.generation());
+    asr.stale_reply(interrupted_generation);
+    pump();
+    phase(&fixture, Phase::Transcribing);
+    until(|| asr.complete_checked(generation, true, "fr"));
+    phase(&fixture, Phase::Ready);
+    let result = fixture.call(&["dictation", "result", attempt], 0);
+    assert_eq!(result["data"]["incomplete"], true);
+    assert_eq!(result["data"]["delivery"], "none");
+    owner.with_controller(|c| {
+        assert!(matches!(c.visible_transcript, Some(crate::controller::VisibleTranscript::Incomplete(g)) if g == generation));
+        let response = c.repaste_latest_with(|_| panic!("incomplete result attempted to capture a paste target"));
+        assert_eq!(response.error.unwrap().code, "invalid_state");
+        let copy = c.copy_latest_with(|text| text == "Synthetic capture result");
+        assert_eq!(copy.data["incomplete"], true);
+    });
+    assert_eq!(cache_count(), 1);
+
+    // A healthy later dictation accepts its own Stop and yields a complete result.
+    prepare();
+    let next = cli_start(&fixture);
+    phase(&fixture, Phase::Recording);
+    sampled(&fixture);
+    fixture.call(&["dictation", "stop", &next], 0);
+    released(&fixture);
+    owner.with_controller(|c| generation = c.state.generation());
+    until(|| asr.complete(generation));
+    phase(&fixture, Phase::Ready);
+    let result = fixture.call(&["dictation", "result", &next], 0);
+    assert_eq!(result["data"]["incomplete"], false);
+    fixture.call(
+        &[
+            "dictation",
+            "transcribe-fragment",
+            &next,
+            "--confirm",
+            token,
+            "--accept-upload",
+        ],
+        1,
+    );
+    assert_eq!(cache_count(), 1);
+
+    // Stop while the first replacement is opening can keep the original
+    // audio only if the replacement checks settle within the recovery deadline.
+    enum Reopen {
+        Stop,
+        OpenFailed,
+        Cancel,
+        PermissionRevoked,
+        DefaultChanged,
+        TimedOut,
+    }
+    for case in [
+        Reopen::Stop,
+        Reopen::OpenFailed,
+        Reopen::Cancel,
+        Reopen::PermissionRevoked,
+        Reopen::DefaultChanged,
+        Reopen::TimedOut,
+    ] {
+        prepare();
+        let operation = cli_start(&fixture);
+        phase(&fixture, Phase::Recording);
+        sampled(&fixture);
+        let before = backend.counts();
+        let resume = backend.block_next_open();
+        backend.set_default(2);
+        backend.disconnect(1);
+        until(|| backend.counts().0 == before.0 + 1);
+        let opening = Instant::now();
+        let cancel = matches!(case, Reopen::Cancel);
+        if matches!(case, Reopen::TimedOut) {
+            // Make the later Stop deadline distinct from the recovery deadline.
+            until(|| opening.elapsed() >= Duration::from_millis(1500));
+        }
+        fixture.call(
+            &[
+                "dictation",
+                if cancel { "cancel" } else { "stop" },
+                &operation,
+            ],
+            0,
+        );
+        let rejection = match case {
+            Reopen::PermissionRevoked => {
+                backend.set_authorized(false);
+                Some("麦克风权限")
+            }
+            Reopen::DefaultChanged => {
+                let (resume_id, entered) = backend.block_next_final_default_id();
+                resume.send(true).unwrap();
+                until(|| entered.try_recv().is_ok());
+                backend.disconnect(0);
+                backend.set_default(1);
+                assert!(backend.notify_default_changed());
+                resume_id.send(()).unwrap();
+                Some("麦克风已变化")
+            }
+            Reopen::TimedOut => {
+                until(|| opening.elapsed() >= crate::audio::worker::WAIT);
+                Some("等待麦克风恢复超时")
+            }
+            Reopen::Stop | Reopen::OpenFailed | Reopen::Cancel => None,
+        };
+        if !matches!(case, Reopen::DefaultChanged) {
+            resume.send(!matches!(case, Reopen::OpenFailed)).unwrap();
+        }
+        released(&fixture);
+        phase(&fixture, if cancel { Phase::Idle } else { Phase::Failed });
+        assert_eq!(backend.counts().0, before.0 + 1);
+        assert_eq!(backend.counts().2, before.2);
+        asr.assert_no_job();
+        if let Some(reason) = rejection {
+            owner.with_controller(|c| assert!(c.message.contains(reason), "{}", c.message));
+        }
+        if matches!(case, Reopen::Stop | Reopen::OpenFailed) {
+            let result = fixture.call(&["dictation", "result", &operation], 1);
+            assert_eq!(result["data"]["fragment_available"], true);
+            assert_eq!(result["data"]["retry_available"], false);
+            let offer = fixture.call(&["dictation", "fragment", &operation], 0);
+            assert_eq!(offer["data"]["incomplete"], true);
+            assert_eq!(cache_count(), 2);
+            fixture.call(&["dictation", "cancel", &operation], 0);
+        }
+        fixture.call(&["dictation", "fragment", &operation], 1);
+        assert_eq!(cache_count(), 1);
+    }
+    println!(
+        "audio-start first reopen: Stop retained only original audio; Cancel, permission, route and deadline failures discarded it"
+    );
+
+    // Stop or Cancel can race a second disconnect's native teardown. A Stop
+    // settles the one verified lease and a Cancel invalidates the pending reply.
+    for cancel in [false, true] {
+        prepare();
+        let operation = cli_start(&fixture);
+        phase(&fixture, Phase::Recording);
+        sampled(&fixture);
+        backend.set_default(2);
+        backend.disconnect(1);
+        until(|| {
+            let mut recovered = false;
+            owner.with_controller(|c| {
+                recovered = c
+                    .microphone_route()
+                    .is_some_and(|route| route.contains("已恢复录音"))
+            });
+            recovered
+        });
+        let opens = backend.counts().0;
+        let (resume, entered) = backend.block_next_release();
+        backend.disconnect(2);
+        until(|| entered.try_recv().is_ok());
+        fixture.call(
+            &[
+                "dictation",
+                if cancel { "cancel" } else { "stop" },
+                &operation,
+            ],
+            0,
+        );
+        resume.send(true).unwrap();
+        released(&fixture);
+        phase(&fixture, if cancel { Phase::Idle } else { Phase::Failed });
+        assert_eq!(backend.counts().0, opens);
+        asr.assert_no_job();
+        if cancel {
+            fixture.call(&["dictation", "fragment", &operation], 1);
+        } else {
+            let confirmation = fixture.call(&["dictation", "fragment", &operation], 0);
+            assert_eq!(confirmation["data"]["incomplete"], true);
+            fixture.call(&["dictation", "cancel", &operation], 0);
+            fixture.call(&["dictation", "result", &operation], 130);
+            fixture.call(&["dictation", "fragment", &operation], 1);
+        }
+        assert_eq!(cache_count(), 1);
+    }
+    println!(
+        "audio-start fragments: signal and permission admission, explicit consent, stale reply, Stop/Cancel and cleanup checked"
+    );
+
+    prepare();
+
     let first = backend.counts();
     let _keep_init_blocked_until_process_exit = backend.block_next_open();
     cli_start(&fixture);

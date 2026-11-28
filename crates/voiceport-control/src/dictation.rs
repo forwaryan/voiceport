@@ -68,6 +68,7 @@ pub enum TranscriptionState {
 pub enum DictationBlockReason {
     PanelOnly,
     RetryPanelOnly,
+    InterruptedPanelOnly,
     StartRejected,
     SourceUnavailable,
     UnsupportedLanguage,

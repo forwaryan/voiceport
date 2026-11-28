@@ -1,6 +1,6 @@
 //! One native audio operation at a time. AppKit owns only commands and plain
 //! replies. A blocked framework call keeps the slot until native teardown ends.
-use super::{EventSender, Recorder, devices};
+use super::{EventSender, Recorder, Recovery, devices};
 use crate::{local_audio, storage::Recording};
 use std::{
     sync::{
@@ -37,6 +37,14 @@ impl Drop for Reservation {
 impl Lane {
     pub fn busy(&self) -> bool {
         self.reserved.load(Ordering::Acquire)
+    }
+
+    pub fn microphone_authorized(&self) -> bool {
+        #[cfg(debug_assertions)]
+        if let Some(fixture) = &self.fixture {
+            return fixture.authorized();
+        }
+        Recorder::check_microphone().is_ok()
     }
 
     pub(super) fn spawn(&self, run: impl FnOnce() + Send + 'static) -> Result<(), String> {
@@ -134,6 +142,10 @@ pub(crate) enum Reply {
         result: Result<(), String>,
         diagnostics: Option<super::CaptureDiagnostics>,
     },
+    Interrupted {
+        reason: String,
+        diagnostics: Option<super::CaptureDiagnostics>,
+    },
     Failed(String),
 }
 
@@ -150,6 +162,16 @@ impl Activity {
     const ACCEPTING: u8 = 0;
     const STOPPING: u8 = 1;
     const CANCELLED: u8 = 2;
+    const INTERRUPTED: u8 = 3;
+
+    fn close_interrupted(&self) -> Result<(), String> {
+        self.0
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                (state != Self::CANCELLED).then_some(Self::INTERRUPTED)
+            })
+            .map(|_| ())
+            .map_err(|_| CANCELLED.into())
+    }
 
     pub fn accepting(&self) -> bool {
         self.0.load(Ordering::Acquire) == Self::ACCEPTING
@@ -170,9 +192,10 @@ pub(crate) struct Capture {
     pub replies: Receiver<Reply>,
     commands: SyncSender<Command>,
     activity: Activity,
-    // Only validated Stop acceptance can transfer this path out of the capture.
+    // Only a validated Stop or interrupted reply can transfer this path.
     pending_recording: Arc<Mutex<Option<Arc<Recording>>>>,
     checking: Arc<AtomicU64>,
+    input_lost: Arc<AtomicBool>,
     level: Arc<AtomicU8>,
 }
 
@@ -183,6 +206,7 @@ impl Capture {
         let activity = Activity::default();
         let pending_recording = Arc::new(Mutex::new(None));
         let checking = Arc::new(AtomicU64::new(0));
+        let input_lost = Arc::new(AtomicBool::new(false));
         let level = Arc::new(AtomicU8::new(0));
         let generation = start.generation;
         let deadline = Instant::now() + WAIT;
@@ -191,6 +215,7 @@ impl Capture {
             replies: reply_tx,
             activity: activity.clone(),
             checking: checking.clone(),
+            input_lost: input_lost.clone(),
             level: level.clone(),
         };
         let worker_recording = pending_recording.clone();
@@ -210,6 +235,7 @@ impl Capture {
             activity,
             pending_recording,
             checking,
+            input_lost,
             level,
         })
     }
@@ -221,18 +247,21 @@ impl Capture {
     }
 
     pub fn stop(&self) -> Result<(), String> {
-        self.activity
-            .0
-            .compare_exchange(
-                Activity::ACCEPTING,
-                Activity::STOPPING,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .map_err(|_| CANCELLED.to_owned())?;
-        self.commands
-            .try_send(Command::Stop)
-            .map_err(|_| "录音线程已结束，请重新开始。".into())
+        match self.activity.0.compare_exchange(
+            Activity::ACCEPTING,
+            Activity::STOPPING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {}
+            Err(Activity::INTERRUPTED) => return Ok(()), // Consume the single pending terminal reply.
+            Err(_) => return Err(CANCELLED.into()),
+        }
+        match self.commands.try_send(Command::Stop) {
+            Ok(()) => Ok(()),
+            Err(_) if self.activity.0.load(Ordering::Acquire) == Activity::INTERRUPTED => Ok(()),
+            Err(_) => Err("录音线程已结束，请重新开始。".into()),
+        }
     }
 
     pub fn take_finalized(&self) -> Result<Arc<Recording>, String> {
@@ -241,6 +270,10 @@ impl Capture {
             .expect("capture recording custody")
             .take()
             .ok_or_else(|| "录音已不可用。".into())
+    }
+
+    pub fn input_lost(&self) -> bool {
+        self.input_lost.load(Ordering::Acquire)
     }
 
     pub fn checking(&self) -> Option<u64> {
@@ -276,10 +309,36 @@ struct Worker {
     replies: mpsc::Sender<Reply>,
     activity: Activity,
     checking: Arc<AtomicU64>,
+    input_lost: Arc<AtomicBool>,
     level: Arc<AtomicU8>,
 }
 
 impl Worker {
+    fn finish_interruption(
+        &self,
+        mut recorder: Recorder,
+        reason: String,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        self.activity.close_interrupted()?;
+        let result = objc2::rc::autoreleasepool(|_| recorder.finalize_interrupted());
+        let diagnostics = recorder.capture_diagnostics();
+        drop(recorder);
+        if self.activity.cancelled() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(RECOVERY_TIMEOUT.into());
+        }
+        result.map_err(|error| format!("{reason} {error} 请重新开始。"))?;
+        self.replies
+            .send(Reply::Interrupted {
+                reason,
+                diagnostics,
+            })
+            .map_err(|_| CANCELLED.into())
+    }
+
     fn check(&self, deadline: Instant) -> Result<(), String> {
         if !self.activity.accepting() {
             Err(CANCELLED.into())
@@ -347,8 +406,23 @@ impl Worker {
         loop {
             match self.commands.recv_timeout(AUDIO_POLL) {
                 Ok(Command::Stop) if !self.activity.cancelled() => {
-                    let result =
-                        objc2::rc::autoreleasepool(|_| recorder.stop_native_capture()).map(|_| ());
+                    let deadline = Instant::now() + WAIT;
+                    let loss = objc2::rc::autoreleasepool(|_| recorder.interrupted_at_stop());
+                    if loss.is_some() {
+                        self.input_lost.store(true, Ordering::Release);
+                    }
+                    if loss == Some(true) {
+                        return self.finish_interruption(
+                            recorder,
+                            "麦克风在结束录音前已断开。".into(),
+                            deadline,
+                        );
+                    }
+                    let result = if loss.is_some() {
+                        Err("无法确认结束录音时的麦克风；未转写本轮音频，请重新开始。".into())
+                    } else {
+                        objc2::rc::autoreleasepool(|_| recorder.finalize_capture()).map(|_| ())
+                    };
                     let diagnostics = recorder.capture_diagnostics();
                     drop(recorder);
                     if self.activity.cancelled() {
@@ -373,8 +447,6 @@ impl Worker {
             let recover = || {
                 if self.activity.cancelled() {
                     Err(CANCELLED.into())
-                } else if self.activity.stopping() {
-                    Err("麦克风在结束录音前已断开；未转写本轮音频，请重新开始。".into())
                 } else if Instant::now() >= deadline {
                     Err(RECOVERY_TIMEOUT.into())
                 } else {
@@ -382,19 +454,28 @@ impl Worker {
                 }
             };
             let recovered = objc2::rc::autoreleasepool(|_| {
-                recorder.recover_input(preferred_uid.as_deref(), &recover, || {
-                    push(Reply::Recovering)
-                })
+                recorder.recover_input(
+                    preferred_uid.as_deref(),
+                    &recover,
+                    || {
+                        self.input_lost.store(true, Ordering::Release);
+                        push(Reply::Recovering)
+                    },
+                    || self.activity.stopping(),
+                )
             });
-            let recovered = recovered?;
-            if Instant::now() >= deadline && !self.activity.stopping() {
-                return Err(RECOVERY_TIMEOUT.into());
-            }
-            if recovered {
-                // This Activity belongs to the same capture generation as the
-                // tap. Stop/cancel that won during recovery cannot finalize it.
-                recover()?;
-                push(Reply::Route(recorder.route().unwrap().summary()))?;
+            recover()?;
+            match recovered? {
+                Recovery::Unchanged => {}
+                Recovery::Recovered => {
+                    // Admission succeeded before Stop. Its command finalizes
+                    // the verified capture in the next iteration.
+                    self.input_lost.store(false, Ordering::Release);
+                    push(Reply::Route(recorder.route().unwrap().summary()))?;
+                }
+                Recovery::Interrupted(reason) => {
+                    return self.finish_interruption(recorder, reason, deadline);
+                }
             }
             self.checking.fetch_add(1, Ordering::Release);
             self.level.store(
