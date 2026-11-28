@@ -1602,6 +1602,7 @@ name = "voiceport-cli"
 version = "0.3.18"
 dependencies = [
  "serde_json",
+ "signal-hook-registry",
  "tempfile",
  "tokio",
  "tokio-util",

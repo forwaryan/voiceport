@@ -5,6 +5,8 @@ use crate::{
     plugins::{Adapter, validate_endpoint},
 };
 use serde::Serialize;
+#[cfg(target_arch = "aarch64")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     collections::VecDeque,
     fs::{File, Metadata, OpenOptions, Permissions},
@@ -457,15 +459,17 @@ pub fn transcribe_local_batch(
     model_id: &str,
     language: &str,
     cancel: &CancellationToken,
+    interrupted: &AtomicBool,
 ) -> Result<Vec<Result<String, voiceport_control::Failure>>, voiceport_control::Response> {
     let run = || {
-        check_cancel(cancel)?;
+        check_batch_cancel(cancel, interrupted)?;
         let (mut model, language) = select_local_model(model_id, language)?;
-        check_cancel(cancel)?;
+        check_batch_cancel(cancel, interrupted)?;
         let _runtime = stage_local_runtime(&mut model)?;
+        check_batch_cancel(cancel, interrupted)?;
         let mut recognizer = crate::local_runtime::BatchRecognizer::open(&model, language, cancel)
             .map_err(|_| LOCAL_UNAVAILABLE)?;
-        transcribe_local_batch_inputs(paths, cancel, |audio| {
+        transcribe_local_batch_inputs(paths, cancel, interrupted, |audio| {
             recognizer
                 .transcribe(audio, cancel)
                 .map_err(local_file_error)
@@ -553,16 +557,28 @@ fn local_response<T>(
 }
 
 #[cfg(target_arch = "aarch64")]
+fn check_batch_cancel(cancel: &CancellationToken, interrupted: &AtomicBool) -> Result<(), Error> {
+    // The signal handler can finish before Tokio turns the signal into token
+    // cancellation. Read the latch directly on the worker at file boundaries.
+    if interrupted.load(Ordering::SeqCst) {
+        cancel.cancel();
+    }
+    check_cancel(cancel)
+}
+
+#[cfg(target_arch = "aarch64")]
 fn transcribe_local_batch_inputs(
     paths: &[std::path::PathBuf],
     cancel: &CancellationToken,
+    interrupted: &AtomicBool,
     mut recognize: impl FnMut(&Path) -> Result<String, Error>,
 ) -> Result<Vec<Result<String, Error>>, Error> {
     paths
         .iter()
         .map(|path| {
+            check_batch_cancel(cancel, interrupted)?;
             let result = transcribe_local_input(path, cancel, &mut recognize);
-            check_cancel(cancel)?;
+            check_batch_cancel(cancel, interrupted)?;
             Ok(result)
         })
         .collect()

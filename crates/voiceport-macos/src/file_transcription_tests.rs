@@ -122,6 +122,7 @@ fn standalone_batch_keeps_order_and_continues_after_a_bad_file() {
     let results = transcribe_local_batch_inputs(
         &[first.clone(), bad, second, first],
         &CancellationToken::new(),
+        &AtomicBool::new(false),
         |audio| {
             assert!(snapshots.iter().all(|path| !path.exists()));
             snapshots.push(audio.to_owned());
@@ -150,19 +151,29 @@ fn standalone_batch_keeps_order_and_continues_after_a_bad_file() {
 fn standalone_batch_cancellation_cleans_the_current_file_and_stops() {
     let folder = tempfile::tempdir().unwrap();
     let first = wav(folder.path());
-    let cancel = CancellationToken::new();
-    let mut snapshot = None;
-    let result = transcribe_local_batch_inputs(&[first.clone(), first], &cancel, |audio| {
-        assert!(
-            snapshot.is_none(),
-            "next file reached recognition after cancellation"
-        );
-        snapshot = Some(audio.to_owned());
-        cancel.cancel();
-        Err(TRANSCRIPTION)
-    });
-    assert_eq!(result, Err(CANCELLED));
-    assert!(!snapshot.unwrap().exists());
+    let next = folder.path().join("next.wav");
+    fs::copy(&first, &next).unwrap();
+    let paths = [first, next];
+    for delayed in [false, true] {
+        let cancel = CancellationToken::new();
+        let interrupted = AtomicBool::new(false);
+        let mut snapshot = None;
+        let result = transcribe_local_batch_inputs(&paths, &cancel, &interrupted, |audio| {
+            assert!(
+                snapshot.is_none(),
+                "next file reached recognition after cancellation"
+            );
+            snapshot = Some(audio.to_owned());
+            if delayed {
+                interrupted.store(true, Ordering::SeqCst);
+            } else {
+                cancel.cancel();
+            }
+            Err(TRANSCRIPTION)
+        });
+        assert_eq!(result, Err(CANCELLED), "delayed receive: {delayed}");
+        assert!(!snapshot.unwrap().exists());
+    }
 }
 
 #[test]
