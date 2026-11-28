@@ -20,7 +20,7 @@ mod dictionary_exchange;
 #[cfg(target_os = "macos")]
 mod file_transcription;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub use file_transcription::transcribe_local_file;
+pub use file_transcription::{transcribe_local_batch, transcribe_local_file};
 #[cfg(target_os = "macos")]
 mod hotkey;
 #[cfg(target_os = "macos")]

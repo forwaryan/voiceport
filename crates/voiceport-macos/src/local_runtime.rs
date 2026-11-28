@@ -195,14 +195,18 @@ impl Session {
         check_cancel(cancel)?;
         let native = Native::open(model, language)?;
         check_cancel(cancel)?;
-        Ok(Self {
+        Ok(Self::from_native(native, model.kind))
+    }
+
+    fn from_native(native: Native, kind: ModelKind) -> Self {
+        Self {
             native,
-            kind: model.kind,
+            kind,
             resampler: Resampler::default(),
             transcript: Transcript::default(),
             offline: vec![],
             heard_audio: false,
-        })
+        }
     }
     fn push(
         &mut self,
@@ -255,8 +259,18 @@ impl Session {
         }
         Ok(())
     }
+    fn transcribe_file(
+        &mut self,
+        path: &Path,
+        cancel: &CancellationToken,
+        mut partial: impl FnMut(String),
+    ) -> Result<String, FileError> {
+        crate::audio::read_pcm(path, |packet| self.push(packet, cancel, &mut partial))?;
+        self.finish(cancel, &mut partial)
+    }
+
     fn finish(
-        mut self,
+        &mut self,
         cancel: &CancellationToken,
         partial: &mut impl FnMut(String),
     ) -> Result<String, FileError> {
@@ -350,11 +364,50 @@ pub(crate) fn transcribe_file_classified(
     language: &str,
     path: &Path,
     cancel: &CancellationToken,
-    mut partial: impl FnMut(String),
+    partial: impl FnMut(String),
 ) -> Result<String, FileError> {
-    let mut session = Session::new(model, language, cancel)?;
-    crate::audio::read_pcm(path, |packet| session.push(packet, cancel, &mut partial))?;
-    session.finish(cancel, &mut partial)
+    Session::new(model, language, cancel)?.transcribe_file(path, cancel, partial)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) struct BatchRecognizer<'a> {
+    model: &'a Model,
+    language: &'a str,
+    ready: Option<Session>,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl<'a> BatchRecognizer<'a> {
+    pub(crate) fn open(
+        model: &'a Model,
+        language: &'a str,
+        cancel: &CancellationToken,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            model,
+            language,
+            ready: Some(Session::new(model, language, cancel)?),
+        })
+    }
+
+    pub(crate) fn transcribe(
+        &mut self,
+        path: &Path,
+        cancel: &CancellationToken,
+    ) -> Result<String, FileError> {
+        let mut session = match self.ready.take() {
+            Some(session) => session,
+            None => Session::new(self.model, self.language, cancel)?,
+        };
+        let result = session.transcribe_file(path, cancel, |_| {});
+        // Offline decoding creates a fresh native stream for each segment. The
+        // other recognizers own a stream that cannot be reused after InputFinished.
+        // Drop a failed native session rather than carrying it into the next file.
+        if !self.model.kind.streaming() && !matches!(result, Err(FileError::Failed(_))) {
+            self.ready = Some(Session::from_native(session.native, self.model.kind));
+        }
+        result
+    }
 }
 
 /// Test actual runtime initialization and one decode using generated silence.

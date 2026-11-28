@@ -105,6 +105,77 @@ fn standalone_file_fixture_rejects_missing_and_malformed_audio_before_recognitio
     );
 }
 
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn standalone_batch_keeps_order_and_continues_after_a_bad_file() {
+    let folder = tempfile::tempdir().unwrap();
+    let first = wav(folder.path());
+    let bad = folder.path().join("bad.wav");
+    fs::write(&bad, b"RIFF\x10\0\0\0WAVEbroken").unwrap();
+    let second = folder.path().join("next.wav");
+    let original = crate::plugin_runtime::sample();
+    let mut distinct = original.clone();
+    *distinct.last_mut().unwrap() = 1;
+    fs::write(&second, &distinct).unwrap();
+
+    let mut snapshots: Vec<std::path::PathBuf> = Vec::new();
+    let results = transcribe_local_batch_inputs(
+        &[first.clone(), bad, second, first],
+        &CancellationToken::new(),
+        &AtomicBool::new(false),
+        |audio| {
+            assert!(snapshots.iter().all(|path| !path.exists()));
+            snapshots.push(audio.to_owned());
+            match fs::read(audio).unwrap() {
+                bytes if bytes == original => Ok(" first \n".into()),
+                bytes if bytes == distinct => Ok("next".into()),
+                _ => panic!("invalid audio reached recognition"),
+            }
+        },
+    );
+    assert_eq!(
+        results,
+        Ok(vec![
+            Ok("first".into()),
+            Err(INVALID_AUDIO),
+            Ok("next".into()),
+            Ok("first".into())
+        ])
+    );
+    assert_eq!(snapshots.len(), 3);
+    assert!(snapshots.iter().all(|path| !path.exists()));
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn standalone_batch_cancellation_cleans_the_current_file_and_stops() {
+    let folder = tempfile::tempdir().unwrap();
+    let first = wav(folder.path());
+    let next = folder.path().join("next.wav");
+    fs::copy(&first, &next).unwrap();
+    let paths = [first, next];
+    for delayed in [false, true] {
+        let cancel = CancellationToken::new();
+        let interrupted = AtomicBool::new(false);
+        let mut snapshot = None;
+        let result = transcribe_local_batch_inputs(&paths, &cancel, &interrupted, |audio| {
+            assert!(
+                snapshot.is_none(),
+                "next file reached recognition after cancellation"
+            );
+            snapshot = Some(audio.to_owned());
+            if delayed {
+                interrupted.store(true, Ordering::SeqCst);
+            } else {
+                cancel.cancel();
+            }
+            Err(TRANSCRIPTION)
+        });
+        assert_eq!(result, Err(CANCELLED), "delayed receive: {delayed}");
+        assert!(!snapshot.unwrap().exists());
+    }
+}
+
 #[test]
 fn missing_source_confirmation_target_and_config_change_do_not_dispatch() {
     let folder = tempfile::tempdir().unwrap();

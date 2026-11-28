@@ -5,6 +5,8 @@ use crate::{
     plugins::{Adapter, validate_endpoint},
 };
 use serde::Serialize;
+#[cfg(target_arch = "aarch64")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     collections::VecDeque,
     fs::{File, Metadata, OpenOptions, Permissions},
@@ -430,60 +432,156 @@ pub fn transcribe_local_file(
     cancel: &CancellationToken,
 ) -> Result<String, voiceport_control::Response> {
     let run = || {
-        use crate::model_library::{MODELS, Paths};
         check_cancel(cancel)?;
-        let definition = MODELS.iter().find(|m| m.id == model_id).ok_or(Error::new(
-            "not_found",
-            "未知本地模型 ID。请查看 voiceport transcribe-local --help。",
-        ))?;
-        let language = if language == "auto" { "" } else { language };
-        if !voiceport_core::language::supported(language)
-            || !definition.kind.supports_language(language)
-        {
-            return Err(Error::new(
-                "unsupported_language",
-                "所选来源不支持当前语言。",
-            ));
-        }
-        let paths = Paths::system().map_err(|_| {
-            Error::new(
-                "invalid_config",
-                "无法定位模型目录。请检查 HOME 或非空绝对路径 VOICEPORT_MODELS_PATH。",
-            )
-        })?;
-        let catalog = Catalog::system_models(model_id, Some(&paths));
-        let Ok(SessionSource::Local(model)) = catalog.snapshot(model_id) else {
-            return Err(Error::new(
-                "source_unavailable",
-                "本地模型或识别引擎未安装或不可用。请打开 VoicePort 的「语音模型」安装或修复后再试。",
-            ));
-        };
+        let (mut model, language) = select_local_model(model_id, language)?;
         transcribe_local_input(path, cancel, |audio| {
-            use crate::local_runtime::{
-                FileError, stage_verified_runtime, transcribe_file_classified,
-            };
-            let runtime = stage_verified_runtime(&model.runtime).map_err(|_| {
-                Error::new(
-                    "source_unavailable",
-                    "无法验证或暂存识别引擎。请检查临时目录，并确认已安装原始发行版引擎文件。",
-                )
-            })?;
+            // Keep single-file error precedence: validate input before staging the engine.
+            let _runtime = stage_local_runtime(&mut model)?;
             check_cancel(cancel)?;
-            let mut model = model;
-            model.runtime = runtime.path().to_path_buf();
-            transcribe_file_classified(&model, language, audio, cancel, |_| {}).map_err(|error| {
-                match error {
-                    FileError::NoSpeech | FileError::NoText => EMPTY_TRANSCRIPT,
-                    FileError::Failed(_) => TRANSCRIPTION,
-                }
-            })
+            crate::local_runtime::transcribe_file_classified(
+                &model,
+                language,
+                audio,
+                cancel,
+                |_| {},
+            )
+            .map_err(local_file_error)
         })
     };
-    let result = run();
+    local_response(run(), cancel)
+}
+
+/// Prepare the installed engine before reading any input, then process in order.
+/// The outer error is for batch setup or cancellation; each row is a file outcome.
+#[cfg(target_arch = "aarch64")]
+pub fn transcribe_local_batch(
+    paths: &[std::path::PathBuf],
+    model_id: &str,
+    language: &str,
+    cancel: &CancellationToken,
+    interrupted: &AtomicBool,
+) -> Result<Vec<Result<String, voiceport_control::Failure>>, voiceport_control::Response> {
+    let run = || {
+        check_batch_cancel(cancel, interrupted)?;
+        let (mut model, language) = select_local_model(model_id, language)?;
+        check_batch_cancel(cancel, interrupted)?;
+        let _runtime = stage_local_runtime(&mut model)?;
+        check_batch_cancel(cancel, interrupted)?;
+        let mut recognizer = crate::local_runtime::BatchRecognizer::open(&model, language, cancel)
+            .map_err(|_| LOCAL_UNAVAILABLE)?;
+        transcribe_local_batch_inputs(paths, cancel, interrupted, |audio| {
+            recognizer
+                .transcribe(audio, cancel)
+                .map_err(local_file_error)
+        })
+    };
+    Ok(local_response(run(), cancel)?
+        .into_iter()
+        .map(|result| {
+            result.map_err(|e| voiceport_control::Failure {
+                code: e.code.into(),
+                message: e.message.into(),
+            })
+        })
+        .collect())
+}
+
+#[cfg(target_arch = "aarch64")]
+const LOCAL_UNAVAILABLE: Error = Error::new(
+    "source_unavailable",
+    "本地模型或识别引擎未安装或不可用。请打开 VoicePort 的「语音模型」安装或修复后再试。",
+);
+
+#[cfg(target_arch = "aarch64")]
+fn select_local_model<'a>(
+    model_id: &str,
+    language: &'a str,
+) -> Result<(crate::local_models::Model, &'a str), Error> {
+    use crate::model_library::{MODELS, Paths};
+    let definition = MODELS.iter().find(|m| m.id == model_id).ok_or(Error::new(
+        "not_found",
+        "未知本地模型 ID。请查看 voiceport transcribe-local --help。",
+    ))?;
+    let language = if language == "auto" { "" } else { language };
+    if !voiceport_core::language::supported(language)
+        || !definition.kind.supports_language(language)
+    {
+        return Err(Error::new(
+            "unsupported_language",
+            "所选来源不支持当前语言。",
+        ));
+    }
+    let paths = Paths::system().map_err(|_| {
+        Error::new(
+            "invalid_config",
+            "无法定位模型目录。请检查 HOME 或非空绝对路径 VOICEPORT_MODELS_PATH。",
+        )
+    })?;
+    let catalog = Catalog::system_models(model_id, Some(&paths));
+    match catalog.snapshot(model_id) {
+        Ok(SessionSource::Local(model)) => Ok((model, language)),
+        _ => Err(LOCAL_UNAVAILABLE),
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn stage_local_runtime(model: &mut crate::local_models::Model) -> Result<tempfile::TempDir, Error> {
+    let runtime = crate::local_runtime::stage_verified_runtime(&model.runtime).map_err(|_| {
+        Error::new(
+            "source_unavailable",
+            "无法验证或暂存识别引擎。请检查临时目录，并确认已安装原始发行版引擎文件。",
+        )
+    })?;
+    model.runtime = runtime.path().to_path_buf();
+    Ok(runtime)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn local_file_error(error: crate::local_runtime::FileError) -> Error {
+    use crate::local_runtime::FileError;
+    match error {
+        FileError::NoSpeech | FileError::NoText => EMPTY_TRANSCRIPT,
+        FileError::Failed(_) => TRANSCRIPTION,
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn local_response<T>(
+    result: Result<T, Error>,
+    cancel: &CancellationToken,
+) -> Result<T, voiceport_control::Response> {
     // Cancellation takes precedence even when a blocking native call fails.
     check_cancel(cancel)
         .and(result)
         .map_err(|e| voiceport_control::Response::error(e.code, e.message))
+}
+
+#[cfg(target_arch = "aarch64")]
+fn check_batch_cancel(cancel: &CancellationToken, interrupted: &AtomicBool) -> Result<(), Error> {
+    // The signal handler can finish before Tokio turns the signal into token
+    // cancellation. Read the latch directly on the worker at file boundaries.
+    if interrupted.load(Ordering::SeqCst) {
+        cancel.cancel();
+    }
+    check_cancel(cancel)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn transcribe_local_batch_inputs(
+    paths: &[std::path::PathBuf],
+    cancel: &CancellationToken,
+    interrupted: &AtomicBool,
+    mut recognize: impl FnMut(&Path) -> Result<String, Error>,
+) -> Result<Vec<Result<String, Error>>, Error> {
+    paths
+        .iter()
+        .map(|path| {
+            check_batch_cancel(cancel, interrupted)?;
+            let result = transcribe_local_input(path, cancel, &mut recognize);
+            check_batch_cancel(cancel, interrupted)?;
+            Ok(result)
+        })
+        .collect()
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -492,6 +590,7 @@ fn transcribe_local_input(
     cancel: &CancellationToken,
     recognize: impl FnOnce(&Path) -> Result<String, Error>,
 ) -> Result<String, Error> {
+    check_cancel(cancel)?;
     let path = std::path::absolute(path).map_err(|_| INVALID_FILE)?;
     let snapshot = Input::open(&path)?.stage(cancel)?;
     validate_audio(&snapshot.path, cancel)?;
