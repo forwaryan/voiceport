@@ -140,6 +140,7 @@ pub(in crate::app::quick_panel) fn run(
         shortcut: "⌃⌥空格",
         activity: dictation_page::Activity {
             title: None,
+            source_issue: None,
             recording: false,
             can_toggle: true,
             can_cancel: false,

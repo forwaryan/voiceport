@@ -352,13 +352,15 @@ impl Delegate {
             AppRulesRequest::List => return Response::ok(json!(c.workflows.app_rules)),
             AppRulesRequest::Match { bundle_id } => {
                 let rules = &c.workflows.app_rules;
-                let (selection, scene) = match rules
-                    .selection(bundle_id.as_deref(), &c.workflows.presets)
-                {
-                    AppRuleSelection::Global => ("global", None),
-                    AppRuleSelection::Application(preset) => ("scene", Some(preset.name.as_str())),
-                    AppRuleSelection::Manual(name) => ("manual", Some(name)),
-                };
+                let (selection, scene) =
+                    match rules.selection(bundle_id.as_deref(), &c.workflows.presets) {
+                        AppRuleSelection::Global => ("global", None),
+                        AppRuleSelection::Application { preset, .. } => {
+                            ("scene", Some(preset.name.as_str()))
+                        }
+                        AppRuleSelection::MissingLocalScene(name) => ("scene", Some(name)),
+                        AppRuleSelection::Manual(name) => ("manual", Some(name)),
+                    };
                 return Response::ok(json!({
                     "enabled": rules.enabled,
                     "selection": selection,

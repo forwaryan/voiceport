@@ -1,9 +1,8 @@
 use crate::local_models::{LEGACY_RUNTIME_VERSION, RUNTIME_VERSION, model_file, runtime_version};
 use ring::digest::{Context, SHA256};
 use std::{
-    fs::{self, OpenOptions, Permissions},
+    fs::{self, OpenOptions},
     io::{self, Read, Write},
-    os::unix::fs::PermissionsExt,
     path::Path,
 };
 use tempfile::TempDir;
@@ -50,11 +49,7 @@ pub(crate) fn stage_verified_runtime(directory: &Path) -> Result<TempDir, String
     };
     // Use the system sticky directory and owner-only mode, independent of the
     // model directory and callers' TMPDIR. dyld opens only these copies.
-    let stage = tempfile::Builder::new()
-        .prefix("voiceport-runtime-")
-        .permissions(Permissions::from_mode(0o700))
-        .tempdir_in("/private/tmp")
-        .map_err(|error| error.to_string())?;
+    let stage = super::runtime_staging_directory()?;
     for library in libraries {
         copy_verified(directory, stage.path(), library)
             .map_err(|error| format!("{}: {error}", library.name))?;

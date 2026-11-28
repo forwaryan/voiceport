@@ -188,6 +188,7 @@ pub(super) struct QuickPanel {
     layout: RefCell<Option<PanelLayout>>,
     screen_height: Cell<f64>,
     header: Retained<NSView>,
+    current_caption: Retained<NSTextField>,
     current: Retained<NSTextField>,
     checkmark: Retained<NSImageView>,
     language: Retained<NSTextField>,
@@ -230,8 +231,8 @@ struct SourceRow {
 
 impl QuickPanel {
     fn update_guidance(&self, c: &Controller, configurable: bool) {
-        let guidance = if c.catalog.entries.is_empty() {
-            None // The current-source row and Add action already explain this case.
+        let guidance = if c.catalog.entries.is_empty() || c.active_app_source().is_some() {
+            None // The header already explains the active source or lack of one.
         } else {
             source_guidance(c)
         };
@@ -567,7 +568,7 @@ impl Delegate {
         let separator = NSBox::initWithFrame(NSBox::alloc(mtm), rect(16., 125., WIDTH - 32., 1.));
         separator.setBoxType(NSBoxType::Separator);
         header.addSubview(&separator);
-        self.caption(&header, "当前来源", rect(16., 108., 72., 17.));
+        let current_caption = self.caption(&header, "当前来源", rect(16., 108., 72., 17.));
         let language = self.caption(&header, "", rect(94., 108., WIDTH - 110., 17.));
         language.setAlignment(NSTextAlignment::Right);
         single_line(&language);
@@ -674,6 +675,7 @@ impl Delegate {
             layout: RefCell::new(None),
             screen_height: Cell::new(f64::INFINITY),
             header,
+            current_caption,
             current,
             checkmark,
             language,
@@ -769,41 +771,59 @@ impl QuickPanel {
                 .update(d, c, idle && d.quick_actions_unlocked());
         let configurable = idle && !c.discovering() && !d.ivars().quitting.get();
         self.update_guidance(c, configurable);
-        let current = c
-            .catalog
-            .entries
-            .iter()
-            .find(|entry| entry.id == c.source_id);
-        let title = current.map_or_else(
-            || {
-                if c.catalog.entries.is_empty() {
-                    "未配置来源"
-                } else {
-                    "当前来源已不可用"
-                }
-            },
-            |entry| &entry.title,
-        );
-        let available = current.is_some_and(|entry| entry.source.is_ok());
+        let (caption, title, language, available, tooltip) =
+            if let Some((title, language)) = c.active_app_source() {
+                (
+                    "本轮来源",
+                    title,
+                    language,
+                    true,
+                    c.gui_result_context().source.clone(),
+                )
+            } else {
+                let current = c
+                    .catalog
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == c.source_id);
+                let title = current.map_or_else(
+                    || {
+                        if c.catalog.entries.is_empty() {
+                            "未配置来源"
+                        } else {
+                            "当前来源已不可用"
+                        }
+                    },
+                    |entry| entry.title.as_str(),
+                );
+                (
+                    "当前来源",
+                    title,
+                    c.language.as_str(),
+                    current.is_some_and(|entry| entry.source.is_ok()),
+                    current.map(|entry| format!("{}\n{}", entry.title, entry.detail)),
+                )
+            };
         if self.checkmark.isHidden() == available {
             self.checkmark.setHidden(!available);
         }
-        if set_label_text(&self.current, title) {
+        let caption_changed = set_label_text(&self.current_caption, caption);
+        if set_label_text(&self.current, title) || caption_changed {
             self.current
-                .setAccessibilityLabel(Some(&NSString::from_str(&format!("当前来源：{title}"))));
+                .setAccessibilityLabel(Some(&NSString::from_str(&format!("{caption}：{title}"))));
         }
-        let tooltip = Some(NSString::from_str(&match current {
-            Some(entry) => format!("{}\n{}", entry.title, entry.detail),
-            None => title.to_owned(),
-        }));
+        let tooltip = Some(NSString::from_str(tooltip.as_deref().unwrap_or(title)));
         if self.current.toolTip() != tooltip {
             self.current.setToolTip(tooltip.as_deref());
         }
         set_label_text(
             &self.language,
-            &format!("识别语言：{}", language_name(&c.language)),
+            &format!("识别语言：{}", language_name(language)),
         );
-        let message = if idle && c.discovering() {
+        let issue = c.app_source_issue();
+        let message = if let Some((title, _)) = issue {
+            title
+        } else if idle && c.discovering() {
             "正在检查来源…"
         } else {
             state
@@ -813,8 +833,11 @@ impl QuickPanel {
             Some(rule) => format!("听写状态：{message} · {rule}"),
             None => format!("听写状态：{message}"),
         };
-        if set_label_text(&self.status, &status) {
-            let tooltip = active_rule.map(|_| self.status.stringValue());
+        set_label_text(&self.status, &status);
+        let tooltip = issue
+            .map(|(_, detail)| NSString::from_str(detail))
+            .or_else(|| active_rule.map(|_| self.status.stringValue()));
+        if self.status.toolTip() != tooltip {
             self.status.setToolTip(tooltip.as_deref());
         }
         let has_shortcut = d.ivars().hotkey_error.borrow().is_none();

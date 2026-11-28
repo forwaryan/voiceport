@@ -1248,9 +1248,13 @@ impl Delegate {
                         || c.source_tests.busy())
                     .then_some(state_text)
                 });
-            let rule_title = c
-                .active_app_rule()
-                .map(|rule| format!("{} · {rule}", activity_title.unwrap_or(state_text)));
+            let rule_title = c.active_app_rule().map(|rule| {
+                let state = activity_title.unwrap_or(state_text);
+                match c.active_app_source() {
+                    Some((title, _)) => format!("{state} · {title} · {rule}"),
+                    None => format!("{state} · {rule}"),
+                }
+            });
             page.refresh(dictation_page::Snapshot {
                 attempt: receipt
                     .as_ref()
@@ -1282,6 +1286,7 @@ impl Delegate {
                 ),
                 activity: dictation_page::Activity {
                     title: rule_title.as_deref().or(activity_title),
+                    source_issue: c.app_source_issue(),
                     recording,
                     can_toggle: !preparing_permissions
                         && !returning_to_input

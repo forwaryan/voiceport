@@ -23,6 +23,7 @@ pub(crate) struct TranscriptOrigin {
 #[derive(Clone, Copy)]
 pub(super) struct Activity<'a> {
     pub(super) title: Option<&'a str>,
+    pub(super) source_issue: Option<(&'static str, &'a str)>,
     pub(super) recording: bool,
     pub(super) can_toggle: bool,
     pub(super) can_cancel: bool,
@@ -562,6 +563,7 @@ impl Page {
                     .can_transcribe_fragment
                     .then_some("麦克风断开 · 已保留录音片段")
             })
+            .or_else(|| s.activity.source_issue.map(|(title, _)| title))
             .or_else(|| attempt.map(receipt_text))
             .unwrap_or("就绪");
         set_label(&self.headline, title);
@@ -574,20 +576,25 @@ impl Page {
         let is_final = s.origin.is_some_and(|origin| origin.final_text) && has_text;
         let incomplete = s.origin.is_some_and(|origin| origin.incomplete);
         let displayed_receipt = if has_text { text_receipt } else { attempt };
+        let source_issue = s.activity.source_issue.map(|(_, detail)| detail);
         let guidance = if s.activity.can_transcribe_fragment {
             "可确认原来源、语言及音频去向后转写片段。原输入框可能已有实时文字。"
         } else if incomplete {
             "不完整 · 仅供查看或复制。原输入框可能已有实时文字。"
+        } else if has_text && !current_round && text_receipt.is_some_and(needs_inspection) {
+            "下方是保留正文。先检查它的原输入框，再决定是否复制并补写。"
+        } else if let Some(detail) = source_issue {
+            detail
         } else if has_text && !current_round {
-            if text_receipt.is_some_and(needs_inspection) {
-                "下方是保留正文。先检查它的原输入框，再决定是否复制并补写。"
-            } else {
-                "下方是保留正文。最新尝试的状态显示在上方。"
-            }
+            "下方是保留正文。最新尝试的状态显示在上方。"
         } else {
             next_step(displayed_receipt)
         };
         set_label(&self.guidance, guidance);
+        let tooltip = source_issue.map(NSString::from_str);
+        if self.guidance.toolTip() != tooltip {
+            self.guidance.setToolTip(tooltip.as_deref());
+        }
 
         let can_edit = is_final
             && !incomplete

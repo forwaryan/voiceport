@@ -116,8 +116,8 @@ The personal dictionary performs local post-transcription replacements on final 
 
 ## Application output rules
 
-- `app-rules list` reads the local `enabled` switch, Bundle ID `bindings`, and the optional active `manual_scene` name. `app-rules enable on` resumes application matching after a manual scene selection. `app-rules enable off` restores global rules and retains bindings. Matching starts disabled.
-- `app-rules set BUNDLE_ID SCENE` assigns a saved scene to an exact, case-sensitive identifier. `app-rules remove BUNDLE_ID` removes the mapping. Removing a scene also removes its bindings. `app open app-rules` opens the native editor.
+- `app-rules list` reads the local `enabled` switch, Bundle ID `bindings`, the optional `local_sources` list of GUI opt-ins, and the optional active `manual_scene` name. `app-rules enable on` resumes application matching after a manual scene selection. `app-rules enable off` restores global rules and retains bindings. Matching starts disabled.
+- `app-rules set BUNDLE_ID SCENE` assigns a saved scene to an exact, case-sensitive identifier. Changing the bound scene removes that binding's local-source opt-in. `app-rules remove BUNDLE_ID` removes the mapping. Removing a scene also removes its bindings. `app open app-rules` opens the native editor to opt in; CLI dictation continues to use its explicit source selection.
 - `app-rules match [BUNDLE_ID]` evaluates saved precedence for the supplied identifier. Omit the identifier to check the unknown-application case. It returns `enabled`, `selection` (`manual`, `scene`, or `global`), and nullable `scene`. It uses saved settings and the supplied identifier. Use `app capabilities` to check support. [Recording and precedence](../../../docs/DICTATION_WORKFLOWS.md#应用输出规则)
 - `set`, `remove`, and `match` accept values beginning with a hyphen. Put `--` before positional values that double as options, as in `app-rules set -- -com.example.Editor --help`. Place global options before `--`.
 

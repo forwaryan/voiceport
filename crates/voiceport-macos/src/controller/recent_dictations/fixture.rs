@@ -66,6 +66,7 @@ impl Target for SyntheticTarget {
 impl SyntheticDictations {
     pub(crate) fn new() -> Self {
         let mut controller = Controller::new();
+        controller.language = "zh".into();
         let (completions, results) = mpsc::channel();
         let (jobs, _) = mpsc::sync_channel(1);
         controller.worker = Some(Worker { jobs, results });
@@ -107,15 +108,15 @@ impl SyntheticDictations {
             failure: None,
         }));
         let controller = &mut self.controller;
+        let profile = if gui {
+            StartProfile::Gui(rule_target)
+        } else {
+            StartProfile::Pinned(SessionSource::ChatGpt, "zh".into())
+        };
         let (generation, _) = controller
-            .prepare_start_with(
-                SessionSource::ChatGpt,
-                "zh".into(),
-                automatic,
-                gui,
-                rule_target,
-                |delivery| delivery.begin_fixture(Box::new(SyntheticTarget(receiver.clone()))),
-            )
+            .prepare_start_with(profile, automatic, |delivery| {
+                delivery.begin_fixture(Box::new(SyntheticTarget(receiver.clone())))
+            })
             .unwrap();
         controller
             .events_tx

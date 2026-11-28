@@ -2,9 +2,11 @@
 use crate::{
     dictation_dictionary::{Dictionary, Rule},
     dictation_output::{OutputPipeline, OutputRules},
-    local_models::{Catalog, SessionSource},
+    local_models::{Catalog, Model, SessionSource},
+    local_runtime::stage_app_engine,
 };
 use serde::{Deserialize, Serialize};
+use voiceport_control::DictationBlockReason as BlockReason;
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -87,6 +89,59 @@ impl Preset {
             return Err("此场景的来源不支持保存的识别语言。".into());
         }
         Ok(source)
+    }
+
+    pub(crate) fn check_app_local_source(
+        &self,
+        catalog: &Catalog,
+    ) -> Result<(), (BlockReason, String)> {
+        self.prepare_app_local_source(catalog).map(|_| ())
+    }
+
+    pub(crate) fn prepare_app_local_source(
+        &self,
+        catalog: &Catalog,
+    ) -> Result<(SessionSource, tempfile::TempDir), (BlockReason, String)> {
+        let mut model = self.app_local_model(catalog)?;
+        let engine = stage_app_engine(&mut model)
+            .map_err(|message| self.app_source_error(BlockReason::SourceUnavailable, &message))?;
+        Ok((SessionSource::Local(model), engine))
+    }
+
+    fn app_local_model(&self, catalog: &Catalog) -> Result<Model, (BlockReason, String)> {
+        let source = catalog
+            .snapshot(&self.source_id)
+            .map_err(|message| self.app_source_error(BlockReason::SourceUnavailable, &message))?;
+        // A loopback HTTP address or a locally launched JSONL adapter can still forward audio.
+        let SessionSource::Local(model) = source else {
+            return Err(self.app_source_error(
+                BlockReason::SourceUnavailable,
+                "应用规则仅可选择 VoicePort 的本机模型。",
+            ));
+        };
+        if !voiceport_core::language::supported(&self.language)
+            || !model.kind.supports_language(&self.language)
+        {
+            return Err(self.app_source_error(
+                BlockReason::UnsupportedLanguage,
+                "模型不支持场景保存的识别语言。",
+            ));
+        }
+        // The catalog may predate a model or engine removal; recheck before requesting capture.
+        model
+            .validate()
+            .map_err(|message| self.app_source_error(BlockReason::SourceUnavailable, &message))?;
+        Ok(model)
+    }
+
+    fn app_source_error(&self, reason: BlockReason, detail: &str) -> (BlockReason, String) {
+        (
+            reason,
+            format!(
+                "场景「{}」的本机来源不可用。不会改用全局来源。请检查应用输出规则。{detail}",
+                self.name
+            ),
+        )
     }
 }
 

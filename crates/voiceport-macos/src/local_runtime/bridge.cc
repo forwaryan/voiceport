@@ -28,6 +28,14 @@ struct Runtime {
 #define FIELD(name) decltype(&::name) name = nullptr;
   FUNCTIONS(FIELD)
 #undef FIELD
+
+  ~Runtime() {
+    if (stream) SherpaOnnxDestroyOnlineStream(stream);
+    if (online) SherpaOnnxDestroyOnlineRecognizer(online);
+    if (offline) SherpaOnnxDestroyOfflineRecognizer(offline);
+    if (library) dlclose(library);
+    if (ort) dlclose(ort);
+  }
 };
 #define CATCH_ERROR(target, capacity) \
   catch (const std::exception &e) { snprintf(target, capacity, "%s", e.what()); } \
@@ -50,39 +58,25 @@ struct OfflineConfigStorage {
   int32_t ctc_fst_max_active = 0;
 };
 
-extern "C" {
-void vp_local_close(Runtime *r) {
-  if (!r) return;
-  if (r->stream) r->SherpaOnnxDestroyOnlineStream(r->stream);
-  if (r->online) r->SherpaOnnxDestroyOnlineRecognizer(r->online);
-  if (r->offline) r->SherpaOnnxDestroyOfflineRecognizer(r->offline);
-  if (r->library) dlclose(r->library);
-  if (r->ort) dlclose(r->ort);
-  delete r;
-}
-const char *vp_local_error(Runtime *r) { return r->error; }
-Runtime *vp_local_open(const char *directory, const char *encoder,
-    const char *decoder, const char *joiner, const char *tokens, const char *language,
-    const char *version, int mode, char *error, size_t capacity) {
+static bool check_runtime_configuration(const char *version, int mode,
+    char *error, size_t capacity) {
   if (mode < Paraformer || mode > Nemotron) {
     snprintf(error, capacity, "Unsupported local model mode: %d", mode);
-    return nullptr;
+    return false;
   }
   if (!version || (strcmp(version, "1.12.37") != 0 && strcmp(version, "2.0.1") != 0)) {
     snprintf(error, capacity, "Unsupported sherpa-onnx ABI requested");
-    return nullptr;
+    return false;
   }
   if ((mode == ParakeetUnified || mode == Nemotron) && strcmp(version, "2.0.1") != 0) {
     snprintf(error, capacity, "This streaming model requires sherpa-onnx 2.0.1");
-    return nullptr;
+    return false;
   }
-  if (mode >= ParakeetTdtV3 && (!joiner || !joiner[0])) {
-    snprintf(error, capacity, "Transducer model requires a joiner");
-    return nullptr;
-  }
-  Runtime *r = nullptr;
-  try { r = new Runtime; } CATCH_ERROR(error, capacity)
-  if (!r) return nullptr;
+  return true;
+}
+
+static bool load_runtime(Runtime *r, const char *directory, const char *version,
+    char *error, size_t capacity) {
   char path[4096];
   if (snprintf(path, sizeof(path), "%s/%s", directory,
       strcmp(version, "2.0.1") == 0 ? "libonnxruntime.dylib" : "libonnxruntime.1.23.2.dylib") >= (int)sizeof(path)) goto fail;
@@ -96,10 +90,43 @@ Runtime *vp_local_open(const char *directory, const char *encoder,
   if (!r->name) { snprintf(error, capacity, "Missing runtime symbol: %s", #name); goto fail; }
   FUNCTIONS(LOAD)
 #undef LOAD
-  if (strcmp(r->SherpaOnnxGetVersionStr(), version) != 0) {
-    snprintf(error, capacity, "Unsupported sherpa-onnx ABI: %s (requires %s)", r->SherpaOnnxGetVersionStr(), version);
-    goto fail;
+  try {
+    const char *abi = r->SherpaOnnxGetVersionStr();
+    if (!abi || strcmp(abi, version) != 0) {
+      snprintf(error, capacity, "Unsupported sherpa-onnx ABI: %s (requires %s)", abi ? abi : "(missing)", version);
+      return false;
+    }
+    return true;
+  } CATCH_ERROR(error, capacity)
+fail:
+  if (!error[0]) snprintf(error, capacity, "Local runtime initialization failed");
+  return false;
+}
+
+extern "C" {
+void vp_local_close(Runtime *r) { delete r; }
+const char *vp_local_error(Runtime *r) { return r->error; }
+
+// Use the recognition loader and release its handles without creating a recognizer.
+bool vp_local_check_engine(const char *directory, const char *version, int mode,
+    char *error, size_t capacity) {
+  if (!check_runtime_configuration(version, mode, error, capacity)) return false;
+  Runtime runtime;
+  return load_runtime(&runtime, directory, version, error, capacity);
+}
+
+Runtime *vp_local_open(const char *directory, const char *encoder,
+    const char *decoder, const char *joiner, const char *tokens, const char *language,
+    const char *version, int mode, char *error, size_t capacity) {
+  if (!check_runtime_configuration(version, mode, error, capacity)) return nullptr;
+  if (mode >= ParakeetTdtV3 && (!joiner || !joiner[0])) {
+    snprintf(error, capacity, "Transducer model requires a joiner");
+    return nullptr;
   }
+  Runtime *r = nullptr;
+  try { r = new Runtime; } CATCH_ERROR(error, capacity)
+  if (!r) return nullptr;
+  if (!load_runtime(r, directory, version, error, capacity)) goto fail;
   try {
     if (mode == Paraformer || mode == ParakeetUnified || mode == Nemotron) {
       SherpaOnnxOnlineRecognizerConfig c = {};
