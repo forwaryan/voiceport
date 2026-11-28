@@ -62,7 +62,7 @@ scenes list/add/remove/apply
 app-rules list/enable/set/remove/match
 history list/show/clear/settings
 file open/sources/plan/start/status/result/cancel/export
-transcribe-local AUDIO --model ID [--language CODE|auto] (no App or socket)
+transcribe-local AUDIO [AUDIO ...] --model ID [--language CODE|auto] (no App or socket)
 qq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)
 skills list | skills get [GUIDE]
 Guides: core, cli, workflows, plugins, plugin-examples, plugin-protocol, plugin-template
