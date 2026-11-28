@@ -14,10 +14,10 @@ use voiceport_core::CancellationToken;
 
 #[path = "local_runtime/app_engine.rs"]
 mod app_engine;
-#[cfg(all(test, debug_assertions, target_arch = "aarch64"))]
-pub(crate) use app_engine::check_app_engine;
 #[cfg(all(debug_assertions, target_arch = "aarch64"))]
 pub(crate) use app_engine::fixture_catalog;
+#[cfg(all(test, debug_assertions, target_arch = "aarch64"))]
+pub(crate) use app_engine::install_fixture_sherpa;
 pub(crate) use app_engine::stage_app_engine;
 
 fn runtime_staging_directory() -> Result<tempfile::TempDir, String> {

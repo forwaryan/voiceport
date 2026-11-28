@@ -1,7 +1,7 @@
-//! Loader preflight and per-recording engine snapshot for automatic app rules.
+//! Native runtime compatibility and per-recording engine snapshot for automatic app rules.
 use super::runtime_staging_directory;
 use crate::local_models::{
-    Model, model_file, runtime_libraries, runtime_version, validate_runtime_for,
+    Model, ModelKind, model_file, runtime_libraries, runtime_version, validate_runtime_for,
 };
 use std::{
     ffi::{CStr, CString, c_char},
@@ -13,30 +13,36 @@ use std::{
 use tempfile::TempDir;
 
 unsafe extern "C" {
-    fn dlopen_preflight(path: *const c_char) -> bool;
+    fn vp_local_check_engine(
+        directory: *const c_char,
+        version: *const c_char,
+        mode: i32,
+        error: *mut c_char,
+        capacity: usize,
+    ) -> bool;
 }
 
-fn preflight(directory: &Path, libraries: [&str; 2]) -> Result<(), String> {
-    for name in libraries {
-        let path = CString::new(directory.join(name).as_os_str().as_encoded_bytes())
-            .map_err(|_| "识别引擎路径包含无效字符。")?;
-        // dyld checks the current image without opening a handle or running initializers.
-        if !unsafe { dlopen_preflight(path.as_ptr()) } {
-            let error = unsafe { libc::dlerror() };
-            let detail = if error.is_null() {
-                "动态加载预检未通过".into()
-            } else {
-                unsafe { CStr::from_ptr(error) }.to_string_lossy()
-            };
-            return Err(format!("识别引擎 {name} 无法加载：{detail}"));
-        }
+fn check_engine(directory: &Path, version: &str, kind: ModelKind) -> Result<(), String> {
+    let directory = CString::new(directory.as_os_str().as_encoded_bytes())
+        .map_err(|_| "识别引擎路径包含无效字符。")?;
+    // runtime_libraries already accepted this package version.
+    let version = CString::new(version).unwrap();
+    let mut error = [0 as c_char; 1024];
+    // SAFETY: The bridge uses the versioned C ABI and closes its handles before returning.
+    if unsafe {
+        vp_local_check_engine(
+            directory.as_ptr(),
+            version.as_ptr(),
+            kind.native_mode(),
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    } {
+        Ok(())
+    } else {
+        let detail = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+        Err(format!("识别引擎无法加载：{detail}"))
     }
-    Ok(())
-}
-
-#[cfg(all(test, debug_assertions, target_arch = "aarch64"))]
-pub(crate) fn check_app_engine(directory: &Path) -> Result<(), String> {
-    preflight(directory, runtime_libraries(&runtime_version(directory)?)?)
 }
 
 pub(crate) fn stage_app_engine(model: &mut Model) -> Result<TempDir, String> {
@@ -57,7 +63,7 @@ pub(crate) fn stage_app_engine(model: &mut Model) -> Result<TempDir, String> {
     .map_err(|error| error.to_string())?;
     validate_runtime_for(stage.path(), std::env::consts::ARCH, model.kind)?;
     // Use the checked copies for the worker and any retry, even if the installation changes.
-    preflight(stage.path(), libraries)?;
+    check_engine(stage.path(), &version, model.kind)?;
     model.runtime = stage.path().to_owned();
     Ok(stage)
 }
@@ -89,44 +95,79 @@ fn copy_library(source: &Path, target: &Path) -> io::Result<()> {
 }
 
 #[cfg(all(debug_assertions, target_arch = "aarch64"))]
-pub(crate) fn fixture_catalog(root: &Path) -> (crate::local_models::Catalog, std::path::PathBuf) {
+fn compile_fixture(library: &Path, mut clang: std::process::Command) {
+    let pending = library.with_extension("building");
+    let output = clang
+        .args([
+            "-std=c++17",
+            "-dynamiclib",
+            "-arch",
+            "arm64",
+            "-install_name",
+        ])
+        .arg(format!(
+            "@loader_path/{}",
+            library.file_name().unwrap().to_str().unwrap()
+        ))
+        .arg("-o")
+        .arg(&pending)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::rename(pending, library).unwrap();
+}
+
+#[cfg(all(debug_assertions, target_arch = "aarch64"))]
+pub(crate) fn install_fixture_sherpa(
+    root: &Path,
+    ort: &Path,
+    sherpa: &Path,
+    abi: &str,
+    omit_symbol: bool,
+) {
+    let mut clang = std::process::Command::new("/usr/bin/clang++");
+    clang
+        .arg(root.join("engine_fixture.cc"))
+        .arg(ort)
+        .arg(format!(r#"-DFIXTURE_ABI="{abi}""#));
+    if omit_symbol {
+        clang.arg("-DFIXTURE_OMIT_OFFLINE_DECODE");
+    }
+    compile_fixture(sherpa, clang);
+}
+
+#[cfg(all(debug_assertions, target_arch = "aarch64"))]
+pub(crate) fn fixture_catalog(
+    root: &Path,
+) -> (crate::local_models::Catalog, [std::path::PathBuf; 2]) {
     use crate::local_models::{Catalog, LEGACY_RUNTIME_VERSION, PARAFORMER};
-    use std::process::Command;
 
     let runtime = root.join("runtime");
     fs::create_dir(&runtime).unwrap();
     fs::write(runtime.join("package.json"), br#"{"version":"1.12.37"}"#).unwrap();
-    let [ort, sherpa] = runtime_libraries(LEGACY_RUNTIME_VERSION).unwrap();
-    let ort_path = runtime.join(ort);
-    let code = root.join("engine_fixture.c");
-    let compile = |name, body: &str, dependency: Option<&Path>| {
-        fs::write(&code, body).unwrap();
-        let output = Command::new("/usr/bin/clang")
-            .args([
-                "-dynamiclib",
-                "-arch",
-                "arm64",
-                "-install_name",
-                &format!("@loader_path/{name}"),
-            ])
-            .arg(&code)
-            .args(dependency)
-            .arg("-o")
-            .arg(runtime.join(name))
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    compile(ort, "int vp_fixture_ort(void) { return 1; }", None);
-    compile(
-        sherpa,
-        "extern int vp_fixture_ort(void); int vp_fixture_sherpa(void) { return vp_fixture_ort(); }",
-        Some(&ort_path),
-    );
+    let [ort, sherpa] = runtime_libraries(LEGACY_RUNTIME_VERSION)
+        .unwrap()
+        .map(|library| runtime.join(library));
+    let ort_source = root.join("ort_fixture.cc");
+    fs::write(
+        &ort_source,
+        r#"extern "C" int vp_fixture_ort() { return 1; }"#,
+    )
+    .unwrap();
+    let mut clang = std::process::Command::new("/usr/bin/clang++");
+    clang.arg(ort_source);
+    compile_fixture(&ort, clang);
+    fs::write(root.join("c-api.h"), include_bytes!("c-api.h")).unwrap();
+    fs::write(
+        root.join("engine_fixture.cc"),
+        include_bytes!("engine_fixture.cc"),
+    )
+    .unwrap();
+    install_fixture_sherpa(root, &ort, &sherpa, LEGACY_RUNTIME_VERSION, false);
     let model = root.join("paraformer-bilingual-zh-en");
     fs::create_dir(&model).unwrap();
     for name in ["encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt"] {
@@ -134,5 +175,5 @@ pub(crate) fn fixture_catalog(root: &Path) -> (crate::local_models::Catalog, std
     }
     let catalog = Catalog::discover(root, &runtime, PARAFORMER, "aarch64");
     assert!(catalog.snapshot(PARAFORMER).is_ok());
-    (catalog, ort_path)
+    (catalog, [ort, sherpa])
 }

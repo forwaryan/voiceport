@@ -349,15 +349,16 @@ pub(super) fn verify_app_local_delivery_and_retry() {
         },
         delivery::model::{Snapshot, TextRange},
         dictation_app_rules::AppRules,
-        local_models::{ModelKind, PARAFORMER, title},
-        local_runtime::{check_app_engine, fixture_catalog},
+        local_models::{LEGACY_RUNTIME_VERSION, ModelKind, PARAFORMER, RUNTIME_VERSION, title},
+        local_runtime::{fixture_catalog, install_fixture_sherpa, probe},
         storage::{NAMESPACE, Storage},
     };
     use std::{cell::RefCell, fs, rc::Rc};
     assert!(objc2::MainThreadMarker::new().is_some());
     let temp = tempfile::tempdir().unwrap();
-    let (catalog, installed_library) = fixture_catalog(temp.path());
-    let library_bytes = fs::read(&installed_library).unwrap();
+    let (catalog, [ort, sherpa]) = fixture_catalog(temp.path());
+    let library_bytes = fs::read(&sherpa).unwrap();
+    let cancel = CancellationToken::new();
     let storage = Storage::at(temp.path().canonicalize().unwrap().join(NAMESPACE));
     for retry in [false, true] {
         let mut rig = SyntheticDictations::new();
@@ -417,25 +418,20 @@ pub(super) fn verify_app_local_delivery_and_retry() {
             panic!("configured native source must reach the worker");
         };
         let engine = c.recorded_app_engine.as_ref().unwrap().clone();
-        let frozen_library = engine.path().join(installed_library.file_name().unwrap());
+        let frozen_library = engine.path().join(sherpa.file_name().unwrap());
         assert_eq!(model.kind, ModelKind::Paraformer);
         assert_eq!(
             model.directory,
             temp.path().join("paraformer-bilingual-zh-en")
         );
         assert_eq!(model.runtime, engine.path());
-        assert_ne!(frozen_library, installed_library);
+        assert_ne!(frozen_library, sherpa);
         if retry {
-            // A previously accepted installation can become corrupt even while its catalog entry stays ready.
-            fs::OpenOptions::new()
-                .write(true)
-                .open(&installed_library)
-                .unwrap()
-                .set_len(8)
-                .unwrap();
+            // The installed ABI changes after admission, while the recording keeps its checked copy.
+            install_fixture_sherpa(temp.path(), &ort, &sherpa, RUNTIME_VERSION, false);
+            assert_ne!(fs::read(&sherpa).unwrap(), library_bytes);
         }
         assert_eq!(fs::read(&frozen_library).unwrap(), library_bytes);
-        check_app_engine(engine.path()).unwrap();
         let shown = c.gui_result_context().source.clone();
         assert_eq!(
             shown.as_deref(),
@@ -453,7 +449,7 @@ pub(super) fn verify_app_local_delivery_and_retry() {
             assert!(job.proxy.is_none() && job.incoming.is_none());
             assert!(Arc::ptr_eq(job.recording.as_ref().unwrap(), &recording));
             assert!(Arc::ptr_eq(job._app_engine.as_ref().unwrap(), &engine));
-            check_app_engine(engine.path()).unwrap();
+            probe(model, &job.language, &cancel).unwrap();
         };
         check_job(queued.try_recv().unwrap(), generation);
         c.source_id = CHATGPT.into();
@@ -511,40 +507,58 @@ pub(super) fn verify_app_local_delivery_and_retry() {
         assert!(!frozen_library.exists());
     }
     println!(
-        "app-local source: native model, language and engine frozen; synthetic target received one final, retry used the same engine after installation damage with zero writes"
+        "app-local source: synthetic native decode passed on the original and retry jobs' shared engine after the installed ABI changed; retry wrote nothing"
     );
 
-    let mut rejected = Controller::new();
-    rejected.catalog = catalog;
-    set_local_rule(&mut rejected, PARAFORMER, "zh", false);
-    let rules = &rejected.workflows.app_rules;
-    let save_error = AppRules::from_editor(
-        true,
-        &rules.editor_text(),
-        &rejected.workflows.presets,
-        &rejected.catalog,
-    )
-    .unwrap_err();
-    assert!(save_error.contains("识别引擎") && save_error.contains("无法加载"));
-    let SessionSource::Local(model) = rejected.catalog.snapshot(PARAFORMER).unwrap() else {
-        unreachable!();
+    let assert_engine_rejected = |diagnostic: &str| {
+        let SessionSource::Local(model) = catalog.snapshot(PARAFORMER).unwrap() else {
+            unreachable!();
+        };
+        model.validate().unwrap(); // Header-only discovery still sees this entry.
+        let native_error = probe(&model, "zh", &cancel).unwrap_err();
+        assert!(native_error.contains(diagnostic), "{native_error}");
+
+        let mut rejected = Controller::new();
+        rejected.catalog = catalog.clone();
+        set_local_rule(&mut rejected, PARAFORMER, "zh", false);
+        let save_error = AppRules::from_editor(
+            true,
+            &rejected.workflows.app_rules.editor_text(),
+            &rejected.workflows.presets,
+            &rejected.catalog,
+        )
+        .expect_err("native runtime rejection must also reject saving the enabled rule");
+        assert!(save_error.contains(diagnostic), "{save_error}");
+        let backend = Backend::new(storage.clone());
+        let asr = rejected.install_audio_fixture(backend.clone());
+        rejected.automatic = false;
+        rejected.start_from_shortcut(Some(&editor()));
+        let receipt = rejected.gui_dictation_receipt().unwrap();
+        assert_eq!(rejected.state.phase, Phase::Failed);
+        assert_eq!(receipt.transcription, TranscriptionState::NotStarted);
+        assert_eq!(receipt.block_reason, Some(BlockReason::SourceUnavailable));
+        let (_, error) = rejected.app_source_issue().unwrap();
+        assert!(error.contains(diagnostic), "{error}");
+        assert!(rejected.recorded_app_engine.is_none());
+        assert!(rejected.events.try_recv().is_err());
+        rejected.poll();
+        assert_eq!(backend.counts(), (0, 0, 0, 0));
+        asr.assert_no_job();
+        println!(
+            "app-local engine: {diagnostic} rejected at save and before permission, device or ASR"
+        );
     };
-    model.validate().unwrap(); // The legacy header-only discovery still sees this entry.
-    let backend = Backend::new(storage);
-    let asr = rejected.install_audio_fixture(backend.clone());
-    rejected.automatic = false;
-    rejected.start_from_shortcut(Some(&editor()));
-    let receipt = rejected.gui_dictation_receipt().unwrap();
-    assert_eq!(receipt.transcription, TranscriptionState::NotStarted);
-    assert_eq!(receipt.block_reason, Some(BlockReason::SourceUnavailable));
-    assert!(rejected.app_source_issue().unwrap().1.contains("无法加载"));
-    assert!(rejected.events.try_recv().is_err());
-    rejected.poll();
-    assert_eq!(backend.counts(), (0, 0, 0, 0));
-    asr.assert_no_job();
-    println!(
-        "app-local engine: damaged installed library refused save and start before permission, device open or ASR"
-    );
+    assert_engine_rejected("Unsupported sherpa-onnx ABI: 2.0.1 (requires 1.12.37)");
+    install_fixture_sherpa(temp.path(), &ort, &sherpa, LEGACY_RUNTIME_VERSION, true);
+    assert_engine_rejected("Missing runtime symbol: SherpaOnnxDecodeOfflineStream");
+    install_fixture_sherpa(temp.path(), &ort, &sherpa, LEGACY_RUNTIME_VERSION, false);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&ort)
+        .unwrap()
+        .set_len(8)
+        .unwrap();
+    assert_engine_rejected("ONNX Runtime:");
 }
 
 #[cfg(debug_assertions)]
