@@ -51,6 +51,8 @@ python3 -I scripts/qq_bridge/setup.py --output /private/tmp/my-qq-bridge stop --
 
 准备后也可用输出目录中的 `manage.py` 执行 `start/login/status/stop`，参数与 `setup.py` 相同，后续管理不依赖仓库位置。每次重新启动桥接都要检查就绪状态；退出、崩溃或重启电脑后，先 `status` / `stop` 结算旧启动，再 `start`，必要时正常登录。系统清空临时目录后，启动命令会重建相同 socket 路径的私有父目录，配对密钥仍来自持久安装配置。
 
+`status` 把副本进程列表 `processes` 和私有桥接回执 `bridge` 写到 stdout。有副本进程但缺少主进程时，`bridge` 为 `null`，`bridge_error` 为 `bridge_main_not_running`。主进程存在时，socket 缺失、无法访问、超时或回执无效分别返回 `bridge_socket_missing`、`bridge_status_unavailable`、`bridge_status_timeout` 或 `bridge_status_invalid_response`。这些情况保留进程列表并以退出码 1 结束。收到正常回执时，`bridge.ready=false` 表示桥接尚未就绪，退出码仍为 0。该结果只描述历史开发副本的本机桥接状态，普通 QQ 安装前提仍由 `qq doctor` 检查。
+
 启动、停止和准备均先写私有回执。失败或超时后先执行 `status` 并核对 `launch.json` / `lifecycle.jsonl`，不要重复未决启动。`stop` 只处理该安装目录的副本进程；证明退出后才清理其残留 socket/临时音频并允许新启动。它不退出无关 QQ 安装，不清理系统账号或授权。
 
 ## 连接 VoicePort

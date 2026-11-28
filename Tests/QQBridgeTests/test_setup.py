@@ -5,6 +5,11 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import select
+import shutil
+import socket
+import subprocess
+import sys
 from types import SimpleNamespace
 import tarfile
 import tempfile
@@ -132,6 +137,127 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(rows, [original])
             self.assertEqual(report['status'], 'stopped')
             self.assertEqual(json.loads((root / 'launch.json').read_bytes())['stage'], 'stopped')
+
+
+class StatusTests(unittest.TestCase):
+    MAIN = '/fixture/OwnedQQ.app/Contents/MacOS/QQ'
+    HELPER = '/fixture/OwnedQQ.app/Contents/Frameworks/QQ Helper.app/Contents/MacOS/QQ Helper'
+    ORIGINAL = '/fixture/OriginalQQ.app/Contents/MacOS/QQ'
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='vpqq-test-', dir='/tmp')
+        self.addCleanup(temporary.cleanup)
+        self.output = Path(temporary.name).resolve()
+        self.socket = self.output / 'bridge.sock'
+        self.admin_token = 'a' * 64
+        config = self.output / 'config.json'
+        setup.write_json(config, {'socketPath': str(self.socket), 'adminToken': self.admin_token})
+        setup.write_json(self.output / 'installation.json', {
+            'app': '/fixture/OwnedQQ.app', 'original_app': '/fixture/OriginalQQ.app',
+            'config': str(config), 'runtime': str(self.output),
+        })
+
+    def status(self, *executables):
+        # Replace only the OS process inventory; run the CLI and socket path as shipped.
+        inventory = '\n'.join(f'{pid} 1 {exe}' for pid, exe in enumerate(executables, start=1))
+        launcher = '''
+import runpy, subprocess, sys
+from unittest.mock import patch
+inventory, *sys.argv = sys.argv[1:]
+
+def ps(args, **kwargs):
+    assert args == ['/bin/ps', '-ww', '-axo', 'pid=,ppid=,comm='], args
+    return subprocess.CompletedProcess(args, 0, inventory, '')
+
+with patch.object(subprocess, 'run', side_effect=ps):
+    runpy.run_path(sys.argv[0], run_name='__main__')
+'''
+        return subprocess.run([sys.executable, '-I', '-B', '-c', launcher, inventory,
+                               str(SCRIPT), '--output', str(self.output), 'status'],
+                              capture_output=True, text=True, timeout=8)
+
+    def assert_status_error(self, result, code, *executables):
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(result.stdout, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual([row['executable'] for row in report['processes']], list(executables))
+        self.assertIsNone(report['bridge'])
+        self.assertEqual(report['bridge_error'], code)
+        self.assertNotIn(self.admin_token, result.stdout + result.stderr)
+
+    def test_exited_copy_with_helpers_preserves_processes(self):
+        result = self.status(self.ORIGINAL, self.HELPER)
+        self.assert_status_error(result, 'bridge_main_not_running', self.HELPER)
+        result = self.status(self.ORIGINAL)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {'processes': [], 'bridge': None})
+
+    def test_running_copy_reports_missing_and_refused_sockets(self):
+        self.assert_status_error(self.status(self.MAIN), 'bridge_socket_missing', self.MAIN)
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(self.socket))
+            self.assert_status_error(self.status(self.MAIN), 'bridge_status_unavailable', self.MAIN)
+
+    def test_status_rejects_invalid_readiness_and_reports_timeout(self):
+        plan = {'app': '/fixture/OwnedQQ.app'}
+        main = {'pid': 1, 'parent': 1, 'executable': self.MAIN}
+        with patch.object(setup, 'processes', return_value=[main]), \
+             patch.object(setup, 'control') as control:
+            control.return_value = {'type': 'status', 'ready': 'false', 'busy': False, 'cleanup_failed': False}
+            self.assertEqual(setup.status(plan, {}), {
+                'processes': [main], 'bridge': None, 'bridge_error': 'bridge_status_invalid_response',
+            })
+            control.side_effect = TimeoutError
+            self.assertEqual(setup.status(plan, {}), {
+                'processes': [main], 'bridge': None, 'bridge_error': 'bridge_status_timeout',
+            })
+
+    @unittest.skipUnless(shutil.which('node'), 'requires Node for the real bridge fixture')
+    def test_status_reads_the_real_bridge_before_and_after_synthetic_service(self):
+        harness = '''
+const { createBridge } = require(process.argv[1]);
+const [socketPath, dataDirectory] = process.argv.slice(2);
+const bridge = createBridge({ socketPath, dataDirectory,
+  token: 'b'.repeat(64), adminToken: 'a'.repeat(64) });
+bridge.ready.then(() => {
+  console.log('listening');
+  process.stdin.once('data', () => {
+    bridge.setService({ uploadSmartPttSlice() { throw Error('unexpected upload'); },
+      addKernelBdhUploadListener() {}, removeKernelBdhUploadListener() {} });
+    console.log('service');
+  });
+  process.stdin.once('end', bridge.stop);
+});
+'''
+        with subprocess.Popen(['node', '-e', harness, str(SCRIPT.with_name('bridge.cjs')),
+                               str(self.socket), str(self.output)],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE) as server:
+            try:
+                for marker, ready in [(b'listening\n', False), (b'service\n', True)]:
+                    self.assertTrue(select.select([server.stdout], [], [], 5)[0], 'bridge fixture stalled')
+                    self.assertEqual(server.stdout.readline(), marker)
+                    result = self.status(self.MAIN)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    report = json.loads(result.stdout)
+                    self.assertNotIn('bridge_error', report)
+                    self.assertEqual(report['bridge'], {
+                        'type': 'status', 'ready': ready, 'busy': False, 'cleanup_failed': False,
+                        'submitted': 0, 'completed': 0, 'failed': 0, 'abandoned': 0,
+                    })
+                    if ready:
+                        self.assert_status_error(self.status(self.HELPER), 'bridge_main_not_running', self.HELPER)
+                    else:
+                        server.stdin.write(b'set service\n')
+                        server.stdin.flush()
+            finally:
+                server.stdin.close()
+                try:
+                    server.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    server.kill()
+                    server.wait()
+                    self.fail('bridge fixture did not exit')
+        self.assertEqual(server.returncode, 0)
 
 
 if __name__ == '__main__':

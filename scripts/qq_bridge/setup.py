@@ -261,6 +261,33 @@ def control(config, op):
         return json.loads(data)
 
 
+def status(plan, config):
+    prefix = plan['app'] + '/'
+    owned = [row for row in processes(plan) if row['executable'].startswith(prefix)]
+    report = {'processes': owned, 'bridge': None}
+    if not owned:
+        return report
+    if not any(row['executable'] == prefix + 'Contents/MacOS/QQ' for row in owned):
+        return dict(report, bridge_error='bridge_main_not_running')
+
+    try:
+        bridge = control(config, 'status')
+        flags = ('ready', 'busy', 'cleanup_failed')
+        require(isinstance(bridge, dict) and bridge.get('type') == 'status'
+                and all(type(bridge.get(flag)) is bool for flag in flags), 'invalid_control_response')
+    except FileNotFoundError:
+        error = 'bridge_socket_missing'
+    except TimeoutError:
+        error = 'bridge_status_timeout'
+    except OSError:
+        error = 'bridge_status_unavailable'
+    except (RuntimeError, ValueError):
+        error = 'bridge_status_invalid_response'
+    else:
+        return dict(report, bridge=bridge)
+    return dict(report, bridge_error=error)
+
+
 def start(args, plan, config):
     output = args.output
     app = Path(plan['app'])
@@ -392,13 +419,15 @@ def main():
         if args.command == 'login':
             journal(args.output, 'normal_login_button_attempt')
             return control(config, 'login')
-        owned = [row for row in processes(plan) if row['executable'].startswith(plan['app'] + '/')]
-        return {'processes': owned, 'bridge': control(config, 'status') if owned else None}
+        return status(plan, config)
 
 
 if __name__ == '__main__':
     try:
-        print(json.dumps(main(), ensure_ascii=False))
+        result = main()
+        print(json.dumps(result, ensure_ascii=False))
+        if 'bridge_error' in result:
+            sys.exit(1)
     except Exception as error:
         # No exception details containing paths, auth tokens or target payloads.
         code = str(error) if type(error) is RuntimeError else type(error).__name__
