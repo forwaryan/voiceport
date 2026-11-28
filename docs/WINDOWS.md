@@ -444,7 +444,16 @@ exit. Each recovery selection retries the failed step once. Interrupted or
 unverifiable release keeps capture blocked. These actions leave the existing
 on-disk retention policy in place.
 
-This entry point is covered by synthetic capture and service tests and Windows
-target compilation. Windows linking and runtime, actual tray and shortcut
-behavior, microphone/driver and NTFS checks, service with real audio, protected
-delivery and release packaging still require separate acceptance.
+## Native Windows CI
+
+[Windows CI](../.github/workflows/windows-ci.yml) runs on every pull request and
+push to `main`. The GitHub-hosted Windows Server 2025 x64 runner uses Rust 1.95.0
+and the `x86_64-pc-windows-msvc` target. After fetching locked dependencies, it
+builds and links the default-service `voiceport-windows.exe`, runs `--help` and
+`--smoke-test`, checks the library and binary without the service feature, and
+runs the default-feature Rust tests offline.
+
+The job leaves the existing ignored device and NTFS integration tests out of
+execution. The tray and global shortcut, microphone and driver, private NTFS
+storage, real transcription, protected input delivery, signing and release
+packaging require separate validation.
