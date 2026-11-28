@@ -135,7 +135,7 @@ fn doctor(path: Option<PathBuf>) {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    if let Some(code) = commands::run(&arguments) {
+    if let Some(code) = commands::run(&arguments).await {
         return ExitCode::from(code);
     }
     let command = match parse(arguments) {

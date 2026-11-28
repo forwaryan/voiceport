@@ -256,9 +256,15 @@ impl Catalog {
     }
     #[cfg(target_os = "macos")]
     pub fn system(saved: &str) -> Self {
-        let root = orca_model_root();
         let paths = crate::model_library::Paths::system().ok();
-        let orca = OrcaDiscovery::system(root.as_deref(), paths.as_ref());
+        let mut catalog = Self::system_models(saved, paths.as_ref());
+        catalog.load_configured(saved);
+        catalog
+    }
+    #[cfg(target_os = "macos")]
+    pub(crate) fn system_models(saved: &str, paths: Option<&crate::model_library::Paths>) -> Self {
+        let root = orca_model_root();
+        let orca = OrcaDiscovery::system(root.as_deref(), paths);
         let mut catalog = Self::discover_orca(&orca, saved);
         if let Some(paths) = paths {
             for definition in crate::model_library::MODELS {
@@ -272,7 +278,6 @@ impl Catalog {
                 }
             }
         }
-        catalog.load_configured(saved);
         catalog
     }
     #[cfg(not(target_os = "macos"))]
@@ -473,7 +478,7 @@ fn description(id: &str) -> &'static str {
         _ => "保存的转写来源不可用。",
     }
 }
-fn model_file(path: &Path) -> std::io::Result<File> {
+pub(crate) fn model_file(path: &Path) -> std::io::Result<File> {
     #[cfg(target_os = "macos")]
     let file = {
         use std::os::unix::fs::OpenOptionsExt;

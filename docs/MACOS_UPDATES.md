@@ -64,7 +64,7 @@ VOICEPORT_APP_DIRECTORY="$PWD/dist/signed/VoicePort.app" \
   bash scripts/package_app.sh --distribution --skip-build
 ```
 
-GUI 与 CLI 均带 hardened runtime 和安全时间戳。主程序仅带 `audio-input` 与 `disable-library-validation` 两项 entitlement：前者用于麦克风，后者用于现有本地模型后端加载单独安装在 Orca 中、由其他身份签名的 sherpa/onnx 动态库。CLI 不带这两项权限；不启用 JIT、调试或不受限可执行内存。依据：[Apple hardened runtime](https://developer.apple.com/documentation/xcode/configuring-the-hardened-runtime)、[audio-input](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.device.audio-input)、[library validation](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.cs.disable-library-validation)。这些 entitlement 不自动授予 TCC 权限。
+GUI 与 CLI 均带 hardened runtime 和安全时间戳。主程序带 `audio-input` 与 `disable-library-validation` 两项 entitlement，CLI 只带 `disable-library-validation`。该项允许本地模型后端加载另行安装、签名身份不同的 sherpa/ONNX 动态库；仍复用引擎路径、版本和架构检查。CLI 本地文件转写不用麦克风权限。两者都不启用 JIT、调试或不受限可执行内存。依据：[Apple hardened runtime](https://developer.apple.com/documentation/xcode/configuring-the-hardened-runtime)、[audio-input](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.device.audio-input)、[library validation](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.cs.disable-library-validation)。这些 entitlement 不自动授予 TCC 权限。
 
 完整发行使用以下三个入口；输出目录必须尚不存在：
 
@@ -126,6 +126,8 @@ python3 -I scripts/macos_artifacts.py verify /absolute/attachments \
 ```
 
 逐项核对清单与实际附件名称、大小和 SHA-256，拒绝多余或缺失条目。随后在临时目录检查最终 ZIP 的唯一 App 根、成员路径和类型、包结构、版本和构建号、arm64 GUI/CLI、代码签名及预期身份。两个可执行文件在 ZIP 中记录的 Unix 权限都须为 `0755`。App 树中记录了 Unix 权限的目录须允许所有者列出内容和遍历。解包在写完子项后应用目录权限，再检查包结构和签名。只接受对应到 App 成员的 `ditto` AppleDouble 条目，解包时跳过这些元数据。退出 0 时以 JSON 输出已核对的附件、版本、构建号和签名类型。独立校验阶段不创建签名、不启动或安装 App。公证票据、Gatekeeper、公开发布资产读回和隐私扫描继续按正式流程检查。
+
+已知使用旧签名策略的正式包（build 24 及更早）在核对可信清单摘要、预期版本和构建号时，可加 `--legacy-distribution-cli`，要求 CLI 权利集为空。当前策略默认要求 CLI 仅有 `disable-library-validation`，不会因版本或验证失败自动切换。`prepare` 生成新版候选凭据，`submit` 和 `resume` 按原凭据 schema 区分旧候选（1）和新候选（2），并核对原归档和可执行文件摘要。
 
 开发预览改用 `--signature preview --certificate-sha1 "$EXPECTED_CERTIFICATE_SHA1"`，同时核对 App 和 CLI 的固定签名证书。校验隔离测试包或合成夹具时使用 `--signature test`，核对测试专用 App/CLI 身份与 ad-hoc 签名。构建及使用方式见[隔离测试 ZIP](PACKAGING.md#isolated-macos-test-zip)。
 

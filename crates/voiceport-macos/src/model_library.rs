@@ -426,7 +426,7 @@ async fn download(
     file.sync_all().map_err(save_error)?;
     check(cancel)
 }
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 fn verify(asset: &Asset, bytes: u64, digest: &[u8]) -> Result<(), String> {

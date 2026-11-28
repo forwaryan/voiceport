@@ -2,6 +2,7 @@
 use serde_json::json;
 use std::{collections::BTreeMap, ffi::OsString, path::PathBuf};
 use voiceport_control::{Action, Response};
+mod local_file;
 mod product;
 
 const GROUPS: &[&str] = &[
@@ -10,6 +11,7 @@ const GROUPS: &[&str] = &[
     "sources",
     "plugins",
     "dictation",
+    "transcribe-local",
     "skills",
     "qq",
 ];
@@ -60,6 +62,7 @@ scenes list/add/remove/apply
 app-rules list/enable/set/remove/match
 history list/show/clear/settings
 file open/sources/plan/start/status/result/cancel/export
+transcribe-local AUDIO --model ID [--language CODE|auto] (no App or socket)
 qq doctor [--qq ABSOLUTE_APP_PATH] (offline installation check)
 skills list | skills get [GUIDE]
 Guides: core, cli, workflows, plugins, plugin-examples, plugin-protocol, plugin-template
@@ -102,7 +105,7 @@ fn is_group(arg: &OsString) -> bool {
 }
 
 /// None delegates the byte-preserving original command line to the portable CLI.
-pub fn run(raw: &[OsString]) -> Option<u8> {
+pub async fn run(raw: &[OsString]) -> Option<u8> {
     let managed = raw
         .iter()
         .any(|a| ["--json", "--socket", "--version"].iter().any(|f| a == f))
@@ -128,13 +131,13 @@ pub fn run(raw: &[OsString]) -> Option<u8> {
         .map(|a| a.to_str().map(str::to_owned).ok_or(()))
         .collect();
     let response = match args {
-        Ok(args) => execute(args),
+        Ok(args) => execute(args).await,
         Err(_) => Err(invalid()),
     }
     .unwrap_or_else(|e| e);
     Some(print_result(response, json_output))
 }
-fn execute(mut args: Vec<String>) -> Result<Response, Response> {
+async fn execute(mut args: Vec<String>) -> Result<Response, Response> {
     let mut socket = None;
     let mut seen_json = false;
     let mut i = 0;
@@ -168,8 +171,17 @@ fn execute(mut args: Vec<String>) -> Result<Response, Response> {
     {
         return Ok(Response::ok(json!({"text":HELP})));
     }
+    if socket.is_some()
+        && (args[0] == "transcribe-local"
+            || matches!(args.as_slice(), [help, group] if help == "help" && group == "transcribe-local"))
+    {
+        return Err(invalid());
+    }
     if let Some(text) = contextual_help(&args) {
         return Ok(Response::ok(json!({"text":text})));
+    }
+    if args[0] == "transcribe-local" {
+        return local_file::execute(&args[1..]).await;
     }
     if args[0] == "skills" {
         return match args.get(1).map(String::as_str) {
@@ -296,6 +308,7 @@ fn option_takes_value(option: &str) -> bool {
             | "--set"
             | "--secret-stdin"
             | "--source"
+            | "--model"
             | "--language"
             | "--preview"
             | "--dictionary"
@@ -445,6 +458,11 @@ fn contextual_help(args: &[String]) -> Option<String> {
             ],
             "Single-file transcription",
         ),
+        "transcribe-local" => (
+            "transcribe-local",
+            &[],
+            "Standalone local file transcription",
+        ),
         "qq" => ("qq", &["doctor"], "QQ installation diagnostics (macOS)"),
         "skills" => ("skills", &["list", "get"], "Offline commands"),
         _ => return None,
@@ -455,8 +473,13 @@ fn contextual_help(args: &[String]) -> Option<String> {
     let reference = GUIDES.iter().find(|(name, _)| *name == "cli")?.1;
     let heading = format!("## {section}\n");
     let content = reference.split_once(&heading)?.1.split("\n## ").next()?;
+    let socket_option = if group == "transcribe-local" {
+        ""
+    } else {
+        " [--socket ABSOLUTE_PATH]"
+    };
     Some(format!(
-        "voiceport [--json] [--socket ABSOLUTE_PATH] {group}\n\n{}",
+        "voiceport [--json]{socket_option} {group}\n\n{}",
         content.trim()
     ))
 }

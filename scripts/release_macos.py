@@ -107,7 +107,7 @@ def prepare(folder, team_id, skip_build):
         run(folder, 'archive-submission', ['/usr/bin/ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', app, candidate])
         info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
         write_new(folder / 'prepared.json', {
-            'schema_version': 1, 'team_id': team_id, 'identity': identity,
+            'schema_version': 2, 'team_id': team_id, 'identity': identity,
             'version': info['CFBundleShortVersionString'], 'build': info['CFBundleVersion'],
             'archive_sha256': sha(candidate),
             'main_sha256': sha(app / 'Contents/MacOS/voiceport-app'),
@@ -118,14 +118,15 @@ def prepare(folder, team_id, skip_build):
 
 def check_prepared(folder):
     prepared = read_json(folder / 'prepared.json')
-    if prepared.get('schema_version') != 1:
+    schema = prepared.get('schema_version')
+    if type(schema) is not int or schema not in (1, 2):
         raise ValueError('unsupported prepared release schema')
     validate_team_id(prepared.get('team_id'))
     candidate = real_path(folder / 'notarization-upload.zip')
     if not candidate.is_file() or sha(candidate) != prepared['archive_sha256']:
         raise ValueError('notarization archive changed after preparation')
     app = folder / 'VoicePort.app'
-    validate_distribution(app, prepared['team_id'])
+    validate_distribution(app, prepared['team_id'], legacy_cli=schema == 1)
     for name, field in [('voiceport-app', 'main_sha256'), ('voiceport', 'cli_sha256')]:
         if sha(app / 'Contents/MacOS' / name) != prepared[field]:
             raise ValueError('signed executables changed after preparation')

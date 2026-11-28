@@ -23,7 +23,8 @@ Choose the command for the question:
 | Configure or check application output rules | `app-rules list/enable/set/remove/match` | Saved Bundle ID bindings and the output selection for a supplied ID |
 | Copy or repaste an existing GUI result | `dictation copy-last`, `dictation paste-last --target-pid PID --target-bundle ID` | Explicit clipboard or focused-field action with content-free receipts |
 | Examine recent GUI dictation | `history list`, then explicitly requested `history show ID` | Bounded, process-local metadata and separately requested text |
-| Transcribe and export a chosen audio file | `app open files`, `file sources/plan/start/status/result/export` | Reviewable source/destination, operation ID, explicit text and new export file |
+| Transcribe a file locally without the App | `transcribe-local AUDIO --model ID` | Final text from one explicitly chosen installed model; no socket, network, or download |
+| Transcribe and export a chosen audio file using the App | `app open files`, `file sources/plan/start/status/result/export` | Reviewable source/destination, operation ID, explicit text and new export file |
 | Check a QQ installation | `qq doctor [--qq ABSOLUTE_APP_PATH]` | Read-only installation report; inspect `data.blockers`, not just exit 0; no bridge or transcription proof |
 | Test source connectivity and elapsed time | `sources probe ID [--language CODE|auto]` | Proposal only until `--accept-upload`; tests synthetic silence, not recognition quality |
 | Record and retrieve requested speech | `dictation start/stop/result` | Explicit microphone operation; no automatic delivery |
@@ -68,7 +69,9 @@ For a failed retained recording, use an authorized failure receipt with `state:"
 
 ## Step 5: Handle existing audio or results
 
-For a selected local audio file, use `file sources` and `file plan` to identify its source and destination. After planning, verify the active destination and review the full live HTTP endpoint before seeking consent. Discard the proposal and approval if the destination changed or cannot be verified. Submit `file start OPERATION --confirm` only for the reviewed file, language and destination. `file status` accepts the saved proposal ID even after a lost start reply. Read `data.state` and any `data.error` even when the status command exits 0. Cancel the matching operation with `file cancel OPERATION` when asked, then check the state. Retrieve text with `file result` or write it with `file export` only when requested and ready. [File workflow](references/workflows.md#transcribe-a-selected-file)
+For offline-only transcription with a user-chosen installed model, skip App status, source selection, and IPC. Run `voiceport --json transcribe-local AUDIO --model ID [--language CODE|auto]`; read the final `data.text` only when requested. If the model is unavailable, show the installation step; do not open the App, download or switch to a cloud source automatically. [Standalone command](references/cli.md#standalone-local-file-transcription)
+
+For App-based transcription and export, use `file sources` and `file plan` to identify the selected file's source and destination. After planning, verify the active destination and review the full live HTTP endpoint before seeking consent. Discard the proposal and approval if the destination changed or cannot be verified. Submit `file start OPERATION --confirm` only for the reviewed file, language and destination. `file status` accepts the saved proposal ID even after a lost start reply. Read `data.state` and any `data.error` even when the status command exits 0. Cancel the matching operation with `file cancel OPERATION` when asked, then check the state. Retrieve text with `file result` or write it with `file export` only when requested and ready. [File workflow](references/workflows.md#transcribe-a-selected-file)
 
 Use `history list` with `--query TEXT` and `--delivery STATE` as needed to find metadata. Use `history show ID` only when the user asks to read the selected retained text. Clearing history and disabling collection both require explicit confirmation.
 

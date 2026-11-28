@@ -20,5 +20,8 @@ voiceport-core = { path = "../voiceport-core" }
 tokio.workspace = true
 tokio-util.workspace = true
 
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+voiceport-macos = { path = "../voiceport-macos" }
+
 [dev-dependencies]
 tempfile.workspace = true
