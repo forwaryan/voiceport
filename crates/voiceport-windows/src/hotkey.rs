@@ -12,9 +12,11 @@ pub struct Hotkey {
 #[derive(Debug)]
 pub struct Conflict;
 impl Hotkey {
+    pub(crate) const ID: i32 = 0x5650;
+
     pub fn register() -> Result<Self, Conflict> {
         // A single reserved application id; caller must run a native message loop.
-        let id = 0x5650;
+        let id = Self::ID;
         if OWNED.get() {
             return Err(Conflict);
         }

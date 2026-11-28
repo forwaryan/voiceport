@@ -1,7 +1,7 @@
 //! Native shell. The callback only records bounded, coalesced action bits;
 //! Rust state remains on the message-loop stack and is never an FFI raw pointer.
 use crate::{
-    actions::{Actions, ManualClipboard},
+    actions::{Action, Actions, ManualClipboard},
     hotkey::Hotkey,
 };
 use std::{
@@ -15,6 +15,7 @@ use windows_sys::Win32::{
     UI::{Shell::*, WindowsAndMessaging::*},
 };
 const TRAY: u32 = WM_APP + 1;
+const SHOW_MENU: u32 = 8;
 thread_local! {static PENDING:Cell<u32>=const {Cell::new(0)};}
 fn queue(id: u32) {
     if id < 32 {
@@ -27,20 +28,16 @@ fn wide(s: &str) -> Vec<u16> {
 unsafe extern "system" fn callback(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     let guarded = std::panic::catch_unwind(|| match msg {
         WM_CLOSE => {
-            queue(6);
-            0
-        }
-        WM_COMMAND => {
-            queue((w & 0xffff) as u32);
+            queue(Action::Exit as u32);
             0
         }
         WM_TIMER => {
-            queue(7);
+            queue(Action::Poll as u32);
             0
         }
         TRAY => {
             if l as u32 == WM_RBUTTONUP || l as u32 == WM_LBUTTONUP {
-                queue(8);
+                queue(SHOW_MENU);
             }
             0
         }
@@ -103,24 +100,29 @@ impl Drop for Window {
         }
     }
 }
-fn menu(hwnd: HWND, copy: bool, retry: bool) -> u32 {
+fn menu(hwnd: HWND, actions: &Actions) -> u32 {
     unsafe {
         let menu = CreatePopupMenu();
         if menu.is_null() {
             return 0;
         }
-        for (id, text, disabled) in [
-            (1, "Start (recording unavailable)", true),
-            (2, "Stop (recording unavailable)", true),
-            (3, "Cancel", false),
-            (4, "Copy result manually", !copy),
-            (5, "Retry transcription", !retry),
-            (6, "Exit", false),
+        for (action, text, enabled) in [
+            (Action::Start, "Start dictation", actions.can_start()),
+            (Action::Stop, "Stop and transcribe", actions.can_stop()),
+            (Action::Cancel, "Cancel", true),
+            (Action::Copy, "Copy result manually", actions.can_copy()),
+            (Action::Retry, "Retry transcription", actions.can_retry()),
+            (
+                Action::RecoverCapture,
+                "Recover capture",
+                actions.can_recover_capture(),
+            ),
+            (Action::Exit, "Exit", true),
         ] {
             if AppendMenuW(
                 menu,
-                MF_STRING | if disabled { MF_GRAYED } else { 0 },
-                id,
+                MF_STRING | if enabled { 0 } else { MF_GRAYED },
+                action as usize,
                 wide(text).as_ptr(),
             ) == 0
             {
@@ -144,6 +146,8 @@ fn menu(hwnd: HWND, copy: bool, retry: bool) -> u32 {
             null(),
         ) as u32;
         DestroyMenu(menu);
+        // Finish notification-area menu tracking even when no item was selected.
+        PostMessageW(hwnd, WM_NULL, 0, 0);
         selected
     }
 }
@@ -167,7 +171,7 @@ pub fn run() -> Result<(), String> {
         let hwnd = CreateWindowExW(
             0,
             class.as_ptr(),
-            wide("VoicePort: recording unavailable").as_ptr(),
+            wide("VoicePort").as_ptr(),
             0,
             0,
             0,
@@ -189,7 +193,7 @@ pub fn run() -> Result<(), String> {
         notify.uFlags = NIF_MESSAGE | NIF_TIP | NIF_ICON;
         notify.uCallbackMessage = TRAY;
         notify.hIcon = LoadIconW(null_mut(), IDI_APPLICATION);
-        let tip = wide("VoicePort: recording unavailable; manual results only");
+        let tip = wide("VoicePort");
         notify.szTip[..tip.len()].copy_from_slice(&tip);
         let mut window = Window {
             hwnd,
@@ -203,22 +207,28 @@ pub fn run() -> Result<(), String> {
         if SetTimer(hwnd, 1, 100, None) == 0 {
             return Err("Native timer unavailable".into());
         }
-        let hotkey = Hotkey::register();
         #[cfg(not(feature = "service"))]
         let mut actions = Actions::default();
         #[cfg(feature = "service")]
-        let mut actions = Actions::with_executor(crate::executor::Executor::new(
-            std::sync::Arc::new(crate::executor::CoreService::default()),
-        ));
-        if hotkey.is_err() {
-            actions.status = "Global hotkey conflict; tray still available".into();
-        }
+        let mut actions = Actions::with_capture(
+            crate::executor::Executor::new(std::sync::Arc::new(
+                crate::executor::CoreService::default(),
+            )),
+            crate::capture::owner::NativeFactory::default,
+        );
+        let hotkey = if actions.can_start() {
+            Some(Hotkey::register())
+        } else {
+            None
+        };
+        let hotkey_registered = hotkey.as_ref().is_some_and(Result::is_ok);
+        let hotkey_conflict = hotkey.as_ref().is_some_and(Result::is_err);
         let mut clipboard = Clipboard(hwnd);
         let mut message: MSG = std::mem::zeroed();
         loop {
             let got = GetMessageW(&mut message, null_mut(), 0, 0);
             if got == 0 {
-                if actions.act(crate::actions::Action::Exit, &mut clipboard) {
+                if actions.act(Action::Exit, &mut clipboard) {
                     break;
                 }
                 // WM_QUIT is consumed; the still-owned timer continues normal
@@ -228,24 +238,37 @@ pub fn run() -> Result<(), String> {
             if got < 0 {
                 return Err("Native message loop failed".into());
             }
-            if message.message == WM_HOTKEY && message.wParam == 0x5650 {
-                queue(1);
+            if message.message == WM_HOTKEY
+                && message.hwnd.is_null()
+                && message.wParam == Hotkey::ID as usize
+                && hotkey_registered
+            {
+                queue(Action::ToggleCapture as u32);
             } else {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
-            let pending = PENDING.replace(0);
-            if pending & (1 << 8) != 0 {
-                queue(menu(hwnd, actions.can_copy(), actions.can_retry()));
+            let mut pending = PENDING.replace(0);
+            if pending & (1 << SHOW_MENU) != 0
+                && !Action::Exit.queued(pending)
+                && !Action::Cancel.queued(pending)
+            {
+                let selected = menu(hwnd, &actions);
+                if selected != 0 {
+                    queue(selected);
+                }
+                // TrackPopupMenu can dispatch window messages before returning.
+                pending |= PENDING.replace(0);
             }
             let exit = actions.dispatch(pending, &mut clipboard);
-            // A menu selection must wake GetMessage rather than wait for user input.
-            if PENDING.get() != 0 {
-                PostMessageW(hwnd, WM_NULL, 0, 0);
-            }
-            SetWindowTextW(hwnd, wide(&actions.status).as_ptr());
+            let status = if hotkey_conflict {
+                format!("{}; Ctrl+Alt+Space unavailable", actions.status)
+            } else {
+                actions.status.clone()
+            };
+            SetWindowTextW(hwnd, wide(&status).as_ptr());
             window.notify.szTip.fill(0);
-            let tip: Vec<u16> = actions.status.encode_utf16().take(127).collect();
+            let tip: Vec<u16> = status.encode_utf16().take(127).collect();
             window.notify.szTip[..tip.len()].copy_from_slice(&tip);
             Shell_NotifyIconW(NIM_MODIFY, &window.notify);
             if exit {
