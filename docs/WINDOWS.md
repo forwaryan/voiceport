@@ -451,7 +451,11 @@ push to `main`. The GitHub-hosted Windows Server 2025 x64 runner uses Rust 1.95.
 and the `x86_64-pc-windows-msvc` target. After fetching locked dependencies, it
 builds and links the default-service `voiceport-windows.exe`, runs `--help` and
 `--smoke-test`, checks the library and binary without the service feature, and
-runs the default-feature Rust tests offline.
+runs the default-feature Rust tests offline. Executor tests observe actual
+Windows file handles and hold the service worker in real TLS teardown. The
+cleanup ownership fixture pauses before the Windows cleanup loop enters so the
+loop can spawn and join workers outside the loader lock. On Unix, the same
+fixture still runs the cleanup loop inside the cleanup thread's TLS destructor.
 
 The job leaves the existing ignored device and NTFS integration tests out of
 execution. The tray and global shortcut, microphone and driver, private NTFS

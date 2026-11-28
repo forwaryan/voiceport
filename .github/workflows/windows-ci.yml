@@ -59,4 +59,4 @@ jobs:
 
       - name: Run default-feature Windows tests offline
         # Keep the native device and NTFS integration tests marked ignored.
-        run: cargo test --locked --offline --target $env:WINDOWS_TARGET -p voiceport-windows --no-fail-fast
+        run: cargo test --locked --offline --target $env:WINDOWS_TARGET -p voiceport-windows --no-fail-fast -- --show-output

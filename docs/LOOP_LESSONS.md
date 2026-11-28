@@ -145,3 +145,11 @@
 - **证据：** [PR #85](https://github.com/forwaryan/voiceport/pull/85) 的 `eb6b257af2af39b4a1f3da328ddb20bf81c2d344` 在独立验收中拒绝旧正式包，缺少引擎内容身份检查，且将可解码的静音 WAV/MP3 归为 `transcription_error`。返修保留旧包隔离签名回执和真实静音的退出与 JSON。
 
 独立观察：1 次（2026-11-27）。
+
+## Windows teardown 夹具须使用实际句柄并避开 loader lock（2026-11-28）
+
+- **规则：** 平台测试用实际文件句柄检查存续和关闭。阻塞 Windows TLS 析构前，先启动并确认发起操作的探针线程。需要启动或 join 工作线程的清理夹具，在 Windows 将等待点放在清理线程进入循环之前。
+- **原因：** 原清理夹具在 Windows 固定返回句柄仍打开，使关闭控制断言必然失败。另一个夹具在真实 TLS 析构等待期间启动探针线程，Windows loader lock 阻止新线程进入。清理循环若在 Windows TLS 析构内 join，也会与该锁冲突。[Rust 1.95.0 `LocalKey` 文档](https://doc.rust-lang.org/1.95.0/std/thread/struct.LocalKey.html#synchronization-in-thread-local-destructors)
+- **证据：** Windows 原生运行中，`cleanup_tls` 的 `control` 在 `!open(fd)` 失败。`tls` 进程报 `thread local panicked on drop`，以 `0xc0000409` 退出。其余 57 项通过，4 项依原标记为 ignored。修正使用 `GetHandleInformation`，在持锁前启动探针，保留真实 service TLS 断言和 Unix cleanup TLS 夹具。[PR #90 首轮原生作业](https://github.com/forwaryan/voiceport/actions/runs/46123660972/job/140913394410)
+
+独立观察：1 次（2026-11-28）。

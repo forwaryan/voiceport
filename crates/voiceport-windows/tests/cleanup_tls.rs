@@ -1,7 +1,10 @@
-#[cfg(unix)]
-use std::os::fd::AsRawFd;
+#[path = "support/file_handle.rs"]
+mod file_handle;
+
+use file_handle::{Handle, is_open};
+#[cfg(not(windows))]
+use std::cell::RefCell;
 use std::{
-    cell::RefCell,
     fs::File,
     io,
     path::{Path, PathBuf},
@@ -18,21 +21,7 @@ use voiceport_windows::{
     actions::{Action, Actions, ManualClipboard},
     executor::{Executor, OsSpawner, Service, ServiceFailure, Spawner},
 };
-#[cfg(unix)]
-unsafe extern "C" {
-    fn fcntl(fd: i32, cmd: i32, ...) -> i32;
-}
-fn open(fd: i32) -> bool {
-    #[cfg(unix)]
-    {
-        unsafe { fcntl(fd, 1) >= 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = fd;
-        true
-    }
-}
+
 struct Sink(Vec<String>);
 impl ManualClipboard for Sink {
     fn copy(&mut self, s: &str) -> Result<(), String> {
@@ -47,14 +36,14 @@ impl Service for Good {
         Ok("cleanup TLS positive".into())
     }
 }
-fn recording(root: &Path, name: &str) -> (Recording, i32) {
+fn recording(root: &Path, name: &str) -> (Recording, Handle) {
     let path = root.join(name);
     let file = File::create_new(&path).unwrap();
-    #[cfg(unix)]
-    let fd = file.as_raw_fd();
-    #[cfg(not(unix))]
-    let fd = -1;
-    (Recording::caller_owned(file, path, Some("en".into())), fd)
+    let handle = file_handle::handle(&file);
+    (
+        Recording::caller_owned(file, path, Some("en".into())),
+        handle,
+    )
 }
 fn until(stage: &str, mut f: impl FnMut() -> bool) {
     let end = Instant::now() + Duration::from_secs(5);
@@ -63,11 +52,13 @@ fn until(stage: &str, mut f: impl FnMut() -> bool) {
         thread::yield_now();
     }
 }
+#[cfg(not(windows))]
 struct Tail {
     work: Option<Box<dyn FnOnce() + Send>>,
     entered: mpsc::SyncSender<()>,
     release: mpsc::Receiver<()>,
 }
+#[cfg(not(windows))]
 impl Drop for Tail {
     fn drop(&mut self) {
         self.entered.send(()).unwrap();
@@ -75,15 +66,22 @@ impl Drop for Tail {
         self.work.take().unwrap()();
     }
 }
+#[cfg(not(windows))]
 thread_local! { static CLEANUP_TAIL:RefCell<Option<Tail>>=const{RefCell::new(None)}; }
-struct CleanupTls(Mutex<Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>>);
-impl Spawner for CleanupTls {
+struct GatedCleanup(Mutex<Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>>);
+impl Spawner for GatedCleanup {
     fn spawn(&self, work: Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>> {
         let (entered, release) = self.0.lock().unwrap().take().unwrap();
-        // The returned actual OS-thread handle covers the supplied loop, including
-        // its execution during thread-local destruction. No detached helper is used.
-        // On Err OsSpawner drops the unstarted closure and all supplied work.
+        // The actual OS-thread handle covers the supplied loop in both cases.
+        // The Windows TLS loader lock would prevent the loop from joining a worker.
         OsSpawner.spawn(Box::new(move || {
+            #[cfg(windows)]
+            {
+                entered.send(()).unwrap();
+                release.recv_timeout(Duration::from_secs(15)).unwrap();
+                work();
+            }
+            #[cfg(not(windows))]
             CLEANUP_TAIL.with(|slot| {
                 *slot.borrow_mut() = Some(Tail {
                     work: Some(work),
@@ -112,13 +110,13 @@ fn run_case(root: PathBuf, mode: String) {
             Arc::new(OsSpawner),
             Arc::new(DiscardCleanup),
         ));
-        let (r, fd) = recording(&root, "discard.wav");
+        let (r, handle) = recording(&root, "discard.wav");
         ui.submit_finalized(r).unwrap();
         until("discarded cleanup initial failure", || {
             ui.act(Action::Poll, &mut sink);
             ui.can_retry()
         });
-        assert!(open(fd));
+        assert!(is_open(handle));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         for _ in 0..8 {
             ui.act(Action::Retry, &mut sink);
@@ -129,18 +127,18 @@ fn run_case(root: PathBuf, mode: String) {
             assert_eq!(calls.load(Ordering::SeqCst), 0);
         }
         assert!(ui.act(Action::Exit, &mut sink));
-        assert!(!open(fd));
+        assert!(!is_open(handle));
         return;
     }
     if mode == "control" {
         let mut ui = Actions::with_executor(Executor::new(Arc::new(Good(calls.clone()))));
-        let (r, fd) = recording(&root, "control.wav");
+        let (r, handle) = recording(&root, "control.wav");
         ui.submit_finalized(r).unwrap();
         until("default cleanup result", || {
             assert!(!ui.act(Action::Poll, &mut sink));
             ui.can_copy()
         });
-        assert!(!open(fd));
+        assert!(!is_open(handle));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         ui.act(Action::Copy, &mut sink);
         assert_eq!(sink.0, ["cleanup TLS positive"]);
@@ -152,16 +150,16 @@ fn run_case(root: PathBuf, mode: String) {
     }
     let (tx, entered) = mpsc::sync_channel(1);
     let (release, gate) = mpsc::sync_channel(1);
-    let cleanup = Arc::new(CleanupTls(Mutex::new(Some((tx, gate)))));
+    let cleanup = Arc::new(GatedCleanup(Mutex::new(Some((tx, gate)))));
     let mut ui = Actions::with_executor(Executor::with_spawners(
         Arc::new(Good(calls.clone())),
         Arc::new(OsSpawner),
         cleanup,
     ));
-    let (r, fd) = recording(&root, "held.wav");
+    let (r, handle) = recording(&root, "held.wav");
     ui.submit_finalized(r).unwrap();
     entered.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert!(open(fd));
+    assert!(is_open(handle));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     let mut owner = Some(ui);
     let mut next = Actions::with_executor(Executor::new(Arc::new(Good(calls.clone()))));
@@ -189,7 +187,7 @@ fn run_case(root: PathBuf, mode: String) {
             }
         })
         .unwrap_or_default();
-    assert!(open(fd));
+    assert!(is_open(handle));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert!(sink.0.is_empty());
     release.send(()).unwrap();
@@ -209,12 +207,13 @@ fn run_case(root: PathBuf, mode: String) {
             }
         });
     }
-    until("held recording file disposal", || !open(fd));
+    until("held recording file disposal", || !is_open(handle));
     let service_calls = calls.load(Ordering::SeqCst);
     assert_eq!(service_calls, if mode == "poll" { 1 } else { 0 });
     assert!(next.act(Action::Exit, &mut sink));
+    let under_tls = !cfg!(windows);
     println!(
-        "{{\"case\":\"cleanup-TLS-{mode}\",\"actual_OS_handle_covers_supplied_loop\":true,\"cleanup_loop_runs_in_owned_TLS_destructor\":true,\"destructor_entered_and_held\":true,\"worker_calls_before_release\":0,\"UI_panicked_before_release\":{panicked},\"panic_text\":\"{panic_text}\",\"File_retained_until_release\":true,\"service_calls_after_release\":{service_calls},\"recording_closed_after_release\":true}}"
+        "{{\"case\":\"cleanup-TLS-{mode}\",\"actual_OS_handle_covers_supplied_loop\":true,\"cleanup_loop_runs_in_owned_TLS_destructor\":{under_tls},\"destructor_entered_and_held\":{under_tls},\"cleanup_gate_entered_and_held\":true,\"worker_calls_before_release\":0,\"UI_panicked_before_release\":{panicked},\"panic_text\":\"{panic_text}\",\"File_retained_until_release\":true,\"service_calls_after_release\":{service_calls},\"recording_closed_after_release\":true}}"
     );
     assert!(!panicked);
     let mut healthy = Actions::with_executor(Executor::new(Arc::new(Good(calls.clone()))));

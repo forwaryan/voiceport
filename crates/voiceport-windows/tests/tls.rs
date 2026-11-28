@@ -1,3 +1,6 @@
+#[path = "support/file_handle.rs"]
+mod file_handle;
+
 use std::{
     cell::RefCell,
     fs::File,
@@ -42,31 +45,14 @@ impl Service for Answer {
         Ok("positive control".into())
     }
 }
-static FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
-#[cfg(unix)]
-unsafe extern "C" {
-    fn fcntl(fd: i32, cmd: i32) -> i32;
-}
-fn descriptor_open(fd: i32) -> bool {
-    #[cfg(unix)]
-    {
-        unsafe { fcntl(fd, 1) >= 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = fd;
-        true
-    }
-}
-fn rec(root: &std::path::Path, name: &str) -> Recording {
+fn rec(root: &std::path::Path, name: &str) -> (Recording, file_handle::Handle) {
     let path = root.join(name);
     let file = File::create_new(&path).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        FD.store(file.as_raw_fd(), std::sync::atomic::Ordering::SeqCst);
-    }
-    Recording::caller_owned(file, path, Some("en".into()))
+    let handle = file_handle::handle(&file);
+    (
+        Recording::caller_owned(file, path, Some("en".into())),
+        handle,
+    )
 }
 fn pump(a: &mut Actions, s: &mut Sink) {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -84,7 +70,9 @@ fn acknowledged_tls_teardown_is_nonblocking() {
     // Actual OsSpawner positive control,not a parallel executor model.
     let mut normal = Actions::with_executor(Executor::new(Arc::new(Answer)));
     let mut sink = Sink(vec![]);
-    normal.submit_finalized(rec(&root, "positive.wav")).unwrap();
+    normal
+        .submit_finalized(rec(&root, "positive.wav").0)
+        .unwrap();
     pump(&mut normal, &mut sink);
     normal.act(Action::Copy, &mut sink);
     assert_eq!(sink.0, ["positive control"]);
@@ -96,42 +84,22 @@ fn acknowledged_tls_teardown_is_nonblocking() {
         "closing-poll",
         "orphan-reap",
     ] {
-        let (entered, at_tail) = mpsc::sync_channel(1);
-        let (release, held) = mpsc::sync_channel(1);
-        let mut ui = Actions::with_executor(Executor::new(Arc::new(TlsService(Mutex::new(Some(
-            Hold {
-                entered,
-                release: held,
-            },
-        ))))));
-        ui.submit_finalized(rec(&root, &format!("{kind}.wav")))
-            .unwrap();
-        at_tail.recv_timeout(Duration::from_secs(5)).unwrap();
-        let held_fd = FD.load(std::sync::atomic::Ordering::SeqCst);
-        assert!(descriptor_open(held_fd));
-        let mut sink = Sink(vec![]);
-        // Acknowledgement proves genuine OS thread-local destruction has begun after
-        // the supplied service and work closure returned;the destructor is still held.
-        if kind == "cancelled-poll" {
-            assert!(!ui.act(Action::Cancel, &mut sink));
-        }
-        if kind == "closing-poll" {
-            assert!(!ui.act(Action::Exit, &mut sink));
-        }
+        let (ready, probe_ready) = mpsc::sync_channel(1);
+        let (start_probe, probe_input) = mpsc::sync_channel::<Option<(Actions, Sink)>>(1);
         let (started, observed) = mpsc::sync_channel(1);
         let (done, result) = mpsc::sync_channel(1);
         let root2 = root.clone();
-        let mode = kind.to_owned();
-        let owner = if kind == "orphan-reap" {
-            let t = Instant::now();
-            drop(ui);
-            assert!(t.elapsed() < Duration::from_secs(1));
-            thread::spawn(move || {
+        // A Windows TLS destructor holds the loader lock and blocks thread startup.
+        // Start the probe before creating the service worker, then gate its action.
+        let owner = thread::spawn(move || {
+            ready.send(()).unwrap();
+            let input = probe_input.recv().unwrap();
+            if kind == "orphan-reap" {
                 let mut next = Actions::with_executor(Executor::new(Arc::new(Answer)));
                 let mut s = Sink(vec![]);
                 started.send(()).unwrap();
                 let t = Instant::now();
-                next.submit_finalized(rec(&root2, "orphan-next.wav"))
+                next.submit_finalized(rec(&root2, "orphan-next.wav").0)
                     .unwrap();
                 done.send(t.elapsed()).unwrap();
                 let deadline = Instant::now() + Duration::from_secs(5);
@@ -146,18 +114,17 @@ fn acknowledged_tls_teardown_is_nonblocking() {
                 next.act(Action::Copy, &mut s);
                 assert_eq!(s.0, ["positive control"]);
                 assert!(next.act(Action::Exit, &mut s));
-            })
-        } else {
-            thread::spawn(move || {
+            } else {
+                let (mut ui, mut sink) = input.unwrap();
                 started.send(()).unwrap();
                 let t = Instant::now();
                 assert!(!ui.act(Action::Poll, &mut sink));
                 done.send(t.elapsed()).unwrap();
-                if mode == "ordinary-poll" {
+                if kind == "ordinary-poll" {
                     pump(&mut ui, &mut sink);
                     ui.act(Action::Copy, &mut sink);
                     assert_eq!(sink.0, ["current TLS result"]);
-                } else if mode == "closing-poll" {
+                } else if kind == "closing-poll" {
                     let until = Instant::now() + Duration::from_secs(5);
                     while !ui.act(Action::Poll, &mut sink) {
                         assert!(Instant::now() < until);
@@ -175,15 +142,46 @@ fn acknowledged_tls_teardown_is_nonblocking() {
                     assert!(sink.0.is_empty());
                 }
                 assert!(ui.act(Action::Exit, &mut sink));
-            })
+            }
+        });
+        probe_ready.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        let (entered, at_tail) = mpsc::sync_channel(1);
+        let (release, held) = mpsc::sync_channel(1);
+        let mut ui = Actions::with_executor(Executor::new(Arc::new(TlsService(Mutex::new(Some(
+            Hold {
+                entered,
+                release: held,
+            },
+        ))))));
+        let (recording, held_handle) = rec(&root, &format!("{kind}.wav"));
+        ui.submit_finalized(recording).unwrap();
+        // Only exercise the action after the real TLS destructor acknowledges entry.
+        at_tail.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(file_handle::is_open(held_handle));
+        let mut sink = Sink(vec![]);
+        if kind == "cancelled-poll" {
+            assert!(!ui.act(Action::Cancel, &mut sink));
+        }
+        if kind == "closing-poll" {
+            assert!(!ui.act(Action::Exit, &mut sink));
+        }
+        let input = if kind == "orphan-reap" {
+            let t = Instant::now();
+            drop(ui);
+            assert!(t.elapsed() < Duration::from_secs(1));
+            None
+        } else {
+            Some((ui, sink))
         };
+        start_probe.send(input).unwrap();
         observed.recv_timeout(Duration::from_secs(5)).unwrap();
         let response = result.recv_timeout(Duration::from_secs(1));
         let responsive = response.is_ok();
         if !responsive {
             failures += 1;
         }
-        assert!(descriptor_open(held_fd));
+        assert!(file_handle::is_open(held_handle));
         release.send(()).unwrap();
         let elapsed =
             response.unwrap_or_else(|_| result.recv_timeout(Duration::from_secs(5)).unwrap());
