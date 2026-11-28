@@ -153,3 +153,11 @@
 - **证据：** Windows 原生运行中，`cleanup_tls` 的 `control` 在 `!open(fd)` 失败。`tls` 进程报 `thread local panicked on drop`，以 `0xc0000409` 退出。其余 57 项通过，4 项依原标记为 ignored。修正使用 `GetHandleInformation`，在持锁前启动探针，保留真实 service TLS 断言和 Unix cleanup TLS 夹具。[PR #90 首轮原生作业](https://github.com/forwaryan/voiceport/actions/runs/46123660972/job/140913394410)
 
 独立观察：1 次（2026-11-28）。
+
+## Cargo 输入变更后核对原生许可证清单（2026-11-28）
+
+- Cargo 锁文件或清单变更后，使用仓库生成器刷新原生许可证清单，检查差异，并离线校验清单和打包用例。[打包流程](PACKAGING.md#product-inputs-and-licence-materials)
+- 清单记录 Cargo 构建输入的摘要。为已有锁定依赖新增直接引用也会改变这些摘要，Rust 构建和转写测试通过时打包仍会拒绝旧清单。
+- PR #91 的 `4a907c3` 通过 release 构建，`packaging-bundle` 在 `RealBundleTests.setUpClass` 报 `source license manifest differs from locked native graph/reviewed selections/cached source materials`。离线重算和校验确认本次只需更新两个 Cargo 输入的摘要，162 个依赖记录及 971 份许可证材料内容一致。[PR #91 macOS 作业](https://github.com/forwaryan/voiceport/actions/runs/46148573821/job/140989904484)
+
+独立观察：1 次（2026-11-28）。
