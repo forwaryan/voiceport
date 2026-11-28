@@ -526,12 +526,8 @@ pub(crate) fn validate_runtime_for(
     }
     Ok(())
 }
-pub(crate) fn validate_runtime(directory: &Path, architecture: &str) -> Result<(), String> {
-    if architecture != "aarch64" {
-        return Err("本地模型目前仅支持 Apple Silicon arm64。".into());
-    }
-    let version = runtime_version(directory)?;
-    let ort = match version.as_str() {
+pub(crate) fn runtime_libraries(version: &str) -> Result<[&'static str; 2], String> {
+    let ort = match version {
         RUNTIME_VERSION => "libonnxruntime.dylib",
         LEGACY_RUNTIME_VERSION => "libonnxruntime.1.23.2.dylib",
         _ => {
@@ -540,7 +536,13 @@ pub(crate) fn validate_runtime(directory: &Path, architecture: &str) -> Result<(
             ));
         }
     };
-    for name in ["libsherpa-onnx-c-api.dylib", ort] {
+    Ok([ort, "libsherpa-onnx-c-api.dylib"])
+}
+pub(crate) fn validate_runtime(directory: &Path, architecture: &str) -> Result<(), String> {
+    if architecture != "aarch64" {
+        return Err("本地模型目前仅支持 Apple Silicon arm64。".into());
+    }
+    for name in runtime_libraries(&runtime_version(directory)?)? {
         let path = directory.join(name);
         readable(&path)?;
         let mut header = [0; 8];

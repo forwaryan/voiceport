@@ -50,6 +50,8 @@ struct Job {
     proxy: Option<String>,
     cancel: CancellationToken,
     source: SessionSource,
+    // The worker can outlive the controller's reference after cancellation.
+    _app_engine: Option<Arc<tempfile::TempDir>>,
     incoming: Option<Incoming>,
     partial: PartialSlot,
     custody: Custody,
@@ -291,6 +293,7 @@ enum StartProfile<'a> {
 
 struct GuiProfile {
     source: SessionSource,
+    app_engine: Option<tempfile::TempDir>,
     language: String,
     context: GuiResultContext,
     output: OutputPipeline,
@@ -314,6 +317,7 @@ pub struct Controller {
     pub(crate) file_jobs: crate::file_transcription::Jobs,
     discovery: Option<Receiver<Catalog>>,
     recorded_source: SessionSource,
+    recorded_app_engine: Option<Arc<tempfile::TempDir>>,
     partial: PartialSlot,
     #[cfg(test)]
     recorder: Recorder,
@@ -433,6 +437,7 @@ impl Controller {
             file_jobs: crate::file_transcription::Jobs::default(),
             discovery: None,
             recorded_source: SessionSource::ChatGpt,
+            recorded_app_engine: None,
             partial: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             recorder: Recorder::new(),
@@ -700,6 +705,11 @@ impl Controller {
             });
         }
     }
+    fn discard_recording(&mut self) {
+        self.recording = None;
+        self.recorded_app_engine = None;
+    }
+
     fn cancel_capture(&mut self) {
         if self.capture.take().is_some() {
             self.seal_gui_capture(Some(CaptureDiagnostics::default()));
@@ -824,7 +834,7 @@ impl Controller {
     }
     fn mark_start_rejected(&mut self, message: &str) {
         if self.interrupted_recording.take().is_some() {
-            self.recording = None;
+            self.discard_recording();
         }
         self.state.phase = Phase::Failed;
         self.state.retry_available = false;
@@ -982,52 +992,66 @@ impl Controller {
             |delivery| delivery.begin_in_application_reporting(None, None),
         )
     }
+    fn app_rule_for_target(&self, target: Option<&ApplicationTarget>) -> AppRuleSelection<'_> {
+        let bundle_id = target
+            .filter(|target| target.pid > 0 && target.pid as u32 != std::process::id())
+            .map(|target| target.bundle.as_str());
+        self.workflows
+            .app_rules
+            .selection(bundle_id, &self.workflows.presets)
+    }
+
+    pub(crate) fn requires_app_local_source(&self, target: Option<&ApplicationTarget>) -> bool {
+        matches!(
+            self.app_rule_for_target(target),
+            AppRuleSelection::Application {
+                local_source: true,
+                ..
+            } | AppRuleSelection::MissingLocalScene(_)
+        )
+    }
+
     fn gui_profile(
         &mut self,
         target: Option<&ApplicationTarget>,
         automatic: bool,
     ) -> Option<GuiProfile> {
-        let bundle_id = target
-            .filter(|target| target.pid > 0 && target.pid as u32 != std::process::id())
-            .map(|target| target.bundle.as_str());
-        let rules = &self.workflows.app_rules;
         let (dictionary, output) = (
             self.workflows.dictionary_enabled,
             self.workflows.output_rules,
         );
-        let (dictionary, output, label, local_preset) =
-            match rules.selection(bundle_id, &self.workflows.presets) {
-                AppRuleSelection::Global => (
-                    dictionary,
-                    output,
-                    rules.enabled.then(|| "全局规则".into()),
-                    None,
-                ),
-                AppRuleSelection::Manual(name) => (
-                    dictionary,
-                    output,
-                    Some(format!("手动场景「{name}」")),
-                    None,
-                ),
-                AppRuleSelection::Application {
-                    preset,
-                    local_source,
-                } => (
-                    preset.dictionary_enabled,
-                    preset.output_rules,
-                    Some(format!("场景「{}」", preset.name)),
-                    local_source.then_some(preset),
-                ),
-                AppRuleSelection::MissingLocalScene(name) => {
-                    let error =
-                        format!("场景「{name}」已不存在。请检查应用输出规则；不会改用全局来源。");
-                    self.reject_app_local_start(BlockReason::SourceUnavailable, error, automatic);
-                    return None;
-                }
-            };
-        let (source, source_id, language) = if let Some(preset) = local_preset {
-            match preset.app_local_source(&self.catalog) {
-                Ok(source) => (source, &preset.source_id, &preset.language),
+        let (dictionary, output, label, local_preset) = match self.app_rule_for_target(target) {
+            AppRuleSelection::Global => (
+                dictionary,
+                output,
+                self.workflows.app_rules.enabled.then(|| "全局规则".into()),
+                None,
+            ),
+            AppRuleSelection::Manual(name) => (
+                dictionary,
+                output,
+                Some(format!("手动场景「{name}」")),
+                None,
+            ),
+            AppRuleSelection::Application {
+                preset,
+                local_source,
+            } => (
+                preset.dictionary_enabled,
+                preset.output_rules,
+                Some(format!("场景「{}」", preset.name)),
+                local_source.then_some(preset),
+            ),
+            AppRuleSelection::MissingLocalScene(name) => {
+                let error =
+                    format!("场景「{name}」已不存在。请检查应用输出规则；不会改用全局来源。");
+                self.reject_app_local_start(BlockReason::SourceUnavailable, error, automatic);
+                return None;
+            }
+        };
+        let (source, source_id, language, app_engine) = if let Some(preset) = local_preset {
+            match preset.prepare_app_local_source(&self.catalog) {
+                Ok((source, engine)) => (source, &preset.source_id, &preset.language, Some(engine)),
                 Err((reason, error)) => {
                     self.reject_app_local_start(reason, error, automatic);
                     return None;
@@ -1039,7 +1063,7 @@ impl Controller {
                 .snapshot(&self.source_id)
                 .and_then(SessionSource::pin)
             {
-                Ok(source) => (source, &self.source_id, &self.language),
+                Ok(source) => (source, &self.source_id, &self.language, None),
                 Err(error) => {
                     self.reject_gui_start(&error, BlockReason::SourceUnavailable, automatic);
                     return None;
@@ -1056,6 +1080,7 @@ impl Controller {
         context.app_rule = label;
         Some(GuiProfile {
             source,
+            app_engine,
             language: language.clone(),
             context,
             output: self.workflows.output_for_session(dictionary, output),
@@ -1074,16 +1099,17 @@ impl Controller {
             self.message = audio::AUDIO_BUSY.into();
             return None;
         }
-        let (source, language, gui_settings) = match profile {
-            StartProfile::Pinned(source, language) => (source, language, None),
+        let (source, language, app_engine, gui_settings) = match profile {
+            StartProfile::Pinned(source, language) => (source, language, None, None),
             StartProfile::Gui(target) => {
                 let GuiProfile {
                     source,
+                    app_engine,
                     language,
                     context,
                     output,
                 } = self.gui_profile(target, automatic)?;
-                (source, language, Some((context, output)))
+                (source, language, app_engine, Some((context, output)))
             }
         };
         let gui = gui_settings.is_some();
@@ -1137,11 +1163,12 @@ impl Controller {
             OutputPipeline::default()
         };
         self.cancel_capture();
-        self.recording = None;
+        self.discard_recording();
         self.interrupted_recording = None;
         self.testing = false;
         self.recorded_language = language;
         self.recorded_source = source;
+        self.recorded_app_engine = app_engine.map(Arc::new);
         self.recorded_microphone_uid = self.microphone_uid.clone();
         self.allow_delivery = automatic;
         let use_speech = self.recorded_source.uses_system_speech();
@@ -1182,7 +1209,7 @@ impl Controller {
         self.detach_gui_delivery();
         self.gui_diagnostics.abandon_stages();
         self.delivery.clear();
-        self.recording = None;
+        self.discard_recording();
         self.interrupted_recording = None;
         self.latest_output.clear_notice();
         self.transcript.clear();
@@ -1405,7 +1432,7 @@ impl Controller {
         }
         if !self.audio_lane.microphone_authorized() {
             self.interrupted_recording = None;
-            self.recording = None;
+            self.discard_recording();
             self.state.retry_available = false;
             self.message = "无法确认麦克风权限；未转写录音片段。".into();
             return false;
@@ -1484,6 +1511,7 @@ impl Controller {
                 },
                 cancel: cancel.clone(),
                 source: self.recorded_source.clone(),
+                _app_engine: self.recorded_app_engine.clone(),
                 incoming,
                 partial: self.partial.clone(),
                 incomplete: self.fragment_generation(self.state.generation()),
@@ -1703,7 +1731,7 @@ impl Controller {
             active.cancel.cancel();
             self.message = "正在取消并释放录音…".into();
         } else {
-            self.recording = None;
+            self.discard_recording();
             self.message = "听写已取消。".into();
         }
         self.wait_for_delivery();
@@ -1792,6 +1820,7 @@ impl Controller {
         );
         self.seal_gui_capture(Some(CaptureDiagnostics::default()));
         self.cancel_capture();
+        self.discard_recording();
         self.gui_diagnostics.abandon_stages();
         self.delivery.clear();
         self.wait_for_delivery();
@@ -1947,7 +1976,7 @@ impl Controller {
     fn finish_stopping(&mut self) {
         self.cancel_capture();
         if self.interrupted_recording.is_none() {
-            self.recording = None;
+            self.discard_recording();
         }
         if let Some(error) = self.stop_failure.take() {
             self.state.phase = Phase::Failed;
@@ -2065,6 +2094,7 @@ impl Controller {
                     }
                     if !microphone {
                         self.state.permissions(generation, false);
+                        self.discard_recording();
                         self.message = "请在系统设置中允许 VoicePort 使用麦克风。".into();
                         self.report_gui_transcription(
                             TranscriptionState::NotStarted,
@@ -2250,7 +2280,7 @@ impl Controller {
                             self.message = self.delivery_status.clone();
                         }
                         self.cancel_capture();
-                        self.recording = None;
+                        self.discard_recording();
                     }
                     Err(error) => {
                         self.message = error.message;

@@ -12,6 +12,23 @@ use std::{
 };
 use voiceport_core::CancellationToken;
 
+#[path = "local_runtime/app_engine.rs"]
+mod app_engine;
+#[cfg(all(test, debug_assertions, target_arch = "aarch64"))]
+pub(crate) use app_engine::check_app_engine;
+#[cfg(all(debug_assertions, target_arch = "aarch64"))]
+pub(crate) use app_engine::fixture_catalog;
+pub(crate) use app_engine::stage_app_engine;
+
+fn runtime_staging_directory() -> Result<tempfile::TempDir, String> {
+    use std::{fs::Permissions, os::unix::fs::PermissionsExt};
+    tempfile::Builder::new()
+        .prefix("voiceport-runtime-")
+        .permissions(Permissions::from_mode(0o700))
+        .tempdir_in("/private/tmp")
+        .map_err(|error| error.to_string())
+}
+
 #[cfg(target_arch = "aarch64")]
 #[path = "local_runtime/verified.rs"]
 mod verified;

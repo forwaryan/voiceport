@@ -343,40 +343,33 @@ fn app_local_rejects_unavailable_and_external_sources_without_dispatch() {
 #[cfg(all(debug_assertions, target_arch = "aarch64"))]
 pub(super) fn verify_app_local_delivery_and_retry() {
     use crate::{
+        audio::devices::fixture::Backend,
         controller::recent_dictations::fixture::{
             ReceiverState, SyntheticDictations, SyntheticTarget,
         },
         delivery::model::{Snapshot, TextRange},
-        local_models::{PARAFORMER, title},
+        dictation_app_rules::AppRules,
+        local_models::{ModelKind, PARAFORMER, title},
+        local_runtime::{check_app_engine, fixture_catalog},
         storage::{NAMESPACE, Storage},
     };
     use std::{cell::RefCell, fs, rc::Rc};
     assert!(objc2::MainThreadMarker::new().is_some());
     let temp = tempfile::tempdir().unwrap();
-    let runtime = temp.path().join("runtime");
-    let model_dir = temp.path().join("paraformer-bilingual-zh-en");
-    fs::create_dir(&model_dir).unwrap();
-    fs::create_dir(&runtime).unwrap();
-    fs::write(runtime.join("package.json"), br#"{"version":"1.12.37"}"#).unwrap();
-    for name in ["libsherpa-onnx-c-api.dylib", "libonnxruntime.1.23.2.dylib"] {
-        fs::write(runtime.join(name), [0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0, 0, 1]).unwrap();
-    }
-    for name in ["encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt"] {
-        fs::write(model_dir.join(name), [1]).unwrap();
-    }
+    let (catalog, installed_library) = fixture_catalog(temp.path());
+    let library_bytes = fs::read(&installed_library).unwrap();
     let storage = Storage::at(temp.path().canonicalize().unwrap().join(NAMESPACE));
     for retry in [false, true] {
         let mut rig = SyntheticDictations::new();
         let c = &mut rig.controller;
-        c.catalog = Catalog::discover(temp.path(), &runtime, PARAFORMER, "aarch64");
+        c.catalog = catalog.clone();
         c.source_id = "unavailable-global".into();
         c.language = "en".into();
-        let expected = c.catalog.snapshot(PARAFORMER).unwrap();
         set_local_rule(c, PARAFORMER, "zh", true);
         let saved = serde_json::to_string(&c.workflows).unwrap();
         c.workflows = Workflows::load(Some(&saved)).unwrap();
         if !retry {
-            let backend = crate::audio::devices::fixture::Backend::new(storage.clone());
+            let backend = Backend::new(storage.clone());
             let asr = c.install_audio_fixture(backend.clone());
             c.automatic = false;
             c.start_from_shortcut(Some(&editor()));
@@ -419,6 +412,30 @@ pub(super) fn verify_app_local_delivery_and_retry() {
         assert!(!speech);
         assert_eq!(c.source_id, "unavailable-global");
         assert_eq!(c.language, "en");
+        let expected = c.recorded_source.clone();
+        let SessionSource::Local(ref model) = expected else {
+            panic!("configured native source must reach the worker");
+        };
+        let engine = c.recorded_app_engine.as_ref().unwrap().clone();
+        let frozen_library = engine.path().join(installed_library.file_name().unwrap());
+        assert_eq!(model.kind, ModelKind::Paraformer);
+        assert_eq!(
+            model.directory,
+            temp.path().join("paraformer-bilingual-zh-en")
+        );
+        assert_eq!(model.runtime, engine.path());
+        assert_ne!(frozen_library, installed_library);
+        if retry {
+            // A previously accepted installation can become corrupt even while its catalog entry stays ready.
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&installed_library)
+                .unwrap()
+                .set_len(8)
+                .unwrap();
+        }
+        assert_eq!(fs::read(&frozen_library).unwrap(), library_bytes);
+        check_app_engine(engine.path()).unwrap();
         let shown = c.gui_result_context().source.clone();
         assert_eq!(
             shown.as_deref(),
@@ -435,6 +452,8 @@ pub(super) fn verify_app_local_delivery_and_retry() {
             assert_eq!(job.language, "zh");
             assert!(job.proxy.is_none() && job.incoming.is_none());
             assert!(Arc::ptr_eq(job.recording.as_ref().unwrap(), &recording));
+            assert!(Arc::ptr_eq(job._app_engine.as_ref().unwrap(), &engine));
+            check_app_engine(engine.path()).unwrap();
         };
         check_job(queued.try_recv().unwrap(), generation);
         c.source_id = CHATGPT.into();
@@ -487,9 +506,44 @@ pub(super) fn verify_app_local_delivery_and_retry() {
             assert_eq!(target.snapshot.text, "A中🙂B");
         }
         assert!(queued.try_recv().is_err());
+        assert!(c.recorded_app_engine.is_none());
+        drop(engine);
+        assert!(!frozen_library.exists());
     }
     println!(
-        "app-local source: native model and language frozen; synthetic target received one formatted final, retry kept the original job and delivered nothing"
+        "app-local source: native model, language and engine frozen; synthetic target received one final, retry used the same engine after installation damage with zero writes"
+    );
+
+    let mut rejected = Controller::new();
+    rejected.catalog = catalog;
+    set_local_rule(&mut rejected, PARAFORMER, "zh", false);
+    let rules = &rejected.workflows.app_rules;
+    let save_error = AppRules::from_editor(
+        true,
+        &rules.editor_text(),
+        &rejected.workflows.presets,
+        &rejected.catalog,
+    )
+    .unwrap_err();
+    assert!(save_error.contains("识别引擎") && save_error.contains("无法加载"));
+    let SessionSource::Local(model) = rejected.catalog.snapshot(PARAFORMER).unwrap() else {
+        unreachable!();
+    };
+    model.validate().unwrap(); // The legacy header-only discovery still sees this entry.
+    let backend = Backend::new(storage);
+    let asr = rejected.install_audio_fixture(backend.clone());
+    rejected.automatic = false;
+    rejected.start_from_shortcut(Some(&editor()));
+    let receipt = rejected.gui_dictation_receipt().unwrap();
+    assert_eq!(receipt.transcription, TranscriptionState::NotStarted);
+    assert_eq!(receipt.block_reason, Some(BlockReason::SourceUnavailable));
+    assert!(rejected.app_source_issue().unwrap().1.contains("无法加载"));
+    assert!(rejected.events.try_recv().is_err());
+    rejected.poll();
+    assert_eq!(backend.counts(), (0, 0, 0, 0));
+    asr.assert_no_job();
+    println!(
+        "app-local engine: damaged installed library refused save and start before permission, device open or ASR"
     );
 }
 

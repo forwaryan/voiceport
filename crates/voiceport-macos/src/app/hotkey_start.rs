@@ -203,18 +203,33 @@ impl Delegate {
             "dispatch_pid":null, "outcome":"checking",
         }));
         if !automatic {
-            if let Some(trace) = self.ivars().last_start_trace.borrow_mut().as_mut() {
-                trace["outcome"] = "panel_only".into();
-            }
+            let issue = if event.at.elapsed() >= input_target::START_DEADLINE {
+                Some((
+                    "expired_keypress",
+                    "本次按键等待过久，已停止启动，请重新开始。",
+                ))
+            } else if event
+                .application
+                .as_ref()
+                .is_none_or(|app| app.isTerminated())
+            {
+                Some(("target_exited", "按键时的目标应用已退出或无法确认。"))
+            } else {
+                None
+            };
             self.with_controller(|c| {
-                let target = event.target.as_ref().filter(|_| {
-                    c.workflows.app_rules.enabled
-                        && event.at.elapsed() < input_target::START_DEADLINE
-                        && event
-                            .application
-                            .as_ref()
-                            .is_some_and(|app| !app.isTerminated())
-                });
+                let captured = event.target.as_ref();
+                // Dropping a known local binding would authorize the global source.
+                if let Some((code, message)) = issue
+                    && c.requires_app_local_source(captured)
+                {
+                    self.reject_hotkey_start(c, code, message);
+                    return;
+                }
+                if let Some(trace) = self.ivars().last_start_trace.borrow_mut().as_mut() {
+                    trace["outcome"] = "panel_only".into();
+                }
+                let target = captured.filter(|_| c.workflows.app_rules.enabled && issue.is_none());
                 self.start_from_press(c, event.stroke, held_mode, |c| {
                     c.start_from_shortcut(target)
                 })
@@ -287,10 +302,14 @@ impl Delegate {
     }
 
     fn reject_hotkey(&self, code: &str, message: &str) {
+        self.with_controller(|c| self.reject_hotkey_start(c, code, message));
+    }
+
+    fn reject_hotkey_start(&self, c: &mut Controller, code: &str, message: &str) {
         if let Some(trace) = self.ivars().last_start_trace.borrow_mut().as_mut() {
             trace["outcome"] = code.into();
         }
-        self.with_controller(|c| self.start_with_trace(c, |c| c.reject_start(message)));
+        self.start_with_trace(c, |c| c.reject_start(message));
     }
 
     fn route_hotkey(&self, event: KeyPress, first: bool, held_mode: bool) {
@@ -528,6 +547,182 @@ pub(super) fn isolated_event_regression(mtm: MainThreadMarker) {
     assert!(!delegate.cancel_shortcut_session());
     println!(
         "shortcut_events: synthetic queue verified short tap, released foreground handoff, preparation cancellation and stale release; no system input or recording"
+    );
+    #[cfg(all(debug_assertions, target_arch = "aarch64"))]
+    app_local_toggle_regression(mtm);
+}
+
+#[cfg(all(debug_assertions, target_arch = "aarch64"))]
+fn app_local_toggle_regression(mtm: MainThreadMarker) {
+    use crate::{
+        audio::devices::fixture::Backend,
+        dictation_app_rules::AppRules,
+        dictation_workflows::{Preset, Workflows},
+        local_models::{CHATGPT, PARAFORMER, title},
+        local_runtime::fixture_catalog,
+        storage::{NAMESPACE, Storage},
+    };
+    use std::time::{Duration, Instant};
+    use voiceport_control::{DictationBlockReason, TranscriptionState};
+
+    let _application = NSApplication::sharedApplication(mtm);
+    let running = NSRunningApplication::currentApplication();
+    assert!(!running.isTerminated());
+    let temp = tempfile::tempdir().unwrap();
+    let (catalog, _) = fixture_catalog(temp.path());
+    let storage = Storage::at(temp.path().canonicalize().unwrap().join(NAMESPACE));
+    let captured = ApplicationTarget {
+        pid: i32::MAX,
+        bundle: "com.example.Editor".into(),
+    };
+    let other = ApplicationTarget {
+        bundle: "com.example.Other".into(),
+        ..captured.clone()
+    };
+    let mut workflows = Workflows::load(Some(
+        &json!({"presets":[{
+            "name":"本机编辑", "source_id":PARAFORMER, "language":"zh", "dictionary_enabled":false
+        }]})
+        .to_string(),
+    ))
+    .unwrap();
+    workflows.app_rules = AppRules::from_editor(
+        true,
+        "本机 com.example.Editor → 本机编辑",
+        &workflows.presets,
+        &catalog,
+    )
+    .unwrap();
+    let manual_scene = Preset {
+        name: "手动".into(),
+        source_id: CHATGPT.into(),
+        language: "en".into(),
+        dictionary_enabled: false,
+        output_rules: Default::default(),
+    };
+    let deadline = input_target::START_DEADLINE;
+    for (target, age, application, manual, expected) in [
+        (
+            Some(&captured),
+            Duration::ZERO,
+            Some(&running),
+            false,
+            Ok("场景「本机编辑」"),
+        ),
+        (
+            Some(&captured),
+            deadline,
+            Some(&running),
+            false,
+            Err("expired_keypress"),
+        ),
+        (
+            Some(&captured),
+            Duration::ZERO,
+            None,
+            false,
+            Err("target_exited"),
+        ),
+        (None, deadline, None, false, Ok("全局规则")),
+        (
+            Some(&other),
+            deadline,
+            Some(&running),
+            false,
+            Ok("全局规则"),
+        ),
+        (
+            Some(&captured),
+            deadline,
+            Some(&running),
+            true,
+            Ok("手动场景「手动」"),
+        ),
+    ] {
+        let delegate = Delegate::new(mtm);
+        delegate.ivars().shortcut_mode.set(ShortcutMode::Toggle);
+        let mut controller = Controller::new();
+        controller.automatic = false;
+        controller.language = "en".into();
+        controller.catalog = catalog.clone();
+        controller.workflows = workflows.clone();
+        if manual {
+            controller
+                .workflows
+                .add_preset(manual_scene.clone())
+                .unwrap();
+            controller.workflows.apply_preset_output(&manual_scene);
+        }
+        let backend = Backend::new(storage.clone());
+        let asr = controller.install_audio_fixture(backend.clone());
+        delegate.ivars().controller.replace(Some(controller));
+        let (tx, rx) = std::sync::mpsc::channel();
+        delegate.ivars().hotkey_rx.replace(Some(rx));
+        tx.send(HotKeyEvent::Press(KeyPress {
+            at: Instant::now() - age,
+            stroke: Stroke::fixture_stroke(1),
+            application: application.cloned(),
+            target: target.cloned(),
+        }))
+        .unwrap();
+        delegate.poll_toggle_shortcut();
+        delegate.with_controller(|c| match expected {
+            Err(code) => {
+                assert_eq!(c.state.phase, Phase::Failed);
+                assert_eq!(
+                    delegate.ivars().last_start_trace.borrow().as_ref().unwrap()["outcome"],
+                    code
+                );
+                let receipt = c.gui_dictation_receipt().unwrap();
+                assert_eq!(receipt.transcription, TranscriptionState::NotStarted);
+                assert_eq!(
+                    receipt.block_reason,
+                    Some(DictationBlockReason::StartRejected)
+                );
+                c.poll_with_capture(
+                    |_| true,
+                    |_, _, _, _| panic!("rejected shortcut entered capture"),
+                );
+            }
+            Ok(rule) => {
+                assert_eq!(c.state.phase, Phase::Permissions);
+                assert_eq!(c.active_app_rule(), Some(rule));
+                let local = rule == "场景「本机编辑」";
+                assert_eq!(
+                    c.active_app_source(),
+                    local.then(|| (title(PARAFORMER), "zh"))
+                );
+                if !local {
+                    assert!(
+                        c.gui_result_context()
+                            .source
+                            .as_ref()
+                            .unwrap()
+                            .starts_with("ChatGPT · English")
+                    );
+                }
+                let mut admitted = false;
+                c.poll_with_capture(
+                    |_| true,
+                    |_, speech, _, incoming| {
+                        assert!(!speech);
+                        assert_eq!(incoming.is_some(), local);
+                        admitted = true;
+                        Err("synthetic probe stops before opening a capture device".into())
+                    },
+                );
+                assert!(admitted);
+                assert_eq!(
+                    c.gui_dictation_receipt().unwrap().block_reason,
+                    Some(DictationBlockReason::CaptureFailed)
+                );
+            }
+        });
+        assert_eq!(backend.counts(), (0, 0, 0, 0));
+        asr.assert_no_job();
+    }
+    println!(
+        "app-local shortcut: known stale or unavailable targets refused before capture; fresh local, unknown, unmatched and manual controls passed"
     );
 }
 

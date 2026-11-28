@@ -144,7 +144,7 @@ impl AppRules {
                 if enabled {
                     let preset = presets.iter().find(|preset| preset.name == scene).unwrap();
                     preset
-                        .app_local_source(catalog)
+                        .check_app_local_source(catalog)
                         .map_err(|(_, error)| format!("第 {line_number} 行：{error}"))?;
                 }
                 next.local_sources.insert(id.into());
