@@ -1,23 +1,30 @@
-//! Local application-to-scene bindings, independent of source and delivery.
-use crate::dictation_workflows::Preset;
+//! Exact application-to-scene bindings. Local source selection is opt-in per binding.
+use crate::{dictation_workflows::Preset, local_models::Catalog};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_RULES: usize = 32;
+const LOCAL_PREFIX: &str = "本机 ";
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(default)]
 pub(crate) struct AppRules {
     pub(crate) enabled: bool,
     bindings: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    local_sources: BTreeSet<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     manual_scene: Option<String>,
 }
 
 pub(crate) enum AppRuleSelection<'a> {
     Global,
-    Application(&'a Preset),
+    Application {
+        preset: &'a Preset,
+        local_source: bool,
+    },
     Manual(&'a str),
+    MissingLocalScene(&'a str),
 }
 
 pub(crate) fn valid_bundle_id(id: &str) -> bool {
@@ -51,18 +58,22 @@ impl AppRules {
         {
             return AppRuleSelection::Manual(name);
         }
-        self.matched_scene(bundle_id, presets)
-            .map_or(AppRuleSelection::Global, AppRuleSelection::Application)
-    }
-
-    fn matched_scene<'a>(
-        &self,
-        bundle_id: Option<&str>,
-        presets: &'a [Preset],
-    ) -> Option<&'a Preset> {
-        let id = bundle_id.filter(|id| self.enabled && valid_bundle_id(id))?;
-        let scene = self.bindings.get(id)?;
-        presets.iter().find(|preset| &preset.name == scene)
+        let Some(id) = bundle_id.filter(|id| self.enabled && valid_bundle_id(id)) else {
+            return AppRuleSelection::Global;
+        };
+        let Some(scene) = self.bindings.get(id) else {
+            return AppRuleSelection::Global;
+        };
+        let local_source = self.local_sources.contains(id);
+        match presets.iter().find(|preset| &preset.name == scene) {
+            Some(preset) => AppRuleSelection::Application {
+                preset,
+                local_source,
+            },
+            // An inconsistent saved binding must not silently use a remote default.
+            None if local_source => AppRuleSelection::MissingLocalScene(scene),
+            None => AppRuleSelection::Global,
+        }
     }
 
     pub(crate) fn assign(
@@ -80,16 +91,23 @@ impl AppRules {
         if self.bindings.len() >= MAX_RULES && !self.bindings.contains_key(bundle_id) {
             return Err(format!("最多保存 {MAX_RULES} 条应用输出规则。"));
         }
-        self.bindings.insert(bundle_id.into(), scene.into());
+        let previous = self.bindings.insert(bundle_id.into(), scene.into());
+        if previous.as_deref() != Some(scene) {
+            // An output-only assignment does not authorize a different scene's source.
+            self.local_sources.remove(bundle_id);
+        }
         Ok(())
     }
 
     pub(crate) fn remove(&mut self, bundle_id: &str) -> bool {
+        self.local_sources.remove(bundle_id);
         self.bindings.remove(bundle_id).is_some()
     }
 
     pub(crate) fn remove_scene(&mut self, name: &str) {
         self.bindings.retain(|_, scene| scene != name);
+        self.local_sources
+            .retain(|id| self.bindings.contains_key(id));
         if self.manual_scene.as_deref() == Some(name) {
             self.manual_scene = None;
         }
@@ -99,6 +117,7 @@ impl AppRules {
         enabled: bool,
         text: &str,
         presets: &[Preset],
+        catalog: &Catalog,
     ) -> Result<Self, String> {
         let mut next = Self {
             enabled,
@@ -113,11 +132,23 @@ impl AppRules {
                 .split_once('→')
                 .ok_or_else(|| format!("第 {line_number} 行应使用 Bundle ID → 场景名称。"))?;
             let id = id.trim();
+            let local = id.strip_prefix(LOCAL_PREFIX);
+            let id = local.map_or(id, str::trim_start);
             if next.bindings.contains_key(id) {
                 return Err(format!("第 {line_number} 行的 Bundle ID 已有规则。"));
             }
-            next.assign(id, scene.trim(), presets)
+            let scene = scene.trim();
+            next.assign(id, scene, presets)
                 .map_err(|error| format!("第 {line_number} 行：{error}"))?;
+            if local.is_some() {
+                if enabled {
+                    let preset = presets.iter().find(|preset| preset.name == scene).unwrap();
+                    preset
+                        .app_local_source(catalog)
+                        .map_err(|(_, error)| format!("第 {line_number} 行：{error}"))?;
+                }
+                next.local_sources.insert(id.into());
+            }
         }
         Ok(next)
     }
@@ -125,7 +156,14 @@ impl AppRules {
     pub(crate) fn editor_text(&self) -> String {
         self.bindings
             .iter()
-            .map(|(id, scene)| format!("{id} → {scene}"))
+            .map(|(id, scene)| {
+                let prefix = if self.local_sources.contains(id) {
+                    LOCAL_PREFIX
+                } else {
+                    ""
+                };
+                format!("{prefix}{id} → {scene}")
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -147,7 +185,7 @@ mod tests {
 
     #[test]
     fn app_rules_legacy_disabled_exact_match_and_global_fallback() {
-        use super::AppRules;
+        use super::{AppRuleSelection, AppRules};
 
         let mut prefs = preferences();
         let rules = &mut prefs.app_rules;
@@ -155,19 +193,15 @@ mod tests {
         rules
             .assign("com.example.Editor", "写作", &prefs.presets)
             .unwrap();
-        assert!(
-            rules
-                .matched_scene(Some("com.example.Editor"), &prefs.presets)
-                .is_none()
-        );
+        assert!(matches!(
+            rules.selection(Some("com.example.Editor"), &prefs.presets),
+            AppRuleSelection::Global
+        ));
         rules.enabled = true;
-        assert_eq!(
-            rules
-                .matched_scene(Some("com.example.Editor"), &prefs.presets)
-                .unwrap()
-                .name,
-            "写作"
-        );
+        assert!(matches!(
+            rules.selection(Some("com.example.Editor"), &prefs.presets),
+            AppRuleSelection::Application { preset, local_source: false } if preset.name == "写作"
+        ));
         for id in [
             None,
             Some(""),
@@ -176,43 +210,61 @@ mod tests {
             Some("com.example.Editor.beta"),
             Some(" com.example.Editor"),
         ] {
-            assert!(rules.matched_scene(id, &prefs.presets).is_none(), "{id:?}");
+            assert!(
+                matches!(
+                    rules.selection(id, &prefs.presets),
+                    AppRuleSelection::Global
+                ),
+                "{id:?}"
+            );
         }
-        assert!(
-            rules
-                .matched_scene(Some("com.example.Editor"), &[])
-                .is_none()
-        );
+        assert!(matches!(
+            rules.selection(Some("com.example.Editor"), &[]),
+            AppRuleSelection::Global
+        ));
         let saved = serde_json::to_string(&prefs).unwrap();
-        assert_eq!(
-            Workflows::load(Some(&saved)).unwrap().app_rules,
-            prefs.app_rules
-        );
+        assert!(!saved.contains("local_sources"));
+        let loaded = Workflows::load(Some(&saved)).unwrap();
+        assert_eq!(loaded.app_rules, prefs.app_rules);
+        assert!(matches!(
+            loaded
+                .app_rules
+                .selection(Some("com.example.Editor"), &loaded.presets),
+            AppRuleSelection::Application {
+                local_source: false,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn app_rules_edit_roundtrip_validation_and_scene_removal() {
-        use super::{AppRules, MAX_RULES};
+        use super::{AppRuleSelection, AppRules, Catalog, MAX_RULES};
+        use crate::local_models::CHATGPT;
 
         let mut prefs = preferences();
+        let catalog = Catalog::pending(CHATGPT);
         let rules = &mut prefs.app_rules;
         *rules = AppRules::from_editor(
             true,
             "com.example.Chat → 聊天 → 简短\n\ncom.example.Editor → 写作",
             &prefs.presets,
+            &catalog,
         )
         .unwrap();
         assert_eq!(
-            AppRules::from_editor(true, &rules.editor_text(), &prefs.presets).unwrap(),
+            AppRules::from_editor(true, &rules.editor_text(), &prefs.presets, &catalog).unwrap(),
             *rules
         );
         assert!(
             AppRules::from_editor(
                 true,
-                "com.example.Chat → 写作\ncom.example.Chat → 写作",
-                &prefs.presets
+                "com.example.Chat → 写作\n本机 com.example.Chat → 写作",
+                &prefs.presets,
+                &catalog,
             )
-            .is_err()
+            .unwrap_err()
+            .contains("Bundle ID 已有规则")
         );
         assert!(
             rules
@@ -224,13 +276,10 @@ mod tests {
                 .assign("com.example.Chat", "未知场景", &prefs.presets)
                 .is_err()
         );
-        assert_eq!(
-            rules
-                .matched_scene(Some("com.example.Chat"), &prefs.presets)
-                .unwrap()
-                .name,
-            "聊天 → 简短"
-        );
+        assert!(matches!(
+            rules.selection(Some("com.example.Chat"), &prefs.presets),
+            AppRuleSelection::Application { preset, .. } if preset.name == "聊天 → 简短"
+        ));
         for i in 2..MAX_RULES {
             rules
                 .assign(&format!("com.example.App{i}"), "写作", &prefs.presets)
@@ -245,13 +294,64 @@ mod tests {
             .assign("com.example.Editor", "聊天 → 简短", &prefs.presets)
             .unwrap();
         prefs.remove_preset(1);
-        assert!(
+        assert!(matches!(
             prefs
                 .app_rules
-                .matched_scene(Some("com.example.Editor"), &prefs.presets)
-                .is_none()
-        );
+                .selection(Some("com.example.Editor"), &prefs.presets),
+            AppRuleSelection::Global
+        ));
         assert!(!prefs.app_rules.remove("com.example.Chat"));
         assert!(prefs.app_rules.remove("com.example.App2"));
+    }
+
+    #[test]
+    fn app_rules_opt_in_roundtrips_and_does_not_follow_reassignment() {
+        use super::{AppRuleSelection, AppRules, Catalog};
+        use crate::local_models::CHATGPT;
+
+        const EDITOR: &str = "com.example.Editor";
+        const RULES: &str = "本机 com.example.Chat → 写作\n本机 com.example.Editor → 写作";
+        let mut prefs = preferences();
+        let catalog = Catalog::pending(CHATGPT);
+        // A user can disable a stale binding without losing it; saving it enabled is rejected.
+        prefs.app_rules = AppRules::from_editor(false, RULES, &prefs.presets, &catalog).unwrap();
+        assert!(
+            AppRules::from_editor(true, RULES, &prefs.presets, &catalog)
+                .unwrap_err()
+                .contains("第 1 行")
+        );
+        let saved = serde_json::to_string(&prefs).unwrap();
+        let mut loaded = Workflows::load(Some(&saved)).unwrap();
+        assert_eq!(loaded.app_rules.editor_text(), RULES);
+        assert!(matches!(
+            loaded.app_rules.selection(Some(EDITOR), &loaded.presets),
+            AppRuleSelection::Global
+        ));
+        let rules = &mut loaded.app_rules;
+        rules.set_enabled(true);
+        rules.assign(EDITOR, "写作", &loaded.presets).unwrap();
+        assert!(matches!(
+            rules.selection(Some(EDITOR), &loaded.presets),
+            AppRuleSelection::Application {
+                local_source: true,
+                ..
+            }
+        ));
+        rules
+            .assign(EDITOR, "聊天 → 简短", &loaded.presets)
+            .unwrap();
+        assert!(matches!(
+            rules.selection(Some(EDITOR), &loaded.presets),
+            AppRuleSelection::Application {
+                local_source: false,
+                ..
+            }
+        ));
+        assert!(rules.remove("com.example.Chat"));
+        assert!(rules.local_sources.is_empty());
+        loaded.app_rules = AppRules::from_editor(false, RULES, &loaded.presets, &catalog).unwrap();
+        loaded.remove_preset(0);
+        assert!(loaded.app_rules.editor_text().is_empty());
+        assert!(loaded.app_rules.local_sources.is_empty());
     }
 }

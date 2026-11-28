@@ -5,6 +5,7 @@ use crate::{
     local_models::{Catalog, SessionSource},
 };
 use serde::{Deserialize, Serialize};
+use voiceport_control::DictationBlockReason as BlockReason;
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -86,6 +87,44 @@ impl Preset {
         {
             return Err("此场景的来源不支持保存的识别语言。".into());
         }
+        Ok(source)
+    }
+
+    pub(crate) fn app_local_source(
+        &self,
+        catalog: &Catalog,
+    ) -> Result<SessionSource, (BlockReason, String)> {
+        let error = |reason, detail: &str| {
+            (
+                reason,
+                format!(
+                    "场景「{}」的本机来源不可用。不会改用全局来源。请检查应用输出规则。{detail}",
+                    self.name
+                ),
+            )
+        };
+        let source = catalog
+            .snapshot(&self.source_id)
+            .map_err(|message| error(BlockReason::SourceUnavailable, &message))?;
+        // A loopback HTTP address or a locally launched JSONL adapter can still forward audio.
+        let SessionSource::Local(model) = &source else {
+            return Err(error(
+                BlockReason::SourceUnavailable,
+                "应用规则仅可选择 VoicePort 的本机模型。",
+            ));
+        };
+        if !voiceport_core::language::supported(&self.language)
+            || !model.kind.supports_language(&self.language)
+        {
+            return Err(error(
+                BlockReason::UnsupportedLanguage,
+                "模型不支持场景保存的识别语言。",
+            ));
+        }
+        // The catalog may predate a model or engine removal; recheck before requesting capture.
+        model
+            .validate()
+            .map_err(|message| error(BlockReason::SourceUnavailable, &message))?;
         Ok(source)
     }
 }

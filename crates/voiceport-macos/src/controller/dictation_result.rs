@@ -9,6 +9,8 @@ pub(crate) struct GuiResultContext {
     pub(crate) source: Option<String>,
     pub(crate) target: Option<String>,
     pub(super) app_rule: Option<String>,
+    pub(super) app_local_title: Option<String>,
+    pub(super) app_source_issue: Option<String>,
 }
 
 impl GuiResultContext {
@@ -17,6 +19,7 @@ impl GuiResultContext {
         language: &str,
         catalog: &Catalog,
         source_id: &str,
+        app_local: bool,
     ) -> Self {
         let descriptor = source.descriptor();
         let title = catalog
@@ -59,8 +62,8 @@ impl GuiResultContext {
         };
         Self {
             source: Some(format!("{title} · {language} · {destination}")),
-            target: None,
-            app_rule: None,
+            app_local_title: app_local.then(|| title.to_owned()),
+            ..Self::default()
         }
     }
 }

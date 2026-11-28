@@ -91,6 +91,7 @@ fn main() {
         let original = "隔离合成正文\nSynthetic original".repeat(90);
         let activity = Activity {
             title: None,
+            source_issue: None,
             recording: false,
             can_toggle: true,
             can_cancel: false,

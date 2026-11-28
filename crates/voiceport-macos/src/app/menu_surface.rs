@@ -41,6 +41,10 @@ impl Snapshot {
         } else if let Some(stage) = capture_stage {
             let appearance = if recording { Recording } else { Working };
             (appearance, stage.title())
+        } else if c.state.phase == Phase::Failed
+            && let Some((title, _)) = c.app_source_issue()
+        {
+            (Attention, title)
         } else {
             match c.state.phase {
                 Phase::Recording => (Recording, "正在听写"),
@@ -78,7 +82,10 @@ impl Snapshot {
             shortcut: iv.shortcut_binding.get().label(),
             shortcut_instruction: iv.shortcut_mode.get().instruction(),
             hotkey_failed,
-            source: quick_panel::selected_title(c).into(),
+            source: c
+                .active_app_source()
+                .map_or_else(|| quick_panel::selected_title(c), |(title, _)| title)
+                .into(),
             toggle_title: if opening {
                 "取消麦克风准备"
             } else if recording {

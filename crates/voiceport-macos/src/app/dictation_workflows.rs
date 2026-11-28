@@ -69,13 +69,13 @@ impl Delegate {
         let rules = self.workflow_text(
             &view,
             &preferences.app_rules.editor_text(),
-            "应用 Bundle ID 和听写场景的映射",
+            "应用与场景绑定，可用本机前缀选择场景的模型和语言",
             32.,
             139.,
             true,
         );
         let mut detail = String::from(
-            "每行填写 Bundle ID → 已保存的场景名称。精确命中时采用场景的输出设置，其余情况使用全局设置。",
+            "每行填写 Bundle ID → 已保存的场景名称。默认只使用场景的输出规则。\n\n要让指定应用同时使用场景的本机模型和语言，请在该行开头加「本机 」：\n本机 com.example.Editor → 写作\n\n仅支持已就绪的 VoicePort 本机模型。模型或语言不可用时不开始录音，也不会改用全局来源。",
         );
         if let AppRuleSelection::Manual(name) =
             preferences.app_rules.selection(None, &preferences.presets)
@@ -87,11 +87,16 @@ impl Delegate {
         let alert = self.workflow_alert("应用输出规则", &detail, &["保存", "取消"]);
         alert.setAccessoryView(Some(&view));
         while alert.runModal() == NSAlertFirstButtonReturn && !self.ivars().quitting.get() {
-            match crate::dictation_app_rules::AppRules::from_editor(
-                enabled.state() == NSControlStateValueOn,
-                &rules.string().to_string(),
-                &preferences.presets,
-            ) {
+            let candidate = {
+                let slot = self.ivars().controller.borrow();
+                crate::dictation_app_rules::AppRules::from_editor(
+                    enabled.state() == NSControlStateValueOn,
+                    &rules.string().to_string(),
+                    &preferences.presets,
+                    &slot.as_ref().unwrap().catalog,
+                )
+            };
+            match candidate {
                 Ok(rules) => {
                     preferences.app_rules = rules;
                     return self.update_workflows(preferences);
@@ -521,7 +526,7 @@ impl Delegate {
             destination.details(),
         );
         if preferences.app_rules.enabled {
-            details.push_str("\n\n手动场景的输出设置优先，直至重新启用应用匹配。");
+            details.push_str("\n\n暂不使用按应用设置的来源、语言和输出规则，直至恢复应用匹配。");
         }
         if self
             .workflow_alert(

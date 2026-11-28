@@ -284,6 +284,18 @@ enum GuiStartOrigin<'a> {
     Shortcut(Option<&'a ApplicationTarget>),
 }
 
+enum StartProfile<'a> {
+    Gui(Option<&'a ApplicationTarget>),
+    Pinned(SessionSource, String),
+}
+
+struct GuiProfile {
+    source: SessionSource,
+    language: String,
+    context: GuiResultContext,
+    output: OutputPipeline,
+}
+
 pub struct Controller {
     pub state: Lifecycle,
     pub transcript: String,
@@ -637,6 +649,29 @@ impl Controller {
             None
         }
     }
+    pub(crate) fn active_app_source(&self) -> Option<(&str, &str)> {
+        self.active_app_rule()?;
+        Some((
+            self.gui_result_context.app_local_title.as_deref()?,
+            &self.recorded_language,
+        ))
+    }
+    pub(crate) fn app_source_issue(&self) -> Option<(&'static str, &str)> {
+        let receipt = self.gui_receipt.as_ref()?;
+        if receipt.generation != self.state.generation() {
+            return None;
+        }
+        let context = &self.gui_result_context;
+        if let Some(issue) = context.app_source_issue.as_deref() {
+            return Some(("场景本机来源不可用 · 未录音", issue));
+        }
+        (context.app_local_title.is_some()
+            && receipt.block_reason == Some(BlockReason::TranscriptionFailed))
+        .then_some((
+            "场景本机转写失败 · 未切换来源",
+            "重试仍使用原模型和语言。若已有实时文字，请检查原输入位置。",
+        ))
+    }
     pub(crate) fn retained_gui_result(&self) -> Option<&RetainedGuiResult> {
         self.retained_gui_result.as_ref().filter(|result| {
             self.visible_transcript
@@ -783,6 +818,10 @@ impl Controller {
         }
         self.mark_start_rejected(message);
     }
+    fn reject_app_local_start(&mut self, reason: BlockReason, error: String, automatic: bool) {
+        self.reject_gui_start(&error, reason, automatic);
+        self.gui_result_context.app_source_issue = Some(error);
+    }
     fn mark_start_rejected(&mut self, message: &str) {
         if self.interrupted_recording.take().is_some() {
             self.recording = None;
@@ -818,17 +857,6 @@ impl Controller {
             self.message = audio::AUDIO_BUSY.into();
             return;
         }
-        let source = match self
-            .catalog
-            .snapshot(&self.source_id)
-            .and_then(SessionSource::pin)
-        {
-            Ok(source) => source,
-            Err(error) => {
-                self.reject_gui_start(&error, BlockReason::SourceUnavailable, self.automatic);
-                return;
-            }
-        };
         let delivery_target = match start {
             GuiStartOrigin::Shortcut(target) if self.automatic => target,
             _ => None,
@@ -857,14 +885,18 @@ impl Controller {
             GuiStartOrigin::Frontmost => panel_target.as_ref(),
             GuiStartOrigin::Shortcut(target) => target,
         };
-        if let Some((generation, use_speech)) = self.prepare_start_in_application(
-            source,
-            self.language.clone(),
-            self.automatic,
-            delivery_target,
-            true,
-            rule_target,
-        ) {
+        let mut original_application = None;
+        let start =
+            self.prepare_start_with(StartProfile::Gui(rule_target), self.automatic, |delivery| {
+                delivery.begin_in_application_reporting(
+                    delivery_target,
+                    Some(&mut original_application),
+                )
+            });
+        if let Some(application) = original_application {
+            self.gui_result_context.target = Some(application);
+        }
+        if let Some((generation, use_speech)) = start {
             self.overlay_origin_pid = origin;
             #[cfg(debug_assertions)]
             if self.audio_lane.fixture.is_some() {
@@ -944,37 +976,95 @@ impl Controller {
         language: String,
         automatic: bool,
     ) -> Option<(u64, bool)> {
-        self.prepare_start_in_application(source, language, automatic, None, false, None)
+        self.prepare_start_with(
+            StartProfile::Pinned(source, language),
+            automatic,
+            |delivery| delivery.begin_in_application_reporting(None, None),
+        )
     }
-    fn prepare_start_in_application(
+    fn gui_profile(
         &mut self,
-        source: SessionSource,
-        language: String,
-        automatic: bool,
         target: Option<&ApplicationTarget>,
-        gui: bool,
-        rule_target: Option<&ApplicationTarget>,
-    ) -> Option<(u64, bool)> {
-        let mut original_application = None;
-        let start =
-            self.prepare_start_with(source, language, automatic, gui, rule_target, |delivery| {
-                delivery.begin_in_application_reporting(
-                    target,
-                    gui.then_some(&mut original_application),
-                )
-            });
-        if let Some(application) = original_application {
-            self.gui_result_context.target = Some(application);
-        }
-        start
+        automatic: bool,
+    ) -> Option<GuiProfile> {
+        let bundle_id = target
+            .filter(|target| target.pid > 0 && target.pid as u32 != std::process::id())
+            .map(|target| target.bundle.as_str());
+        let rules = &self.workflows.app_rules;
+        let (dictionary, output) = (
+            self.workflows.dictionary_enabled,
+            self.workflows.output_rules,
+        );
+        let (dictionary, output, label, local_preset) =
+            match rules.selection(bundle_id, &self.workflows.presets) {
+                AppRuleSelection::Global => (
+                    dictionary,
+                    output,
+                    rules.enabled.then(|| "全局规则".into()),
+                    None,
+                ),
+                AppRuleSelection::Manual(name) => (
+                    dictionary,
+                    output,
+                    Some(format!("手动场景「{name}」")),
+                    None,
+                ),
+                AppRuleSelection::Application {
+                    preset,
+                    local_source,
+                } => (
+                    preset.dictionary_enabled,
+                    preset.output_rules,
+                    Some(format!("场景「{}」", preset.name)),
+                    local_source.then_some(preset),
+                ),
+                AppRuleSelection::MissingLocalScene(name) => {
+                    let error =
+                        format!("场景「{name}」已不存在。请检查应用输出规则；不会改用全局来源。");
+                    self.reject_app_local_start(BlockReason::SourceUnavailable, error, automatic);
+                    return None;
+                }
+            };
+        let (source, source_id, language) = if let Some(preset) = local_preset {
+            match preset.app_local_source(&self.catalog) {
+                Ok(source) => (source, &preset.source_id, &preset.language),
+                Err((reason, error)) => {
+                    self.reject_app_local_start(reason, error, automatic);
+                    return None;
+                }
+            }
+        } else {
+            match self
+                .catalog
+                .snapshot(&self.source_id)
+                .and_then(SessionSource::pin)
+            {
+                Ok(source) => (source, &self.source_id, &self.language),
+                Err(error) => {
+                    self.reject_gui_start(&error, BlockReason::SourceUnavailable, automatic);
+                    return None;
+                }
+            }
+        };
+        let mut context = GuiResultContext::at_start(
+            &source,
+            language,
+            &self.catalog,
+            source_id,
+            local_preset.is_some(),
+        );
+        context.app_rule = label;
+        Some(GuiProfile {
+            source,
+            language: language.clone(),
+            context,
+            output: self.workflows.output_for_session(dictionary, output),
+        })
     }
     fn prepare_start_with(
         &mut self,
-        source: SessionSource,
-        language: String,
+        profile: StartProfile<'_>,
         automatic: bool,
-        gui: bool,
-        rule_target: Option<&ApplicationTarget>,
         capture_target: impl FnOnce(&mut Delivery) -> Result<(), String>,
     ) -> Option<(u64, bool)> {
         if self.busy() {
@@ -984,6 +1074,19 @@ impl Controller {
             self.message = audio::AUDIO_BUSY.into();
             return None;
         }
+        let (source, language, gui_settings) = match profile {
+            StartProfile::Pinned(source, language) => (source, language, None),
+            StartProfile::Gui(target) => {
+                let GuiProfile {
+                    source,
+                    language,
+                    context,
+                    output,
+                } = self.gui_profile(target, automatic)?;
+                (source, language, Some((context, output)))
+            }
+        };
+        let gui = gui_settings.is_some();
         if !voiceport_core::language::supported(&language)
             || matches!(&source, SessionSource::Local(model) if !model.kind.supports_language(&language))
         {
@@ -1025,44 +1128,17 @@ impl Controller {
                 }
             }
         }
-        if gui {
-            self.gui_result_context =
-                GuiResultContext::at_start(&source, &language, &self.catalog, &self.source_id);
+        self.recorded_output = if let Some((context, output)) = gui_settings {
+            self.gui_result_context = context;
             self.begin_recent_dictation(generation);
+            output
         } else {
             self.discard_recent_dictation_candidate();
-        }
+            OutputPipeline::default()
+        };
         self.cancel_capture();
         self.recording = None;
         self.interrupted_recording = None;
-        self.recorded_output = if gui {
-            let bundle_id = rule_target
-                .filter(|target| target.pid > 0 && target.pid as u32 != std::process::id())
-                .map(|target| target.bundle.as_str());
-            let rules = &self.workflows.app_rules;
-            let (dictionary, output) = (
-                self.workflows.dictionary_enabled,
-                self.workflows.output_rules,
-            );
-            let (dictionary, output, label) =
-                match rules.selection(bundle_id, &self.workflows.presets) {
-                    AppRuleSelection::Global => {
-                        (dictionary, output, rules.enabled.then(|| "全局规则".into()))
-                    }
-                    AppRuleSelection::Manual(name) => {
-                        (dictionary, output, Some(format!("手动场景「{name}」")))
-                    }
-                    AppRuleSelection::Application(preset) => (
-                        preset.dictionary_enabled,
-                        preset.output_rules,
-                        Some(format!("场景「{}」", preset.name)),
-                    ),
-                };
-            self.gui_result_context.app_rule = label;
-            self.workflows.output_for_session(dictionary, output)
-        } else {
-            OutputPipeline::default()
-        };
         self.testing = false;
         self.recorded_language = language;
         self.recorded_source = source;
@@ -2458,14 +2534,10 @@ pub(crate) mod stop_failure_regression {
                 .assign(&editor.bundle, "编辑", &c.workflows.presets)
                 .unwrap();
             c.workflows.apply_preset_output(&manual);
-            c.prepare_start_with(
-                SessionSource::ChatGpt,
-                "zh".into(),
-                false,
-                true,
-                Some(&editor),
-                |_| panic!("synthetic panel-only session cannot capture an input target"),
-            )
+            c.language = "zh".into();
+            c.prepare_start_with(StartProfile::Gui(Some(&editor)), false, |_| {
+                panic!("synthetic panel-only session cannot capture an input target")
+            })
             .unwrap()
             .0
         });
@@ -2803,15 +2875,11 @@ pub(crate) mod stop_failure_regression {
         }
         fn start(c: &mut Controller) -> (u64, Rc<RefCell<ReceiverState>>) {
             let receiver = receiver();
+            c.language = "zh".into();
             let (generation, _) = c
-                .prepare_start_with(
-                    SessionSource::ChatGpt,
-                    "zh".into(),
-                    true,
-                    true,
-                    None,
-                    |delivery| delivery.begin_fixture(Box::new(Receiver(receiver.clone()))),
-                )
+                .prepare_start_with(StartProfile::Gui(None), true, |delivery| {
+                    delivery.begin_fixture(Box::new(Receiver(receiver.clone())))
+                })
                 .unwrap();
             assert_eq!(c.overlay_snapshot().stage, Some(Stage::Preparing));
             c.capture_started(generation, false, None, None);
@@ -2997,16 +3065,9 @@ pub(crate) mod stop_failure_regression {
         assert_eq!(c.gui_result_context().target, None);
         assert_eq!(c.transcript, "测试");
         let (panel, _) = c
-            .prepare_start_with(
-                SessionSource::ChatGpt,
-                "zh".into(),
-                false,
-                true,
-                None,
-                |_| {
-                    panic!("panel-only GUI must not capture a target");
-                },
-            )
+            .prepare_start_with(StartProfile::Gui(None), false, |_| {
+                panic!("panel-only GUI must not capture a target");
+            })
             .unwrap();
         let receipt = c.gui_dictation_receipt().unwrap();
         assert_eq!(receipt.generation, panel);
@@ -3216,6 +3277,8 @@ pub(crate) mod stop_failure_regression {
                 gui_delivery_without_devices();
                 #[cfg(debug_assertions)]
                 super::dictation_workflow_tests::verify_manual_scene_history_and_repaste(true);
+                #[cfg(all(debug_assertions, target_arch = "aarch64"))]
+                super::dictation_workflow_tests::verify_app_local_delivery_and_retry();
             }
             _ => panic!("unknown stop_failure case: {case}"),
         }
@@ -3811,14 +3874,9 @@ pub(crate) mod tests {
     fn late_permission_after_shortcut_release_cannot_capture_or_transcribe() {
         let mut c = Controller::new();
         let (generation, _) = c
-            .prepare_start_with(
-                SessionSource::ChatGpt,
-                String::new(),
-                false,
-                true,
-                None,
-                |_| panic!("panel-only start must not capture a target"),
-            )
+            .prepare_start_with(StartProfile::Gui(None), false, |_| {
+                panic!("panel-only start must not capture a target")
+            })
             .unwrap();
         c.poll_with_capture(
             |_| panic!("permission has not arrived"),
