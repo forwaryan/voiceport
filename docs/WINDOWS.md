@@ -413,3 +413,38 @@ delivery, full Windows link/PE/runtime and packaging/material completeness, plus
 actual PreCompact/full rotation lifecycle, remain mandatory. No native recording,
 auth/network/upload, clipboard/keys/targets/permissions, cleanup scanner/deletion,
 dependency change or product acceptance is part of this slice.
+
+## Tray and global shortcut capture entry
+
+On Windows, the default `service` build connects the notification-area menu in
+`voiceport-windows --run` to the native capture owner. Opening the tray starts
+neither the microphone nor transcription. Select **Start dictation** to open the
+microphone and **Stop and transcribe** to finish. **Ctrl+Alt+Space** toggles those
+same actions. If shortcut registration conflicts, the tray remains usable and
+its tooltip reports that the shortcut is unavailable. Builds without `service`
+leave Start/Stop disabled and skip shortcut registration.
+
+Capture requires an available WinMM input device and the private local NTFS
+storage accepted by the existing native checks. Finishing, including at the
+existing 180-second PCM limit, submits only a finalized recording after capture
+release and the off-UI thread join. A completed main buffer triggers Stop/Reset
+before its PCM is drained. The automatic cutoff keeps exactly 2,880,000 samples;
+a short sentinel returned by Stop/Reset is not included. A filled sentinel, or
+an over-limit drain without the automatic cutoff, still fails instead of
+submitting a truncated recording. Transcription uses the existing service and
+requires its configured sign-in and network access. Copy is an explicit menu
+operation. Failed transcription keeps the current recording available for
+**Retry transcription** until the user cancels or exits. New capture stays
+blocked while capture or transcription owns the current work.
+
+**Cancel** and **Exit** discard the current result and invalidate late
+completions. Exit waits for confirmed capture and service release. A returned
+capture release error enables **Recover capture**, including while waiting to
+exit. Each recovery selection retries the failed step once. Interrupted or
+unverifiable release keeps capture blocked. These actions leave the existing
+on-disk retention policy in place.
+
+This entry point is covered by synthetic capture and service tests and Windows
+target compilation. Windows linking and runtime, actual tray and shortcut
+behavior, microphone/driver and NTFS checks, service with real audio, protected
+delivery and release packaging still require separate acceptance.

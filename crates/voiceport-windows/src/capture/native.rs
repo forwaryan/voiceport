@@ -56,6 +56,7 @@ struct WaveIn {
     device_id: u32,
     sequence: u64,
     reset: bool,
+    limit_reached: bool,
     _thread: PhantomData<Rc<()>>,
 }
 pub struct NativeSession(Session<WaveIn, Pending>);
@@ -222,7 +223,7 @@ impl Backend for WaveIn {
                 return Err(Error::Overflow);
             }
         }
-        for b in &mut self.buffers {
+        for (index, b) in self.buffers.iter_mut().enumerate() {
             if !b.queued {
                 continue;
             }
@@ -256,6 +257,25 @@ impl Backend for WaveIn {
             let n = h.dwBytesRecorded as usize / 2;
             if b.offset > n {
                 return Err(Error::InvalidEvent);
+            }
+            if !draining && index == 0 && n == MAX_SAMPLES {
+                // Arm the cutoff before copying any of this completed block.
+                // A bounded software drain must not keep the microphone live.
+                self.limit_reached = true;
+                return Ok(Read::LimitReached);
+            }
+            if index == 1 {
+                if n == FRAME_SAMPLES {
+                    // The sentinel filled before input actually stopped;
+                    // WinMM may have exhausted the queued capture capacity.
+                    return Err(Error::Overflow);
+                }
+                if draining && self.limit_reached {
+                    // Stop/reset can return a short sentinel after the cutoff.
+                    // It is not part of the recording, and is driver-free.
+                    b.queued = false;
+                    continue;
+                }
             }
             if b.offset == n {
                 b.queued = false;

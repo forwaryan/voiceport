@@ -1,5 +1,5 @@
-//! Incremental Windows adapter. No native capture, storage cleanup or automatic
-//! delivery is enabled. Direct core integration avoids a second host parser.
+//! Incremental Windows adapter with manual dictation and result copying.
+//! Direct core integration avoids a second host parser.
 use std::{
     fs::File,
     path::{Path, PathBuf},

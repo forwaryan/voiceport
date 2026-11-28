@@ -1,9 +1,18 @@
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.as_slice() {
-        [a] if a == "--help" => println!(
-            "voiceport-windows [--help | --smoke-test | --run]\nPartial Windows adapter; native tray available on Windows; capture/storage unavailable; finalized-recording backend uses the service feature."
-        ),
+        [a] if a == "--help" => {
+            println!("voiceport-windows [--help | --smoke-test | --run]");
+            if cfg!(all(windows, feature = "service")) {
+                println!(
+                    "--run opens the Windows tray. Use Start dictation and Stop and transcribe, or Ctrl+Alt+Space. Copy results manually."
+                );
+            } else if cfg!(windows) {
+                println!("--run opens the Windows tray. Dictation requires the service feature.");
+            } else {
+                println!("--run requires Windows. The smoke test performs no I/O.");
+            }
+        }
         [a] if a == "--smoke-test" => {
             let c = voiceport_windows::Controller::default();
             println!(

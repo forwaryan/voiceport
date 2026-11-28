@@ -1,4 +1,4 @@
-//! Lazy, bounded process owner. Native UI dispatch deliberately remains unwired.
+//! Lazy, bounded process owner for explicit capture requests.
 //! Caller methods only change atomics, wake threads, or try a short result lock.
 //! Only the supervisor joins; only release PLUS join permits a stopped result.
 use super::{CleanupStatus, Error, Phase, Result, Session};

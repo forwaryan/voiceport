@@ -1,14 +1,39 @@
-//! UI action state independent of Win32. No native capability is implied.
-use crate::{Controller, Job, Outcome, Phase, Recording, Refused};
+//! UI action state independent of Win32.
+use crate::{
+    Controller, Job, Outcome, Phase, Recording, Refused,
+    capture::{
+        self,
+        owner::{CaptureOwner, Factory, Status},
+    },
+    executor::Executor,
+};
 #[derive(Clone, Copy)]
+#[repr(u32)]
 pub enum Action {
-    Start,
-    Stop,
-    Cancel,
-    Copy,
-    Retry,
-    Exit,
-    Poll,
+    Start = 1,
+    Stop = 2,
+    Cancel = 3,
+    Copy = 4,
+    Retry = 5,
+    Exit = 6,
+    Poll = 7,
+    RecoverCapture = 9,
+    ToggleCapture = 10,
+}
+impl Action {
+    pub(crate) fn queued(self, bits: u32) -> bool {
+        bits & (1 << self as u32) != 0
+    }
+}
+
+type StartCapture = Box<dyn Fn(&mut CaptureOwner) -> capture::Result<u64> + Send + Sync>;
+
+struct Capture {
+    owner: CaptureOwner,
+    start: StartCapture,
+    generation: Option<u64>,
+    stop_requested: bool,
+    start_error: Option<capture::Error>,
 }
 pub trait ManualClipboard {
     fn copy(&mut self, text: &str) -> Result<(), String>;
@@ -18,24 +43,156 @@ pub struct Actions {
     result: Option<String>,
     pub status: String,
     closing: bool,
-    executor: Option<crate::executor::Executor>,
+    executor: Option<Executor>,
+    capture: Option<Capture>,
 }
 impl Default for Actions {
     fn default() -> Self {
         Self {
             controller: Controller::default(),
             result: None,
-            status: "Recording/storage unavailable; automatic paste disabled".into(),
+            status: "Recording unavailable; automatic paste disabled".into(),
             closing: false,
             executor: None,
+            capture: None,
         }
     }
 }
 impl Actions {
-    pub fn with_executor(executor: crate::executor::Executor) -> Self {
+    pub fn with_executor(executor: Executor) -> Self {
         Self {
             executor: Some(executor),
             ..Self::default()
+        }
+    }
+    pub fn with_capture<F: Factory>(
+        executor: Executor,
+        factory: impl Fn() -> F + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            capture: Some(Capture {
+                owner: CaptureOwner::default(),
+                start: Box::new(move |owner| owner.start(factory())),
+                generation: None,
+                stop_requested: false,
+                start_error: None,
+            }),
+            status: "Ready to record; results are copied manually".into(),
+            ..Self::with_executor(executor)
+        }
+    }
+    fn capture_status(&self) -> Status {
+        self.capture
+            .as_ref()
+            .map_or(Status::Idle, |capture| capture.owner.poll())
+    }
+    fn capture_idle(&self) -> bool {
+        matches!(self.capture_status(), Status::Idle | Status::Stopped)
+    }
+    pub fn can_start(&self) -> bool {
+        !self.closing
+            && self
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.start_error.is_none())
+            && self.capture_idle()
+            && matches!(self.controller.phase(), Phase::Idle | Phase::Ready)
+            && self.executor.as_ref().is_some_and(Executor::idle)
+    }
+    pub fn can_stop(&self) -> bool {
+        !self.closing
+            && self.capture.as_ref().is_some_and(|capture| {
+                capture.generation.is_some()
+                    && !capture.stop_requested
+                    && matches!(capture.owner.poll(), Status::Starting | Status::Running)
+            })
+    }
+    pub fn can_recover_capture(&self) -> bool {
+        self.capture.as_ref().is_some_and(|capture| {
+            (!self.closing && capture.start_error == Some(capture::Error::Start))
+                || capture.owner.poll() == Status::RecoveryRequired
+        })
+    }
+    fn start_capture(&mut self) {
+        if !self.can_start() {
+            return;
+        }
+        let capture = self.capture.as_mut().unwrap();
+        match (capture.start)(&mut capture.owner) {
+            Ok(generation) => {
+                capture.generation = Some(generation);
+                capture.stop_requested = false;
+                self.result = None;
+                self.status = "Starting microphone".into();
+            }
+            Err(error) => {
+                capture.start_error = (error != capture::Error::Busy).then_some(error);
+                self.status = if error == capture::Error::Start {
+                    "Capture could not start; recover capture to try again".into()
+                } else {
+                    error.to_string()
+                };
+            }
+        }
+    }
+    fn stop_capture(&mut self) {
+        if !self.can_stop() {
+            return;
+        }
+        let capture = self.capture.as_mut().unwrap();
+        capture.stop_requested = true;
+        capture.owner.stop();
+        self.status = "Finishing recording".into();
+    }
+    fn recover_capture(&mut self) {
+        if !self.can_recover_capture() {
+            return;
+        }
+        let capture = self.capture.as_mut().unwrap();
+        if capture.start_error == Some(capture::Error::Start) {
+            if CaptureOwner::recover_infrastructure().is_ok() {
+                capture.start_error = None;
+                self.status = "Ready to try recording again".into();
+            }
+        } else if capture.owner.recover().is_ok() {
+            self.status = "Recovering microphone release".into();
+        }
+    }
+    fn drain_capture(&mut self, snapshot: Status) {
+        let Some(capture) = &mut self.capture else {
+            return;
+        };
+        match snapshot {
+            Status::RecoveryRequired => {
+                self.status = "Microphone release failed; select Recover capture".into()
+            }
+            Status::Interrupted | Status::Unavailable => {
+                self.status = "Microphone release could not be confirmed".into()
+            }
+            _ => {}
+        }
+        let Some(generation) = capture.generation else {
+            return;
+        };
+        match snapshot {
+            Status::Running if !capture.stop_requested => self.status = "Recording".into(),
+            Status::Stopping | Status::Joining => self.status = "Finishing recording".into(),
+            Status::Ready => {
+                let Some(answer) = capture.owner.take_result(generation) else {
+                    return;
+                };
+                capture.generation = None;
+                match answer {
+                    Ok(recording) => match self.admit(recording) {
+                        Ok(job) => self.enqueue(job),
+                        Err(error) => {
+                            self.status = format!("Recording could not be submitted ({error:?})")
+                        }
+                    },
+                    Err(error) => self.status = error.to_string(),
+                }
+            }
+            _ => {}
         }
     }
     pub fn submit_finalized(&mut self, r: Recording) -> Result<(), Refused> {
@@ -62,11 +219,18 @@ impl Actions {
     }
     pub fn can_retry(&self) -> bool {
         !self.closing
+            && self.capture_idle()
             && self.controller.phase() == Phase::Failed
-            && self.executor.as_ref().is_some_and(|e| e.idle())
+            && self.executor.as_ref().is_some_and(Executor::idle)
     }
 
     pub fn admit_finalized(&mut self, r: Recording) -> Result<Job, Refused> {
+        if !self.closing && !self.capture_idle() {
+            return Err(Refused::Busy);
+        }
+        self.admit(r)
+    }
+    fn admit(&mut self, r: Recording) -> Result<Job, Refused> {
         let job = self.controller.start(r)?;
         self.result = None;
         self.status = "Transcribing".into();
@@ -90,28 +254,30 @@ impl Actions {
             Outcome::Ignored => {}
         }
     }
-    /// Exit/cancel take priority over coalesced copy or start notifications.
+    /// Invalidation precedes result consumption, even if a timer or Stop was queued.
     pub fn dispatch(&mut self, bits: u32, sink: &mut impl ManualClipboard) -> bool {
-        if bits & (1 << 6) != 0 {
+        if Action::Exit.queued(bits) {
             return self.act(Action::Exit, sink);
+        }
+        if !self.closing && Action::Cancel.queued(bits) {
+            return self.act(Action::Cancel, sink);
+        }
+        if Action::RecoverCapture.queued(bits) {
+            self.act(Action::RecoverCapture, sink);
         }
         if self.closing {
             return self.act(Action::Poll, sink);
         }
-        if bits & (1 << 3) != 0 {
-            self.act(Action::Cancel, sink);
-            return false;
+        if let Some(action) = [Action::Stop, Action::ToggleCapture, Action::Start]
+            .into_iter()
+            .find(|action| action.queued(bits))
+        {
+            self.act(action, sink);
         }
         self.drain();
-        for (id, action) in [
-            (1, Action::Start),
-            (2, Action::Stop),
-            (4, Action::Copy),
-            (5, Action::Retry),
-            (7, Action::Poll),
-        ] {
-            if bits & (1 << id) != 0 && self.act(action, sink) {
-                return true;
+        for action in [Action::Copy, Action::Retry, Action::Poll] {
+            if action.queued(bits) {
+                self.act(action, sink);
             }
         }
         false
@@ -119,12 +285,56 @@ impl Actions {
     pub fn can_copy(&self) -> bool {
         !self.closing && self.controller.phase() == Phase::Ready && self.result.is_some()
     }
+    fn invalidate_capture(&mut self) {
+        if let Some(capture) = &mut self.capture {
+            capture.generation = None;
+            if self.closing {
+                capture.owner.exit();
+            } else {
+                capture.owner.cancel();
+            }
+        }
+    }
+    fn poll(&mut self) -> bool {
+        self.drain();
+        let capture_status = self.capture_status();
+        self.drain_capture(capture_status);
+        let capture_idle = matches!(capture_status, Status::Idle | Status::Stopped);
+        if self.controller.phase() == Phase::Stopping || (self.closing && !capture_idle) {
+            if capture_idle && self.controller.poll_stopped() {
+                self.status = if self.capture.is_some() {
+                    "Cancelled; microphone and service stopped"
+                } else {
+                    "Cancelled; service stopped"
+                }
+                .into();
+            } else if !matches!(
+                capture_status,
+                Status::RecoveryRequired | Status::Interrupted | Status::Unavailable
+            ) {
+                self.status = if self.capture.is_some() {
+                    "Waiting for microphone and service to stop"
+                } else {
+                    "Cancelled; waiting for service stop"
+                }
+                .into();
+            }
+        }
+        self.closing && capture_idle && self.controller.phase() == Phase::Closed
+    }
     /// True means confirmed idle shutdown; false keeps the message pump alive.
     pub fn act(&mut self, a: Action, sink: &mut impl ManualClipboard) -> bool {
         match a {
-            Action::Start | Action::Stop => {
-                self.status = "Native recording and secure storage are not implemented".into()
+            Action::Start => self.start_capture(),
+            Action::Stop => self.stop_capture(),
+            Action::ToggleCapture => {
+                if self.can_stop() {
+                    self.stop_capture();
+                } else {
+                    self.start_capture();
+                }
             }
+            Action::RecoverCapture => self.recover_capture(),
             Action::Retry => {
                 if self.can_retry()
                     && let Ok(job) = self.controller.retry()
@@ -142,35 +352,18 @@ impl Actions {
                     };
                 }
             }
-            Action::Cancel => {
+            Action::Cancel | Action::Exit => {
+                self.closing |= matches!(a, Action::Exit);
                 self.result = None;
-                self.controller.cancel();
-                let stopped = self.controller.poll_stopped();
-                self.status = if stopped {
-                    "Cancelled; service stopped"
-                } else {
-                    "Cancelled; waiting for service stop"
-                }
-                .into();
-            }
-            Action::Exit => {
-                self.closing = true;
-                self.result = None;
-                self.controller.shutdown();
-                self.drain();
-                return self.controller.poll_stopped();
-            }
-            Action::Poll => {
-                self.drain();
-                let was_stopping = self.controller.phase() == Phase::Stopping;
-                let stopped = self.controller.poll_stopped();
+                self.invalidate_capture();
                 if self.closing {
-                    return stopped;
+                    self.controller.shutdown();
+                } else {
+                    self.controller.cancel();
                 }
-                if was_stopping && stopped {
-                    self.status = "Cancelled; service stopped".into();
-                }
+                return self.poll();
             }
+            Action::Poll => return self.poll(),
         }
         false
     }
