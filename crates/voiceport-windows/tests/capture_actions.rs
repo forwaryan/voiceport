@@ -13,11 +13,12 @@ use voiceport_windows::{
     Job, Recording,
     actions::{Action, Actions, ManualClipboard},
     capture::{
-        CleanupStatus, Error, Phase, Result,
+        Backend, Budget, CleanupStatus, Device, Error, FRAME_SAMPLES, Format, Frame, Output, PCM,
+        Phase, Read, Result,
         owner::{CaptureSession, Factory},
     },
     executor::{Executor, Service, ServiceFailure},
-    wav::Wav,
+    wav::{MAX_SAMPLES, Wav},
 };
 
 const LIMIT: Duration = Duration::from_secs(5);
@@ -169,6 +170,7 @@ impl Drop for Session {
 #[derive(Default)]
 struct FakeService {
     calls: AtomicUsize,
+    wav_bytes: AtomicUsize,
     fail_next: AtomicBool,
     gate: Mutex<Option<Gate>>,
 }
@@ -176,7 +178,13 @@ impl Service for FakeService {
     fn run(&self, job: &Job) -> std::result::Result<String, ServiceFailure> {
         self.calls.fetch_add(1, Relaxed);
         assert_eq!(job.language(), Some("zh"));
-        assert_eq!(&std::fs::read(job.path()).unwrap()[..4], b"RIFF");
+        let wav = std::fs::read(job.path()).unwrap();
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(
+            u32::from_le_bytes(wav[40..44].try_into().unwrap()) as usize,
+            wav.len() - 44
+        );
+        self.wav_bytes.store(wav.len(), Relaxed);
         if self.fail_next.swap(false, Relaxed) {
             return Err(ServiceFailure);
         }
@@ -391,4 +399,192 @@ fn tray_and_hotkey_share_capture_lifecycle() {
     wait(|| dispatch(&mut actions, &mut sink, &[Action::Poll]));
     assert_eq!(recovery.recoveries.load(Relaxed), 1);
     assert_eq!(service.calls.load(Relaxed), 3);
+
+    buffered_limit_matrix(root.path(), &mut sink);
+}
+
+// Exercise the production Session as well as the owner/Actions/executor. The
+// backend models a completed fixed buffer, not elapsed real recording time.
+struct BufferedCapture {
+    path: PathBuf,
+    at_limit: bool,
+    samples: usize,
+    reset_gate: Mutex<Option<Gate>>,
+    stops: AtomicUsize,
+}
+struct BufferedBackend {
+    capture: Arc<BufferedCapture>,
+    id: u64,
+    sequence: u64,
+    remaining: usize,
+    reset: bool,
+}
+impl Backend for BufferedBackend {
+    fn open(&mut self, id: u64, format: Format) -> Result<Device> {
+        self.id = id;
+        Ok(Device { id: 1, format })
+    }
+    fn prepare(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn start(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn read(&mut self, draining: bool, frame: &mut Frame) -> Result<Read> {
+        if !draining {
+            return Ok(if self.capture.at_limit {
+                Read::LimitReached
+            } else {
+                Read::Idle
+            });
+        }
+        assert!(self.reset);
+        let n = self.remaining.min(FRAME_SAMPLES);
+        if n == 0 {
+            return Ok(Read::End);
+        }
+        self.sequence += 1;
+        self.remaining -= n;
+        frame.session = self.id;
+        frame.device = 1;
+        frame.sequence = self.sequence;
+        frame.format = PCM;
+        frame.bytes = n * 2;
+        frame.done = true;
+        frame.samples[..n].fill(23);
+        thread::current().unpark();
+        Ok(Read::Data)
+    }
+    fn stop(&mut self) -> Result<()> {
+        assert_eq!(self.capture.stops.fetch_add(1, Relaxed), 0);
+        Ok(())
+    }
+    fn reset(&mut self) -> Result<()> {
+        assert_eq!(self.capture.stops.load(Relaxed), 1);
+        let gate = self.capture.reset_gate.lock().unwrap().take();
+        if let Some(gate) = gate {
+            gate.hold();
+        }
+        self.reset = true;
+        Ok(())
+    }
+    fn unprepare(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+struct BufferedOutput(Wav<File>, PathBuf);
+impl Output for BufferedOutput {
+    fn append(&mut self, samples: &[i16]) -> Result<()> {
+        self.0.append(samples).map_err(|_| Error::Write)
+    }
+    fn finish(self, language: Option<String>) -> Result<Recording> {
+        Ok(Recording::caller_owned(
+            self.0.finish().map_err(|_| Error::Finalize)?,
+            self.1,
+            language,
+        ))
+    }
+}
+struct BufferedFactory(Arc<BufferedCapture>);
+impl Factory for BufferedFactory {
+    type Session = voiceport_windows::capture::Session<BufferedBackend, BufferedOutput>;
+    fn create(self) -> Result<Self::Session> {
+        let capture = self.0;
+        let path = capture.path.clone();
+        let file = File::create_new(&path).map_err(|_| Error::Write)?;
+        let output = BufferedOutput(Wav::new(file).map_err(|_| Error::Write)?, path);
+        let remaining = capture.samples;
+        Self::Session::with_backend(
+            BufferedBackend {
+                capture,
+                id: 0,
+                sequence: 0,
+                remaining,
+                reset: false,
+            },
+            output,
+            Some("zh".into()),
+            &Budget::default(),
+        )
+    }
+}
+
+fn buffered_limit_matrix(root: &std::path::Path, sink: &mut Clipboard) {
+    for (name, at_limit, samples, cancel, error) in [
+        ("automatic", true, MAX_SAMPLES, false, None),
+        ("manual", false, 17, false, None),
+        (
+            "overflow",
+            true,
+            MAX_SAMPLES + 1,
+            false,
+            Some(Error::Overflow),
+        ),
+        (
+            "short-after-limit",
+            true,
+            MAX_SAMPLES - 1,
+            false,
+            Some(Error::InvalidEvent),
+        ),
+        ("cancel", true, MAX_SAMPLES, true, None),
+    ] {
+        let (gate, resetting, release) = Gate::new();
+        let capture = Arc::new(BufferedCapture {
+            path: root.join(format!("buffered-{name}.wav")),
+            at_limit,
+            samples,
+            reset_gate: Mutex::new(Some(gate)),
+            stops: AtomicUsize::new(0),
+        });
+        let service = Arc::new(FakeService::default());
+        let factory = capture.clone();
+        let mut actions = Actions::with_capture(Executor::new(service.clone()), move || {
+            BufferedFactory(factory.clone())
+        });
+        wait(|| {
+            dispatch(&mut actions, sink, &[Action::Start]);
+            actions.status == "Starting microphone"
+        });
+        if !at_limit {
+            assert!(actions.can_stop());
+            dispatch(&mut actions, sink, &[Action::Stop]);
+        }
+        // Automatic cases must reach reset without an Action::Stop or any UI poll.
+        resetting.recv_timeout(LIMIT).unwrap();
+        assert_eq!(capture.stops.load(Relaxed), 1);
+        assert!(!actions.can_start());
+        assert_eq!(service.calls.load(Relaxed), 0);
+        if cancel {
+            dispatch(&mut actions, sink, &[Action::Cancel, Action::Poll]);
+            assert!(!actions.can_start());
+        }
+        release.send(()).unwrap();
+        wait(|| {
+            dispatch(&mut actions, sink, &[Action::Poll]);
+            actions.can_start()
+        });
+        for _ in 0..3 {
+            dispatch(&mut actions, sink, &[Action::Poll]);
+        }
+        if let Some(error) = error {
+            assert_eq!(actions.status, error.to_string(), "{name}");
+        }
+        let delivered = !cancel && error.is_none();
+        assert_eq!(actions.can_copy(), delivered, "{name}");
+        assert_eq!(
+            service.calls.load(Relaxed),
+            usize::from(delivered),
+            "{name}"
+        );
+        assert_eq!(
+            service.wav_bytes.load(Relaxed),
+            if delivered { 44 + 2 * samples } else { 0 },
+            "{name}"
+        );
+        assert!(dispatch(&mut actions, sink, &[Action::Exit]));
+    }
 }

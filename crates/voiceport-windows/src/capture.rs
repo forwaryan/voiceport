@@ -102,6 +102,9 @@ impl Default for Frame {
 pub enum Read {
     Idle,
     Data,
+    /// Running only: the sample limit is already buffered. Stop/reset now,
+    /// then return the exact remaining samples through the usual drain.
+    LimitReached,
     End,
 }
 /// Trusted owner backend. All calls (including Drop) may block: NEVER run on UI.
@@ -187,6 +190,7 @@ struct Owner<B: Backend, O: Output> {
     keep: bool,
     error: Option<Error>,
     samples: usize,
+    limit_reached: bool,
     sequence: u64,
     drained: usize,
     frame: Box<Frame>,
@@ -227,8 +231,8 @@ fn confirmed_call<T>(unconfirmed: &mut bool, call: impl FnOnce() -> T) -> T {
     *unconfirmed = false;
     result
 }
-/// Synchronous off-UI session; not connected to native tray actions. Each poll
-/// copies at most one running packet or four drain packets. Unknown cleanup
+/// Synchronous off-UI session. Each poll copies at most one running packet
+/// and up to four drain packets if it transitions to cleanup. Unknown cleanup
 /// retains self; Drop deliberately leaks at most the occupied native owner, with
 /// its process permit, rather than freeing driver pointers or allowing reuse.
 pub struct Session<B: Backend, O: Output> {
@@ -262,6 +266,7 @@ impl<B: Backend, O: Output> Session<B, O> {
                 keep: false,
                 error: None,
                 samples: 0,
+                limit_reached: false,
                 sequence: 0,
                 drained: 0,
                 frame: Box::default(),
@@ -355,6 +360,11 @@ impl<B: Backend, O: Output> Session<B, O> {
                             o.fail(e);
                         }
                     }
+                    Ok(Read::LimitReached) => {
+                        o.phase = Phase::Stopping;
+                        o.keep = true;
+                        o.limit_reached = true;
+                    }
                     Ok(Read::End) => o.fail(Error::InvalidEvent),
                     Err(e) => o.fail(e),
                 }
@@ -406,6 +416,9 @@ impl<B: Backend, O: Output> Session<B, O> {
                         .read(true, &mut o.frame)
                 }) {
                     Ok(Read::End) => {
+                        if o.limit_reached && o.keep && o.samples != MAX_SAMPLES {
+                            o.fail(Error::InvalidEvent);
+                        }
                         o.cleanup = Cleanup::Unprepare;
                         break;
                     }
@@ -420,6 +433,11 @@ impl<B: Backend, O: Output> Session<B, O> {
                         if let Err(e) = o.accept_frame() {
                             o.fail(e);
                         }
+                    }
+                    Ok(Read::LimitReached) => {
+                        o.fail(Error::InvalidEvent);
+                        o.cleanup = Cleanup::Unprepare;
+                        break;
                     }
                     Err(e) => {
                         o.fail(e);

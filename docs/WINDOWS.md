@@ -427,7 +427,11 @@ leave Start/Stop disabled and skip shortcut registration.
 Capture requires an available WinMM input device and the private local NTFS
 storage accepted by the existing native checks. Finishing, including at the
 existing 180-second PCM limit, submits only a finalized recording after capture
-release and the off-UI thread join. Transcription uses the existing service and
+release and the off-UI thread join. A completed main buffer triggers Stop/Reset
+before its PCM is drained. The automatic cutoff keeps exactly 2,880,000 samples;
+a short sentinel returned by Stop/Reset is not included. A filled sentinel, or
+an over-limit drain without the automatic cutoff, still fails instead of
+submitting a truncated recording. Transcription uses the existing service and
 requires its configured sign-in and network access. Copy is an explicit menu
 operation. Failed transcription keeps the current recording available for
 **Retry transcription** until the user cancels or exits. New capture stays
